@@ -134,6 +134,12 @@ export function applyToolPolicy(
     }
 
     const tool = rawTool as ToolName;
+    const toolClass = TOOL_POLICY_MATRIX[tool].class;
+
+    if (isLowConfidence && toolClass !== "read") {
+      denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });
+      continue;
+    }
 
     if (tool === "kb.search") {
       allowed.push(tool);
@@ -162,10 +168,6 @@ export function applyToolPolicy(
     }
 
     if (tool === "hold.create") {
-      if (planner.confidence === "low") {
-        denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });
-        continue;
-      }
       if (truth.contradiction_in_turn) {
         denied.push({ tool, allowed: false, reason: "contradiction_in_turn" });
         continue;
@@ -212,10 +214,6 @@ export function applyToolPolicy(
     }
 
     if (tool === "cancel_hold") {
-      if (planner.confidence === "low") {
-        denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });
-        continue;
-      }
       if (!truth.active_hold_exists) {
         denied.push({ tool, allowed: false, reason: "cancel_hold_requires_active_hold" });
         continue;

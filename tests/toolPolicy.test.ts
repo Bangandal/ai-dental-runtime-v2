@@ -93,6 +93,29 @@ test("hold.create allowed with medium/high confidence and required facts", () =>
   assert.deepEqual(high.tools_allowed, ["hold.create"]);
 });
 
+test("low confidence + hold.create is denied with gate reason", () => {
+  const result = applyToolPolicy(
+    { ...basePlanner, confidence: "low", tools_requested: ["hold.create"] },
+    baseTruth,
+  );
+  assert.equal(result.tools_allowed.length, 0);
+  assert.equal(result.tools_denied[0]?.reason, "low_confidence_execution_gate");
+});
+
+test("low confidence + booking.confirm is denied with gate reason", () => {
+  const result = applyToolPolicy(
+    {
+      ...basePlanner,
+      confidence: "low",
+      tools_requested: ["booking.confirm"],
+      explicit_patient_confirmation: true,
+    },
+    baseTruth,
+  );
+  assert.equal(result.tools_allowed.length, 0);
+  assert.equal(result.tools_denied[0]?.reason, "low_confidence_execution_gate");
+});
+
 test("high confidence + active hold + explicit confirmation can pass booking.confirm", () => {
   const result = applyToolPolicy(
     {
@@ -150,6 +173,15 @@ test("appointment.mutate denied by default as not implemented", () => {
   const result = applyToolPolicy({ ...basePlanner, tools_requested: ["appointment.mutate"] }, baseTruth);
   assert.equal(result.tools_allowed.length, 0);
   assert.equal(result.tools_denied[0]?.reason, "appointment_mutation_not_implemented");
+});
+
+test("low confidence + appointment.mutate is denied with gate reason", () => {
+  const result = applyToolPolicy(
+    { ...basePlanner, confidence: "low", tools_requested: ["appointment.mutate"] },
+    baseTruth,
+  );
+  assert.equal(result.tools_allowed.length, 0);
+  assert.equal(result.tools_denied[0]?.reason, "low_confidence_execution_gate");
 });
 
 test("admin.notify is not accepted as a runtime tool", () => {

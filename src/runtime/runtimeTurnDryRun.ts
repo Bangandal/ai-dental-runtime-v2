@@ -55,12 +55,12 @@ export async function runRuntimeTurnDry(
       : null;
 
   const executionContext: ToolExecutionContext = {
-    trace_id: input.trace_id ?? undefined,
-    contact_id: input.contact_id ?? undefined,
-    case_id: input.case_id ?? undefined,
+    ...input.execution_context,
+    trace_id: input.trace_id ?? input.execution_context?.trace_id ?? undefined,
+    contact_id: input.contact_id ?? input.execution_context?.contact_id ?? undefined,
+    case_id: input.case_id ?? input.execution_context?.case_id ?? undefined,
     planner: pipelineResult.planner,
     truth_snapshot: pipelineResult.truth_snapshot,
-    ...input.execution_context,
   };
 
   try {

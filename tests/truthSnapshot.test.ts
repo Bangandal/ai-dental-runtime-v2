@@ -43,7 +43,55 @@ test("expired hold sets hold_not_expired=false", () => {
   assert.equal(truth.hold_not_expired, false);
 });
 
-test("contact/case mismatch sets contact_case_match=false", () => {
+test("active hold but no current_contact_id/current_case_id => contact_case_match=false", () => {
+  const truth = buildTruthSnapshot({
+    active_hold: { id: "hold_1", contact_id: "c1", case_id: "case1" },
+  });
+
+  assert.equal(truth.contact_case_match, false);
+});
+
+test("active hold but missing active_hold.contact_id => contact_case_match=false", () => {
+  const truth = buildTruthSnapshot({
+    active_hold: { id: "hold_1", contact_id: null, case_id: "case1" },
+    current_contact_id: "c1",
+    current_case_id: "case1",
+  });
+
+  assert.equal(truth.contact_case_match, false);
+});
+
+test("active hold but missing active_hold.case_id => contact_case_match=false", () => {
+  const truth = buildTruthSnapshot({
+    active_hold: { id: "hold_1", contact_id: "c1", case_id: null },
+    current_contact_id: "c1",
+    current_case_id: "case1",
+  });
+
+  assert.equal(truth.contact_case_match, false);
+});
+
+test("active hold with matching contact but missing current case id => contact_case_match=false", () => {
+  const truth = buildTruthSnapshot({
+    active_hold: { id: "hold_1", contact_id: "c1", case_id: "case1" },
+    current_contact_id: "c1",
+    current_case_id: null,
+  });
+
+  assert.equal(truth.contact_case_match, false);
+});
+
+test("active hold with matching contact/case => contact_case_match=true", () => {
+  const truth = buildTruthSnapshot({
+    active_hold: { id: "hold_1", contact_id: "c1", case_id: "case1" },
+    current_contact_id: "c1",
+    current_case_id: "case1",
+  });
+
+  assert.equal(truth.contact_case_match, true);
+});
+
+test("contact mismatch => contact_case_match=false", () => {
   const truth = buildTruthSnapshot({
     active_hold: { id: "hold_1", contact_id: "c1", case_id: "case1" },
     current_contact_id: "c2",
@@ -53,14 +101,14 @@ test("contact/case mismatch sets contact_case_match=false", () => {
   assert.equal(truth.contact_case_match, false);
 });
 
-test("matching contact/case sets contact_case_match=true", () => {
+test("case mismatch => contact_case_match=false", () => {
   const truth = buildTruthSnapshot({
     active_hold: { id: "hold_1", contact_id: "c1", case_id: "case1" },
     current_contact_id: "c1",
-    current_case_id: "case1",
+    current_case_id: "case2",
   });
 
-  assert.equal(truth.contact_case_match, true);
+  assert.equal(truth.contact_case_match, false);
 });
 
 test("availability_result with non-empty slots sets availability_result_exists=true", () => {
@@ -165,6 +213,30 @@ test("hold.create allowed only when builder produces availability/proposed/servi
 
   const allowed = applyToolPolicy(planner, allowedTruth);
   assert.deepEqual(allowed.tools_allowed, ["hold.create"]);
+});
+
+
+
+test("booking.confirm denied when active hold exists but contact/case ids are missing", () => {
+  const planner = parsePlannerOutput({
+    confidence: "high",
+    tools_requested: ["booking.confirm"],
+    explicit_patient_confirmation: true,
+  }).planner;
+
+  const truth = buildTruthSnapshot({
+    active_hold: {
+      id: "hold_1",
+      expires_at: "2030-01-01T00:00:00.000Z",
+      contact_id: "c1",
+      case_id: "case1",
+    },
+    now: new Date("2026-01-01T00:00:00.000Z"),
+  });
+
+  const result = applyToolPolicy(planner, truth);
+  assert.equal(result.tools_allowed.length, 0);
+  assert.equal(result.tools_denied[0]?.reason, "booking_confirm_contact_case_mismatch");
 });
 
 test("booking.confirm allowed only when builder produces hold/expiry/match and planner has explicit confirmation", () => {

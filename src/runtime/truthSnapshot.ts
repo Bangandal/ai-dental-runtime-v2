@@ -58,18 +58,19 @@ export function buildTruthSnapshot(input: TruthSnapshotInput): TruthSnapshot {
   const holdNotExpired =
     activeHoldExists && isFutureDate(activeHold?.expires_at ?? null, now);
 
-  let contactCaseMatch = false;
-  if (activeHoldExists) {
-    const hasContactToCheck = hasNonEmptyText(input.current_contact_id);
-    const hasCaseToCheck = hasNonEmptyText(input.current_case_id);
+  const hasActiveHoldContactId = hasNonEmptyText(activeHold?.contact_id);
+  const hasCurrentContactId = hasNonEmptyText(input.current_contact_id);
+  const hasActiveHoldCaseId = hasNonEmptyText(activeHold?.case_id);
+  const hasCurrentCaseId = hasNonEmptyText(input.current_case_id);
 
-    const contactMatches = !hasContactToCheck
-      || activeHold?.contact_id === input.current_contact_id;
-    const caseMatches = !hasCaseToCheck
-      || activeHold?.case_id === input.current_case_id;
-
-    contactCaseMatch = contactMatches && caseMatches;
-  }
+  const contactCaseMatch =
+    activeHoldExists
+    && hasActiveHoldContactId
+    && hasCurrentContactId
+    && activeHold?.contact_id === input.current_contact_id
+    && hasActiveHoldCaseId
+    && hasCurrentCaseId
+    && activeHold?.case_id === input.current_case_id;
 
   const slots = input.availability_result?.slots;
   const availabilityResultExists = Array.isArray(slots) && slots.length > 0;

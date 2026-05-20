@@ -6,8 +6,19 @@ export type ToolName =
   | "hold.create"
   | "booking.confirm"
   | "cancel_hold"
-  | "appointment.mutate"
-  | "admin.notify";
+  | "appointment.mutate";
+
+export type RawToolName = string;
+
+export type SideEffectType = "admin.notify";
+
+export type RuntimeSideEffect = {
+  type: SideEffectType;
+  eligible: boolean;
+  reason?: "low_confidence_execution_gate";
+};
+
+export type BackendEventType = "booking.confirm.success" | "faq.soft_interest";
 
 export type ReplyStrategy =
   | "answer_only"
@@ -26,7 +37,7 @@ export type BookingAction =
 
 export interface PlannerOutput {
   confidence: Confidence;
-  tools_requested: ToolName[];
+  tools_requested: RawToolName[];
   reply_strategy: ReplyStrategy;
   booking_action: BookingAction;
   explicit_patient_confirmation?: boolean;
@@ -52,10 +63,11 @@ export type PolicyDenyReason =
   | "booking_confirm_requires_unexpired_hold"
   | "booking_confirm_contact_case_mismatch"
   | "insufficient_booking_request_data"
-  | "contradiction_in_turn";
+  | "contradiction_in_turn"
+  | "invalid_tool_requested";
 
 export interface ToolDecision {
-  tool: ToolName;
+  tool: RawToolName;
   allowed: boolean;
   reason?: PolicyDenyReason;
 }
@@ -65,7 +77,7 @@ export interface PolicyResult {
   tools_denied: ToolDecision[];
   reply_strategy: ReplyStrategy;
   booking_action: BookingAction;
-  admin_notify_suppressed: boolean;
+  side_effects: RuntimeSideEffect[];
 }
 
 const WRITE_TOOLS = new Set<ToolName>([
@@ -73,7 +85,15 @@ const WRITE_TOOLS = new Set<ToolName>([
   "booking.confirm",
   "cancel_hold",
   "appointment.mutate",
-  "admin.notify",
+]);
+
+const RUNTIME_TOOLS = new Set<ToolName>([
+  "kb.search",
+  "availability.check",
+  "hold.create",
+  "booking.confirm",
+  "cancel_hold",
+  "appointment.mutate",
 ]);
 
 export function applyToolPolicy(
@@ -94,7 +114,14 @@ export function applyToolPolicy(
     bookingAction = null;
   }
 
-  for (const tool of planner.tools_requested) {
+  for (const rawTool of planner.tools_requested) {
+    if (!RUNTIME_TOOLS.has(rawTool as ToolName)) {
+      denied.push({ tool: rawTool, allowed: false, reason: "invalid_tool_requested" });
+      continue;
+    }
+
+    const tool = rawTool as ToolName;
+
     if (isLowConfidence && WRITE_TOOLS.has(tool)) {
       denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });
       continue;
@@ -150,8 +177,22 @@ export function applyToolPolicy(
     tools_denied: denied,
     reply_strategy: replyStrategy,
     booking_action: bookingAction,
-    admin_notify_suppressed: isLowConfidence,
+    side_effects: [],
   };
+}
+
+export function deriveRuntimeSideEffects(
+  confidence: Confidence,
+  backendEvents: BackendEventType[],
+): RuntimeSideEffect[] {
+  if (backendEvents.includes("booking.confirm.success")) {
+    if (confidence === "low") {
+      return [{ type: "admin.notify", eligible: false, reason: "low_confidence_execution_gate" }];
+    }
+    return [{ type: "admin.notify", eligible: true }];
+  }
+
+  return [];
 }
 
 function hasEnoughBookingRequestData(request: PlannerOutput["booking_request"]): boolean {

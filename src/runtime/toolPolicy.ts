@@ -35,9 +35,23 @@ export type BookingAction =
   | "create_hold"
   | "confirm"
   | "cancel_hold"
+  | "reschedule_check"
+  | "reschedule_confirm"
+  | "cancel_request"
   | null;
 
+export type TurnType =
+  | "faq"
+  | "booking"
+  | "availability_request"
+  | "reschedule"
+  | "cancel"
+  | "greeting"
+  | "off_topic"
+  | "unknown";
+
 export interface PlannerOutput {
+  turn_type: TurnType;
   confidence: Confidence;
   tools_requested: RawToolName[];
   reply_strategy: ReplyStrategy;

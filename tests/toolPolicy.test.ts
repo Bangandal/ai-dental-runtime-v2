@@ -24,6 +24,7 @@ const baseTruth: TruthSnapshot = {
 };
 
 const basePlanner: PlannerOutput = {
+  turn_type: "booking",
   confidence: "high",
   tools_requested: [],
   reply_strategy: "answer_only",

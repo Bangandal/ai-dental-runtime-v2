@@ -5,21 +5,21 @@ import type { ToolName } from "../src/runtime/toolPolicy.ts";
 import {
   makeFailedToolResult,
   makeNotImplementedToolResult,
-  type AvailabilityCheckResult,
-  type BookingConfirmResult,
-  type HoldCreateResult,
-  type KbSearchResult,
+  type AvailabilityCheckSuccessResult,
+  type BookingConfirmSuccessResult,
+  type HoldCreateSuccessResult,
+  type KbSearchSuccessResult,
   type ToolExecutionResult,
 } from "../src/runtime/toolResults.ts";
 
-test("each success result type can be constructed with valid data", () => {
-  const kbSearchResult: KbSearchResult = {
+test("success result types can be constructed with required data", () => {
+  const kbSearchResult: KbSearchSuccessResult = {
     tool: "kb.search",
     status: "success",
     data: { chunks: [{ chunk_id: "c1", text: "cleaning policy" }] },
   };
 
-  const availabilityCheckResult: AvailabilityCheckResult = {
+  const availabilityCheckResult: AvailabilityCheckSuccessResult = {
     tool: "availability.check",
     status: "success",
     data: {
@@ -28,7 +28,7 @@ test("each success result type can be constructed with valid data", () => {
     },
   };
 
-  const holdCreateResult: HoldCreateResult = {
+  const holdCreateResult: HoldCreateSuccessResult = {
     tool: "hold.create",
     status: "success",
     data: {
@@ -42,7 +42,7 @@ test("each success result type can be constructed with valid data", () => {
     },
   };
 
-  const bookingConfirmResult: BookingConfirmResult = {
+  const bookingConfirmResult: BookingConfirmSuccessResult = {
     tool: "booking.confirm",
     status: "success",
     data: {
@@ -65,13 +65,20 @@ test("each success result type can be constructed with valid data", () => {
   assert.equal(bookingConfirmResult.data.case_id, "case_1");
 });
 
-test("makeNotImplementedToolResult for appointment.mutate returns not_implemented", () => {
-  const result = makeNotImplementedToolResult("appointment.mutate");
-  assert.equal(result.tool, "appointment.mutate");
-  assert.equal(result.status, "not_implemented");
+test("makeNotImplementedToolResult supports appointment.mutate and any ToolName", () => {
+  const resultA = makeNotImplementedToolResult("appointment.mutate");
+  const resultB = makeNotImplementedToolResult("kb.search");
+
+  assert.equal(resultA.tool, "appointment.mutate");
+  assert.equal(resultA.status, "not_implemented");
+  assert.equal(resultA.error?.code, "tool_not_implemented");
+
+  assert.equal(resultB.tool, "kb.search");
+  assert.equal(resultB.status, "not_implemented");
+  assert.equal(resultB.error?.retryable, false);
 });
 
-test("makeFailedToolResult returns failed with error", () => {
+test("makeFailedToolResult returns failed with error and no success data requirement", () => {
   const result = makeFailedToolResult("availability.check", "upstream_timeout", "provider timeout", true);
   assert.equal(result.tool, "availability.check");
   assert.equal(result.status, "failed");
@@ -80,9 +87,10 @@ test("makeFailedToolResult returns failed with error", () => {
     message: "provider timeout",
     retryable: true,
   });
+  assert.equal(result.data, null);
 });
 
-test("ToolExecutionResult union accepts all current runtime tools and excludes admin.notify", () => {
+test("ToolExecutionResult union accepts all runtime tools and excludes admin.notify", () => {
   const tools: ToolName[] = [
     "kb.search",
     "availability.check",

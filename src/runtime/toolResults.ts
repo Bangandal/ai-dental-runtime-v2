@@ -1,21 +1,22 @@
 import type { ToolDecision, ToolName } from "./toolPolicy.ts";
 
-export type ToolExecutionStatus = "success" | "denied" | "failed" | "not_implemented";
+export type ToolExecutionStatus = "success" | "failed" | "not_implemented";
 
 export interface ToolExecutionBase {
   tool: ToolName;
   status: ToolExecutionStatus;
   trace_id?: string;
-  error?: {
-    code: string;
-    message: string;
-    retryable: boolean;
-  };
 }
 
-export interface KbSearchResult extends ToolExecutionBase {
+export type ToolExecutionError = {
+  code: string;
+  message: string;
+  retryable: boolean;
+};
+
+export interface KbSearchSuccessResult extends ToolExecutionBase {
   tool: "kb.search";
-  status: "success" | "failed";
+  status: "success";
   data: {
     query?: string;
     chunks: Array<{
@@ -28,9 +29,9 @@ export interface KbSearchResult extends ToolExecutionBase {
   };
 }
 
-export interface AvailabilityCheckResult extends ToolExecutionBase {
+export interface AvailabilityCheckSuccessResult extends ToolExecutionBase {
   tool: "availability.check";
-  status: "success" | "failed";
+  status: "success";
   data: {
     slots: Array<{
       slot_id: string;
@@ -45,9 +46,9 @@ export interface AvailabilityCheckResult extends ToolExecutionBase {
   };
 }
 
-export interface HoldCreateResult extends ToolExecutionBase {
+export interface HoldCreateSuccessResult extends ToolExecutionBase {
   tool: "hold.create";
-  status: "success" | "failed";
+  status: "success";
   data: {
     hold_id: string;
     slot_id: string;
@@ -59,9 +60,9 @@ export interface HoldCreateResult extends ToolExecutionBase {
   };
 }
 
-export interface BookingConfirmResult extends ToolExecutionBase {
+export interface BookingConfirmSuccessResult extends ToolExecutionBase {
   tool: "booking.confirm";
-  status: "success" | "failed";
+  status: "success";
   data: {
     appointment_id: string;
     hold_id: string;
@@ -73,9 +74,9 @@ export interface BookingConfirmResult extends ToolExecutionBase {
   };
 }
 
-export interface CancelHoldResult extends ToolExecutionBase {
+export interface CancelHoldSuccessResult extends ToolExecutionBase {
   tool: "cancel_hold";
-  status: "success" | "failed";
+  status: "success";
   data: {
     hold_id: string;
     status: "cancelled";
@@ -83,39 +84,60 @@ export interface CancelHoldResult extends ToolExecutionBase {
   };
 }
 
-export interface AppointmentMutateResult extends ToolExecutionBase {
+export interface AppointmentMutateNotImplementedResult extends ToolExecutionBase {
   tool: "appointment.mutate";
   status: "not_implemented";
   data?: null;
+  error?: {
+    code: "tool_not_implemented";
+    message: string;
+    retryable: false;
+  };
 }
 
-export type ToolExecutionResult =
-  | KbSearchResult
-  | AvailabilityCheckResult
-  | HoldCreateResult
-  | BookingConfirmResult
-  | CancelHoldResult
-  | AppointmentMutateResult;
+export type ToolSuccessResult =
+  | KbSearchSuccessResult
+  | AvailabilityCheckSuccessResult
+  | HoldCreateSuccessResult
+  | BookingConfirmSuccessResult
+  | CancelHoldSuccessResult;
+
+export interface ToolFailedResult extends ToolExecutionBase {
+  tool: ToolName;
+  status: "failed";
+  error: ToolExecutionError;
+  data?: null;
+}
+
+export interface ToolNotImplementedResult extends ToolExecutionBase {
+  tool: ToolName;
+  status: "not_implemented";
+  error?: {
+    code: "tool_not_implemented";
+    message: string;
+    retryable: false;
+  };
+  data?: null;
+}
+
+export type ToolExecutionResult = ToolSuccessResult | ToolFailedResult | ToolNotImplementedResult;
 
 export interface ToolExecutionPlan {
   tools_allowed: ToolName[];
   policy_denials: ToolDecision[];
 }
 
-export function makeNotImplementedToolResult(tool: ToolName): ToolExecutionResult {
-  if (tool === "appointment.mutate") {
-    return { tool, status: "not_implemented", data: null };
-  }
-
+export function makeNotImplementedToolResult(tool: ToolName): ToolNotImplementedResult {
   return {
     tool,
-    status: "failed",
+    status: "not_implemented",
     error: {
       code: "tool_not_implemented",
       message: `${tool} is not implemented`,
       retryable: false,
     },
-  } as ToolExecutionResult;
+    data: null,
+  };
 }
 
 export function makeFailedToolResult(
@@ -123,7 +145,7 @@ export function makeFailedToolResult(
   code: string,
   message: string,
   retryable = false,
-): ToolExecutionResult {
+): ToolFailedResult {
   return {
     tool,
     status: "failed",
@@ -132,5 +154,6 @@ export function makeFailedToolResult(
       message,
       retryable,
     },
-  } as ToolExecutionResult;
+    data: null,
+  };
 }

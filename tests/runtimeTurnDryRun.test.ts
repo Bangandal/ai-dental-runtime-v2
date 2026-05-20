@@ -230,6 +230,88 @@ test("no DB/OpenAI/calendar/n8n/Telegram imports are introduced", async () => {
   assert.doesNotMatch(source, /supabase|postgres|openai|calendar|n8n|telegram/i);
 });
 
+test("execution_context cannot override planner and truth_snapshot", async () => {
+  let capturedPlanner: unknown;
+  let capturedTruthSnapshot: unknown;
+  const registry: ToolExecutorRegistry = {
+    "kb.search": async (context) => {
+      capturedPlanner = context.planner;
+      capturedTruthSnapshot = context.truth_snapshot;
+      return { tool: "kb.search", status: "not_implemented" };
+    },
+  };
+  const spoofedPlanner = { confidence: "high", tools_requested: ["booking.confirm"] };
+  const spoofedTruth = { hold_present: true };
+
+  const result = await runRuntimeTurnDry({
+    raw_planner_output: { confidence: "high", tools_requested: ["kb.search"] },
+    truth_input: {},
+    executor_registry: registry,
+    execution_context: {
+      planner: spoofedPlanner as never,
+      truth_snapshot: spoofedTruth as never,
+    },
+  });
+
+  assert.notEqual(capturedPlanner, spoofedPlanner);
+  assert.notEqual(capturedTruthSnapshot, spoofedTruth);
+  assert.deepEqual(capturedPlanner, result.pipeline_result.planner);
+  assert.deepEqual(capturedTruthSnapshot, result.pipeline_result.truth_snapshot);
+});
+
+test("execution_context cannot override contact_id/case_id when top-level values are provided", async () => {
+  let capturedContactId: unknown;
+  let capturedCaseId: unknown;
+  const registry: ToolExecutorRegistry = {
+    "kb.search": async (context) => {
+      capturedContactId = context.contact_id;
+      capturedCaseId = context.case_id;
+      return { tool: "kb.search", status: "not_implemented" };
+    },
+  };
+
+  await runRuntimeTurnDry({
+    contact_id: "contact_top",
+    case_id: "case_top",
+    raw_planner_output: { confidence: "high", tools_requested: ["kb.search"] },
+    truth_input: {},
+    executor_registry: registry,
+    execution_context: {
+      contact_id: "contact_ctx",
+      case_id: "case_ctx",
+    },
+  });
+
+  assert.equal(capturedContactId, "contact_top");
+  assert.equal(capturedCaseId, "case_top");
+});
+
+test("execution_context supplemental timezone/now are preserved", async () => {
+  let capturedTimezone: unknown;
+  let capturedNow: unknown;
+  const registry: ToolExecutorRegistry = {
+    "kb.search": async (context) => {
+      capturedTimezone = (context as Record<string, unknown>).timezone;
+      capturedNow = (context as Record<string, unknown>).now;
+      return { tool: "kb.search", status: "not_implemented" };
+    },
+  };
+  const now = "2026-05-20T12:00:00.000Z";
+
+  await runRuntimeTurnDry({
+    raw_planner_output: { confidence: "high", tools_requested: ["kb.search"] },
+    truth_input: {},
+    executor_registry: registry,
+    execution_context: {
+      timezone: "America/New_York",
+      now,
+    } as never,
+  });
+
+  assert.equal(capturedTimezone, "America/New_York");
+  assert.equal(capturedNow, now);
+});
+
 test("side_effects are included in debug envelope but not delivered", async () => {
   const result = await runRuntimeTurnDry({
     raw_planner_output: { confidence: "high" },

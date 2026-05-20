@@ -69,7 +69,8 @@ This matrix documents how Runtime V2 capabilities map to the **existing** Supaba
 - `cancel_hold`
 
 **Candidate existing RPC**
-- `rpc_apply_booking_decision_v1`
+- `rpc_check_availability_v1` (read-only)
+- `rpc_apply_booking_decision_v1` (write operations: hold/create/confirm/cancel)
 
 **Runtime repository**
 - `BookingRepository.checkAvailability`
@@ -78,7 +79,9 @@ This matrix documents how Runtime V2 capabilities map to the **existing** Supaba
 - `BookingRepository.cancelHold`
 
 **Status**
-- likely reusable for transactional booking operations after adapter review
+- split path required:
+  - read-only availability via dedicated RPC
+  - transactional writes via existing booking decision RPC
 
 **Critical rule**
 Runtime must not duplicate transactional booking logic, including:
@@ -88,12 +91,35 @@ Runtime must not duplicate transactional booking logic, including:
 - appointment creation transaction
 - hold cancellation transaction
 
+**Read-only availability RPC contract (`rpc_check_availability_v1`)**
+- returns available slots only (no mutation side effects)
+- validates:
+  - clinic
+  - working hours
+  - doctor availability
+  - appointment conflicts
+  - active hold conflicts
+- must not:
+  - create `slot_holds`
+  - update `cases`
+  - create `appointments`
+  - write `case_events` or `appointment_events`
+  - prepare/send/admin notify
+
+**Output shape**
+- `slots[]` with:
+  - `slot_key` or `slot_id`
+  - `doctor_id`
+  - `doctor_name` (if available)
+  - `starts_at`
+  - `ends_at`
+  - `timezone`
+  - `service_interest` (if available)
+
 **Risks / gaps**
-- `availability.check` may require read-only behavior.
-- If `rpc_apply_booking_decision_v1(propose_slot)` creates a hold, it may be unsuitable for pure `availability.check`.
-- A dedicated read-only availability RPC may be needed.
-- confirm output shape for hold and appointment records
-- confirm `should_notify_admin` / event output behavior
+- confirm exact `rpc_check_availability_v1` input/output schema
+- confirm output shape for hold and appointment records for write operations
+- confirm `should_notify_admin` / event output behavior for write operations
 
 ## 4) Appointment Lookup / Post-booking Context
 
@@ -209,7 +235,7 @@ Runtime must not duplicate transactional booking logic, including:
 | Active booking context | `ContactRepository.getActiveBookingContext` | `rpc_get_active_booking_context_v1` | likely_reusable | yes | Booking context derivation in RPC layer | Confirm upcoming/latest semantics |
 | Case state merge | `CaseRepository.mergeCaseState` | `rpc_apply_case_decision_v1` | review_needed | yes | Case-state merge behavior in backend transaction | Validate contract and semantic-safety |
 | Case event append | `CaseRepository.appendCaseEvent` | `rpc_log_case_event` (or equivalent) | review_needed | yes | Event write path and ordering guarantees | Confirm event schema + side effects |
-| Availability read | `BookingRepository.checkAvailability` | `rpc_apply_booking_decision_v1` (tentative) | review_needed | yes | Slot rules and conflict checks in backend | availability.check may require read-only RPC |
+| Availability read | `BookingRepository.checkAvailability` | `rpc_check_availability_v1` | required_new_read_rpc | yes | Slot rules and conflict checks in backend | read-only RPC must not write holds/cases/appointments/events |
 | Hold creation | `BookingRepository.createHold` | `rpc_apply_booking_decision_v1` | likely_reusable | yes | Hold transaction logic in backend | Confirm hold output shape |
 | Booking confirm | `BookingRepository.confirmBooking` | `rpc_apply_booking_decision_v1` | likely_reusable | yes | Appointment transaction logic in backend | Confirm appointment + event/admin flags |
 | Hold cancellation | `BookingRepository.cancelHold` | `rpc_apply_booking_decision_v1` | likely_reusable | yes | Hold cancellation transaction logic in backend | Confirm cancellation status shape |

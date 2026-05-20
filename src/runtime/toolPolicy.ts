@@ -10,6 +10,8 @@ export type ToolName =
 
 export type RawToolName = string;
 
+export type ToolClass = "read" | "write" | "destructive";
+
 export type SideEffectType = "admin.notify";
 
 export type RuntimeSideEffect = {
@@ -53,6 +55,13 @@ export interface TruthSnapshot {
   hold_not_expired: boolean;
   contact_case_match: boolean;
   contradiction_in_turn?: boolean;
+  availability_result_exists?: boolean;
+  proposed_slot_exists?: boolean;
+  service_known?: boolean;
+  explicit_slot_rejection?: boolean;
+  explicit_cancellation_request?: boolean;
+  scheduling_intent_present?: boolean;
+  date_or_time_present?: boolean;
 }
 
 export type PolicyDenyReason =
@@ -64,7 +73,16 @@ export type PolicyDenyReason =
   | "booking_confirm_contact_case_mismatch"
   | "insufficient_booking_request_data"
   | "contradiction_in_turn"
-  | "invalid_tool_requested";
+  | "invalid_tool_requested"
+  | "availability_check_requires_confidence"
+  | "scheduling_intent_missing"
+  | "date_or_time_missing"
+  | "availability_result_required"
+  | "proposed_slot_required"
+  | "service_required"
+  | "cancel_hold_requires_active_hold"
+  | "cancel_hold_requires_explicit_rejection_or_cancellation"
+  | "appointment_mutation_not_implemented";
 
 export interface ToolDecision {
   tool: RawToolName;
@@ -80,21 +98,16 @@ export interface PolicyResult {
   side_effects: RuntimeSideEffect[];
 }
 
-const WRITE_TOOLS = new Set<ToolName>([
-  "hold.create",
-  "booking.confirm",
-  "cancel_hold",
-  "appointment.mutate",
-]);
+export const TOOL_POLICY_MATRIX: Record<ToolName, { class: ToolClass }> = {
+  "kb.search": { class: "read" },
+  "availability.check": { class: "read" },
+  "hold.create": { class: "write" },
+  "booking.confirm": { class: "write" },
+  "cancel_hold": { class: "destructive" },
+  "appointment.mutate": { class: "destructive" },
+};
 
-const RUNTIME_TOOLS = new Set<ToolName>([
-  "kb.search",
-  "availability.check",
-  "hold.create",
-  "booking.confirm",
-  "cancel_hold",
-  "appointment.mutate",
-]);
+const RUNTIME_TOOLS = new Set<ToolName>(Object.keys(TOOL_POLICY_MATRIX) as ToolName[]);
 
 export function applyToolPolicy(
   planner: PlannerOutput,
@@ -122,8 +135,29 @@ export function applyToolPolicy(
 
     const tool = rawTool as ToolName;
 
-    if (isLowConfidence && WRITE_TOOLS.has(tool)) {
-      denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });
+    if (tool === "kb.search") {
+      allowed.push(tool);
+      continue;
+    }
+
+    if (tool === "availability.check") {
+      if (planner.confidence === "low") {
+        denied.push({ tool, allowed: false, reason: "availability_check_requires_confidence" });
+        continue;
+      }
+      if (truth.contradiction_in_turn) {
+        denied.push({ tool, allowed: false, reason: "contradiction_in_turn" });
+        continue;
+      }
+      if (!truth.scheduling_intent_present) {
+        denied.push({ tool, allowed: false, reason: "scheduling_intent_missing" });
+        continue;
+      }
+      if (!truth.date_or_time_present) {
+        denied.push({ tool, allowed: false, reason: "date_or_time_missing" });
+        continue;
+      }
+      allowed.push(tool);
       continue;
     }
 
@@ -132,12 +166,20 @@ export function applyToolPolicy(
         denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });
         continue;
       }
-      if (!hasEnoughBookingRequestData(planner.booking_request)) {
-        denied.push({ tool, allowed: false, reason: "insufficient_booking_request_data" });
-        continue;
-      }
       if (truth.contradiction_in_turn) {
         denied.push({ tool, allowed: false, reason: "contradiction_in_turn" });
+        continue;
+      }
+      if (!truth.availability_result_exists) {
+        denied.push({ tool, allowed: false, reason: "availability_result_required" });
+        continue;
+      }
+      if (!truth.proposed_slot_exists) {
+        denied.push({ tool, allowed: false, reason: "proposed_slot_required" });
+        continue;
+      }
+      if (!truth.service_known) {
+        denied.push({ tool, allowed: false, reason: "service_required" });
         continue;
       }
       allowed.push(tool);
@@ -169,7 +211,27 @@ export function applyToolPolicy(
       continue;
     }
 
-    allowed.push(tool);
+    if (tool === "cancel_hold") {
+      if (planner.confidence === "low") {
+        denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });
+        continue;
+      }
+      if (!truth.active_hold_exists) {
+        denied.push({ tool, allowed: false, reason: "cancel_hold_requires_active_hold" });
+        continue;
+      }
+      const hasExplicitCancellationSignal = Boolean(
+        truth.explicit_slot_rejection || truth.explicit_cancellation_request,
+      );
+      if (!hasExplicitCancellationSignal) {
+        denied.push({ tool, allowed: false, reason: "cancel_hold_requires_explicit_rejection_or_cancellation" });
+        continue;
+      }
+      allowed.push(tool);
+      continue;
+    }
+
+    denied.push({ tool, allowed: false, reason: "appointment_mutation_not_implemented" });
   }
 
   return {
@@ -193,9 +255,4 @@ export function deriveRuntimeSideEffects(
   }
 
   return [];
-}
-
-function hasEnoughBookingRequestData(request: PlannerOutput["booking_request"]): boolean {
-  if (!request?.service) return false;
-  return Boolean(request.preferred_date_text && request.preferred_time_text);
 }

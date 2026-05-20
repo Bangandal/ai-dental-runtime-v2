@@ -1,4 +1,4 @@
-import type { BookingAction, PlannerOutput, ReplyStrategy } from "./toolPolicy.ts";
+import type { BookingAction, PlannerOutput, ReplyStrategy, TurnType } from "./toolPolicy.ts";
 
 export interface PlannerParseResult {
   ok: boolean;
@@ -10,6 +10,7 @@ export interface PlannerParseResult {
 const SAFE_REPLY_STRATEGY: ReplyStrategy = "ask_clarification";
 
 const SAFE_FALLBACK: PlannerOutput = {
+  turn_type: "unknown",
   confidence: "low",
   tools_requested: [],
   reply_strategy: SAFE_REPLY_STRATEGY,
@@ -36,7 +37,20 @@ const VALID_BOOKING_ACTION = new Set<BookingAction>([
   "create_hold",
   "confirm",
   "cancel_hold",
+  "reschedule_check",
+  "reschedule_confirm",
+  "cancel_request",
   null,
+]);
+const VALID_TURN_TYPE = new Set<TurnType>([
+  "faq",
+  "booking",
+  "availability_request",
+  "reschedule",
+  "cancel",
+  "greeting",
+  "off_topic",
+  "unknown",
 ]);
 
 function asRecord(raw: unknown): Record<string, unknown> | null {
@@ -72,6 +86,13 @@ export function parsePlannerOutput(raw: unknown): PlannerParseResult {
   }
 
   const rawConfidence = rawObject.confidence;
+  const rawTurnType = rawObject.turn_type;
+  if (VALID_TURN_TYPE.has(rawTurnType as TurnType)) {
+    parsed.turn_type = rawTurnType as TurnType;
+  } else if (rawTurnType !== undefined) {
+    warnings.push("invalid turn_type; defaulting to unknown");
+  }
+
   if (VALID_CONFIDENCE.has(rawConfidence as "high" | "medium" | "low")) {
     parsed.confidence = rawConfidence as "high" | "medium" | "low";
   } else if (rawConfidence !== undefined) {

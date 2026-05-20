@@ -20,6 +20,7 @@ const baseTruth: TruthSnapshot = {
 
 test("valid planner output parses ok", () => {
   const result = parsePlannerOutput({
+    turn_type: "booking",
     confidence: "high",
     tools_requested: ["kb.search", "admin.notify"],
     reply_strategy: "answer_only",
@@ -53,6 +54,21 @@ test("invalid booking_action becomes null", () => {
   assert.equal(result.planner.booking_action, null);
 });
 
+test("booking_action=reschedule_check parses ok", () => {
+  const result = parsePlannerOutput({ booking_action: "reschedule_check" });
+  assert.equal(result.planner.booking_action, "reschedule_check");
+});
+
+test("booking_action=reschedule_confirm parses ok", () => {
+  const result = parsePlannerOutput({ booking_action: "reschedule_confirm" });
+  assert.equal(result.planner.booking_action, "reschedule_confirm");
+});
+
+test("booking_action=cancel_request parses ok", () => {
+  const result = parsePlannerOutput({ booking_action: "cancel_request" });
+  assert.equal(result.planner.booking_action, "cancel_request");
+});
+
 test("tools_requested accepts raw strings and non-string tools are ignored", () => {
   const result = parsePlannerOutput({ tools_requested: ["kb.search", 5, true, "admin.notify"] });
   assert.deepEqual(result.planner.tools_requested, ["kb.search", "admin.notify"]);
@@ -65,6 +81,7 @@ test("malformed raw object returns safe fallback", () => {
   assert.equal(result.planner.confidence, "low");
   assert.deepEqual(result.planner.tools_requested, []);
   assert.equal(result.planner.reply_strategy, "ask_clarification");
+  assert.equal(result.planner.turn_type, "unknown");
 });
 
 test("null and undefined return safe fallback", () => {
@@ -100,4 +117,35 @@ test("low-confidence fallback cannot allow write tools through policy", () => {
   assert.equal(result.tools_allowed.length, 0);
   assert.equal(result.tools_denied[0]?.reason, "low_confidence_execution_gate");
   assert.equal(result.tools_denied[1]?.reason, "low_confidence_execution_gate");
+});
+
+test("reschedule/cancel planner actions do not allow unimplemented tools", () => {
+  const parsed = parsePlannerOutput({
+    turn_type: "reschedule",
+    booking_action: "reschedule_confirm",
+    tools_requested: ["reschedule.confirm", "appointment.lookup", "appointment.cancel"],
+  });
+
+  const result = applyToolPolicy(parsed.planner, baseTruth);
+  assert.equal(result.tools_allowed.length, 0);
+  assert.equal(result.tools_denied[0]?.reason, "invalid_tool_requested");
+  assert.equal(result.tools_denied[1]?.reason, "invalid_tool_requested");
+  assert.equal(result.tools_denied[2]?.reason, "invalid_tool_requested");
+});
+test("valid turn_type=reschedule parses ok", () => {
+  const result = parsePlannerOutput({ turn_type: "reschedule" });
+  assert.equal(result.ok, true);
+  assert.equal(result.planner.turn_type, "reschedule");
+});
+
+test("valid turn_type=cancel parses ok", () => {
+  const result = parsePlannerOutput({ turn_type: "cancel" });
+  assert.equal(result.ok, true);
+  assert.equal(result.planner.turn_type, "cancel");
+});
+
+test("invalid turn_type becomes unknown with warning", () => {
+  const result = parsePlannerOutput({ turn_type: "weird_turn" });
+  assert.equal(result.planner.turn_type, "unknown");
+  assert.match(result.warnings.join("\n"), /invalid turn_type/);
 });

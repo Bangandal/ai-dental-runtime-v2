@@ -14,6 +14,7 @@ test("Existing RPC capability matrix doc contains required guard phrases", async
   const doc = await fs.readFile(DOC_PATH, "utf8");
 
   const requiredPhrases = [
+    "rpc_check_availability_v1",
     "rpc_apply_booking_decision_v1",
     "rpc_get_or_create_contact",
     "rpc_get_contact_case_context_v1",
@@ -21,7 +22,13 @@ test("Existing RPC capability matrix doc contains required guard phrases", async
     "kb.rpc_retrieve_context_json",
     "rpc_prepare_admin_notification",
     "admin.notify remains side effect",
-    "availability.check may require read-only RPC",
+    "returns available slots only (no mutation side effects)",
+    "must not:",
+    "create `slot_holds`",
+    "update `cases`",
+    "create `appointments`",
+    "write `case_events` or `appointment_events`",
+    "hold/create/confirm/cancel",
     "Runtime must not duplicate transactional booking logic",
   ];
 

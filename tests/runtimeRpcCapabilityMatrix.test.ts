@@ -1,0 +1,46 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import fs from "node:fs/promises";
+import { execSync } from "node:child_process";
+
+const DOC_PATH = new URL("../docs/EXISTING_RPC_CAPABILITY_MATRIX.md", import.meta.url);
+
+test("Existing RPC capability matrix doc exists", async () => {
+  const stat = await fs.stat(DOC_PATH);
+  assert.equal(stat.isFile(), true);
+});
+
+test("Existing RPC capability matrix doc contains required guard phrases", async () => {
+  const doc = await fs.readFile(DOC_PATH, "utf8");
+
+  const requiredPhrases = [
+    "rpc_apply_booking_decision_v1",
+    "rpc_get_or_create_contact",
+    "rpc_get_contact_case_context_v1",
+    "rpc_get_active_booking_context_v1",
+    "kb.rpc_retrieve_context_json",
+    "rpc_prepare_admin_notification",
+    "admin.notify remains side effect",
+    "availability.check may require read-only RPC",
+    "Runtime must not duplicate transactional booking logic",
+  ];
+
+  for (const phrase of requiredPhrases) {
+    assert.equal(doc.includes(phrase), true, `Missing required phrase: ${phrase}`);
+  }
+});
+
+test("PR scope guard: only docs/tests are modified in this change", () => {
+  const changedFiles = execSync("git diff --name-only HEAD", { encoding: "utf8" })
+    .split("\n")
+    .map((f) => f.trim())
+    .filter(Boolean);
+
+  for (const file of changedFiles) {
+    assert.equal(
+      file.startsWith("docs/") || file.startsWith("tests/"),
+      true,
+      `Unexpected non-doc/test file changed: ${file}`,
+    );
+  }
+});

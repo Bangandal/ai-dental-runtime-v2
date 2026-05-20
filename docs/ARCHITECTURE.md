@@ -43,9 +43,9 @@ Runtime Context Builder produces a compact, policy-relevant snapshot for each tu
 {
   "contact_id": "...",
   "case_id": "...",
-  "case_status": "open | collecting | slot_offered | booked_pending_admin | closed | dropped",
+  "case_status": "open | collecting | slot_offered | booked | closed | dropped",
   "lead_status": "new | qualified | booked | visited | no_show | returning",
-  "booking_status": "none | availability_requested | slots_found | slot_offered | hold_active | confirmed | expired | cancelled",
+  "booking_status": "none | availability_requested | slots_found | slot_offered | hold_active | booked | expired | cancelled",
   "service_interest": "cleaning",
   "offered_slot": {
     "slot_id": "...",
@@ -62,7 +62,7 @@ Runtime Context Builder produces a compact, policy-relevant snapshot for each tu
   "latest_appointment": {
     "appointment_id": "...",
     "starts_at": "...",
-    "status": "booked_pending_admin | confirmed | cancelled"
+    "status": "booked | confirmed_by_crm | cancelled | visited | no_show"
   }
 }
 ```
@@ -112,8 +112,8 @@ Tool policy is the runtime safety/control gate between planner intent and execut
 6. User explicitly confirms.
 7. Planner marks confirmation intent.
 8. Policy allows `booking.confirm` only with active unexpired hold.
-9. Executor creates appointment.
-10. Backend emits event/log for n8n admin notification.
+9. `booking.confirm` creates an actual booked appointment.
+10. After booking success, CRM/admin follow-up may happen externally via backend event/logs and n8n.
 
 ## RAG / FAQ Flow
 1. Planner decides whether FAQ grounding is needed and forms semantic `kb_queries`.

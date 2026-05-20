@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyToolPolicy, type PlannerOutput, type TruthSnapshot } from "../src/runtime/toolPolicy.ts";
+import {
+  applyToolPolicy,
+  deriveRuntimeSideEffects,
+  type PlannerOutput,
+  type TruthSnapshot,
+} from "../src/runtime/toolPolicy.ts";
 
 const baseTruth: TruthSnapshot = {
   active_hold_exists: true,
@@ -50,15 +55,19 @@ test("low confidence + hold.create is denied", () => {
   assert.equal(result.tools_denied[0]?.reason, "low_confidence_execution_gate");
 });
 
-test("low confidence suppresses admin notify side effect", () => {
+test("admin.notify is not accepted as a runtime tool", () => {
   const result = applyToolPolicy(
-    { ...basePlanner, confidence: "low", tools_requested: ["admin.notify"] },
+    { ...basePlanner, tools_requested: ["admin.notify" as never] },
     baseTruth,
   );
 
-  assert.equal(result.admin_notify_suppressed, true);
   assert.equal(result.tools_allowed.length, 0);
-  assert.equal(result.tools_denied[0]?.reason, "low_confidence_execution_gate");
+  assert.equal(result.tools_denied[0]?.reason, "invalid_tool_requested");
+});
+
+test("low confidence suppresses eligible notification side effects", () => {
+  const effects = deriveRuntimeSideEffects("low", ["booking.confirm.success"]);
+  assert.deepEqual(effects, [{ type: "admin.notify", eligible: false, reason: "low_confidence_execution_gate" }]);
 });
 
 test("low confidence + clarification response is allowed", () => {
@@ -104,4 +113,14 @@ test("medium confidence is denied for booking.confirm", () => {
 
   assert.equal(result.tools_allowed.length, 0);
   assert.equal(result.tools_denied[0]?.reason, "booking_confirm_requires_high_confidence");
+});
+
+test("booking.confirm success can create eligible admin notification side effect via backend event", () => {
+  const effects = deriveRuntimeSideEffects("high", ["booking.confirm.success"]);
+  assert.deepEqual(effects, [{ type: "admin.notify", eligible: true }]);
+});
+
+test("faq soft interest does not create admin notification side effect", () => {
+  const effects = deriveRuntimeSideEffects("high", ["faq.soft_interest"]);
+  assert.deepEqual(effects, []);
 });

@@ -8,6 +8,8 @@ export type ToolName =
   | "cancel_hold"
   | "appointment.mutate";
 
+export type RawToolName = string;
+
 export type SideEffectType = "admin.notify";
 
 export type RuntimeSideEffect = {
@@ -35,7 +37,7 @@ export type BookingAction =
 
 export interface PlannerOutput {
   confidence: Confidence;
-  tools_requested: ToolName[];
+  tools_requested: RawToolName[];
   reply_strategy: ReplyStrategy;
   booking_action: BookingAction;
   explicit_patient_confirmation?: boolean;
@@ -65,7 +67,7 @@ export type PolicyDenyReason =
   | "invalid_tool_requested";
 
 export interface ToolDecision {
-  tool: ToolName;
+  tool: RawToolName;
   allowed: boolean;
   reason?: PolicyDenyReason;
 }
@@ -112,11 +114,13 @@ export function applyToolPolicy(
     bookingAction = null;
   }
 
-  for (const tool of planner.tools_requested as string[]) {
-    if (!RUNTIME_TOOLS.has(tool as ToolName)) {
-      denied.push({ tool: tool as ToolName, allowed: false, reason: "invalid_tool_requested" });
+  for (const rawTool of planner.tools_requested) {
+    if (!RUNTIME_TOOLS.has(rawTool as ToolName)) {
+      denied.push({ tool: rawTool, allowed: false, reason: "invalid_tool_requested" });
       continue;
     }
+
+    const tool = rawTool as ToolName;
 
     if (isLowConfidence && WRITE_TOOLS.has(tool)) {
       denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });

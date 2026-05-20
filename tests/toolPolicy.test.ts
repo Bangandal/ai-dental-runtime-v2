@@ -57,7 +57,7 @@ test("low confidence + hold.create is denied", () => {
 
 test("admin.notify is not accepted as a runtime tool", () => {
   const result = applyToolPolicy(
-    { ...basePlanner, tools_requested: ["admin.notify" as never] },
+    { ...basePlanner, tools_requested: ["admin.notify"] },
     baseTruth,
   );
 

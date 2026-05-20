@@ -55,13 +55,13 @@ export interface TruthSnapshot {
   hold_not_expired: boolean;
   contact_case_match: boolean;
   contradiction_in_turn?: boolean;
-  availability_result_exists?: boolean;
-  proposed_slot_exists?: boolean;
-  service_known?: boolean;
-  explicit_slot_rejection?: boolean;
-  explicit_cancellation_request?: boolean;
-  scheduling_intent_present?: boolean;
-  date_or_time_present?: boolean;
+  availability_result_exists: boolean;
+  proposed_slot_exists: boolean;
+  service_known: boolean;
+  explicit_slot_rejection: boolean;
+  explicit_cancellation_request: boolean;
+  scheduling_intent_present: boolean;
+  date_or_time_present: boolean;
 }
 
 export type PolicyDenyReason =

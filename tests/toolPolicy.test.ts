@@ -46,6 +46,15 @@ test("kb.search allowed as read tool", () => {
   assert.equal(result.tools_denied.length, 0);
 });
 
+test("low confidence + kb.search is allowed as read tool", () => {
+  const result = applyToolPolicy(
+    { ...basePlanner, confidence: "low", tools_requested: ["kb.search"] },
+    baseTruth,
+  );
+  assert.deepEqual(result.tools_allowed, ["kb.search"]);
+  assert.equal(result.tools_denied.length, 0);
+});
+
 test("availability.check denied on low confidence", () => {
   const result = applyToolPolicy(
     { ...basePlanner, confidence: "low", tools_requested: ["availability.check"] },

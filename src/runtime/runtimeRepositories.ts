@@ -151,10 +151,12 @@ export interface CaseRepository {
 
 export interface BookingRepository {
   checkAvailability(input: {
-    service_id?: string | null;
-    preferred_date_text?: string | null;
-    preferred_time_text?: string | null;
+    clinic_id: string;
+    requested_date: string;
+    requested_time?: string | null;
+    service_interest?: string | null;
     timezone?: string | null;
+    limit?: number;
   }): Promise<RuntimeResult<{ slots: RpcAvailabilitySlot[]; timezone?: string | null }>>;
 
   createHold(input: {

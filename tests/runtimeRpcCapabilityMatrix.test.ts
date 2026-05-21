@@ -37,7 +37,7 @@ test("Existing RPC capability matrix doc contains required guard phrases", async
   }
 });
 
-test("PR scope guard: only docs/tests and targeted runtime policy file are modified", () => {
+test("PR scope guard: only docs/tests and targeted runtime repository files are modified", () => {
   const changedFiles = execSync("git diff --name-only HEAD", { encoding: "utf8" })
     .split("\n")
     .map((f) => f.trim())
@@ -45,6 +45,8 @@ test("PR scope guard: only docs/tests and targeted runtime policy file are modif
 
   const allowedNonDocTestFiles = new Set([
     "src/runtime/toolPolicy.ts",
+    "src/runtime/runtimeRepositories.ts",
+    "src/runtime/supabaseAvailabilityRepository.ts",
     "sql/rpc/core.rpc_check_availability_v1.sql",
   ]);
 

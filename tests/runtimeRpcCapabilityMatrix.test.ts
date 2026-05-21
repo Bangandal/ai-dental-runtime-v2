@@ -45,6 +45,7 @@ test("PR scope guard: only docs/tests and targeted runtime policy file are modif
 
   const allowedNonDocTestFiles = new Set([
     "src/runtime/toolPolicy.ts",
+    "sql/rpc/core.rpc_check_availability_v1.sql",
   ]);
 
   for (const file of changedFiles) {

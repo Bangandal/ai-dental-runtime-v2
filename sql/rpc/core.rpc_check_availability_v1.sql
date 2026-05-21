@@ -30,7 +30,7 @@ with clinic as (
 ), provider_hours as (
   select
     d.id as doctor_id,
-    d.full_name as doctor_name,
+    d.display_name as doctor_name,
     wh.day_of_week,
     wh.start_time,
     wh.end_time,
@@ -43,25 +43,25 @@ with clinic as (
 ), requested_day as (
   select
     ph.*,
-    ((p_requested_date::text || ' ' || ph.start_time::text) || ' ' || ph.tz)::timestamptz as range_start,
-    ((p_requested_date::text || ' ' || ph.end_time::text) || ' ' || ph.tz)::timestamptz as range_end
+    (p_requested_date::timestamp + ph.start_time) as local_range_start,
+    (p_requested_date::timestamp + ph.end_time) as local_range_end
   from provider_hours ph
   where ph.day_of_week = extract(dow from p_requested_date)::int
 ), candidate_slots as (
   select
     rd.doctor_id,
     rd.doctor_name,
-    gs as starts_at,
-    gs + make_interval(mins => rd.slot_minutes) as ends_at,
+    (local_slot at time zone rd.tz) as starts_at,
+    ((local_slot + make_interval(mins => rd.slot_minutes)) at time zone rd.tz) as ends_at,
     rd.tz as timezone
   from requested_day rd
   cross join lateral generate_series(
-    rd.range_start,
-    rd.range_end - make_interval(mins => rd.slot_minutes),
+    rd.local_range_start,
+    rd.local_range_end - make_interval(mins => rd.slot_minutes),
     make_interval(mins => rd.slot_minutes)
-  ) as gs
+  ) as local_slot
   where p_requested_time is null
-     or to_char(gs at time zone rd.tz, 'HH24:MI') = p_requested_time
+     or to_char(local_slot::time, 'HH24:MI') = p_requested_time
 ), unconflicted as (
   select cs.*
   from candidate_slots cs
@@ -70,8 +70,8 @@ with clinic as (
     from core.appointments a
     where a.clinic_id = p_clinic_id
       and a.doctor_id = cs.doctor_id
-      and a.status in ('booked','confirmed')
-      and tstzrange(a.starts_at, a.ends_at, '[)') && tstzrange(cs.starts_at, cs.ends_at, '[)')
+      and a.status in ('slot_proposed', 'awaiting_patient_confirmation', 'booked_pending_admin_confirmation', 'admin_confirmed')
+      and tstzrange(a.start_at, a.end_at, '[)') && tstzrange(cs.starts_at, cs.ends_at, '[)')
   )
   and not exists (
     select 1
@@ -80,11 +80,11 @@ with clinic as (
       and h.doctor_id = cs.doctor_id
       and h.status = 'active'
       and h.expires_at > now()
-      and tstzrange(h.starts_at, h.ends_at, '[)') && tstzrange(cs.starts_at, cs.ends_at, '[)')
+      and tstzrange(h.start_at, h.end_at, '[)') && tstzrange(cs.starts_at, cs.ends_at, '[)')
   )
 )
 select
-  encode(digest(concat_ws('|', p_clinic_id::text, doctor_id::text, starts_at::text, ends_at::text), 'sha256'), 'hex') as slot_key,
+  md5(concat_ws('|', p_clinic_id::text, doctor_id::text, starts_at::text, ends_at::text)) as slot_key,
   doctor_id,
   doctor_name,
   starts_at,

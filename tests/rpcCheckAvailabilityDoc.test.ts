@@ -16,13 +16,34 @@ test("rpc_check_availability_v1 SQL exists and is read-only declared", async () 
     "returns table",
     "core.slot_holds",
     "core.appointments",
+    "d.display_name as doctor_name",
+    "a.start_at",
+    "a.end_at",
+    "h.start_at",
+    "h.end_at",
+    "slot_proposed",
+    "awaiting_patient_confirmation",
+    "booked_pending_admin_confirmation",
+    "admin_confirmed",
+    "md5(concat_ws",
   ];
 
   for (const phrase of required) {
     assert.equal(sql.includes(phrase), true, `Missing required phrase: ${phrase}`);
   }
 
-  const forbidden = [" insert ", " update ", " delete ", "call core.rpc_apply_booking_decision_v1"];
+  const forbidden = [
+    " insert ",
+    " update ",
+    " delete ",
+    "call core.rpc_apply_booking_decision_v1",
+    "d.full_name as doctor_name",
+    "a.starts_at",
+    "a.ends_at",
+    "h.starts_at",
+    "h.ends_at",
+    "encode(digest(",
+  ];
   const normalized = ` ${sql.toLowerCase().replace(/\s+/g, " ")} `;
   for (const phrase of forbidden) {
     assert.equal(normalized.includes(phrase), false, `Unexpected mutating phrase: ${phrase}`);

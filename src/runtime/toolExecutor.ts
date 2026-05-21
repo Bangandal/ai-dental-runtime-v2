@@ -10,7 +10,12 @@ export interface ToolExecutionContext {
   trace_id?: string;
   contact_id?: string;
   case_id?: string;
+  clinic_id?: string;
+  requested_date?: string;
+  requested_time?: string | null;
+  service_interest?: string | null;
   timezone?: string;
+  limit?: number;
   now?: Date;
   planner?: PlannerOutput;
   truth_snapshot?: TruthSnapshot;

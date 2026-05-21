@@ -45,8 +45,10 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
 
   const allowedNonDocTestFiles = new Set([
     "src/runtime/toolPolicy.ts",
+    "src/runtime/toolExecutor.ts",
     "src/runtime/runtimeRepositories.ts",
     "src/runtime/supabaseAvailabilityRepository.ts",
+    "src/runtime/availabilityCheckExecutor.ts",
     "sql/rpc/core.rpc_check_availability_v1.sql",
   ]);
 

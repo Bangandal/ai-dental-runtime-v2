@@ -209,6 +209,14 @@ test("invalid tool still denied with invalid_tool_requested", () => {
   assert.equal(result.tools_denied[0]?.reason, "invalid_tool_requested");
 });
 
+test("applyToolPolicy side_effects stays empty (no derived side effects in policy)", () => {
+  const result = applyToolPolicy(
+    { ...basePlanner, confidence: "high", tools_requested: ["booking.confirm"] },
+    baseTruth,
+  );
+  assert.deepEqual(result.side_effects, []);
+});
+
 test("low confidence suppresses eligible notification side effects", () => {
   const effects = deriveRuntimeSideEffects("low", ["booking.confirm.success"]);
   assert.deepEqual(effects, [{ type: "admin.notify", eligible: false, reason: "low_confidence_execution_gate" }]);

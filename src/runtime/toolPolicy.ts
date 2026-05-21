@@ -109,11 +109,20 @@ export interface PolicyResult {
   tools_denied: ToolDecision[];
   reply_strategy: ReplyStrategy;
   booking_action: BookingAction;
+  // Intentionally always empty in applyToolPolicy.
+  // Runtime side effects are derived separately via deriveRuntimeSideEffects(...)
+  // to keep policy authorization pure and side-effect free.
+  // TODO(runtime): Consider removing side_effects from PolicyResult in a future
+  // breaking cleanup and keeping side_effects only on RuntimeTurnPipelineResult.
   side_effects: RuntimeSideEffect[];
 }
 
 export const TOOL_POLICY_MATRIX: Record<ToolName, { class: ToolClass }> = {
+  // kb.search is a normal read tool and is safe under low confidence.
   "kb.search": { class: "read" },
+  // availability.check is also classed as read, but it is scheduling-sensitive:
+  // it can drive slot offers and booking flow, so low confidence is denied by
+  // a dedicated gate below.
   "availability.check": { class: "read" },
   "hold.create": { class: "write" },
   "booking.confirm": { class: "write" },
@@ -122,6 +131,10 @@ export const TOOL_POLICY_MATRIX: Record<ToolName, { class: ToolClass }> = {
 };
 
 const RUNTIME_TOOLS = new Set<ToolName>(Object.keys(TOOL_POLICY_MATRIX) as ToolName[]);
+
+function isSchedulingSensitiveRead(tool: ToolName): boolean {
+  return tool === "availability.check";
+}
 
 export function applyToolPolicy(
   planner: PlannerOutput,
@@ -150,8 +163,15 @@ export function applyToolPolicy(
     const tool = rawTool as ToolName;
     const toolClass = TOOL_POLICY_MATRIX[tool].class;
 
+    // Generic low-confidence gate: deny write/destructive tools.
     if (isLowConfidence && toolClass !== "read") {
       denied.push({ tool, allowed: false, reason: "low_confidence_execution_gate" });
+      continue;
+    }
+
+    // Dedicated low-confidence gate for scheduling-sensitive reads.
+    if (isLowConfidence && isSchedulingSensitiveRead(tool)) {
+      denied.push({ tool, allowed: false, reason: "availability_check_requires_confidence" });
       continue;
     }
 
@@ -161,10 +181,6 @@ export function applyToolPolicy(
     }
 
     if (tool === "availability.check") {
-      if (planner.confidence === "low") {
-        denied.push({ tool, allowed: false, reason: "availability_check_requires_confidence" });
-        continue;
-      }
       if (truth.contradiction_in_turn) {
         denied.push({ tool, allowed: false, reason: "contradiction_in_turn" });
         continue;
@@ -259,6 +275,10 @@ export function deriveRuntimeSideEffects(
   confidence: Confidence,
   backendEvents: BackendEventType[],
 ): RuntimeSideEffect[] {
+  // Runtime side effects are derived from backend events only.
+  // This function does not execute/deliver notifications; delivery is handled
+  // by downstream layers (e.g., n8n).
+  // admin.notify remains a side effect intent, not a runtime tool.
   if (backendEvents.includes("booking.confirm.success")) {
     if (confidence === "low") {
       return [{ type: "admin.notify", eligible: false, reason: "low_confidence_execution_gate" }];

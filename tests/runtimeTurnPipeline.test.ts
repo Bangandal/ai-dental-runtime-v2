@@ -119,6 +119,21 @@ test("backend booking.confirm.success can derive admin.notify side effect", () =
   });
 
   assert.deepEqual(result.side_effects, [{ type: "admin.notify", eligible: true }]);
+  assert.deepEqual(result.policy_result.side_effects, []);
+});
+
+test("runtime pipeline side_effects come from deriveRuntimeSideEffects, not PolicyResult.side_effects", () => {
+  const result = runRuntimeTurnPipeline({
+    raw_planner_output: {
+      confidence: "high",
+      tools_requested: ["kb.search"],
+    },
+    truth_input: {},
+    backend_events: ["booking.confirm.success"],
+  });
+
+  assert.deepEqual(result.policy_result.side_effects, []);
+  assert.deepEqual(result.side_effects, [{ type: "admin.notify", eligible: true }]);
 });
 
 test("no backend events produce no side effects", () => {

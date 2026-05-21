@@ -24,7 +24,9 @@ language sql
 stable
 as $$
 with clinic as (
-  select c.id, coalesce(p_timezone, c.timezone, 'UTC') as tz
+  -- p_timezone is reserved for future display conversion only and must not
+  -- override provider/clinic scheduling timezone.
+  select c.id, coalesce(c.timezone, 'UTC') as tz
   from core.clinics c
   where c.id = p_clinic_id
 ), provider_hours as (

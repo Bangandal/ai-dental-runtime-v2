@@ -26,6 +26,9 @@ test("rpc_check_availability_v1 SQL exists and is read-only declared", async () 
     "booked_pending_admin_confirmation",
     "admin_confirmed",
     "md5(concat_ws",
+    "coalesce(c.timezone, 'UTC') as tz",
+    "coalesce(wh.timezone, (select tz from clinic)) as tz",
+    "p_timezone is reserved for future display conversion only",
   ];
 
   for (const phrase of required) {
@@ -43,6 +46,7 @@ test("rpc_check_availability_v1 SQL exists and is read-only declared", async () 
     "h.starts_at",
     "h.ends_at",
     "encode(digest(",
+    "coalesce(p_timezone, c.timezone, 'UTC') as tz",
   ];
   const normalized = ` ${sql.toLowerCase().replace(/\s+/g, " ")} `;
   for (const phrase of forbidden) {

@@ -84,6 +84,20 @@ If `RuntimeTurnService` throws, endpoint returns `200` with a safe fallback repl
 - `side_effects` includes `runtime_turn_failed` admin notification payload.
 - `debug.runtime_error` contains error details for observability.
 
+
+## Server Wiring (PR37)
+
+Server bootstrap should register the endpoint through:
+
+- `registerRuntimeRoutes(app, { openaiClient, model, rpc })` from `src/runtime/runtimeServerBootstrap.ts`
+- internally: `registerRuntimeTurnRoute(app, { runtimeTurnService: createDentalRuntimeTurnService(...) })`
+
+This keeps `POST /runtime/turn` unchanged while switching endpoint execution to `RuntimeTurnService` and the runtime agent loop stack.
+
+## Bootstrap Audit Notes
+
+Within this repository scope, no legacy `/runtime/turn` bootstrap or old runtime route registration module exists anymore. The canonical route wiring path is now `runtimeServerBootstrap -> runtimeTurnHttpRoute -> RuntimeTurnService`.
+
 ## Ownership Boundaries
 
 - Transport/n8n owns delivery and side-effect dispatch.

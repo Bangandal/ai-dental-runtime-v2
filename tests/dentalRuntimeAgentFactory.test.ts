@@ -47,7 +47,7 @@ test("OpenAI caller receives active tool definitions only", async () => {
   await agent.runTurn(makeTurnInput());
   const toolNames = ((captured?.tools ?? []) as Array<Record<string, unknown>>).map((tool) => String(tool.name));
 
-  assert.deepEqual(toolNames.sort(), ["availability.check", "kb.search"]);
+  assert.deepEqual(toolNames.sort(), ["availability_check", "kb_search"]);
 });
 
 test("kb.search path executes RPC and returns final response", async () => {
@@ -59,7 +59,7 @@ test("kb.search path executes RPC and returns final response", async () => {
         callCount += 1;
         if (callCount === 1) {
           return {
-            tool_calls: [{ name: "kb.search", arguments: JSON.stringify({ query: "insurance" }), call_id: "call_1" }],
+            tool_calls: [{ name: "kb_search", arguments: JSON.stringify({ query: "insurance" }), call_id: "call_1" }],
           };
         }
         return { output_text: "We accept PPO." };
@@ -98,7 +98,7 @@ test("availability.check path executes RPC and returns final response", async ()
           callCount += 1;
           if (callCount === 1) {
             return {
-              tool_calls: [{ name: "availability.check", arguments: { requested_date: "2026-05-23" }, call_id: "call_2" }],
+              tool_calls: [{ name: "availability_check", arguments: { requested_date: "2026-05-23" }, call_id: "call_2" }],
             };
           }
           return { output_text: "We have openings tomorrow." };

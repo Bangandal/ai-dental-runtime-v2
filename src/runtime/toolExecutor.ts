@@ -14,6 +14,8 @@ export interface ToolExecutionContext {
   requested_date?: string;
   requested_time?: string | null;
   service_interest?: string | null;
+  query_text?: string;
+  locale?: string | null;
   timezone?: string;
   limit?: number;
   now?: Date;

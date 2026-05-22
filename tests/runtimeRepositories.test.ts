@@ -8,6 +8,7 @@ import type {
   ContactRepository,
   NotificationRepository,
   RuntimeResult,
+  KnowledgeRepository,
 } from "../src/runtime/runtimeRepositories.ts";
 
 test("repository methods are Promise<RuntimeResult<...>> typed contracts", async () => {
@@ -80,6 +81,22 @@ test("booking repository includes future lookupAppointment boundary", async () =
   }
 });
 
+
+
+test("knowledge repository includes clinic-scoped search contract", async () => {
+  const knowledgeRepo: KnowledgeRepository = {
+    async searchKnowledge(input) {
+      assert.equal(input.clinic_id, "clinic_1");
+      return { ok: true, data: { chunks: [{ chunk_id: "k1", text: "Hours are 8 to 5" }] } };
+    },
+  };
+
+  const result = await knowledgeRepo.searchKnowledge({ clinic_id: "clinic_1", query: "hours" });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.data.chunks[0]?.chunk_id, "k1");
+  }
+});
 test("notification repository prepares payloads only and does not expose send methods", () => {
   type NotificationKeys = keyof NotificationRepository;
   const allowedKey: NotificationKeys = "prepareAdminNotification";

@@ -8,16 +8,7 @@ export interface KbSearchExecutorDeps {
 
 function resolveKbQuery(context: ToolExecutionContext): string {
   const direct = typeof context.query_text === "string" ? context.query_text : "";
-  if (direct.trim().length > 0) {
-    return direct.trim();
-  }
-
-  const fromPlanner = context.planner?.booking_request?.service;
-  if (typeof fromPlanner === "string" && fromPlanner.trim().length > 0) {
-    return fromPlanner.trim();
-  }
-
-  return "";
+  return direct.trim();
 }
 
 export function createKbSearchExecutor(deps: KbSearchExecutorDeps): ToolExecutor {

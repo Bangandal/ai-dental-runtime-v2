@@ -49,6 +49,37 @@ test("kb executor fails if query missing and does not call repository", async ()
   assert.equal(result.error.code, "kb_missing_query");
 });
 
+
+
+test("kb executor does not fall back to planner booking_request.service for query", async () => {
+  let repositoryCalled = false;
+  const executor = createKbSearchExecutor({
+    knowledgeRepository: {
+      async searchKnowledge() {
+        repositoryCalled = true;
+        return { ok: true, data: { chunks: [] } };
+      },
+    },
+  });
+
+  const result = await executor({
+    ...BASE_CONTEXT,
+    query_text: " ",
+    planner: {
+      turn_type: "booking",
+      confidence: "high",
+      tools_requested: ["kb.search"],
+      reply_strategy: "answer_only",
+      booking_action: "check_availability",
+      booking_request: { service: "cleaning" },
+    },
+  });
+
+  assert.equal(repositoryCalled, false);
+  assert.equal(result.status, "failed");
+  assert.equal(result.error.code, "kb_missing_query");
+});
+
 test("kb executor calls repository with normalized args", async () => {
   let receivedInput: unknown;
   const executor = createKbSearchExecutor({

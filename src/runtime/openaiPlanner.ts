@@ -18,6 +18,8 @@ export interface OpenAIPlannerResult {
   usage?: unknown;
 }
 
+// TODO(PR27): OpenAIPlanner is a planner-only transitional interface (legacy planner flow).
+// Replace with OpenAI Runtime Agent loop interface in follow-up PR.
 export interface OpenAIPlanner {
   plan(input: OpenAIPlannerInput): Promise<OpenAIPlannerResult>;
 }
@@ -53,6 +55,8 @@ const ALLOWED_RUNTIME_TOOLS = [
   "appointment.mutate",
 ] as const;
 
+// TODO(PR27): JSON-only planner prompt is transitional and will be replaced by
+// Runtime Agent tool-loop prompting that also returns final_patient_reply.
 export function buildPlannerSystemInstruction(_input: OpenAIPlannerInput): string {
   return [
     "You are the runtime planner. Return JSON only.",

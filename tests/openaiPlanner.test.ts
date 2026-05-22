@@ -33,6 +33,40 @@ test("planner calls injected caller with model and messages", async () => {
   assert.match(received?.messages[1]?.content ?? "", /clinic-1/);
 });
 
+
+
+test("planner user message is only in Patient message section", async () => {
+  let received: OpenAIPlannerCallerInput | null = null;
+
+  const planner = createOpenAIPlanner({
+    model: "gpt-test",
+    caller: async (input) => {
+      received = input;
+      return { output: { turn_type: "unknown" } };
+    },
+  });
+
+  const patientText = "I need a cleaning next week";
+
+  await planner.plan({
+    clinic_id: "clinic-1",
+    user_message: patientText,
+  });
+
+  const callerMessageContent = received?.messages[1]?.content ?? "";
+  assert.match(callerMessageContent, /Patient message:/);
+
+  const runtimeJsonMatch = callerMessageContent.match(/Runtime context \(JSON\):\n(.+)\n\nPatient message:/s);
+  assert.ok(runtimeJsonMatch);
+
+  const runtimeContext = JSON.parse(runtimeJsonMatch?.[1] ?? "{}");
+  assert.equal(Object.prototype.hasOwnProperty.call(runtimeContext, "user_message"), false);
+
+  const firstOccurrence = callerMessageContent.indexOf(patientText);
+  assert.notEqual(firstOccurrence, -1);
+  assert.equal(callerMessageContent.lastIndexOf(patientText), firstOccurrence);
+});
+
 test("planner passes conversation_id when provided", async () => {
   let receivedConversationId: string | null | undefined;
 

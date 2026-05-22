@@ -51,7 +51,7 @@ test("buildRuntimeApp registers /runtime/turn", async (t) => {
     method: "POST",
     url: "/runtime/turn",
     payload: {
-      clinic_code: "clinic_a",
+      clinic_code: "11111111-1111-4111-8111-111111111111",
       channel: "telegram",
       external_user_id: "u1",
       text: "Привет",

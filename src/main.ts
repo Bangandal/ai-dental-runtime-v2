@@ -4,7 +4,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import { readRuntimeServerEnv } from "./index.ts";
 import { registerRuntimeRoutes } from "./runtime/runtimeServerBootstrap.ts";
-import type { RpcCaller } from "./runtime/supabaseAvailabilityRepository.ts";
+import type { RpcCaller } from "./runtime/runtimeRepositories.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;

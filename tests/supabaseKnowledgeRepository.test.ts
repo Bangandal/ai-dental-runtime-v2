@@ -69,6 +69,34 @@ test("returns failure on RPC error", async () => {
   }
 });
 
+
+
+test("supports JSON object response with empty hits", async () => {
+  const rpc: RpcCaller = async () => ({ data: { hits: [], count: 0, context_text: "", top_similarity: null }, error: null });
+  const repo = createSupabaseKnowledgeRepository({ rpc, embeddingModel: "m", embeddingClient: { createEmbedding: async () => [0.1] } });
+  const result = await repo.searchKnowledge({ clinic_id: "clinic_1", query: "hours" });
+  assert.deepEqual(result, { ok: true, data: { chunks: [] } });
+});
+
+test("supports JSON object response with hits and normalizes fields", async () => {
+  const rpc: RpcCaller = async () => ({
+    data: {
+      hits: [{ id: "chunk_2", document_id: "doc_2", similarity: 0.73, content: "Emergency policy" }],
+      count: 1,
+      context_text: "Emergency policy",
+      top_similarity: 0.73,
+    },
+    error: null,
+  });
+
+  const repo = createSupabaseKnowledgeRepository({ rpc, embeddingModel: "m", embeddingClient: { createEmbedding: async () => [0.1] } });
+  const result = await repo.searchKnowledge({ clinic_id: "clinic_1", query: "emergency" });
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.deepEqual(result.data.chunks, [{ chunk_id: "chunk_2", document_id: "doc_2", score: 0.73, text: "Emergency policy", metadata: undefined }]);
+  }
+});
 test("fails malformed rows", async () => {
   const rpc: RpcCaller = async () => ({ data: [{ text: "missing chunk_id" }], error: null });
   const repo = createSupabaseKnowledgeRepository({ rpc, embeddingModel: "m", embeddingClient: { createEmbedding: async () => [0.1] } });

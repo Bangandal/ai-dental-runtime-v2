@@ -192,6 +192,29 @@ export interface KnowledgeRepository {
   }): Promise<RuntimeResult<{ chunks: RpcKnowledgeChunk[] }>>;
 }
 
+/**
+ * OpenAI conversation memory stores dialogue continuity identifiers only.
+ *
+ * conversation_id may be persisted against case/contact/convo_state depending
+ * on existing database reality, but it is never source of truth for business
+ * state. Missing conversation_id is valid and means Runtime can start or
+ * continue without prior OpenAI conversation context.
+ */
+export interface ConversationMemoryRepository {
+  getConversationMemory(input: {
+    clinic_id: string;
+    contact_id?: string | null;
+    case_id?: string | null;
+  }): Promise<RuntimeResult<{ conversation_id: string | null }>>;
+
+  saveConversationMemory(input: {
+    clinic_id: string;
+    contact_id?: string | null;
+    case_id?: string | null;
+    conversation_id: string;
+  }): Promise<RuntimeResult<{ conversation_id: string }>>;
+}
+
 export interface NotificationRepository {
   /**
    * Prepares backend notification payload contracts only.

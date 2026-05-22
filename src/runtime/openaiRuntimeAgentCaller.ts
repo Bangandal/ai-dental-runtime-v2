@@ -16,6 +16,13 @@ export interface CreateOpenAIRuntimeAgentCallerDeps {
 }
 
 const SAFE_FALLBACK_REPLY = "Sorry, I’m having trouble processing that right now. Please try again in a moment.";
+const INTERNAL_TO_OPENAI_TOOL_NAME: Record<(typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number], string> = {
+  "kb.search": "kb_search",
+  "availability.check": "availability_check",
+};
+const OPENAI_TO_INTERNAL_TOOL_NAME = Object.fromEntries(
+  Object.entries(INTERNAL_TO_OPENAI_TOOL_NAME).map(([internalName, openAIName]) => [openAIName, internalName]),
+) as Record<string, (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number]>;
 
 export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCallerDeps): RuntimeAgentCaller {
   return async (input) => {
@@ -30,7 +37,7 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
     const def = input.input.tool_definitions[toolName];
     return {
       type: "function",
-      name: toolName,
+      name: INTERNAL_TO_OPENAI_TOOL_NAME[toolName],
       description: def.description,
       parameters: {
         type: "object",
@@ -122,12 +129,18 @@ function toToolRequests(value: unknown): RuntimeAgentToolRequest[] {
     const obj = asObject(item);
     if (!obj) continue;
     const name = readString(obj.name) ?? readString(obj.tool) ?? readString(obj.function_name);
-    if (!name || !isActiveTool(name)) continue;
+    if (!name) continue;
+    const internalToolName = toInternalToolName(name);
+    if (!internalToolName || !isActiveTool(internalToolName)) continue;
     const callId = readString(obj.call_id) ?? readString(obj.id);
     const args = parseArguments(obj.arguments ?? obj.input ?? obj.parameters);
-    toolRequests.push({ tool: name, call_id: callId ?? undefined, arguments: args });
+    toolRequests.push({ tool: internalToolName, call_id: callId ?? undefined, arguments: args });
   }
   return toolRequests;
+}
+
+function toInternalToolName(name: string): string {
+  return OPENAI_TO_INTERNAL_TOOL_NAME[name] ?? name;
 }
 
 function isActiveTool(name: string): name is (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number] {

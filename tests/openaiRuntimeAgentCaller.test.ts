@@ -45,7 +45,7 @@ test("calls injected client.responses.create with expected payload and active to
   assert.equal(parsedPayload.message, "Need help");
   assert.equal(payload.tools.length, 2);
   const toolNames = payload.tools.map((t: Record<string, unknown>) => t.name);
-  assert.deepEqual(toolNames.sort(), ["availability.check", "kb.search"]);
+  assert.deepEqual(toolNames.sort(), ["availability_check", "kb_search"]);
   assert.equal(result.type, "final_response");
 });
 
@@ -64,13 +64,26 @@ test("does not include future or admin tools", async () => {
   assert.equal(names.includes("admin.notify"), false);
 });
 
+test("openai tool definitions names do not contain dots and include expected tools", async () => {
+  let captured: unknown;
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async (input) => ((captured = input), { output_text: "ok" }) } },
+  });
+
+  await caller(makeInput());
+  const names = ((captured as any).tools as Array<Record<string, string>>).map((x) => x.name);
+  for (const name of names) assert.equal(name.includes("."), false);
+  assert.equal(names.includes("kb_search"), true);
+  assert.equal(names.includes("availability_check"), true);
+});
+
 test("maps tool call output to tool_requests", async () => {
   const caller = createOpenAIRuntimeAgentCaller({
     client: {
       responses: {
         create: async () => ({
           conversation_id: "conv_2",
-          tool_calls: [{ name: "kb.search", arguments: JSON.stringify({ query: "insurance" }), call_id: "call_1" }],
+          tool_calls: [{ name: "kb_search", arguments: JSON.stringify({ query: "insurance" }), call_id: "call_1" }],
         }),
       },
     },
@@ -81,6 +94,24 @@ test("maps tool call output to tool_requests", async () => {
   assert.equal(result.conversation_id, "conv_2");
   assert.equal(result.tool_requests[0]?.tool, "kb.search");
   assert.deepEqual(result.tool_requests[0]?.arguments, { query: "insurance" });
+});
+
+test("maps availability_check tool call output to internal availability.check", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          conversation_id: "conv_2",
+          tool_calls: [{ name: "availability_check", arguments: JSON.stringify({ date: "tomorrow" }), call_id: "call_2" }],
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput());
+  assert.equal(result.type, "tool_requests");
+  assert.equal(result.tool_requests[0]?.tool, "availability.check");
+  assert.deepEqual(result.tool_requests[0]?.arguments, { date: "tomorrow" });
 });
 
 test("maps final output text and structured fields to final_response", async () => {

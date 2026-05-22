@@ -4,6 +4,7 @@ import test from "node:test";
 import { TOOL_POLICY_MATRIX } from "../src/runtime/toolPolicy.ts";
 import type {
   BookingRepository,
+  ConversationMemoryRepository,
   ContactRepository,
   NotificationRepository,
   RuntimeResult,
@@ -122,4 +123,54 @@ test("RuntimeResult supports typed success and typed failure", () => {
 
   assert.equal(okResult.ok, true);
   assert.equal(failResult.ok, false);
+});
+
+test("conversation memory repository contract returns RuntimeResult shapes", async () => {
+  const memoryRepo: ConversationMemoryRepository = {
+    async getConversationMemory() {
+      return { ok: true, data: { conversation_id: null } };
+    },
+    async saveConversationMemory(_input) {
+      return { ok: true, data: { conversation_id: "conv_123" } };
+    },
+  };
+
+  const loaded = await memoryRepo.getConversationMemory({ clinic_id: "clinic_1", case_id: "case_1" });
+  assert.equal(loaded.ok, true);
+  if (loaded.ok) {
+    assert.equal(loaded.data.conversation_id, null);
+  }
+
+  const saved = await memoryRepo.saveConversationMemory({
+    clinic_id: "clinic_1",
+    contact_id: "contact_1",
+    conversation_id: "conv_123",
+  });
+  assert.equal(saved.ok, true);
+  if (saved.ok) {
+    assert.equal(saved.data.conversation_id, "conv_123");
+  }
+});
+
+test("conversation memory persistence doc includes required guarantees", async () => {
+  const fs = await import("node:fs/promises");
+  const source = await fs.readFile(
+    new URL("../docs/OPENAI_CONVERSATION_MEMORY_PERSISTENCE.md", import.meta.url),
+    "utf8",
+  );
+
+  assert.equal(source.toLowerCase().includes("dialogue continuity"), true);
+  assert.equal(source.includes("Supabase/Postgres remains the source of truth"), true);
+  assert.equal(source.includes("before `OpenAIPlanner.plan`"), true);
+  assert.equal(source.includes("after planner execution"), true);
+
+  for (const phrase of [
+    "bookings",
+    "holds",
+    "appointments",
+    "prices",
+    "patient identity",
+  ]) {
+    assert.equal(source.toLowerCase().includes(phrase), true);
+  }
 });

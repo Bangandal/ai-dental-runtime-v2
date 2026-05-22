@@ -50,6 +50,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/supabaseAvailabilityRepository.ts",
     "src/runtime/availabilityCheckExecutor.ts",
     "src/runtime/openaiPlanner.ts",
+    "src/runtime/runtimeTurnAssembly.ts",
     "sql/rpc/core.rpc_check_availability_v1.sql",
   ]);
 

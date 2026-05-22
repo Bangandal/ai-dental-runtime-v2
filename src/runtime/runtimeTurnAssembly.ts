@@ -1,6 +1,7 @@
 import { buildRuntimeDebugEnvelope, type RuntimeDebugEnvelope } from "./debugEnvelope.ts";
-import { parsePlannerOutput, type PlannerParseResult } from "./plannerOutput.ts";
 import type { OpenAIPlanner, OpenAIPlannerResult } from "./openaiPlanner.ts";
+import { parsePlannerOutput, type PlannerParseResult } from "./plannerOutput.ts";
+import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
 import {
   buildToolExecutionPlan,
   executeAllowedTools,
@@ -38,6 +39,7 @@ export interface RuntimeTurnAssemblyInput {
 export interface RuntimeTurnAssemblyDeps {
   planner: OpenAIPlanner;
   executors: ToolExecutorRegistry;
+  conversationMemoryRepository?: ConversationMemoryRepository;
   now?: Date;
 }
 
@@ -50,6 +52,8 @@ export interface RuntimeTurnAssemblyResult {
   tool_results: ToolExecutionResult[];
   side_effects: RuntimeSideEffect[];
   debug_envelope: RuntimeDebugEnvelope;
+  resolved_conversation_id?: string | null;
+  returned_conversation_id?: string | null;
   conversation_id?: string | null;
 }
 
@@ -74,6 +78,30 @@ export async function runRuntimeTurnAssembly(
   deps: RuntimeTurnAssemblyDeps,
 ): Promise<RuntimeTurnAssemblyResult> {
   const now = deps.now ?? new Date();
+  let resolvedConversationId: string | null = input.conversation_id ?? null;
+  let memoryLoaded = false;
+  let memorySaved = false;
+  let memoryLoadError: string | null = null;
+  let memorySaveError: string | null = null;
+
+  if (resolvedConversationId === null && deps.conversationMemoryRepository) {
+    try {
+      const memoryResult = await deps.conversationMemoryRepository.getConversationMemory({
+        clinic_id: input.clinic_id,
+        contact_id: input.contact_id,
+        case_id: input.case_id,
+      });
+
+      memoryLoaded = memoryResult.ok;
+      resolvedConversationId = memoryResult.ok ? memoryResult.data.conversation_id : null;
+      if (!memoryResult.ok) {
+        memoryLoadError = memoryResult.error.message;
+      }
+    } catch (error) {
+      memoryLoadError = error instanceof Error ? error.message : String(error);
+      resolvedConversationId = null;
+    }
+  }
 
   try {
     const plannerResult = await deps.planner.plan({
@@ -81,13 +109,32 @@ export async function runRuntimeTurnAssembly(
       clinic_id: input.clinic_id,
       contact_id: input.contact_id,
       case_id: input.case_id,
-      conversation_id: input.conversation_id,
+      conversation_id: resolvedConversationId,
       user_message: input.user_message,
       locale: input.locale,
       recent_summary: input.recent_summary,
       business_context: input.business_context,
       truth_snapshot_hint: input.truth_input as Record<string, unknown> | undefined,
     });
+
+    const returnedConversationId = plannerResult.conversation_id ?? null;
+
+    if (returnedConversationId && deps.conversationMemoryRepository) {
+      try {
+        const saveResult = await deps.conversationMemoryRepository.saveConversationMemory({
+          clinic_id: input.clinic_id,
+          contact_id: input.contact_id,
+          case_id: input.case_id,
+          conversation_id: returnedConversationId,
+        });
+        memorySaved = saveResult.ok;
+        if (!saveResult.ok) {
+          memorySaveError = saveResult.error.message;
+        }
+      } catch (error) {
+        memorySaveError = error instanceof Error ? error.message : String(error);
+      }
+    }
 
     const parsedPlanner = parsePlannerOutput(plannerResult.raw_planner_output);
     const truthSnapshot = buildTruthSnapshot({ ...(input.truth_input ?? {}), planner: parsedPlanner.planner, now });
@@ -98,7 +145,7 @@ export async function runRuntimeTurnAssembly(
     const toolResults = await executeAllowedTools({
       tools_allowed: executionPlan.tools_allowed,
       registry: deps.executors,
-      context: buildSafeContext(input, parsedPlanner, truthSnapshot),
+      context: buildSafeContext({ ...input, conversation_id: returnedConversationId }, parsedPlanner, truthSnapshot),
     });
 
     return {
@@ -109,20 +156,27 @@ export async function runRuntimeTurnAssembly(
       execution_plan: executionPlan,
       tool_results: toolResults,
       side_effects: sideEffects,
-      debug_envelope: buildRuntimeDebugEnvelope({
-        trace_id: input.trace_id,
-        created_at: now,
-        clinic_id: input.clinic_id,
-        contact_id: input.contact_id,
-        case_id: input.case_id,
-        conversation_id: plannerResult.conversation_id,
-        planner_parse_result: parsedPlanner,
-        truth_snapshot: truthSnapshot,
-        policy_result: policyResult,
-        tool_results: toolResults,
-        side_effects: sideEffects,
-      }),
-      conversation_id: plannerResult.conversation_id,
+      debug_envelope: Object.assign(buildRuntimeDebugEnvelope({
+          trace_id: input.trace_id,
+          created_at: now,
+          clinic_id: input.clinic_id,
+          contact_id: input.contact_id,
+          case_id: input.case_id,
+          conversation_id: returnedConversationId,
+          planner_parse_result: parsedPlanner,
+          truth_snapshot: truthSnapshot,
+          policy_result: policyResult,
+          tool_results: toolResults,
+          side_effects: sideEffects,
+        }), {
+        memory_loaded: memoryLoaded,
+        memory_saved: memorySaved,
+        memory_load_error: memoryLoadError,
+        memory_save_error: memorySaveError,
+      }) as RuntimeDebugEnvelope,
+      resolved_conversation_id: resolvedConversationId,
+      returned_conversation_id: returnedConversationId,
+      conversation_id: returnedConversationId,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -140,25 +194,32 @@ export async function runRuntimeTurnAssembly(
       execution_plan: executionPlan,
       tool_results: [],
       side_effects: sideEffects,
-      debug_envelope: buildRuntimeDebugEnvelope({
-        trace_id: input.trace_id,
-        created_at: now,
-        clinic_id: input.clinic_id,
-        contact_id: input.contact_id,
-        case_id: input.case_id,
-        conversation_id: input.conversation_id,
-        planner_parse_result: parsedPlanner,
-        truth_snapshot: truthSnapshot,
-        policy_result: policyResult,
-        tool_results: [],
-        side_effects: sideEffects,
-        runtime_error: {
-          code: "planner_execution_failed",
-          message,
-          retryable: true,
-        },
-      }),
-      conversation_id: input.conversation_id,
+      debug_envelope: Object.assign(buildRuntimeDebugEnvelope({
+          trace_id: input.trace_id,
+          created_at: now,
+          clinic_id: input.clinic_id,
+          contact_id: input.contact_id,
+          case_id: input.case_id,
+          conversation_id: resolvedConversationId,
+          planner_parse_result: parsedPlanner,
+          truth_snapshot: truthSnapshot,
+          policy_result: policyResult,
+          tool_results: [],
+          side_effects: sideEffects,
+          runtime_error: {
+            code: "planner_execution_failed",
+            message,
+            retryable: true,
+          },
+        }), {
+        memory_loaded: memoryLoaded,
+        memory_saved: memorySaved,
+        memory_load_error: memoryLoadError,
+        memory_save_error: memorySaveError,
+      }) as RuntimeDebugEnvelope,
+      resolved_conversation_id: resolvedConversationId,
+      returned_conversation_id: null,
+      conversation_id: resolvedConversationId,
     };
   }
 }

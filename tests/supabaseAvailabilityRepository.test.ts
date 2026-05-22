@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createSupabaseAvailabilityRepository, type RpcCaller } from "../src/runtime/supabaseAvailabilityRepository.ts";
 
-test("calls core.rpc_check_availability_v1 with mapped arguments", async () => {
+test("calls rpc_check_availability_v1 with mapped arguments", async () => {
   let calledName = "";
   let calledArgs: Record<string, unknown> | null = null;
 
@@ -23,7 +23,7 @@ test("calls core.rpc_check_availability_v1 with mapped arguments", async () => {
     limit: 3,
   });
 
-  assert.equal(calledName, "core.rpc_check_availability_v1");
+  assert.equal(calledName, "rpc_check_availability_v1");
   assert.deepEqual(calledArgs, {
     p_clinic_id: "clinic_1",
     p_service_interest: "cleaning",
@@ -111,7 +111,7 @@ test("adapter source enforces read-only boundaries", async () => {
   const fs = await import("node:fs/promises");
   const source = await fs.readFile(new URL("../src/runtime/supabaseAvailabilityRepository.ts", import.meta.url), "utf8");
 
-  assert.equal(source.includes("core.rpc_check_availability_v1"), true);
+  assert.equal(source.includes("rpc_check_availability_v1"), true);
   assert.equal(source.includes("rpc_apply_booking_decision_v1"), false);
 
   const lowered = source.toLowerCase();

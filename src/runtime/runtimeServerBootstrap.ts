@@ -2,11 +2,14 @@ import { registerRuntimeTurnRoute, type RouteRegistrationApp } from "./runtimeTu
 import { createDentalRuntimeTurnService } from "./runtimeTurnService.ts";
 import type { OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
 import type { RpcCaller } from "./runtimeRepositories.ts";
+import type { EmbeddingClient } from "./supabaseKnowledgeRepository.ts";
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
   model: string;
+  embeddingModel: string;
   rpc: RpcCaller;
+  embeddingClient: EmbeddingClient;
 }
 
 export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeServerBootstrapDeps): void {
@@ -14,7 +17,9 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     runtimeTurnService: createDentalRuntimeTurnService({
       openaiClient: deps.openaiClient,
       model: deps.model,
+      embeddingModel: deps.embeddingModel,
       rpc: deps.rpc,
+      embeddingClient: deps.embeddingClient,
     }),
   });
 }

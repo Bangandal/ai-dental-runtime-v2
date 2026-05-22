@@ -54,7 +54,7 @@ function normalizeSlot(row: RpcAvailabilityRow, index: number): RuntimeResult<Rp
 export function createSupabaseAvailabilityRepository(deps: { rpc: RpcCaller }): Pick<BookingRepository, "checkAvailability"> {
   return {
     async checkAvailability(input) {
-      const response = await deps.rpc<RpcAvailabilityRow[]>("core.rpc_check_availability_v1", {
+      const response = await deps.rpc<RpcAvailabilityRow[]>("rpc_check_availability_v1", {
         p_clinic_id: input.clinic_id,
         p_service_interest: input.service_interest ?? null,
         p_requested_date: input.requested_date,
@@ -70,7 +70,7 @@ export function createSupabaseAvailabilityRepository(deps: { rpc: RpcCaller }): 
             code: "availability_rpc_error",
             message: "Failed to check availability via RPC",
             retryable: true,
-            details: { rpc: "core.rpc_check_availability_v1" },
+            details: { rpc: "rpc_check_availability_v1" },
           },
         };
       }

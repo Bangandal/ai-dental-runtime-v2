@@ -3,11 +3,13 @@ import type { RouteRegistrationApp } from "./runtime/runtimeTurnHttpRoute.ts";
 
 export interface RuntimeServerEnv {
   runtimeModel: string;
+  runtimeEmbeddingModel: string;
 }
 
 export function readRuntimeServerEnv(env: NodeJS.ProcessEnv = process.env): RuntimeServerEnv {
   return {
     runtimeModel: env.RUNTIME_OPENAI_MODEL?.trim() || "gpt-4.1-mini",
+    runtimeEmbeddingModel: env.RUNTIME_EMBEDDING_MODEL?.trim() || "text-embedding-3-small",
   };
 }
 
@@ -15,6 +17,7 @@ export interface RuntimeServerDeps {
   app: RouteRegistrationApp;
   openaiClient: RuntimeServerBootstrapDeps["openaiClient"];
   rpc: RuntimeServerBootstrapDeps["rpc"];
+  embeddingClient: RuntimeServerBootstrapDeps["embeddingClient"];
   env?: RuntimeServerEnv;
 }
 
@@ -23,7 +26,9 @@ export function bootstrapRuntimeServer(deps: RuntimeServerDeps): RouteRegistrati
   registerRuntimeRoutes(deps.app, {
     openaiClient: deps.openaiClient,
     model: runtimeEnv.runtimeModel,
+    embeddingModel: runtimeEnv.runtimeEmbeddingModel,
     rpc: deps.rpc,
+    embeddingClient: deps.embeddingClient,
   });
   return deps.app;
 }

@@ -56,8 +56,14 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "sql/rpc/core.rpc_check_availability_v1.sql",
     "package.json",
     "src/main.ts",
+    "src/index.ts",
+    "src/runtime/runtimeServerBootstrap.ts",
+    "src/runtime/dentalRuntimeAgentFactory.ts",
+    "src/runtime/supabaseKnowledgeRepository.ts",
     "Dockerfile",
     ".env.example",
+    "sql/rpc/public.rpc_kb_search_v1.sql",
+    "sql/rpc/public.rpc_check_availability_v1.sql",
   ]);
 
   for (const file of changedFiles) {

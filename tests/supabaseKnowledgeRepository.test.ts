@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { createSupabaseKnowledgeRepository, type RpcCaller } from "../src/runtime/supabaseKnowledgeRepository.ts";
 
-test("calls core.rpc_kb_search_v1 with mapped arguments", async () => {
+test("creates embedding then calls rpc_kb_search_v1 with vector arguments", async () => {
   let calledName = "";
   let calledArgs: Record<string, unknown> | null = null;
 
@@ -13,15 +13,26 @@ test("calls core.rpc_kb_search_v1 with mapped arguments", async () => {
     return { data: [], error: null };
   };
 
-  const repo = createSupabaseKnowledgeRepository({ rpc });
+  let embeddingInput: { model: string; text: string } | null = null;
+  const repo = createSupabaseKnowledgeRepository({
+    rpc,
+    embeddingModel: "text-embedding-3-small",
+    embeddingClient: {
+      async createEmbedding(input) {
+        embeddingInput = input;
+        return [0.12, 0.34];
+      },
+    },
+  });
   await repo.searchKnowledge({ clinic_id: "clinic_1", query: "hours", limit: 5, locale: "en-US" });
 
-  assert.equal(calledName, "core.rpc_kb_search_v1");
+  assert.deepEqual(embeddingInput, { model: "text-embedding-3-small", text: "hours" });
+  assert.equal(calledName, "rpc_kb_search_v1");
   assert.deepEqual(calledArgs, {
     p_clinic_id: "clinic_1",
-    p_query: "hours",
-    p_limit: 5,
-    p_locale: "en-US",
+    p_query_vec: [0.12, 0.34],
+    p_k: 5,
+    p_min_similarity: 0.2,
   });
 });
 
@@ -31,7 +42,7 @@ test("normalizes rows into RpcKnowledgeChunk[]", async () => {
     error: null,
   });
 
-  const repo = createSupabaseKnowledgeRepository({ rpc });
+  const repo = createSupabaseKnowledgeRepository({ rpc, embeddingModel: "m", embeddingClient: { createEmbedding: async () => [0.1] } });
   const result = await repo.searchKnowledge({ clinic_id: "clinic_1", query: "hours" });
 
   assert.equal(result.ok, true);
@@ -42,14 +53,14 @@ test("normalizes rows into RpcKnowledgeChunk[]", async () => {
 
 test("returns empty chunks on null data", async () => {
   const rpc: RpcCaller = async () => ({ data: null, error: null });
-  const repo = createSupabaseKnowledgeRepository({ rpc });
+  const repo = createSupabaseKnowledgeRepository({ rpc, embeddingModel: "m", embeddingClient: { createEmbedding: async () => [0.1] } });
   const result = await repo.searchKnowledge({ clinic_id: "clinic_1", query: "hours" });
   assert.deepEqual(result, { ok: true, data: { chunks: [] } });
 });
 
 test("returns failure on RPC error", async () => {
   const rpc: RpcCaller = async () => ({ data: null, error: new Error("boom") });
-  const repo = createSupabaseKnowledgeRepository({ rpc });
+  const repo = createSupabaseKnowledgeRepository({ rpc, embeddingModel: "m", embeddingClient: { createEmbedding: async () => [0.1] } });
   const result = await repo.searchKnowledge({ clinic_id: "clinic_1", query: "hours" });
   assert.equal(result.ok, false);
   if (!result.ok) {
@@ -60,7 +71,7 @@ test("returns failure on RPC error", async () => {
 
 test("fails malformed rows", async () => {
   const rpc: RpcCaller = async () => ({ data: [{ text: "missing chunk_id" }], error: null });
-  const repo = createSupabaseKnowledgeRepository({ rpc });
+  const repo = createSupabaseKnowledgeRepository({ rpc, embeddingModel: "m", embeddingClient: { createEmbedding: async () => [0.1] } });
   const result = await repo.searchKnowledge({ clinic_id: "clinic_1", query: "hours" });
   assert.equal(result.ok, false);
   if (!result.ok) {

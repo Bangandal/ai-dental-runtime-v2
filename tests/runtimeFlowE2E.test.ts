@@ -53,18 +53,20 @@ test("FAQ flow via RuntimeTurnService executes kb.search and returns AI final re
     openaiClient: client,
     rpc: async (fn, args) => {
       rpcCalls.push({ fn, args });
-      if (fn === "core.rpc_kb_search_v1") {
+      if (fn === "rpc_kb_search_v1") {
         return { data: [{ chunk_id: "kb_1", text: "Чистка от 5 000 ₽" }], error: null };
       }
       return { data: null, error: { code: "unexpected_fn", message: fn, retryable: false } };
     },
+    embeddingClient: { createEmbedding: async () => [0.1, 0.2] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const result = await service.runTurn(makeBaseInput("Сколько стоит чистка?"));
 
   assert.equal(result.final_patient_reply, "Профессиональная чистка стоит от 5 000 ₽.");
   assert.equal(result.tool_results[0]?.status, "success");
-  assert.equal(rpcCalls[0]?.fn, "core.rpc_kb_search_v1");
+  assert.equal(rpcCalls[0]?.fn, "rpc_kb_search_v1");
   assert.equal(JSON.parse((calls[1] as any).input[0].content[0].text).tool_results[0].status, "success");
   assert.equal(JSON.parse((calls[1] as any).input[0].content[0].text).tool_results[0].tool, "kb.search");
 });
@@ -87,7 +89,7 @@ test("Availability flow via RuntimeTurnService executes availability.check and r
     openaiClient: client,
     rpc: async (fn, args) => {
       rpcCalls.push({ fn, args });
-      if (fn === "core.rpc_check_availability_v1") {
+      if (fn === "rpc_check_availability_v1") {
         return {
           data: [{ slot_key: "slot_1", starts_at: "2026-05-23T18:00:00+03:00", ends_at: "2026-05-23T18:30:00+03:00" }],
           error: null,
@@ -95,12 +97,14 @@ test("Availability flow via RuntimeTurnService executes availability.check and r
       }
       return { data: null, error: { code: "unexpected_fn", message: fn, retryable: false } };
     },
+    embeddingClient: { createEmbedding: async () => [0.1, 0.2] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const result = await service.runTurn(makeBaseInput("Есть завтра вечером?"));
 
   assert.equal(result.tool_results[0]?.status, "success");
-  assert.equal(rpcCalls[0]?.fn, "core.rpc_check_availability_v1");
+  assert.equal(rpcCalls[0]?.fn, "rpc_check_availability_v1");
   assert.equal(JSON.parse((calls[1] as any).input[0].content[0].text).tool_results[0].tool, "availability.check");
   assert.equal(result.final_patient_reply, "На завтра вечером есть окна в 18:00 и 19:00.");
 });
@@ -128,6 +132,8 @@ test("memory continuity persists and reuses conversation_id across turns", async
     model: "gpt-test",
     openaiClient: client,
     rpc: async () => ({ data: null, error: null }),
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
     conversationMemoryRepository: memoryRepo,
   });
 
@@ -181,6 +187,8 @@ test("malformed OpenAI output returns safe fallback without rpc execution", asyn
       rpcCalls.push(fn);
       return { data: null, error: null };
     },
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const result = await service.runTurn(makeBaseInput("Что по цене?"));
@@ -200,11 +208,13 @@ test("rpc failure is surfaced as failed tool_result and second OpenAI call still
     model: "gpt-test",
     openaiClient: client,
     rpc: async (fn) => {
-      if (fn === "core.rpc_kb_search_v1") {
+      if (fn === "rpc_kb_search_v1") {
         return { data: null, error: { code: "rpc_down", message: "KB unavailable", retryable: true } };
       }
       return { data: null, error: null };
     },
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const result = await service.runTurn(makeBaseInput("Сколько стоит чистка?"));

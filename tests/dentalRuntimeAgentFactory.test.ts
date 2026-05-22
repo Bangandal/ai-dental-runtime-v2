@@ -24,6 +24,8 @@ test("factory returns object with runTurn function", () => {
     model: "gpt-test",
     openaiClient: { responses: { create: async () => ({ output_text: "ok" }) } },
     rpc: async () => ({ data: null, error: null }),
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   assert.equal(typeof agent.runTurn, "function");
@@ -42,6 +44,8 @@ test("OpenAI caller receives active tool definitions only", async () => {
       },
     },
     rpc: async () => ({ data: null, error: null }),
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   await agent.runTurn(makeTurnInput());
@@ -77,12 +81,14 @@ test("kb.search path executes RPC and returns final response", async () => {
         error: null,
       };
     },
+    embeddingClient: { createEmbedding: async () => [0.1, 0.2] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const result = await agent.runTurn(makeTurnInput());
 
   assert.equal(rpcCalls.length, 1);
-  assert.equal(rpcCalls[0]?.fn, "core.rpc_kb_search_v1");
+  assert.equal(rpcCalls[0]?.fn, "rpc_kb_search_v1");
   assert.equal(result.final_patient_reply, "We accept PPO.");
 });
 
@@ -112,12 +118,14 @@ test("availability.check path executes RPC and returns final response", async ()
         error: null,
       };
     },
+    embeddingClient: { createEmbedding: async () => [0.1, 0.2] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const result = await agent.runTurn(makeTurnInput());
 
   assert.equal(rpcCalls.length, 1);
-  assert.equal(rpcCalls[0]?.fn, "core.rpc_check_availability_v1");
+  assert.equal(rpcCalls[0]?.fn, "rpc_check_availability_v1");
   assert.equal(result.final_patient_reply, "We have openings tomorrow.");
 });
 
@@ -144,6 +152,8 @@ test("future tools are not wired, so no executor/RPC path runs", async () => {
       rpcCalls.push(fn);
       return { data: null, error: null };
     },
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const result = await agent.runTurn(makeTurnInput());
@@ -174,6 +184,8 @@ test("memory repository is used for load and save and failures are non-fatal", a
       },
     },
     rpc: async () => ({ data: null, error: null }),
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
     conversationMemoryRepository: memoryRepository,
   });
 

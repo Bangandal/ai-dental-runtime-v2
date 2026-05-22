@@ -178,8 +178,9 @@ test("conversation memory persistence doc includes required guarantees", async (
 
   assert.equal(source.toLowerCase().includes("dialogue continuity"), true);
   assert.equal(source.includes("Supabase/Postgres remains the source of truth"), true);
-  assert.equal(source.includes("before `OpenAIPlanner.plan`"), true);
-  assert.equal(source.includes("after planner execution"), true);
+  assert.equal(source.toLowerCase().includes("conversation object mode"), true);
+  assert.equal(source.includes("not"), true);
+  assert.equal(source.includes("previous_response_id"), true);
 
   for (const phrase of [
     "bookings",

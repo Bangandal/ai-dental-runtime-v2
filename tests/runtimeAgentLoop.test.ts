@@ -59,8 +59,10 @@ test("kb.search tool path executes and returns second-call final reply", async (
 
 test("availability.check path executes", async () => {
   let executed = false;
-  const caller: RuntimeAgentCaller = async (_input) => {
-    if (!executed) {
+  const callerInputs: Array<Parameters<RuntimeAgentCaller>[0]> = [];
+  const caller: RuntimeAgentCaller = async (input) => {
+    callerInputs.push(input);
+    if (!input.input.tool_results) {
       return {
         type: "tool_requests",
         tool_requests: [{ tool: "availability.check", arguments: { requested_date: "2026-05-23", requested_time: "10:00" } }],
@@ -77,6 +79,9 @@ test("availability.check path executes", async () => {
   const result = await createRuntimeAgentLoop({ model: "m", caller, executors }).runTurn(makeInput());
   assert.equal(result.final_patient_reply, "We have 10:00 AM.");
   assert.equal(executed, true);
+  assert.equal(Array.isArray(callerInputs[1]?.input.tool_results), true);
+  assert.equal(callerInputs[1]?.input.tool_results?.[0]?.status, "success");
+  assert.equal(result.tool_results[0]?.status, "success");
 });
 
 test("inactive and unknown tools are denied", async () => {

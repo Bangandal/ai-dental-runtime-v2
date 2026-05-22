@@ -186,6 +186,7 @@ export interface BookingRepository {
 
 export interface KnowledgeRepository {
   searchKnowledge(input: {
+    clinic_id: string;
     query: string;
     limit?: number;
     locale?: string | null;

@@ -6,6 +6,7 @@
 - Runtime calls `public.rpc_kb_search_v1` via Supabase JS as `rpc("rpc_kb_search_v1", ...)`.
 - `public.rpc_kb_search_v1` is a read-only wrapper that delegates to `kb.rpc_retrieve_context_json`.
 - `clinic_id` must be a UUID-compatible value because wrapper input is typed as `uuid`.
+- Current `/runtime/turn` mapping sets `clinic_id = clinic_code`; for MVP smoke, `clinic_code` must therefore be a real clinic UUID unless a future resolver layer maps code → UUID before repository RPC calls.
 
 ## Availability check
 

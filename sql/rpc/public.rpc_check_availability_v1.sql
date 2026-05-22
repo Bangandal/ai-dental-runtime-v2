@@ -3,31 +3,94 @@ create or replace function public.rpc_check_availability_v1(
   p_requested_date date,
   p_requested_time text default null,
   p_service_interest text default null,
+  p_timezone text default null,
   p_limit integer default 3
 )
 returns jsonb
 language sql
 stable
 as $$
-  select coalesce(
-    jsonb_agg(
-      jsonb_build_object(
-        'slot_key', a.slot_key,
-        'starts_at', a.starts_at,
-        'ends_at', a.ends_at,
-        'doctor_id', a.doctor_id,
-        'timezone', a.timezone
-      )
-      order by a.starts_at
-    ),
-    '[]'::jsonb
+with clinic as (
+  select c.id, coalesce(c.timezone, 'UTC') as tz
+  from core.clinics c
+  where c.id = p_clinic_id
+), provider_hours as (
+  select
+    d.id as doctor_id,
+    wh.day_of_week,
+    wh.start_time,
+    wh.end_time,
+    coalesce(wh.slot_minutes, 30) as slot_minutes,
+    coalesce(wh.timezone, (select tz from clinic)) as tz
+  from core.doctors d
+  join core.doctor_working_hours wh on wh.doctor_id = d.id
+  where d.clinic_id = p_clinic_id
+    and d.is_active = true
+), requested_day as (
+  select
+    ph.*,
+    (p_requested_date::timestamp + ph.start_time) as local_range_start,
+    (p_requested_date::timestamp + ph.end_time) as local_range_end
+  from provider_hours ph
+  where ph.day_of_week = extract(dow from p_requested_date)::int
+), candidate_slots as (
+  select
+    rd.doctor_id,
+    (local_slot at time zone rd.tz) as starts_at,
+    ((local_slot + make_interval(mins => rd.slot_minutes)) at time zone rd.tz) as ends_at,
+    rd.tz as timezone
+  from requested_day rd
+  cross join lateral generate_series(
+    rd.local_range_start,
+    rd.local_range_end - make_interval(mins => rd.slot_minutes),
+    make_interval(mins => rd.slot_minutes)
+  ) as local_slot
+  where p_requested_time is null
+     or to_char(local_slot::time, 'HH24:MI') = p_requested_time
+), unconflicted as (
+  select cs.*
+  from candidate_slots cs
+  where not exists (
+    select 1
+    from core.appointments a
+    where a.clinic_id = p_clinic_id
+      and a.doctor_id = cs.doctor_id
+      and a.status in ('slot_proposed', 'awaiting_patient_confirmation', 'booked_pending_admin_confirmation', 'admin_confirmed')
+      and tstzrange(a.start_at, a.end_at, '[)') && tstzrange(cs.starts_at, cs.ends_at, '[)')
   )
-  from core.rpc_check_availability_v1(
-    p_clinic_id => p_clinic_id,
-    p_service_interest => p_service_interest,
-    p_requested_date => p_requested_date,
-    p_requested_time => p_requested_time,
-    p_timezone => null,
-    p_limit => p_limit
-  ) a;
+  and not exists (
+    select 1
+    from core.slot_holds h
+    where h.clinic_id = p_clinic_id
+      and h.doctor_id = cs.doctor_id
+      and h.status = 'active'
+      and h.expires_at > now()
+      and tstzrange(h.start_at, h.end_at, '[)') && tstzrange(cs.starts_at, cs.ends_at, '[)')
+  )
+), final_rows as (
+  select
+    md5(concat_ws('|', p_clinic_id::text, doctor_id::text, starts_at::text, ends_at::text)) as slot_key,
+    doctor_id,
+    starts_at,
+    ends_at,
+    timezone
+  from unconflicted
+  where exists (select 1 from clinic)
+  order by starts_at
+  limit greatest(coalesce(p_limit, 3), 1)
+)
+select coalesce(
+  jsonb_agg(
+    jsonb_build_object(
+      'slot_key', f.slot_key,
+      'starts_at', f.starts_at,
+      'ends_at', f.ends_at,
+      'doctor_id', f.doctor_id,
+      'timezone', f.timezone
+    )
+    order by f.starts_at
+  ),
+  '[]'::jsonb
+)
+from final_rows f;
 $$;

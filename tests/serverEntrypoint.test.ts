@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { bootstrapRuntimeServer, readRuntimeServerEnv } from "../src/server.ts";
+import { bootstrapRuntimeServer, readRuntimeServerEnv } from "../src/index.ts";
 
 test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService stack", async () => {
   const responseCalls: unknown[] = [];

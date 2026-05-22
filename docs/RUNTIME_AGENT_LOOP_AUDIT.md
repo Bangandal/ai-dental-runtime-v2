@@ -1,6 +1,9 @@
 # Runtime Agent Loop Audit (PR27)
 
 ## Goal
+## PR28 Update
+Planner-only top-layer files (`openaiPlanner`, `runtimeTurnAssembly`) were removed in **PR28** as cleanup to prevent architectural conflict with the target runtime-agent loop. The new OpenAI Runtime Agent Tool Loop orchestration will be introduced in the next implementation PR.
+
 Audit the current planner-only top layer and define the target **OpenAI Runtime Agent Tool Loop** without replacing the runtime loop in this PR.
 
 ## Current Runtime (Planner-Only) Flow

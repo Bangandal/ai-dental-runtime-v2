@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { bootstrapRuntimeServer, readRuntimeServerEnv } from "../src/index.ts";
+const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
 
 test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService stack", async () => {
   const responseCalls: unknown[] = [];
@@ -41,7 +42,7 @@ test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService
   await handler!(
     {
       body: {
-        clinic_code: "clinic_a",
+        clinic_code: CLINIC_UUID,
         channel: "telegram",
         external_user_id: "user_1",
         text: "Здравствуйте",

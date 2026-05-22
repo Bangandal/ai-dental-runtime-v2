@@ -14,7 +14,7 @@ Expected request body:
 
 ```json
 {
-  "clinic_code": "string",
+  "clinic_code": "uuid-string",
   "channel": "telegram",
   "external_user_id": "string",
   "chat_id": "string",
@@ -26,6 +26,7 @@ Expected request body:
 Validation rules:
 
 - `clinic_code` required
+- `clinic_code` must be a valid UUID (it is mapped directly to `clinic_id` for RPC calls)
 - `channel` required
 - `text` required
 - at least one of `external_user_id` or `chat_id` required
@@ -49,7 +50,9 @@ The endpoint currently performs explicit MVP mapping:
 - `contact_id = ${channel}:${external_user_id || chat_id}`
 - `case_id = null`
 
-This is a narrow placeholder boundary and not a full case/contact resolver.
+Because the runtime repositories call UUID-typed RPC arguments (`p_clinic_id uuid`), the endpoint rejects non-UUID `clinic_code` values with `400` (`clinic_code must be a valid UUID clinic_id`).
+
+This is a narrow placeholder boundary and not a full case/contact resolver. If transport needs human-readable clinic aliases, add a backend resolver before runtime execution.
 
 `conversation_id` is not required from n8n.
 

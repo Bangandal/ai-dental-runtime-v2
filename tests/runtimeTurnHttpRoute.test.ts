@@ -7,6 +7,8 @@ import { fileURLToPath } from "node:url";
 import { registerRuntimeTurnRoute } from "../src/runtime/runtimeTurnHttpRoute.ts";
 import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 
+const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
+
 function createRouteHarness(service: RuntimeTurnService) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -56,7 +58,7 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   });
 
   const response = await harness.invoke({
-    clinic_code: "clinic_a",
+    clinic_code: CLINIC_UUID,
     channel: "telegram",
     external_user_id: "user_1",
     chat_id: "chat_1",
@@ -72,7 +74,7 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(typeof payload.trace_id, "string");
 
   const input = calls[0] as Record<string, any>;
-  assert.equal(input.clinic_id, "clinic_a");
+  assert.equal(input.clinic_id, CLINIC_UUID);
   assert.equal(input.contact_id, "telegram:user_1");
   assert.equal(input.case_id, null);
   assert.equal(input.user_message, "Привет");
@@ -85,7 +87,7 @@ test("invalid request returns 400", async () => {
   } });
 
   const missingText = await harness.invoke({
-    clinic_code: "clinic_a",
+    clinic_code: CLINIC_UUID,
     channel: "telegram",
     external_user_id: "user_1",
   });
@@ -97,6 +99,14 @@ test("invalid request returns 400", async () => {
     text: "hi",
   });
   assert.equal(missingClinic.statusCode, 400);
+
+  const invalidClinicCode = await harness.invoke({
+    clinic_code: "clinic_1",
+    channel: "telegram",
+    external_user_id: "user_1",
+    text: "hi",
+  });
+  assert.equal(invalidClinicCode.statusCode, 400);
 });
 
 test("service failure returns safe fallback and admin_notification side effect", async () => {
@@ -107,7 +117,7 @@ test("service failure returns safe fallback and admin_notification side effect",
   });
 
   const response = await harness.invoke({
-    clinic_code: "clinic_a",
+    clinic_code: CLINIC_UUID,
     channel: "telegram",
     chat_id: "chat_1",
     text: "Помогите",
@@ -135,7 +145,7 @@ test("request does not require conversation_id from n8n", async () => {
   });
 
   const response = await harness.invoke({
-    clinic_code: "clinic_a",
+    clinic_code: CLINIC_UUID,
     channel: "telegram",
     chat_id: "chat_1",
     text: "Hello",

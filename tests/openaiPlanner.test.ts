@@ -33,8 +33,6 @@ test("planner calls injected caller with model and messages", async () => {
   assert.match(received?.messages[1]?.content ?? "", /clinic-1/);
 });
 
-
-
 test("planner user message is only in Patient message section", async () => {
   let received: OpenAIPlannerCallerInput | null = null;
 

@@ -73,6 +73,9 @@ function buildSafeContext(input: RuntimeTurnAssemblyInput, parsedPlanner: Planne
   };
 }
 
+// TODO(PR27): Transitional planner-only assembly path.
+// Legacy flow stops after tool_results and does not include AI-authored final_patient_reply.
+// Replace this top-layer orchestrator with Runtime Agent tool loop in next PR.
 export async function runRuntimeTurnAssembly(
   input: RuntimeTurnAssemblyInput,
   deps: RuntimeTurnAssemblyDeps,

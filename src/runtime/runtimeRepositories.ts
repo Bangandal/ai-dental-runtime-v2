@@ -22,6 +22,11 @@ export type RuntimeResult<TData, TCode extends string = string> =
     };
   };
 
+export type RpcCaller = <TResult>(
+  functionName: string,
+  args: Record<string, unknown>,
+) => Promise<{ data: TResult | null; error: unknown | null }>;
+
 export interface RpcContactRecord {
   contact_id: string;
   external_ref?: string | null;

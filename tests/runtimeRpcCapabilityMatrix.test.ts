@@ -52,6 +52,10 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/openaiPlanner.ts",
     "src/runtime/runtimeTurnAssembly.ts",
     "sql/rpc/core.rpc_check_availability_v1.sql",
+    "package.json",
+    "src/main.ts",
+    "Dockerfile",
+    ".env.example",
   ]);
 
   for (const file of changedFiles) {

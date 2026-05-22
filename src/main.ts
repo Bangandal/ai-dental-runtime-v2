@@ -5,10 +5,13 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { readRuntimeServerEnv } from "./index.ts";
 import { registerRuntimeRoutes } from "./runtime/runtimeServerBootstrap.ts";
 import type { RpcCaller } from "./runtime/runtimeRepositories.ts";
+import type { EmbeddingClient } from "./runtime/supabaseKnowledgeRepository.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;
   rpc: RpcCaller;
+  embeddingClient: EmbeddingClient;
+  embeddingModel: string;
   model: string;
 }
 
@@ -20,7 +23,9 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
   registerRuntimeRoutes(app, {
     openaiClient: deps.openaiClient,
     model: deps.model,
+    embeddingModel: deps.embeddingModel,
     rpc: deps.rpc,
+    embeddingClient: deps.embeddingClient,
   });
 
   return app;
@@ -50,12 +55,23 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
   const openaiClient = new OpenAI({ apiKey: openaiApiKey });
   const runtimeEnv = readRuntimeServerEnv(env);
   const rpc = createRpcClient(env);
+  const embeddingClient: EmbeddingClient = {
+    async createEmbedding(input) {
+      const response = await openaiClient.embeddings.create({
+        model: input.model,
+        input: input.text,
+      });
+      return response.data[0]?.embedding ?? [];
+    },
+  };
   const port = Number(env.PORT?.trim() || "3000");
 
   const app = buildRuntimeApp({
     openaiClient,
     model: runtimeEnv.runtimeModel,
+    embeddingModel: runtimeEnv.runtimeEmbeddingModel,
     rpc,
+    embeddingClient,
   });
 
   await app.listen({ port, host: "0.0.0.0" });

@@ -5,6 +5,13 @@ export type RpcCaller = <TResult>(
   args: Record<string, unknown>,
 ) => Promise<{ data: TResult | null; error: unknown | null }>;
 
+export interface EmbeddingClient {
+  createEmbedding(input: {
+    model: string;
+    text: string;
+  }): Promise<number[]>;
+}
+
 interface RpcKnowledgeRow {
   chunk_id?: unknown;
   document_id?: unknown;
@@ -50,14 +57,21 @@ function normalizeChunk(row: RpcKnowledgeRow, index: number): RuntimeResult<RpcK
   };
 }
 
-export function createSupabaseKnowledgeRepository(deps: { rpc: RpcCaller }): Pick<KnowledgeRepository, "searchKnowledge"> {
+export function createSupabaseKnowledgeRepository(
+  deps: { rpc: RpcCaller; embeddingClient: EmbeddingClient; embeddingModel: string },
+): Pick<KnowledgeRepository, "searchKnowledge"> {
   return {
     async searchKnowledge(input) {
-      const response = await deps.rpc<RpcKnowledgeRow[]>("core.rpc_kb_search_v1", {
+      const queryVector = await deps.embeddingClient.createEmbedding({
+        model: deps.embeddingModel,
+        text: input.query,
+      });
+
+      const response = await deps.rpc<RpcKnowledgeRow[]>("rpc_kb_search_v1", {
         p_clinic_id: input.clinic_id,
-        p_query: input.query,
-        p_limit: input.limit ?? null,
-        p_locale: input.locale ?? null,
+        p_query_vec: queryVector,
+        p_k: input.limit ?? null,
+        p_min_similarity: 0.2,
       });
 
       if (response.error) {
@@ -67,7 +81,7 @@ export function createSupabaseKnowledgeRepository(deps: { rpc: RpcCaller }): Pic
             code: "kb_rpc_error",
             message: "Failed to search knowledge via RPC",
             retryable: true,
-            details: { rpc: "core.rpc_kb_search_v1" },
+            details: { rpc: "rpc_kb_search_v1" },
           },
         };
       }

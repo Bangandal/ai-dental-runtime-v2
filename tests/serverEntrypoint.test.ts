@@ -15,7 +15,7 @@ test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService
         handler = routeHandler;
       },
     },
-    env: { runtimeModel: "gpt-entrypoint-test" },
+    env: { runtimeModel: "gpt-entrypoint-test", runtimeEmbeddingModel: "text-embedding-3-small" },
     openaiClient: {
       responses: {
         async create(payload) {
@@ -25,6 +25,7 @@ test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService
       },
     },
     rpc: async () => ({ data: [], error: null }),
+    embeddingClient: { createEmbedding: async () => [0.1] },
   });
 
   assert.ok(handler);
@@ -58,9 +59,11 @@ test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService
 });
 
 test("readRuntimeServerEnv keeps model wiring from process env", () => {
-  const explicit = readRuntimeServerEnv({ RUNTIME_OPENAI_MODEL: "gpt-4.1" });
+  const explicit = readRuntimeServerEnv({ RUNTIME_OPENAI_MODEL: "gpt-4.1", RUNTIME_EMBEDDING_MODEL: "text-embedding-3-large" });
   assert.equal(explicit.runtimeModel, "gpt-4.1");
+  assert.equal(explicit.runtimeEmbeddingModel, "text-embedding-3-large");
 
   const fallback = readRuntimeServerEnv({});
   assert.equal(fallback.runtimeModel, "gpt-4.1-mini");
+  assert.equal(fallback.runtimeEmbeddingModel, "text-embedding-3-small");
 });

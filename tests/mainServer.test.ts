@@ -17,6 +17,8 @@ test("buildRuntimeApp registers /health", async (t) => {
     model: "gpt-test",
     openaiClient: { responses: { async create() { return { output_text: "ok" }; } } } as any,
     rpc: async () => ({ data: [], error: null }),
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const response = await app.inject({ method: "GET", url: "/health" });
@@ -41,6 +43,8 @@ test("buildRuntimeApp registers /runtime/turn", async (t) => {
     model: "gpt-test",
     openaiClient: { responses: { async create() { return { output_text: "Здравствуйте" }; } } } as any,
     rpc: async () => ({ data: [], error: null }),
+    embeddingClient: { createEmbedding: async () => [0.1] },
+    embeddingModel: "text-embedding-3-small",
   });
 
   const response = await app.inject({

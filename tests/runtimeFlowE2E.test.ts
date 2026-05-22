@@ -65,8 +65,8 @@ test("FAQ flow via RuntimeTurnService executes kb.search and returns AI final re
   assert.equal(result.final_patient_reply, "Профессиональная чистка стоит от 5 000 ₽.");
   assert.equal(result.tool_results[0]?.status, "success");
   assert.equal(rpcCalls[0]?.fn, "core.rpc_kb_search_v1");
-  assert.equal((calls[1] as any).input.tool_results[0].status, "success");
-  assert.equal((calls[1] as any).input.tool_results[0].tool, "kb.search");
+  assert.equal(JSON.parse((calls[1] as any).input[0].content[0].text).tool_results[0].status, "success");
+  assert.equal(JSON.parse((calls[1] as any).input[0].content[0].text).tool_results[0].tool, "kb.search");
 });
 
 test("Availability flow via RuntimeTurnService executes availability.check and returns AI final reply", async () => {
@@ -101,7 +101,7 @@ test("Availability flow via RuntimeTurnService executes availability.check and r
 
   assert.equal(result.tool_results[0]?.status, "success");
   assert.equal(rpcCalls[0]?.fn, "core.rpc_check_availability_v1");
-  assert.equal((calls[1] as any).input.tool_results[0].tool, "availability.check");
+  assert.equal(JSON.parse((calls[1] as any).input[0].content[0].text).tool_results[0].tool, "availability.check");
   assert.equal(result.final_patient_reply, "На завтра вечером есть окна в 18:00 и 19:00.");
 });
 
@@ -210,7 +210,7 @@ test("rpc failure is surfaced as failed tool_result and second OpenAI call still
   const result = await service.runTurn(makeBaseInput("Сколько стоит чистка?"));
 
   assert.equal(result.tool_results[0]?.status, "failed");
-  assert.equal((calls[1] as any).input.tool_results[0].status, "failed");
+  assert.equal(JSON.parse((calls[1] as any).input[0].content[0].text).tool_results[0].status, "failed");
   assert.equal(result.final_patient_reply, "Не удалось получить базу знаний, но я могу уточнить детали.");
 });
 

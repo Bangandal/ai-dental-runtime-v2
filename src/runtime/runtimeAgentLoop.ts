@@ -102,8 +102,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
           },
         });
-      } catch {
-        debug.runtime_error = { code: "agent_caller_failed" };
+      } catch (error) {
+        debug.runtime_error = {
+          code: "agent_caller_failed",
+          message: error instanceof Error ? error.message : String(error),
+        };
         return {
           final_patient_reply: "Sorry, I’m having trouble processing that right now. Please try again in a moment.",
           conversation_id: conversationId,
@@ -181,8 +184,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             tool_results: toolResults,
           },
         });
-      } catch {
-        debug.runtime_error = { code: "agent_final_response_failed" };
+      } catch (error) {
+        debug.runtime_error = {
+          code: "agent_final_response_failed",
+          message: error instanceof Error ? error.message : String(error),
+        };
         return {
           final_patient_reply: "I found the information, but I’m having trouble wording the reply right now. Please try again in a moment.",
           conversation_id: conversationId,

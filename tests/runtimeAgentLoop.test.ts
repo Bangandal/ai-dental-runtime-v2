@@ -134,6 +134,8 @@ test("first and second caller failures return safe replies", async () => {
   });
   const firstResult = await firstFail.runTurn(makeInput());
   assert.match(firstResult.final_patient_reply, /trouble processing/i);
+  assert.equal((firstResult.debug as any).runtime_error.code, "agent_caller_failed");
+  assert.equal((firstResult.debug as any).runtime_error.message, "boom");
 
   let run = 0;
   const secondFail = createRuntimeAgentLoop({
@@ -148,6 +150,8 @@ test("first and second caller failures return safe replies", async () => {
   const secondResult = await secondFail.runTurn(makeInput());
   assert.match(secondResult.final_patient_reply, /having trouble wording/i);
   assert.equal(secondResult.tool_results.length, 1);
+  assert.equal((secondResult.debug as any).runtime_error.code, "agent_final_response_failed");
+  assert.equal((secondResult.debug as any).runtime_error.message, "boom2");
 });
 
 test("multi-round tool loop is not implemented", async () => {

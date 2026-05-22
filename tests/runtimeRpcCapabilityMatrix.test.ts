@@ -51,6 +51,8 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/availabilityCheckExecutor.ts",
     "src/runtime/openaiPlanner.ts",
     "src/runtime/runtimeTurnAssembly.ts",
+    "src/runtime/openaiRuntimeAgentCaller.ts",
+    "src/runtime/runtimeAgentLoop.ts",
     "sql/rpc/core.rpc_check_availability_v1.sql",
     "package.json",
     "src/main.ts",

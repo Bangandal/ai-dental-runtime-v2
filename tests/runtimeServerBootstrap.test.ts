@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { registerRuntimeRoutes } from "../src/runtime/runtimeServerBootstrap.ts";
+const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
 
 test("registerRuntimeRoutes wires /runtime/turn to RuntimeTurnService built via createDentalRuntimeTurnService", async () => {
   const responseCalls: unknown[] = [];
@@ -46,7 +47,7 @@ test("registerRuntimeRoutes wires /runtime/turn to RuntimeTurnService built via 
   await handler!(
     {
       body: {
-        clinic_code: "clinic_a",
+        clinic_code: CLINIC_UUID,
         channel: "telegram",
         external_user_id: "user_1",
         text: "Привет",

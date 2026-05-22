@@ -82,7 +82,6 @@ function buildUserMessage(input: OpenAIPlannerInput): string {
     recent_summary: input.recent_summary ?? null,
     business_context: input.business_context ?? {},
     truth_snapshot_hint: input.truth_snapshot_hint ?? {},
-    user_message: input.user_message,
   };
 
   return `Runtime context (JSON):\n${JSON.stringify(context)}\n\nPatient message:\n${input.user_message}`;

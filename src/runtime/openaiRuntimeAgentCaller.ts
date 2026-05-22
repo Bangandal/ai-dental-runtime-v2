@@ -43,17 +43,27 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
 }
 
 export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string, unknown> {
-  const toolResults = input.input.tool_results;
-  const userPayload = {
+  const payload = {
     message: input.input.message,
     context: input.input.context,
+    ...(input.input.tool_results ? { tool_results: input.input.tool_results } : {}),
   };
 
   return {
     model: input.model,
     instructions: input.system_instruction,
     conversation: input.conversation_id ?? undefined,
-    input: toolResults ? { ...userPayload, tool_results: toolResults } : userPayload,
+    input: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: JSON.stringify(payload),
+          },
+        ],
+      },
+    ],
     tools: buildOpenAIToolDefinitions(input),
   };
 }
@@ -139,7 +149,11 @@ function parseArguments(value: unknown): Record<string, unknown> {
 
 function readFinalResponse(response: Record<string, unknown> | null): RuntimeAgentFinalResponse {
   const final = asObject(response?.final_response);
-  const outputText = readString(response?.output_text) ?? readString(final?.final_patient_reply) ?? "";
+  const outputText =
+    readString(response?.output_text) ??
+    readResponseOutputText(response?.output) ??
+    readString(final?.final_patient_reply) ??
+    "";
   return {
     final_patient_reply: outputText,
     language: readString(final?.language) ?? null,
@@ -148,6 +162,28 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
   };
 }
 
+
+function readResponseOutputText(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+
+  for (const item of value) {
+    const obj = asObject(item);
+    if (!obj) continue;
+    if (readString(obj.type) !== "message") continue;
+
+    const content = obj.content;
+    if (!Array.isArray(content)) continue;
+    for (const contentItem of content) {
+      const contentObj = asObject(contentItem);
+      if (!contentObj) continue;
+      if (readString(contentObj.type) !== "output_text") continue;
+      const text = readString(contentObj.text);
+      if (text && text.length > 0) return text;
+    }
+  }
+
+  return null;
+}
 function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }

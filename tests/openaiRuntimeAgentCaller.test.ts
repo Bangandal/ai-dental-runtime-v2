@@ -38,7 +38,11 @@ test("calls injected client.responses.create with expected payload and active to
 
   assert.equal(payload.model, "gpt-test");
   assert.equal(payload.instructions, "system");
-  assert.equal(payload.input.message, "Need help");
+  assert.equal(Array.isArray(payload.input), true);
+  assert.equal(payload.input[0].role, "user");
+  assert.equal(payload.input[0].content[0].type, "input_text");
+  const parsedPayload = JSON.parse(payload.input[0].content[0].text);
+  assert.equal(parsedPayload.message, "Need help");
   assert.equal(payload.tools.length, 2);
   const toolNames = payload.tools.map((t: Record<string, unknown>) => t.name);
   assert.deepEqual(toolNames.sort(), ["availability.check", "kb.search"]);
@@ -102,6 +106,29 @@ test("maps final output text and structured fields to final_response", async () 
   assert.equal(result.final_response.language, "es");
 });
 
+
+test("maps responses-style output message content output_text to final_response", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          conversation_id: "conv_4",
+          output: [
+            {
+              type: "message",
+              content: [{ type: "output_text", text: "From output array" }],
+            },
+          ],
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, "From output array");
+});
+
 test("malformed output returns safe final response", async () => {
   const caller = createOpenAIRuntimeAgentCaller({
     client: { responses: { create: async () => ({ bad: true }) } },
@@ -131,7 +158,8 @@ test("passes conversation_id and supports continuation with tool_results", async
   const result = await caller(input);
 
   assert.equal((seen[0] as any).conversation, "conv_1");
-  assert.equal(Array.isArray((seen[0] as any).input.tool_results), true);
+  const continuationPayload = JSON.parse((seen[0] as any).input[0].content[0].text);
+  assert.equal(Array.isArray(continuationPayload.tool_results), true);
   assert.equal(result.conversation_id, "conv_r");
 });
 

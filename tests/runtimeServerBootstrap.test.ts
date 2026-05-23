@@ -29,6 +29,8 @@ test("registerRuntimeRoutes wires /runtime/turn to RuntimeTurnService built via 
         },
       },
       rpc: async () => ({ data: [], error: null }),
+      embeddingClient: { createEmbedding: async () => [0.1] },
+      embeddingModel: "text-embedding-3-small",
     },
   );
 

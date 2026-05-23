@@ -3,6 +3,7 @@ import { createDentalRuntimeTurnService } from "./runtimeTurnService.ts";
 import type { OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
 import type { RpcCaller } from "./runtimeRepositories.ts";
 import type { EmbeddingClient } from "./supabaseKnowledgeRepository.ts";
+import { createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
@@ -10,6 +11,7 @@ export interface RuntimeServerBootstrapDeps {
   embeddingModel: string;
   rpc: RpcCaller;
   embeddingClient: EmbeddingClient;
+  runtimeTurnLogger?: RuntimeTurnLogger;
 }
 
 export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeServerBootstrapDeps): void {
@@ -21,5 +23,6 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
       rpc: deps.rpc,
       embeddingClient: deps.embeddingClient,
     }),
+    runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
   });
 }

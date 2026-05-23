@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { RuntimeTurnInput, RuntimeTurnService } from "./runtimeTurnService.ts";
+import type { RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -30,6 +31,7 @@ export interface RuntimeTurnHttpErrorResponse {
 
 export interface RuntimeTurnRouteDeps {
   runtimeTurnService: RuntimeTurnService;
+  runtimeTurnLogger: RuntimeTurnLogger;
 }
 
 export interface RouteRegistrationApp {
@@ -51,8 +53,21 @@ const UUID_V4_OR_V1_TO_V5_PATTERN =
 
 export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: RuntimeTurnRouteDeps): void {
   app.post("/runtime/turn", async (request, reply) => {
+    const startTime = Date.now();
     const validationError = validateRuntimeTurnRequest(request.body);
     if (validationError) {
+      void deps.runtimeTurnLogger.logError({
+        ts: new Date().toISOString(),
+        status: "validation_error",
+        trace_id: null,
+        error_code: "invalid_runtime_turn_request",
+        error_message: validationError,
+        channel: readSafeField(request.body?.channel),
+        external_user_id: readSafeField(request.body?.external_user_id),
+        chat_id: readSafeField(request.body?.chat_id),
+        input_text: readSafeField(request.body?.text),
+        latency_ms: Date.now() - startTime,
+      }).catch(() => undefined);
       reply.code(400).send({
         error: {
           code: "invalid_runtime_turn_request",
@@ -86,7 +101,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
 
     try {
       const result = await deps.runtimeTurnService.runTurn(runtimeTurnInput);
-      reply.send({
+      const responsePayload: RuntimeTurnHttpSuccessResponse = {
         trace_id: traceId,
         reply_text: result.final_patient_reply,
         final_patient_reply: result.final_patient_reply,
@@ -94,11 +109,30 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         tool_results: result.tool_results,
         side_effects: [],
         debug: result.debug,
-      });
+      };
+      void deps.runtimeTurnLogger.logTurn({
+        ts: new Date().toISOString(),
+        status: "ok",
+        trace_id: traceId,
+        clinic_id: runtimeTurnInput.clinic_id,
+        contact_id: runtimeTurnInput.contact_id,
+        case_id: runtimeTurnInput.case_id,
+        conversation_id: result.conversation_id ?? null,
+        channel: runtimeTurnInput.business_context.channel,
+        external_user_id: runtimeTurnInput.business_context.external_user_id ?? null,
+        chat_id: runtimeTurnInput.business_context.chat_id ?? null,
+        input_text: runtimeTurnInput.user_message,
+        final_patient_reply: result.final_patient_reply,
+        tool_results: result.tool_results,
+        side_effects: responsePayload.side_effects,
+        debug: result.debug,
+        latency_ms: Date.now() - startTime,
+      }).catch(() => undefined);
+      reply.send(responsePayload);
       return;
     } catch (error) {
       const runtimeError = error instanceof Error ? error.message : String(error);
-      reply.send({
+      const fallbackPayload: RuntimeTurnHttpSuccessResponse = {
         trace_id: traceId,
         reply_text: RUNTIME_FALLBACK_REPLY,
         final_patient_reply: RUNTIME_FALLBACK_REPLY,
@@ -117,7 +151,22 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         debug: {
           runtime_error: runtimeError,
         },
-      });
+      };
+      void deps.runtimeTurnLogger.logError({
+        ts: new Date().toISOString(),
+        status: "runtime_error",
+        trace_id: traceId,
+        error_code: "runtime_turn_failed",
+        error_message: runtimeError,
+        channel: runtimeTurnInput.business_context.channel,
+        external_user_id: runtimeTurnInput.business_context.external_user_id ?? null,
+        chat_id: runtimeTurnInput.business_context.chat_id ?? null,
+        input_text: runtimeTurnInput.user_message,
+        fallback_reply: fallbackPayload.final_patient_reply,
+        side_effects: fallbackPayload.side_effects,
+        latency_ms: Date.now() - startTime,
+      }).catch(() => undefined);
+      reply.send(fallbackPayload);
     }
   });
 }
@@ -147,4 +196,12 @@ function validateRuntimeTurnRequest(body: RuntimeTurnHttpRequestBody | undefined
 function readLocale(meta: Record<string, unknown> | undefined): string | null {
   const languageCode = meta?.language_code;
   return typeof languageCode === "string" && languageCode.trim() ? languageCode.trim() : null;
+}
+
+function readSafeField(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
 }

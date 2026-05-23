@@ -6,6 +6,7 @@ import { readRuntimeServerEnv } from "./index.ts";
 import { registerRuntimeRoutes } from "./runtime/runtimeServerBootstrap.ts";
 import type { RpcCaller } from "./runtime/runtimeRepositories.ts";
 import type { EmbeddingClient } from "./runtime/supabaseKnowledgeRepository.ts";
+import { createFileRuntimeTurnLogger, createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtime/runtimeTurnLogger.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;
@@ -13,6 +14,7 @@ export interface BuildRuntimeAppDeps {
   embeddingClient: EmbeddingClient;
   embeddingModel: string;
   model: string;
+  runtimeTurnLogger?: RuntimeTurnLogger;
 }
 
 export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
@@ -26,6 +28,7 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
     embeddingModel: deps.embeddingModel,
     rpc: deps.rpc,
     embeddingClient: deps.embeddingClient,
+    runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
   });
 
   return app;
@@ -65,6 +68,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
     },
   };
   const port = Number(env.PORT?.trim() || "3000");
+  const runtimeLogDir = env.RUNTIME_LOG_DIR?.trim() || "./logs";
 
   const app = buildRuntimeApp({
     openaiClient,
@@ -72,6 +76,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
     embeddingModel: runtimeEnv.runtimeEmbeddingModel,
     rpc,
     embeddingClient,
+    runtimeTurnLogger: createFileRuntimeTurnLogger({ logDir: runtimeLogDir }),
   });
 
   await app.listen({ port, host: "0.0.0.0" });

@@ -45,7 +45,11 @@ function readRequiredEnv(name: "OPENAI_API_KEY" | "SUPABASE_URL" | "SUPABASE_SER
 function createRpcClient(env: NodeJS.ProcessEnv = process.env): RpcCaller {
   const supabaseUrl = readRequiredEnv("SUPABASE_URL", env);
   const supabaseServiceRoleKey = readRequiredEnv("SUPABASE_SERVICE_ROLE_KEY", env);
-  const supabase: SupabaseClient = createClient(supabaseUrl, supabaseServiceRoleKey);
+  const supabase: SupabaseClient = createClient(supabaseUrl, supabaseServiceRoleKey, {
+    db: {
+      schema: "core",
+    },
+  });
 
   return async <TResult>(functionName: string, args: Record<string, unknown>) => {
     const { data, error } = await supabase.rpc(functionName, args);

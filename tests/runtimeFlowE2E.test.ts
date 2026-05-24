@@ -53,7 +53,7 @@ test("FAQ flow via RuntimeTurnService executes kb.search and returns AI final re
     openaiClient: client,
     rpc: async (fn, args) => {
       rpcCalls.push({ fn, args });
-      if (fn === "public.rpc_kb_search_v1") {
+      if (fn === "rpc_kb_search_v1") {
         return { data: [{ chunk_id: "kb_1", text: "Чистка от 5 000 ₽" }], error: null };
       }
       return { data: null, error: { code: "unexpected_fn", message: fn, retryable: false } };
@@ -66,7 +66,7 @@ test("FAQ flow via RuntimeTurnService executes kb.search and returns AI final re
 
   assert.equal(result.final_patient_reply, "Профессиональная чистка стоит от 5 000 ₽.");
   assert.equal(result.tool_results[0]?.status, "success");
-  assert.equal(rpcCalls[0]?.fn, "public.rpc_kb_search_v1");
+  assert.equal(rpcCalls[0]?.fn, "rpc_kb_search_v1");
   const kbOutput = ((calls[1] as any).input as Array<Record<string, unknown>>).find((item) => item.type === "function_call_output");
   assert.equal(typeof kbOutput?.output, "string");
   assert.equal(JSON.parse(kbOutput?.output as string).status, "success");
@@ -212,7 +212,7 @@ test("rpc failure is surfaced as failed tool_result and second OpenAI call still
     model: "gpt-test",
     openaiClient: client,
     rpc: async (fn) => {
-      if (fn === "public.rpc_kb_search_v1") {
+      if (fn === "rpc_kb_search_v1") {
         return { data: null, error: { code: "rpc_down", message: "KB unavailable", retryable: true } };
       }
       return { data: null, error: null };

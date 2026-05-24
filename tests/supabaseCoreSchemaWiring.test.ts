@@ -29,7 +29,7 @@ test("runtime repository RPC names are schema-compatible after core client pin",
   assert.equal(availabilitySource.includes('"public.rpc_check_availability_v1"'), false);
   assert.equal(availabilitySource.includes('"core.rpc_check_availability_v1"'), false);
 
-  assert.equal(knowledgeSource.includes('"public.rpc_kb_search_v1"'), true);
-  assert.equal(/deps\.rpc<[^\n]*\("rpc_kb_search_v1"/.test(knowledgeSource), false);
+  assert.equal(knowledgeSource.includes('\"rpc_kb_search_v1\"'), true);
+  assert.equal(knowledgeSource.includes('\"public.rpc_kb_search_v1\"'), false);
   assert.equal(knowledgeSource.includes('"core.rpc_kb_search_v1"'), false);
 });

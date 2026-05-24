@@ -117,7 +117,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         first_name: typeof body.meta?.first_name === "string" ? body.meta.first_name : null,
         last_name: typeof body.meta?.last_name === "string" ? body.meta.last_name : null,
       }).catch((error) => ({ ok: false, error: { code: "contact_persist_exception", message: error instanceof Error ? error.message : String(error), retryable: true } } as const));
-      persistenceDebug.contact = contactResult.ok ? "ok" : "error";
+      persistenceDebug.contact = contactResult.ok ? { ok: true } : { ok: false, code: contactResult.error.code };
       if (contactResult.ok) {
         runtimeTurnInput.contact_id = contactResult.data.contact_id;
       }
@@ -125,11 +125,11 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       const inboundResult = await deps.turnPersistenceRepository.registerInboundEvent({
         clinic_id: runtimeTurnInput.clinic_id, contact_id: contactIdForPre, channel: runtimeTurnInput.business_context.channel, external_user_id: externalUserId ?? null, chat_id: chatId ?? null, trace_id: traceId, raw_payload: body.meta ?? null,
       }).catch(() => ({ ok: false } as const));
-      persistenceDebug.inbound_event = inboundResult.ok ? "ok" : "error";
+      persistenceDebug.inbound_event = inboundResult.ok ? { ok: true } : { ok: false, code: "inbound_event_persist_failed" };
       const userMsgResult = await deps.turnPersistenceRepository.saveMessage({
         clinic_id: runtimeTurnInput.clinic_id, contact_id: contactIdForPre, role: "user", text: runtimeTurnInput.user_message, trace_id: traceId,
       }).catch(() => ({ ok: false } as const));
-      persistenceDebug.save_user_message = userMsgResult.ok ? "ok" : "error";
+      persistenceDebug.save_user_message = userMsgResult.ok ? { ok: true } : { ok: false, code: "message_persist_failed" };
     }
 
     const memoryDebug: Record<string, unknown> = {};
@@ -202,7 +202,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         const assistantSave = await deps.turnPersistenceRepository.saveMessage({
           clinic_id: runtimeTurnInput.clinic_id, contact_id: runtimeTurnInput.contact_id, role: "assistant", text: result.final_patient_reply, trace_id: traceId,
         }).catch(() => ({ ok: false } as const));
-        persistenceDebug.save_assistant_message = assistantSave.ok ? "ok" : "error";
+        persistenceDebug.save_assistant_message = assistantSave.ok ? { ok: true } : { ok: false, code: "message_persist_failed" };
         const assistantHasQuestion = /\?/.test(result.final_patient_reply);
         const mergeState = await deps.turnPersistenceRepository.mergeConversationState({
           clinic_id: runtimeTurnInput.clinic_id,
@@ -218,7 +218,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
             turn_count_increment: 1,
           },
         }).catch(() => ({ ok: false } as const));
-        persistenceDebug.merge_state = mergeState.ok ? "ok" : "error";
+        persistenceDebug.merge_state = mergeState.ok ? { ok: true } : { ok: false, code: "convo_state_persist_failed" };
       }
 
       const responsePayload: RuntimeTurnHttpSuccessResponse = {

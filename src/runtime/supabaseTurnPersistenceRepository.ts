@@ -79,7 +79,7 @@ export function createSupabaseTurnPersistenceRepository(deps: { rpc: RpcCaller }
       const { error } = await deps.rpc<unknown>("rpc_merge_conversation_state", {
         p_clinic_id: input.clinic_id,
         p_contact_id: input.contact_id,
-        p_patch: input.patch,
+        p_state_json: input.patch,
       });
       if (error) return fail("convo_state_persist_failed", "Failed to merge conversation state");
       return { ok: true, data: { ok: true } };

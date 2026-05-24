@@ -107,9 +107,14 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     };
 
 
+    const clinicCode = body.clinic_code.trim();
+    const messageId = typeof body.meta?.message_id === "string" ? body.meta.message_id : "";
+    const updateId = typeof body.meta?.update_id === "string" ? body.meta.update_id : "";
+    let userMessageId: string | null = null;
+
     if (deps.turnPersistenceRepository) {
       const contactResult = await deps.turnPersistenceRepository.getOrCreateContact({
-        clinic_id: body.clinic_code.trim(),
+        clinic_code: clinicCode,
         channel: body.channel.trim(),
         external_user_id: externalUserId ?? null,
         chat_id: chatId ?? null,
@@ -120,16 +125,52 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       persistenceDebug.contact = contactResult.ok ? { ok: true } : { ok: false, code: contactResult.error.code };
       if (contactResult.ok) {
         runtimeTurnInput.contact_id = contactResult.data.contact_id;
+        if (typeof (contactResult.data as Record<string, unknown>).clinic_id === "string") {
+          runtimeTurnInput.clinic_id = (contactResult.data as Record<string, string>).clinic_id;
+        }
       }
       const contactIdForPre = runtimeTurnInput.contact_id;
+      const dedupeKey = updateId
+        ? `${runtimeTurnInput.business_context.channel}:${externalUserId ?? "unknown"}:upd:${updateId}`
+        : `${runtimeTurnInput.business_context.channel}:${externalUserId ?? "unknown"}:msg:${messageId || traceId}`;
       const inboundResult = await deps.turnPersistenceRepository.registerInboundEvent({
-        clinic_id: runtimeTurnInput.clinic_id, contact_id: contactIdForPre, channel: runtimeTurnInput.business_context.channel, external_user_id: externalUserId ?? null, chat_id: chatId ?? null, trace_id: traceId, raw_payload: body.meta ?? null,
+        clinic_id: runtimeTurnInput.clinic_id,
+        contact_id: contactIdForPre,
+        channel: runtimeTurnInput.business_context.channel,
+        external_user_id: externalUserId ?? null,
+        dedupe_key: dedupeKey,
+        source_message_id: messageId,
+        source_update_id: updateId,
+        payload: {
+          clinic_code: clinicCode,
+          channel: runtimeTurnInput.business_context.channel,
+          external_user_id: externalUserId ?? null,
+          chat_id: chatId ?? null,
+          text: runtimeTurnInput.user_message,
+          meta: body.meta ?? {},
+        },
+        trace_id: traceId,
       }).catch(() => ({ ok: false } as const));
       persistenceDebug.inbound_event = inboundResult.ok ? { ok: true } : { ok: false, code: "inbound_event_persist_failed" };
       const userMsgResult = await deps.turnPersistenceRepository.saveMessage({
-        clinic_id: runtimeTurnInput.clinic_id, contact_id: contactIdForPre, role: "user", text: runtimeTurnInput.user_message, trace_id: traceId,
+        contact_id: contactIdForPre,
+        direction: "inbound",
+        role: "user",
+        channel: runtimeTurnInput.business_context.channel,
+        text: runtimeTurnInput.user_message,
+        message_type: "text",
+        status: "created",
+        provider_message_id: messageId,
+        reply_to_message_id: null,
+        meta: {
+          trace_id: traceId,
+          clinic_id: runtimeTurnInput.clinic_id,
+          external_user_id: externalUserId ?? null,
+          chat_id: chatId ?? null,
+        },
       }).catch(() => ({ ok: false } as const));
       persistenceDebug.save_user_message = userMsgResult.ok ? { ok: true } : { ok: false, code: "message_persist_failed" };
+      userMessageId = userMsgResult.ok ? userMsgResult.data.message_id ?? null : null;
     }
 
     const memoryDebug: Record<string, unknown> = {};
@@ -200,23 +241,33 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
 
       if (deps.turnPersistenceRepository) {
         const assistantSave = await deps.turnPersistenceRepository.saveMessage({
-          clinic_id: runtimeTurnInput.clinic_id, contact_id: runtimeTurnInput.contact_id, role: "assistant", text: result.final_patient_reply, trace_id: traceId,
+          contact_id: runtimeTurnInput.contact_id,
+          direction: "outbound",
+          role: "assistant",
+          channel: runtimeTurnInput.business_context.channel,
+          text: result.final_patient_reply,
+          message_type: "text",
+          status: "created",
+          provider_message_id: "",
+          reply_to_message_id: userMessageId,
+          meta: {
+            trace_id: traceId,
+            openai_conversation_id: conversationIdToPersist,
+            last_intent: (result.debug as Record<string, unknown> | undefined)?.last_intent ?? null,
+            conversation_intent: (result.debug as Record<string, unknown> | undefined)?.conversation_intent ?? null,
+          },
         }).catch(() => ({ ok: false } as const));
         persistenceDebug.save_assistant_message = assistantSave.ok ? { ok: true } : { ok: false, code: "message_persist_failed" };
-        const assistantHasQuestion = /\?/.test(result.final_patient_reply);
         const mergeState = await deps.turnPersistenceRepository.mergeConversationState({
           clinic_id: runtimeTurnInput.clinic_id,
           contact_id: runtimeTurnInput.contact_id,
-          patch: {
-            last_user_message_text: runtimeTurnInput.user_message,
-            last_assistant_message_text: result.final_patient_reply,
-            last_intent: (result.debug as Record<string, unknown> | undefined)?.last_intent ?? null,
-            last_bot_action: (result.debug as Record<string, unknown> | undefined)?.last_bot_action ?? null,
-            last_bot_question: assistantHasQuestion ? result.final_patient_reply : null,
-            conversation_id: conversationIdToPersist,
-            openai_conversation_id: conversationIdToPersist,
-            turn_count_increment: 1,
-          },
+          user_text: runtimeTurnInput.user_message,
+          reply_text: result.final_patient_reply,
+          requested_action: String((result.debug as Record<string, unknown> | undefined)?.requested_action ?? "continue"),
+          conversation_intent: String((result.debug as Record<string, unknown> | undefined)?.last_intent ?? (result.debug as Record<string, unknown> | undefined)?.conversation_intent ?? "unknown"),
+          handoff_recommended: Boolean((result.debug as Record<string, unknown> | undefined)?.handoff_recommended ?? false),
+          confidence: "medium",
+          control_flags: { openai_conversation_id: conversationIdToPersist },
         }).catch(() => ({ ok: false } as const));
         persistenceDebug.merge_state = mergeState.ok ? { ok: true } : { ok: false, code: "convo_state_persist_failed" };
       }

@@ -19,6 +19,18 @@ test("repository keeps intended RPC names and does not use stub-only args", asyn
   ]) {
     assert.equal(repo.includes(rpcName), true, `missing repo RPC call: ${rpcName}`);
   }
+  for (const requiredParam of [
+    "p_clinic_code",
+    "p_dedupe_key",
+    "p_source_message_id",
+    "p_direction",
+    "p_message_type",
+    "p_user_text",
+    "p_reply_text",
+  ]) {
+    assert.equal(repo.includes(requiredParam), true, `missing expected RPC param mapping: ${requiredParam}`);
+  }
+  assert.equal(repo.includes("p_state_json"), false);
   assert.equal(repo.includes("p_patch"), false);
 });
 

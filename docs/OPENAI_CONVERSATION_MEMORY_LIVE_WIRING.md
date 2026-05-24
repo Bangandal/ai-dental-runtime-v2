@@ -24,9 +24,12 @@ For `/runtime/turn`:
    - `clinic_id + channel + external_user_id` when external user id is available.
    - otherwise `clinic_id + channel + chat_id`.
 2. If memory exists, route passes `conversation_id` to runtime service.
-3. After `runTurn`, if a `conversation_id` is present in the result, route upserts memory.
+3. If memory does not exist, route creates a new OpenAI conversation object and passes that `conversation_id` to runtime service.
+4. After `runTurn`, route upserts memory using:
+   - `result.conversation_id` when present, otherwise
+   - the pre-created `conversation_id` used for the turn.
 
-Load/save failures are non-fatal and should not break runtime replies.
+Load/save failures and conversation creation failures are non-fatal and should not break runtime replies.
 
 ## Boundary reminders
 

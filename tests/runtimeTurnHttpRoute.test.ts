@@ -413,3 +413,42 @@ test("existing memory does not create new conversation", async () => {
   assert.equal(calls[0]?.conversation_id, "conv_mem_1");
   assert.equal(creates, 0);
 });
+
+test("route persists pre/post turn artifacts and keeps response contract", async () => {
+  const calls: string[] = [];
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "Question?", tool_results: [], debug: { last_intent: "faq" } }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+  );
+  const persistenceRepo = {
+    async getOrCreateContact() { calls.push("contact"); return { ok: true, data: { contact_id: "c1" } }; },
+    async registerInboundEvent() { calls.push("inbound"); return { ok: true, data: {} }; },
+    async saveMessage(input: any) { calls.push(`msg:${input.role}`); return { ok: true, data: {} }; },
+    async mergeConversationState(input: any) { calls.push("merge"); assert.equal(input.patch.last_bot_question, "Question?"); return { ok: true, data: { ok: true } }; },
+  };
+  (harness as any); // keep linter happy in no-lint env
+
+  const appHarness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "Question?", tool_results: [], debug: { last_intent: "faq" } }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+  );
+  // re-register with persistence
+  let handler: any;
+  registerRuntimeTurnRoute({ post(_p, h) { handler = h; } }, {
+    runtimeTurnService: { runTurn: async () => ({ final_patient_reply: "Question?", tool_results: [], debug: { last_intent: "faq" } }) as any },
+    runtimeTurnLogger: createNoopRuntimeTurnLogger(),
+    turnPersistenceRepository: persistenceRepo as any,
+  });
+  let payload: any;
+  await handler({ body: { clinic_code: CLINIC_UUID, channel: "telegram", chat_id: "chat_1", text: "hi" } }, { code() { return this; }, send(p: any) { payload = p; } });
+
+  assert.deepEqual(calls, ["contact", "inbound", "msg:user", "msg:assistant", "merge"]);
+  assert.equal(payload.reply_text, "Question?");
+  assert.equal(payload.final_patient_reply, "Question?");
+  assert.equal(payload.side_effects.length, 0);
+  assert.equal(payload.debug.persistence_debug.merge_state, "ok");
+});

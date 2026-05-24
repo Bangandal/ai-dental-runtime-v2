@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { RuntimeTurnInput, RuntimeTurnService } from "./runtimeTurnService.ts";
 import type { RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 import type { OpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
+import type { TurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -35,6 +36,7 @@ export interface RuntimeTurnRouteDeps {
   runtimeTurnLogger: RuntimeTurnLogger;
   openAIConversationMemoryRepository?: OpenAIConversationMemoryRepository;
   createOpenAIConversation?: () => Promise<string | null>;
+  turnPersistenceRepository?: TurnPersistenceRepository;
 }
 
 export interface RouteRegistrationApp {
@@ -86,6 +88,8 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     const externalUserId = body.external_user_id?.trim() || undefined;
     const chatId = body.chat_id?.trim() || undefined;
 
+    const persistenceDebug: Record<string, unknown> = {};
+
     const runtimeTurnInput: RuntimeTurnInput = {
       trace_id: traceId,
       clinic_id: body.clinic_code.trim(),
@@ -101,6 +105,32 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       },
       recent_summary: null,
     };
+
+
+    if (deps.turnPersistenceRepository) {
+      const contactResult = await deps.turnPersistenceRepository.getOrCreateContact({
+        clinic_id: body.clinic_code.trim(),
+        channel: body.channel.trim(),
+        external_user_id: externalUserId ?? null,
+        chat_id: chatId ?? null,
+        username: typeof body.meta?.username === "string" ? body.meta.username : null,
+        first_name: typeof body.meta?.first_name === "string" ? body.meta.first_name : null,
+        last_name: typeof body.meta?.last_name === "string" ? body.meta.last_name : null,
+      }).catch((error) => ({ ok: false, error: { code: "contact_persist_exception", message: error instanceof Error ? error.message : String(error), retryable: true } } as const));
+      persistenceDebug.contact = contactResult.ok ? "ok" : "error";
+      if (contactResult.ok) {
+        runtimeTurnInput.contact_id = contactResult.data.contact_id;
+      }
+      const contactIdForPre = runtimeTurnInput.contact_id;
+      const inboundResult = await deps.turnPersistenceRepository.registerInboundEvent({
+        clinic_id: runtimeTurnInput.clinic_id, contact_id: contactIdForPre, channel: runtimeTurnInput.business_context.channel, external_user_id: externalUserId ?? null, chat_id: chatId ?? null, trace_id: traceId, raw_payload: body.meta ?? null,
+      }).catch(() => ({ ok: false } as const));
+      persistenceDebug.inbound_event = inboundResult.ok ? "ok" : "error";
+      const userMsgResult = await deps.turnPersistenceRepository.saveMessage({
+        clinic_id: runtimeTurnInput.clinic_id, contact_id: contactIdForPre, role: "user", text: runtimeTurnInput.user_message, trace_id: traceId,
+      }).catch(() => ({ ok: false } as const));
+      persistenceDebug.save_user_message = userMsgResult.ok ? "ok" : "error";
+    }
 
     const memoryDebug: Record<string, unknown> = {};
 
@@ -168,6 +198,29 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         }
       }
 
+      if (deps.turnPersistenceRepository) {
+        const assistantSave = await deps.turnPersistenceRepository.saveMessage({
+          clinic_id: runtimeTurnInput.clinic_id, contact_id: runtimeTurnInput.contact_id, role: "assistant", text: result.final_patient_reply, trace_id: traceId,
+        }).catch(() => ({ ok: false } as const));
+        persistenceDebug.save_assistant_message = assistantSave.ok ? "ok" : "error";
+        const assistantHasQuestion = /\?/.test(result.final_patient_reply);
+        const mergeState = await deps.turnPersistenceRepository.mergeConversationState({
+          clinic_id: runtimeTurnInput.clinic_id,
+          contact_id: runtimeTurnInput.contact_id,
+          patch: {
+            last_user_message_text: runtimeTurnInput.user_message,
+            last_assistant_message_text: result.final_patient_reply,
+            last_intent: (result.debug as Record<string, unknown> | undefined)?.last_intent ?? null,
+            last_bot_action: (result.debug as Record<string, unknown> | undefined)?.last_bot_action ?? null,
+            last_bot_question: assistantHasQuestion ? result.final_patient_reply : null,
+            conversation_id: conversationIdToPersist,
+            openai_conversation_id: conversationIdToPersist,
+            turn_count_increment: 1,
+          },
+        }).catch(() => ({ ok: false } as const));
+        persistenceDebug.merge_state = mergeState.ok ? "ok" : "error";
+      }
+
       const responsePayload: RuntimeTurnHttpSuccessResponse = {
         trace_id: traceId,
         reply_text: result.final_patient_reply,
@@ -175,7 +228,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

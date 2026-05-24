@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { RuntimeTurnInput, RuntimeTurnService } from "./runtimeTurnService.ts";
 import type { RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
+import type { OpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -32,6 +33,8 @@ export interface RuntimeTurnHttpErrorResponse {
 export interface RuntimeTurnRouteDeps {
   runtimeTurnService: RuntimeTurnService;
   runtimeTurnLogger: RuntimeTurnLogger;
+  openAIConversationMemoryRepository?: OpenAIConversationMemoryRepository;
+  createOpenAIConversation?: () => Promise<string | null>;
 }
 
 export interface RouteRegistrationApp {
@@ -99,8 +102,50 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       recent_summary: null,
     };
 
+    if (deps.openAIConversationMemoryRepository) {
+      try {
+        const loadedMemory = await deps.openAIConversationMemoryRepository.getConversationMemory({
+          clinic_id: body.clinic_code.trim(),
+          channel: body.channel.trim(),
+          external_user_id: externalUserId ?? null,
+          chat_id: chatId ?? null,
+        });
+        if (loadedMemory.ok && loadedMemory.data.conversation_id) {
+          runtimeTurnInput.conversation_id = loadedMemory.data.conversation_id;
+        }
+      } catch {
+        // non-fatal by contract
+      }
+    }
+
+    if (!runtimeTurnInput.conversation_id && deps.createOpenAIConversation) {
+      try {
+        const createdConversationId = await deps.createOpenAIConversation();
+        if (createdConversationId) {
+          runtimeTurnInput.conversation_id = createdConversationId;
+        }
+      } catch {
+        // non-fatal by contract
+      }
+    }
+
     try {
       const result = await deps.runtimeTurnService.runTurn(runtimeTurnInput);
+      const conversationIdToPersist = result.conversation_id ?? runtimeTurnInput.conversation_id ?? null;
+      if (conversationIdToPersist && deps.openAIConversationMemoryRepository) {
+        try {
+          await deps.openAIConversationMemoryRepository.saveConversationMemory({
+            clinic_id: runtimeTurnInput.clinic_id,
+            channel: runtimeTurnInput.business_context.channel,
+            external_user_id: runtimeTurnInput.business_context.external_user_id ?? null,
+            chat_id: runtimeTurnInput.business_context.chat_id ?? null,
+            conversation_id: conversationIdToPersist,
+          });
+        } catch {
+          // non-fatal by contract
+        }
+      }
+
       const responsePayload: RuntimeTurnHttpSuccessResponse = {
         trace_id: traceId,
         reply_text: result.final_patient_reply,

@@ -63,7 +63,6 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/supabaseKnowledgeRepository.ts",
     "src/runtime/supabaseOpenAIConversationMemoryRepository.ts",
     "src/runtime/supabaseTurnPersistenceRepository.ts",
-    "sql/rpc/core.rpc_turn_persistence.sql",
     "Dockerfile",
     ".env.example",
     "sql/rpc/public.rpc_kb_search_v1.sql",

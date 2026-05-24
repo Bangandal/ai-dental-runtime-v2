@@ -4,6 +4,7 @@ import type { RuntimeTurnInput, RuntimeTurnService } from "./runtimeTurnService.
 import type { RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 import type { OpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 import type { TurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
+import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -37,6 +38,7 @@ export interface RuntimeTurnRouteDeps {
   openAIConversationMemoryRepository?: OpenAIConversationMemoryRepository;
   createOpenAIConversation?: () => Promise<string | null>;
   turnPersistenceRepository?: TurnPersistenceRepository;
+  clinicIdentityResolver?: ClinicIdentityResolver;
 }
 
 export interface RouteRegistrationApp {
@@ -53,8 +55,6 @@ export interface RouteReply {
 
 const RUNTIME_FALLBACK_REPLY =
   "Извините, сейчас не удалось обработать сообщение. Администратор проверит вручную.";
-const UUID_V4_OR_V1_TO_V5_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: RuntimeTurnRouteDeps): void {
   app.post("/runtime/turn", async (request, reply) => {
@@ -84,6 +84,15 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
 
     const body = request.body as Required<Pick<RuntimeTurnHttpRequestBody, "clinic_code" | "channel" | "text">> &
       RuntimeTurnHttpRequestBody;
+
+    const clinicIdentifier = body.clinic_code.trim();
+    const resolvedClinic = await deps.clinicIdentityResolver?.resolveClinicIdentity({ clinic_identifier: clinicIdentifier });
+    if (!resolvedClinic || !resolvedClinic.ok) {
+      reply.code(400).send({
+        error: { code: "invalid_runtime_turn_request", message: "unknown clinic" },
+      });
+      return;
+    }
     const traceId = randomUUID();
     const externalUserId = body.external_user_id?.trim() || undefined;
     const chatId = body.chat_id?.trim() || undefined;
@@ -92,7 +101,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
 
     const runtimeTurnInput: RuntimeTurnInput = {
       trace_id: traceId,
-      clinic_id: body.clinic_code.trim(),
+      clinic_id: resolvedClinic.data.clinic_id,
       contact_id: `${body.channel.trim()}:${externalUserId ?? chatId}`,
       case_id: null,
       user_message: body.text.trim(),
@@ -107,7 +116,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     };
 
 
-    const clinicCode = body.clinic_code.trim();
+    const clinicCode = resolvedClinic.data.clinic_code;
     const messageId = typeof body.meta?.message_id === "string" ? body.meta.message_id : "";
     const updateId = typeof body.meta?.update_id === "string" ? body.meta.update_id : "";
     let userMessageId: string | null = null;
@@ -178,14 +187,14 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     if (deps.openAIConversationMemoryRepository) {
       try {
         const loadedMemory = await deps.openAIConversationMemoryRepository.getConversationMemory({
-          clinic_id: body.clinic_code.trim(),
+          clinic_id: resolvedClinic.data.clinic_id,
           channel: body.channel.trim(),
           external_user_id: externalUserId ?? null,
           chat_id: chatId ?? null,
         });
         memoryDebug.memory_lookup = {
           ok: loadedMemory.ok,
-          clinic_id: body.clinic_code.trim(),
+          clinic_id: resolvedClinic.data.clinic_id,
           channel: body.channel.trim(),
           external_user_id: externalUserId ?? null,
           chat_id: chatId ?? null,
@@ -348,9 +357,6 @@ function validateRuntimeTurnRequest(body: RuntimeTurnHttpRequestBody | undefined
   }
   if (!body.clinic_code?.trim()) {
     return "clinic_code is required";
-  }
-  if (!UUID_V4_OR_V1_TO_V5_PATTERN.test(body.clinic_code.trim())) {
-    return "clinic_code must be a valid UUID clinic_id";
   }
   if (!body.channel?.trim()) {
     return "channel is required";

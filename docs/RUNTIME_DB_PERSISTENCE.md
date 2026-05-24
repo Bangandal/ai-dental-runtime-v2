@@ -36,3 +36,19 @@ Persistence is best-effort and non-fatal for live chat.
 - Runtime turn still returns a normal response if persistence fails.
 - `response.debug.persistence_debug` records per-step status.
 - JSONL runtime turn logs include the same persistence debug envelope.
+
+
+## Missing SQL in this repo
+
+The repository does **not** currently include concrete SQL definitions for:
+
+- `rpc_get_or_create_contact`
+- `rpc_register_inbound_event`
+- `rpc_save_message`
+- `rpc_merge_conversation_state`
+
+Given this gap, Runtime keeps non-fatal RPC calls in the repository layer, but this codebase must **not** add SQL stubs that can shadow/replace real DB functions.
+
+Action required outside this repo: confirm real function signatures in the live core schema and keep runtime argument mapping aligned to those real RPC contracts.
+
+Short rule: **do not add SQL stubs** for these RPCs here.

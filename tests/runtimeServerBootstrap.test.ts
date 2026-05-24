@@ -28,7 +28,9 @@ test("registerRuntimeRoutes wires /runtime/turn to RuntimeTurnService built via 
           },
         },
       },
-      rpc: async () => ({ data: [], error: null }),
+      rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1"
+        ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null }
+        : { data: [], error: null },
       embeddingClient: { createEmbedding: async () => [0.1] },
       embeddingModel: "text-embedding-3-small",
     },
@@ -106,6 +108,7 @@ test("registerRuntimeRoutes wires createOpenAIConversation and first turn uses c
       } as any,
       rpc: async (fn, args) => {
         rpcCalls.push({ fn, args: args as Record<string, unknown> });
+        if (fn === "rpc_resolve_clinic_identity_v1") return { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null };
         if (fn === "rpc_get_openai_conversation_memory_v1") return { data: [], error: null };
         if (fn === "rpc_upsert_openai_conversation_memory_v1") return { data: [{ conversation_id: "conv_created_1" }], error: null };
         return { data: [], error: null };

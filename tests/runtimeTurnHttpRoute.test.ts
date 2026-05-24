@@ -10,8 +10,19 @@ import { createFileRuntimeTurnLogger, createNoopRuntimeTurnLogger } from "../src
 import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 import type { OpenAIConversationMemoryRepository } from "../src/runtime/supabaseOpenAIConversationMemoryRepository.ts";
 import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
+import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
 
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
+const CLINIC_CODE = "clinic_1";
+
+const defaultClinicIdentityResolver: ClinicIdentityResolver = {
+  async resolveClinicIdentity(input) {
+    if (input.clinic_identifier === CLINIC_UUID || input.clinic_identifier === CLINIC_CODE) {
+      return { ok: true, data: { clinic_id: CLINIC_UUID, clinic_code: CLINIC_CODE } };
+    }
+    return { ok: false, error: { code: "clinic_not_found", message: "missing", retryable: false } };
+  },
+};
 
 function createRouteHarness(
   service: RuntimeTurnService,
@@ -19,6 +30,7 @@ function createRouteHarness(
   openAIConversationMemoryRepository?: OpenAIConversationMemoryRepository,
   createOpenAIConversation?: () => Promise<string | null>,
   turnPersistenceRepository?: TurnPersistenceRepository,
+  clinicIdentityResolver: ClinicIdentityResolver = defaultClinicIdentityResolver,
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -28,7 +40,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver },
   );
 
   assert.ok(handler);
@@ -113,15 +125,29 @@ test("invalid request returns 400", async () => {
   });
   assert.equal(missingClinic.statusCode, 400);
 
-  const invalidClinicCode = await harness.invoke({
-    clinic_code: "clinic_1",
-    channel: "telegram",
-    external_user_id: "user_1",
-    text: "hi",
-  });
-  assert.equal(invalidClinicCode.statusCode, 400);
 });
 
+
+test("accepts short clinic_code and resolves clinic identity", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const harness = createRouteHarness({
+    async runTurn(input) {
+      calls.push(input as Record<string, unknown>);
+      return { final_patient_reply: "ok", tool_results: [] } as any;
+    },
+  });
+
+  const response = await harness.invoke({ clinic_code: CLINIC_CODE, channel: "telegram", external_user_id: "user_1", text: "hi" });
+  assert.equal(response.statusCode, 200);
+  assert.equal(calls[0]?.clinic_id, CLINIC_UUID);
+});
+
+test("rejects unknown clinic identifier", async () => {
+  const harness = createRouteHarness({ runTurn: async () => ({ final_patient_reply: "ok", tool_results: [] }) as any });
+  const response = await harness.invoke({ clinic_code: "unknown_clinic", channel: "telegram", external_user_id: "user_1", text: "hi" });
+  assert.equal(response.statusCode, 400);
+  assert.equal((response.payload as any).error.message, "unknown clinic");
+});
 test("service failure returns safe fallback and admin_notification side effect", async () => {
   const harness = createRouteHarness({
     runTurn: async () => {
@@ -419,7 +445,7 @@ test("existing memory does not create new conversation", async () => {
 test("route persists pre/post turn artifacts and keeps response contract", async () => {
   const calls: string[] = [];
   const persistenceRepo: TurnPersistenceRepository = {
-    async getOrCreateContact() { calls.push("contact"); return { ok: true, data: { contact_id: "c1", clinic_id: CLINIC_UUID } }; },
+    async getOrCreateContact(input) { calls.push("contact"); assert.equal(input.clinic_code, CLINIC_CODE); return { ok: true, data: { contact_id: "c1", clinic_id: CLINIC_UUID } }; },
     async registerInboundEvent(input) { calls.push("inbound"); assert.equal(typeof input.dedupe_key, "string"); return { ok: true, data: {} }; },
     async saveMessage(input) { calls.push(`msg:${input.role}:${input.direction}`); return { ok: true, data: { message_id: input.role === "user" ? "m_user_1" : "m_assistant_1" } }; },
     async mergeConversationState(input) { calls.push("merge"); assert.equal(input.user_text, "hi"); assert.equal(input.reply_text, "Question?"); return { ok: true, data: { ok: true } }; },

@@ -14,7 +14,7 @@ Expected request body:
 
 ```json
 {
-  "clinic_code": "uuid-string",
+  "clinic_code": "uuid-or-short-code",
   "channel": "telegram",
   "external_user_id": "string",
   "chat_id": "string",
@@ -26,7 +26,7 @@ Expected request body:
 Validation rules:
 
 - `clinic_code` required
-- `clinic_code` must be a valid UUID (it is mapped directly to `clinic_id` for RPC calls)
+- `clinic_code` accepts either clinic UUID (e.g. `e8179559-fc8d-40e5-9808-287ed69fcf7c`) or short code (e.g. `clinic_1`)
 - `channel` required
 - `text` required
 - at least one of `external_user_id` or `chat_id` required
@@ -42,17 +42,17 @@ Invalid payload returns `400` with:
 }
 ```
 
-## Runtime Input Mapping (MVP placeholder)
+## Runtime Input Mapping
 
 The endpoint currently performs explicit MVP mapping:
 
-- `clinic_id = clinic_code`
+- `clinic_code` is treated as a clinic identifier, then resolved via `core.rpc_resolve_clinic_identity_v1(p_clinic_identifier text)`
 - `contact_id = ${channel}:${external_user_id || chat_id}`
 - `case_id = null`
 
-Because the runtime repositories call UUID-typed RPC arguments (`p_clinic_id uuid`), the endpoint rejects non-UUID `clinic_code` values with `400` (`clinic_code must be a valid UUID clinic_id`).
-
-This is a narrow placeholder boundary and not a full case/contact resolver. If transport needs human-readable clinic aliases, add a backend resolver before runtime execution.
+- `runtimeTurnInput.clinic_id` always uses resolved UUID clinic id (for memory/KB and UUID-typed RPC paths).
+- `getOrCreateContact` uses resolved short `clinic_code` value (`p_clinic_code`).
+- unknown clinic identifiers return `400` with `unknown clinic`.
 
 `conversation_id` is not required from n8n.
 

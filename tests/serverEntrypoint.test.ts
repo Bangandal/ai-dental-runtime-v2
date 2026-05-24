@@ -24,7 +24,9 @@ test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService
         },
       },
     },
-    rpc: async () => ({ data: [], error: null }),
+    rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1"
+        ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null }
+        : { data: [], error: null },
     embeddingClient: { createEmbedding: async () => [0.1] },
   });
 

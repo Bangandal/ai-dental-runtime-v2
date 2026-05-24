@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
+
 test("buildRuntimeApp registers /health", async (t) => {
   let buildRuntimeApp: (typeof import("../src/main.ts"))["buildRuntimeApp"];
   try {
@@ -16,7 +18,9 @@ test("buildRuntimeApp registers /health", async (t) => {
   const app = buildRuntimeApp({
     model: "gpt-test",
     openaiClient: { responses: { async create() { return { output_text: "ok" }; } } } as any,
-    rpc: async () => ({ data: [], error: null }),
+    rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1"
+        ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null }
+        : { data: [], error: null },
     embeddingClient: { createEmbedding: async () => [0.1] },
     embeddingModel: "text-embedding-3-small",
   });
@@ -42,7 +46,9 @@ test("buildRuntimeApp registers /runtime/turn", async (t) => {
   const app = buildRuntimeApp({
     model: "gpt-test",
     openaiClient: { responses: { async create() { return { output_text: "Здравствуйте" }; } } } as any,
-    rpc: async () => ({ data: [], error: null }),
+    rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1"
+        ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null }
+        : { data: [], error: null },
     embeddingClient: { createEmbedding: async () => [0.1] },
     embeddingModel: "text-embedding-3-small",
   });

@@ -4,6 +4,7 @@ import type { OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
 import type { RpcCaller } from "./runtimeRepositories.ts";
 import type { EmbeddingClient } from "./supabaseKnowledgeRepository.ts";
 import { createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
+import { createSupabaseOpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
@@ -15,6 +16,8 @@ export interface RuntimeServerBootstrapDeps {
 }
 
 export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeServerBootstrapDeps): void {
+  const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
+
   registerRuntimeTurnRoute(app, {
     runtimeTurnService: createDentalRuntimeTurnService({
       openaiClient: deps.openaiClient,
@@ -24,5 +27,6 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
       embeddingClient: deps.embeddingClient,
     }),
     runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
+    openAIConversationMemoryRepository,
   });
 }

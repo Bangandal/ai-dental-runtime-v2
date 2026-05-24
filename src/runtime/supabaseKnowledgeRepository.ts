@@ -81,7 +81,7 @@ export function createSupabaseKnowledgeRepository(
         text: input.query,
       });
 
-      const response = await deps.rpc<RpcKnowledgeRow[] | RpcKnowledgeJsonResponse>("rpc_kb_search_v1", {
+      const response = await deps.rpc<RpcKnowledgeRow[] | RpcKnowledgeJsonResponse>("public.rpc_kb_search_v1", {
         p_clinic_id: input.clinic_id,
         p_query_vec: queryVector,
         p_k: input.limit ?? null,
@@ -95,7 +95,7 @@ export function createSupabaseKnowledgeRepository(
             code: "kb_rpc_error",
             message: "Failed to search knowledge via RPC",
             retryable: true,
-            details: { rpc: "rpc_kb_search_v1" },
+            details: { rpc: "public.rpc_kb_search_v1" },
           },
         };
       }

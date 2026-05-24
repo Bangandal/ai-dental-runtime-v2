@@ -88,7 +88,7 @@ test("kb.search path executes RPC and returns final response", async () => {
   const result = await agent.runTurn(makeTurnInput());
 
   assert.equal(rpcCalls.length, 1);
-  assert.equal(rpcCalls[0]?.fn, "rpc_kb_search_v1");
+  assert.equal(rpcCalls[0]?.fn, "public.rpc_kb_search_v1");
   assert.equal(result.final_patient_reply, "We accept PPO.");
 });
 

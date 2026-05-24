@@ -27,7 +27,7 @@ test("creates embedding then calls rpc_kb_search_v1 with vector arguments", asyn
   await repo.searchKnowledge({ clinic_id: "clinic_1", query: "hours", limit: 5, locale: "en-US" });
 
   assert.deepEqual(embeddingInput, { model: "text-embedding-3-small", text: "hours" });
-  assert.equal(calledName, "rpc_kb_search_v1");
+  assert.equal(calledName, "public.rpc_kb_search_v1");
   assert.deepEqual(calledArgs, {
     p_clinic_id: "clinic_1",
     p_query_vec: [0.12, 0.34],

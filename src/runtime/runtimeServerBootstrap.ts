@@ -5,6 +5,7 @@ import type { RpcCaller } from "./runtimeRepositories.ts";
 import type { EmbeddingClient } from "./supabaseKnowledgeRepository.ts";
 import { createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 import { createSupabaseOpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
+import { createSupabaseTurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
@@ -24,6 +25,7 @@ function readConversationId(value: unknown): string | null {
 
 export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeServerBootstrapDeps): void {
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
+  const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const createOpenAIConversation = async (): Promise<string | null> => {
     const conversations = (deps.openaiClient as unknown as {
       conversations?: { create?: () => Promise<unknown> };
@@ -48,5 +50,6 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
     openAIConversationMemoryRepository,
     createOpenAIConversation,
+    turnPersistenceRepository,
   });
 }

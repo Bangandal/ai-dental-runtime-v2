@@ -9,6 +9,7 @@ import { registerRuntimeTurnRoute } from "../src/runtime/runtimeTurnHttpRoute.ts
 import { createFileRuntimeTurnLogger, createNoopRuntimeTurnLogger } from "../src/runtime/runtimeTurnLogger.ts";
 import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 import type { OpenAIConversationMemoryRepository } from "../src/runtime/supabaseOpenAIConversationMemoryRepository.ts";
+import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -17,6 +18,7 @@ function createRouteHarness(
   logger = createNoopRuntimeTurnLogger(),
   openAIConversationMemoryRepository?: OpenAIConversationMemoryRepository,
   createOpenAIConversation?: () => Promise<string | null>,
+  turnPersistenceRepository?: TurnPersistenceRepository,
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -26,7 +28,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository },
   );
 
   assert.ok(handler);
@@ -412,4 +414,31 @@ test("existing memory does not create new conversation", async () => {
 
   assert.equal(calls[0]?.conversation_id, "conv_mem_1");
   assert.equal(creates, 0);
+});
+
+test("route persists pre/post turn artifacts and keeps response contract", async () => {
+  const calls: string[] = [];
+  const persistenceRepo: TurnPersistenceRepository = {
+    async getOrCreateContact() { calls.push("contact"); return { ok: true, data: { contact_id: "c1" } }; },
+    async registerInboundEvent() { calls.push("inbound"); return { ok: true, data: {} }; },
+    async saveMessage(input) { calls.push(`msg:${input.role}`); return { ok: true, data: {} }; },
+    async mergeConversationState(input) { calls.push("merge"); assert.equal(input.patch.last_bot_question, "Question?"); return { ok: true, data: { ok: true } }; },
+  };
+
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "Question?", tool_results: [], debug: { last_intent: "faq" } }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    persistenceRepo,
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", chat_id: "chat_1", text: "hi" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.deepEqual(calls, ["contact", "inbound", "msg:user", "msg:assistant", "merge"]);
+  assert.equal(payload.reply_text, "Question?");
+  assert.equal(payload.final_patient_reply, "Question?");
+  assert.equal(payload.side_effects.length, 0);
+  assert.deepEqual(payload.debug.persistence_debug.merge_state, { ok: true });
 });

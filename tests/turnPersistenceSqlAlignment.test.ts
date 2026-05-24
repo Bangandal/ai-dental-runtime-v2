@@ -1,0 +1,29 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import fs from "node:fs/promises";
+
+const REPO_PATH = new URL("../src/runtime/supabaseTurnPersistenceRepository.ts", import.meta.url);
+const DOC_PATH = new URL("../docs/RUNTIME_DB_PERSISTENCE.md", import.meta.url);
+
+test("no turn-persistence SQL stub file exists", async () => {
+  await assert.rejects(fs.stat(new URL("../sql/rpc/core.rpc_turn_persistence.sql", import.meta.url)));
+});
+
+test("repository keeps intended RPC names and does not use stub-only args", async () => {
+  const repo = await fs.readFile(REPO_PATH, "utf8");
+  for (const rpcName of [
+    "rpc_get_or_create_contact",
+    "rpc_register_inbound_event",
+    "rpc_save_message",
+    "rpc_merge_conversation_state",
+  ]) {
+    assert.equal(repo.includes(rpcName), true, `missing repo RPC call: ${rpcName}`);
+  }
+  assert.equal(repo.includes("p_patch"), false);
+});
+
+test("docs explicitly record missing SQL definitions in this repository", async () => {
+  const doc = await fs.readFile(DOC_PATH, "utf8");
+  assert.equal(doc.includes("Missing SQL in this repo"), true);
+  assert.equal(doc.includes("do not add SQL stubs"), true);
+});

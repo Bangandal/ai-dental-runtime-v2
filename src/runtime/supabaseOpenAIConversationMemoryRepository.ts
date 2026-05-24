@@ -35,7 +35,7 @@ function readConversationIdFromRows(rows: ConversationMemoryRpcRow[] | null): st
 export function createSupabaseOpenAIConversationMemoryRepository(deps: { rpc: RpcCaller }): OpenAIConversationMemoryRepository {
   return {
     async getConversationMemory(input) {
-      const response = await deps.rpc<ConversationMemoryRpcRow[]>("core.rpc_get_openai_conversation_memory_v1", {
+      const response = await deps.rpc<ConversationMemoryRpcRow[]>("rpc_get_openai_conversation_memory_v1", {
         p_clinic_id: input.clinic_id,
         p_channel: input.channel,
         p_external_user_id: input.external_user_id ?? null,
@@ -57,7 +57,7 @@ export function createSupabaseOpenAIConversationMemoryRepository(deps: { rpc: Rp
     },
 
     async saveConversationMemory(input) {
-      const response = await deps.rpc<ConversationMemoryRpcRow[]>("core.rpc_upsert_openai_conversation_memory_v1", {
+      const response = await deps.rpc<ConversationMemoryRpcRow[]>("rpc_upsert_openai_conversation_memory_v1", {
         p_clinic_id: input.clinic_id,
         p_channel: input.channel,
         p_external_user_id: input.external_user_id ?? null,

@@ -106,8 +106,8 @@ test("registerRuntimeRoutes wires createOpenAIConversation and first turn uses c
       } as any,
       rpc: async (fn, args) => {
         rpcCalls.push({ fn, args: args as Record<string, unknown> });
-        if (fn === "core.rpc_get_openai_conversation_memory_v1") return { data: [], error: null };
-        if (fn === "core.rpc_upsert_openai_conversation_memory_v1") return { data: [{ conversation_id: "conv_created_1" }], error: null };
+        if (fn === "rpc_get_openai_conversation_memory_v1") return { data: [], error: null };
+        if (fn === "rpc_upsert_openai_conversation_memory_v1") return { data: [{ conversation_id: "conv_created_1" }], error: null };
         return { data: [], error: null };
       },
       embeddingClient: { createEmbedding: async () => [0.1] },
@@ -143,6 +143,6 @@ test("registerRuntimeRoutes wires createOpenAIConversation and first turn uses c
   assert.equal(createCalls, 1);
   assert.equal(responseCalls.length >= 1, true);
   assert.equal(responseCalls[0]?.conversation, "conv_created_1");
-  assert.equal(rpcCalls.some((c) => c.fn === "core.rpc_get_openai_conversation_memory_v1"), true);
-  assert.equal(rpcCalls.some((c) => c.fn === "core.rpc_upsert_openai_conversation_memory_v1"), true);
+  assert.equal(rpcCalls.some((c) => c.fn === "rpc_get_openai_conversation_memory_v1"), true);
+  assert.equal(rpcCalls.some((c) => c.fn === "rpc_upsert_openai_conversation_memory_v1"), true);
 });

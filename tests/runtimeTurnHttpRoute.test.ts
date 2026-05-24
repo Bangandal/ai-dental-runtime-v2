@@ -419,10 +419,10 @@ test("existing memory does not create new conversation", async () => {
 test("route persists pre/post turn artifacts and keeps response contract", async () => {
   const calls: string[] = [];
   const persistenceRepo: TurnPersistenceRepository = {
-    async getOrCreateContact() { calls.push("contact"); return { ok: true, data: { contact_id: "c1" } }; },
-    async registerInboundEvent() { calls.push("inbound"); return { ok: true, data: {} }; },
-    async saveMessage(input) { calls.push(`msg:${input.role}`); return { ok: true, data: {} }; },
-    async mergeConversationState(input) { calls.push("merge"); assert.equal(input.patch.last_bot_question, "Question?"); return { ok: true, data: { ok: true } }; },
+    async getOrCreateContact() { calls.push("contact"); return { ok: true, data: { contact_id: "c1", clinic_id: CLINIC_UUID } }; },
+    async registerInboundEvent(input) { calls.push("inbound"); assert.equal(typeof input.dedupe_key, "string"); return { ok: true, data: {} }; },
+    async saveMessage(input) { calls.push(`msg:${input.role}:${input.direction}`); return { ok: true, data: { message_id: input.role === "user" ? "m_user_1" : "m_assistant_1" } }; },
+    async mergeConversationState(input) { calls.push("merge"); assert.equal(input.user_text, "hi"); assert.equal(input.reply_text, "Question?"); return { ok: true, data: { ok: true } }; },
   };
 
   const harness = createRouteHarness(
@@ -436,7 +436,7 @@ test("route persists pre/post turn artifacts and keeps response contract", async
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", chat_id: "chat_1", text: "hi" });
   const payload = response.payload as Record<string, any>;
 
-  assert.deepEqual(calls, ["contact", "inbound", "msg:user", "msg:assistant", "merge"]);
+  assert.deepEqual(calls, ["contact", "inbound", "msg:user:inbound", "msg:assistant:outbound", "merge"]);
   assert.equal(payload.reply_text, "Question?");
   assert.equal(payload.final_patient_reply, "Question?");
   assert.equal(payload.side_effects.length, 0);

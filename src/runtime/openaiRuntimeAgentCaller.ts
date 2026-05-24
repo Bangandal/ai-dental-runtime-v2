@@ -53,24 +53,36 @@ export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string,
   const payload = {
     message: input.input.message,
     context: input.input.context,
-    ...(input.input.tool_results ? { tool_results: input.input.tool_results } : {}),
   };
+
+  const responseInput: Array<Record<string, unknown>> = [
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: JSON.stringify(payload),
+        },
+      ],
+    },
+  ];
+
+  if (input.input.tool_results) {
+    for (const toolResult of input.input.tool_results) {
+      if (!toolResult.call_id) continue;
+      responseInput.push({
+        type: "function_call_output",
+        call_id: toolResult.call_id,
+        output: JSON.stringify(toolResult),
+      });
+    }
+  }
 
   return {
     model: input.model,
     instructions: input.system_instruction,
     conversation: input.conversation_id ?? undefined,
-    input: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "input_text",
-            text: JSON.stringify(payload),
-          },
-        ],
-      },
-    ],
+    input: responseInput,
     tools: buildOpenAIToolDefinitions(input),
   };
 }

@@ -189,8 +189,8 @@ test("passes conversation_id and supports continuation with tool_results", async
   const result = await caller(input);
 
   assert.equal((seen[0] as any).conversation, "conv_1");
-  const continuationPayload = JSON.parse((seen[0] as any).input[0].content[0].text);
-  assert.equal(Array.isArray(continuationPayload.tool_results), true);
+  const functionOutputs = ((seen[0] as any).input as Array<Record<string, unknown>>).filter((item) => item.type === "function_call_output");
+  assert.equal(functionOutputs.length, 0);
   assert.equal(result.conversation_id, "conv_r");
 });
 

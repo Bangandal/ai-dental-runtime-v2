@@ -15,8 +15,27 @@ export interface RuntimeServerBootstrapDeps {
   runtimeTurnLogger?: RuntimeTurnLogger;
 }
 
+
+function readConversationId(value: unknown): string | null {
+  if (value === null || typeof value !== "object") return null;
+  const candidate = (value as Record<string, unknown>).id;
+  return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
+}
+
 export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeServerBootstrapDeps): void {
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
+  const createOpenAIConversation = async (): Promise<string | null> => {
+    const conversations = (deps.openaiClient as unknown as {
+      conversations?: { create?: () => Promise<unknown> };
+    }).conversations;
+
+    if (typeof conversations?.create !== "function") {
+      return null;
+    }
+
+    const created = await conversations.create();
+    return readConversationId(created);
+  };
 
   registerRuntimeTurnRoute(app, {
     runtimeTurnService: createDentalRuntimeTurnService({
@@ -28,5 +47,6 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     }),
     runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
     openAIConversationMemoryRepository,
+    createOpenAIConversation,
   });
 }

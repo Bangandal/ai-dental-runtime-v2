@@ -16,6 +16,7 @@ function createRouteHarness(
   service: RuntimeTurnService,
   logger = createNoopRuntimeTurnLogger(),
   openAIConversationMemoryRepository?: OpenAIConversationMemoryRepository,
+  createOpenAIConversation?: () => Promise<string | null>,
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -25,7 +26,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation },
   );
 
   assert.ok(handler);
@@ -267,15 +268,16 @@ test("jsonl lines are valid JSON and do not contain secret env values", async ()
 });
 
 
-test("first turn without memory runs without conversation_id and saves returned conversation_id", async () => {
+test("no memory creates conversation_id and passes it into service", async () => {
   const calls: Array<Record<string, unknown>> = [];
   const memorySaves: string[] = [];
+  let creates = 0;
 
   const harness = createRouteHarness(
     {
       async runTurn(input) {
         calls.push(input as Record<string, unknown>);
-        return { final_patient_reply: "ok", conversation_id: "conv_new_1", tool_results: [] } as any;
+        return { final_patient_reply: "ok", conversation_id: null, tool_results: [] } as any;
       },
     },
     createNoopRuntimeTurnLogger(),
@@ -288,6 +290,10 @@ test("first turn without memory runs without conversation_id and saves returned 
         return { ok: true, data: { conversation_id: input.conversation_id } };
       },
     },
+    async () => {
+      creates += 1;
+      return "conv_created_1";
+    },
   );
 
   const response = await harness.invoke({
@@ -299,8 +305,9 @@ test("first turn without memory runs without conversation_id and saves returned 
   });
 
   assert.equal(response.statusCode, 200);
-  assert.equal(calls[0]?.conversation_id, undefined);
-  assert.deepEqual(memorySaves, ["conv_new_1"]);
+  assert.equal(calls[0]?.conversation_id, "conv_created_1");
+  assert.deepEqual(memorySaves, ["conv_created_1"]);
+  assert.equal(creates, 1);
 });
 
 test("second turn with memory passes conversation_id into service", async () => {
@@ -367,4 +374,42 @@ test("memory save failure is non-fatal", async () => {
 
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", chat_id: "chat_1", text: "hi" });
   assert.equal(response.statusCode, 200);
+});
+
+
+test("existing memory does not create new conversation", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  let creates = 0;
+
+  const harness = createRouteHarness(
+    {
+      async runTurn(input) {
+        calls.push(input as Record<string, unknown>);
+        return { final_patient_reply: "ok", conversation_id: "conv_mem_1", tool_results: [] } as any;
+      },
+    },
+    createNoopRuntimeTurnLogger(),
+    {
+      async getConversationMemory() {
+        return { ok: true, data: { conversation_id: "conv_mem_1" } };
+      },
+      async saveConversationMemory(input) {
+        return { ok: true, data: { conversation_id: input.conversation_id } };
+      },
+    },
+    async () => {
+      creates += 1;
+      return "conv_created_should_not_happen";
+    },
+  );
+
+  await harness.invoke({
+    clinic_code: CLINIC_UUID,
+    channel: "telegram",
+    external_user_id: "user_1",
+    text: "hi",
+  });
+
+  assert.equal(calls[0]?.conversation_id, "conv_mem_1");
+  assert.equal(creates, 0);
 });

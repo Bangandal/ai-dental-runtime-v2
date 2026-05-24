@@ -34,6 +34,7 @@ export interface RuntimeTurnRouteDeps {
   runtimeTurnService: RuntimeTurnService;
   runtimeTurnLogger: RuntimeTurnLogger;
   openAIConversationMemoryRepository?: OpenAIConversationMemoryRepository;
+  createOpenAIConversation?: () => Promise<string | null>;
 }
 
 export interface RouteRegistrationApp {
@@ -117,16 +118,28 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       }
     }
 
+    if (!runtimeTurnInput.conversation_id && deps.createOpenAIConversation) {
+      try {
+        const createdConversationId = await deps.createOpenAIConversation();
+        if (createdConversationId) {
+          runtimeTurnInput.conversation_id = createdConversationId;
+        }
+      } catch {
+        // non-fatal by contract
+      }
+    }
+
     try {
       const result = await deps.runtimeTurnService.runTurn(runtimeTurnInput);
-      if (result.conversation_id && deps.openAIConversationMemoryRepository) {
+      const conversationIdToPersist = result.conversation_id ?? runtimeTurnInput.conversation_id ?? null;
+      if (conversationIdToPersist && deps.openAIConversationMemoryRepository) {
         try {
           await deps.openAIConversationMemoryRepository.saveConversationMemory({
             clinic_id: runtimeTurnInput.clinic_id,
             channel: runtimeTurnInput.business_context.channel,
             external_user_id: runtimeTurnInput.business_context.external_user_id ?? null,
             chat_id: runtimeTurnInput.business_context.chat_id ?? null,
-            conversation_id: result.conversation_id,
+            conversation_id: conversationIdToPersist,
           });
         } catch {
           // non-fatal by contract

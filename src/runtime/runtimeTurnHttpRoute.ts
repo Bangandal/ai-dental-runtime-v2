@@ -102,6 +102,8 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       recent_summary: null,
     };
 
+    const memoryDebug: Record<string, unknown> = {};
+
     if (deps.openAIConversationMemoryRepository) {
       try {
         const loadedMemory = await deps.openAIConversationMemoryRepository.getConversationMemory({
@@ -110,11 +112,23 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
           external_user_id: externalUserId ?? null,
           chat_id: chatId ?? null,
         });
+        memoryDebug.memory_lookup = {
+          ok: loadedMemory.ok,
+          clinic_id: body.clinic_code.trim(),
+          channel: body.channel.trim(),
+          external_user_id: externalUserId ?? null,
+          chat_id: chatId ?? null,
+          conversation_id: loadedMemory.ok ? loadedMemory.data.conversation_id : null,
+          error: loadedMemory.ok ? null : loadedMemory.error,
+        };
         if (loadedMemory.ok && loadedMemory.data.conversation_id) {
           runtimeTurnInput.conversation_id = loadedMemory.data.conversation_id;
         }
-      } catch {
-        // non-fatal by contract
+      } catch (error) {
+        memoryDebug.memory_lookup = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
     }
 
@@ -134,15 +148,23 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       const conversationIdToPersist = result.conversation_id ?? runtimeTurnInput.conversation_id ?? null;
       if (conversationIdToPersist && deps.openAIConversationMemoryRepository) {
         try {
-          await deps.openAIConversationMemoryRepository.saveConversationMemory({
+          const memorySaveResult = await deps.openAIConversationMemoryRepository.saveConversationMemory({
             clinic_id: runtimeTurnInput.clinic_id,
             channel: runtimeTurnInput.business_context.channel,
             external_user_id: runtimeTurnInput.business_context.external_user_id ?? null,
             chat_id: runtimeTurnInput.business_context.chat_id ?? null,
             conversation_id: conversationIdToPersist,
           });
-        } catch {
-          // non-fatal by contract
+          memoryDebug.memory_save = {
+            ok: memorySaveResult.ok,
+            conversation_id: conversationIdToPersist,
+            error: memorySaveResult.ok ? null : memorySaveResult.error,
+          };
+        } catch (error) {
+          memoryDebug.memory_save = {
+            ok: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
         }
       }
 
@@ -150,10 +172,10 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         trace_id: traceId,
         reply_text: result.final_patient_reply,
         final_patient_reply: result.final_patient_reply,
-        conversation_id: result.conversation_id ?? null,
+        conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: result.debug,
+        debug: { ...(result.debug ?? {}), ...memoryDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),
@@ -162,7 +184,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         clinic_id: runtimeTurnInput.clinic_id,
         contact_id: runtimeTurnInput.contact_id,
         case_id: runtimeTurnInput.case_id,
-        conversation_id: result.conversation_id ?? null,
+        conversation_id: conversationIdToPersist,
         channel: runtimeTurnInput.business_context.channel,
         external_user_id: runtimeTurnInput.business_context.external_user_id ?? null,
         chat_id: runtimeTurnInput.business_context.chat_id ?? null,
@@ -170,7 +192,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         final_patient_reply: result.final_patient_reply,
         tool_results: result.tool_results,
         side_effects: responsePayload.side_effects,
-        debug: result.debug,
+        debug: responsePayload.debug,
         latency_ms: Date.now() - startTime,
       }).catch(() => undefined);
       reply.send(responsePayload);

@@ -7,6 +7,7 @@ import { createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtimeTu
 import { createSupabaseOpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 import { createSupabaseTurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import { createSupabaseClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
+import { createSupabaseRuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
@@ -28,6 +29,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
   const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const clinicIdentityResolver = createSupabaseClinicIdentityResolver({ rpc: deps.rpc });
+  const runtimeContextRepository = createSupabaseRuntimeContextRepository({ rpc: deps.rpc });
   const createOpenAIConversation = async (): Promise<string | null> => {
     const conversations = (deps.openaiClient as unknown as {
       conversations?: { create?: () => Promise<unknown> };
@@ -54,5 +56,6 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     createOpenAIConversation,
     turnPersistenceRepository,
     clinicIdentityResolver,
+    runtimeContextRepository,
   });
 }

@@ -205,3 +205,25 @@ test("adapter has no forbidden imports or env var reads", async () => {
   assert.doesNotMatch(source, /from\s+["'][^"']*supabase[^"']*["']/i);
   assert.doesNotMatch(source, /process\.env/i);
 });
+
+
+test("openai input includes runtime_context block when provided", async () => {
+  let captured: unknown;
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async (input) => ((captured = input), { output_text: "ok" }) } },
+  });
+
+  const input = makeInput();
+  (input.input.context as Record<string, unknown>).runtime_context = {
+    known_contact: { contact_id: "contact_1" },
+    conversation_state: { state_version: 3 },
+    runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" },
+    recent_history: [],
+  };
+
+  await caller(input as any);
+  const payload = captured as Record<string, any>;
+  const parsedPayload = JSON.parse(payload.input[0].content[0].text);
+  assert.equal(parsedPayload.context.runtime_context.conversation_state.state_version, 3);
+  assert.deepEqual(parsedPayload.context.runtime_context.recent_history, []);
+});

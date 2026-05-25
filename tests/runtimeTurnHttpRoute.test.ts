@@ -31,6 +31,7 @@ function createRouteHarness(
   createOpenAIConversation?: () => Promise<string | null>,
   turnPersistenceRepository?: TurnPersistenceRepository,
   clinicIdentityResolver: ClinicIdentityResolver = defaultClinicIdentityResolver,
+  runtimeContextRepository?: { loadRuntimeContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -40,7 +41,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository },
   );
 
   assert.ok(handler);
@@ -467,4 +468,71 @@ test("route persists pre/post turn artifacts and keeps response contract", async
   assert.equal(payload.final_patient_reply, "Question?");
   assert.equal(payload.side_effects.length, 0);
   assert.deepEqual(payload.debug.persistence_debug.merge_state, { ok: true });
+});
+
+
+test("runtime context load success hydrates runtime_context and logs debug fields", async () => {
+  const calls: Array<Record<string, any>> = [];
+  const harness = createRouteHarness(
+    {
+      async runTurn(input) {
+        calls.push(input as Record<string, any>);
+        return { final_patient_reply: "ok", tool_results: [], debug: {} } as any;
+      },
+    },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    {
+      async loadRuntimeContext() {
+        return {
+          ok: true,
+          data: {
+            known_contact: { contact_id: "contact_1", clinic_id: CLINIC_UUID },
+            conversation_state: { state_version: 7, intent: "faq" },
+            runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" },
+            recent_history: [],
+          },
+        };
+      },
+    },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
+  assert.equal(response.statusCode, 200);
+  const input = calls[0];
+  const runtimeContext = input.business_context.runtime_context;
+  assert.equal(runtimeContext.conversation_state.state_version, 7);
+  assert.deepEqual(runtimeContext.recent_history, []);
+
+  const debug = (response.payload as any).debug.runtime_context;
+  assert.equal(debug.loaded, true);
+  assert.equal(debug.source, "supabase");
+  assert.equal(debug.state_version, 7);
+  assert.equal(debug.recent_history_count, 0);
+});
+
+test("runtime context load failure is non-fatal and still replies", async () => {
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "ok", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    {
+      async loadRuntimeContext() {
+        return { ok: false, error: { code: "runtime_context_load_failed", message: "rpc failed", retryable: true } };
+      },
+    },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
+  assert.equal(response.statusCode, 200);
+  const debug = (response.payload as any).debug.runtime_context;
+  assert.equal(debug.loaded, false);
+  assert.equal(debug.source, "supabase");
+  assert.equal(debug.error.code, "runtime_context_load_failed");
 });

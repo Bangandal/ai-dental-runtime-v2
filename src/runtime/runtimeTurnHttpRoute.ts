@@ -5,6 +5,7 @@ import type { RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 import type { OpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 import type { TurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
+import type { RuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -39,6 +40,7 @@ export interface RuntimeTurnRouteDeps {
   createOpenAIConversation?: () => Promise<string | null>;
   turnPersistenceRepository?: TurnPersistenceRepository;
   clinicIdentityResolver?: ClinicIdentityResolver;
+  runtimeContextRepository?: RuntimeContextRepository;
 }
 
 export interface RouteRegistrationApp {
@@ -212,6 +214,40 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       }
     }
 
+
+    const runtimeContextDebug: Record<string, unknown> = {
+      loaded: false,
+      source: "supabase",
+      recent_history_count: 0,
+    };
+
+    if (deps.runtimeContextRepository) {
+      try {
+        const runtimeContextResult = await deps.runtimeContextRepository.loadRuntimeContext({
+          clinic_id: runtimeTurnInput.clinic_id,
+          contact_id: runtimeTurnInput.contact_id ?? `${body.channel.trim()}:${externalUserId ?? chatId}`,
+        });
+
+        runtimeContextDebug.loaded = runtimeContextResult.ok;
+        if (runtimeContextResult.ok) {
+          runtimeContextDebug.state_version = (runtimeContextResult.data.conversation_state as Record<string, unknown>).state_version ?? null;
+          runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
+          runtimeTurnInput.business_context = {
+            ...(runtimeTurnInput.business_context ?? {}),
+            runtime_context: runtimeContextResult.data,
+          };
+        } else {
+          runtimeContextDebug.error = runtimeContextResult.error;
+        }
+      } catch (error) {
+        runtimeContextDebug.loaded = false;
+        runtimeContextDebug.error = {
+          code: "runtime_context_exception",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }
+
     if (!runtimeTurnInput.conversation_id && deps.createOpenAIConversation) {
       try {
         const createdConversationId = await deps.createOpenAIConversation();
@@ -288,7 +324,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

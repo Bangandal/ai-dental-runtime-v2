@@ -8,6 +8,7 @@ import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts
 import type { RuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
 import type { CaseContextRepository } from "./supabaseCaseContextRepository.ts";
 import { buildModelVisibleRuntimeContext } from "./modelVisibleRuntimeContext.ts";
+import { runCaseRouterShadow } from "./caseRouterShadow.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -265,6 +266,8 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       runtimeTurnInput.business_context = { ...(runtimeTurnInput.business_context ?? {}), runtime_context: mergeCaseContextIntoModelContext({}, loadedCaseContext) };
     }
 
+    let caseRouterDebug = runCaseRouterShadow();
+
     if (!runtimeTurnInput.conversation_id && deps.createOpenAIConversation) {
       try {
         const createdConversationId = await deps.createOpenAIConversation();
@@ -341,7 +344,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, case_router: caseRouterDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

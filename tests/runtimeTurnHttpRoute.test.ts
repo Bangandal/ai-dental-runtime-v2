@@ -97,6 +97,8 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(payload.final_patient_reply, "Здравствуйте!");
   assert.equal(payload.side_effects.length, 0);
   assert.equal(typeof payload.trace_id, "string");
+  assert.equal(payload.debug.case_router.mode, "shadow");
+  assert.equal(payload.debug.case_router.decision.should_apply, false);
 
   const input = calls[0] as Record<string, any>;
   assert.equal(input.clinic_id, CLINIC_UUID);

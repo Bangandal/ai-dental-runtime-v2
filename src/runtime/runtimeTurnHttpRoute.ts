@@ -218,7 +218,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     }
 
 
-    const caseContextDebug: Record<string, unknown> = { loaded: false, open_cases_count: 0, recent_cases_count: 0, has_current_case: false, has_active_hold: false, has_latest_appointment: false };
+    const caseContextDebug: Record<string, unknown> = { loaded: false, open_cases_count: 0, recent_cases_count: 0, has_current_case: false, current_case_resolved: false, has_active_hold: false, has_latest_appointment: false };
     let loadedCaseContext: unknown = null;
     if (deps.caseContextRepository) {
       try {
@@ -231,6 +231,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
           caseContextDebug.open_cases_count = openCases.length;
           caseContextDebug.recent_cases_count = recentCases.length;
           caseContextDebug.has_current_case = Boolean(caseContextResult.data.current_case_id);
+          caseContextDebug.current_case_resolved = openCases.some((openCase) => asString((openCase as Record<string, unknown>).case_id) === asString(caseContextResult.data.current_case_id));
           caseContextDebug.has_active_hold = Boolean(caseContextResult.data.active_booking_context.active_hold);
           caseContextDebug.has_latest_appointment = Boolean(caseContextResult.data.active_booking_context.latest_appointment);
         } else {
@@ -411,11 +412,14 @@ function mergeCaseContextIntoModelContext(baseContext: Record<string, unknown>, 
   const appointmentContext = asRecord(root.active_booking_context);
   const activeHold = asRecord(appointmentContext.active_hold);
   const latestAppointment = asRecord(appointmentContext.latest_appointment);
+  const currentCaseId = asString(root.current_case_id);
+  const currentCase = openCases.find((openCase) => asString(openCase.case_id) === currentCaseId) ?? null;
+
   return {
     ...baseContext,
     case_context: {
-      has_current_case: asString(root.current_case_id) !== null,
-      current_case: openCases[0] ? { case_type: asString(openCases[0].case_type), topic: asString(openCases[0].topic), status: asString(openCases[0].status), priority: asString(openCases[0].priority) } : null,
+      has_current_case: currentCaseId !== null,
+      current_case: currentCase ? { case_type: asString(currentCase.case_type), topic: asString(currentCase.topic), status: asString(currentCase.status), priority: asString(currentCase.priority) } : null,
       open_cases_count: openCases.length,
       recent_cases: recentCases.map((row) => ({ case_type: asString(row.case_type), topic: asString(row.topic), status: asString(row.status) })),
     },

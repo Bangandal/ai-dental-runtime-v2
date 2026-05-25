@@ -1,6 +1,7 @@
 import type { RpcCaller, RuntimeResult } from "./runtimeRepositories.ts";
 
 export interface CaseSummary {
+  case_id: string | null;
   case_type: string | null;
   topic: string | null;
   status: string | null;
@@ -82,6 +83,7 @@ function asCaseList(value: unknown): CaseSummary[] {
   return value.map((item) => {
     const row = asRecord(item);
     return {
+      case_id: asNullableString(row.case_id),
       case_type: asNullableString(row.case_type),
       topic: asNullableString(row.topic),
       status: asNullableString(row.status),

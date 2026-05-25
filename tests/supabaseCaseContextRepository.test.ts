@@ -10,8 +10,8 @@ test("loads and normalizes case + booking context", async () => {
         return {
           data: [{
             current_case_id: "case_1",
-            open_cases: [{ case_type: "booking", topic: "crown", status: "open", priority: "high" }],
-            recent_cases: [{ case_type: "faq", topic: "insurance", status: "closed", priority: null }],
+            open_cases: [{ case_id: "case_1", case_type: "booking", topic: "crown", status: "open", priority: "high" }],
+            recent_cases: [{ case_id: "case_9", case_type: "faq", topic: "insurance", status: "closed", priority: null }],
           }],
           error: null,
         };
@@ -31,6 +31,7 @@ test("loads and normalizes case + booking context", async () => {
   if (!result.ok) return;
   assert.equal(result.data.current_case_id, "case_1");
   assert.equal(result.data.open_cases.length, 1);
+  assert.equal(result.data.open_cases[0]?.case_id, "case_1");
   assert.equal(result.data.active_booking_context.active_hold?.status, "active");
 });
 

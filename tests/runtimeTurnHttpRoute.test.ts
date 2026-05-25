@@ -567,7 +567,7 @@ test("case context load success hydrates slim case/booking context and debug", a
     undefined,
     defaultClinicIdentityResolver,
     { async loadRuntimeContext() { return { ok: true, data: { known_contact: {}, conversation_state: { collected: {}, missing_fields: [] }, runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" }, recent_history: [] } }; } },
-    { async loadCaseContext() { return { ok: true, data: { current_case_id: "case_1", open_cases: [{ case_type: "booking", topic: "crown", status: "open", priority: "high" }], recent_cases: [{ case_type: "faq", topic: "insurance", status: "closed", priority: null }], active_booking_context: { active_hold: { service_interest: "cleaning", label: "Mon 9am", status: "active" }, latest_appointment: { service_interest: "exam", status: "booked", start_at: "2026-06-01T09:00:00Z" } } } }; } },
+    { async loadCaseContext() { return { ok: true, data: { current_case_id: "case_2", open_cases: [{ case_id: "case_1", case_type: "faq", topic: "insurance", status: "open", priority: "low" }, { case_id: "case_2", case_type: "booking", topic: "crown", status: "open", priority: "high" }], recent_cases: [{ case_id: "case_7", case_type: "faq", topic: "insurance", status: "closed", priority: null }], active_booking_context: { active_hold: { service_interest: "cleaning", label: "Mon 9am", status: "active" }, latest_appointment: { service_interest: "exam", status: "booked", start_at: "2026-06-01T09:00:00Z" } } } }; } },
   );
 
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
@@ -575,15 +575,19 @@ test("case context load success hydrates slim case/booking context and debug", a
   const runtimeContext = calls[0].business_context.runtime_context;
   assert.equal(runtimeContext.case_context.has_current_case, true);
   assert.equal(runtimeContext.case_context.current_case.case_type, "booking");
+  assert.equal(runtimeContext.case_context.current_case.topic, "crown");
+  assert.equal(runtimeContext.case_context.current_case.case_id, undefined);
+  assert.equal(runtimeContext.case_context.recent_cases[0].case_id, undefined);
   assert.equal(runtimeContext.booking_context.has_active_hold, true);
   assert.equal(runtimeContext.booking_context.latest_appointment.start_at, "2026-06-01T09:00:00Z");
   assert.equal(runtimeContext.current_case_id, undefined);
 
   const debug = (response.payload as any).debug.case_context;
   assert.equal(debug.loaded, true);
-  assert.equal(debug.open_cases_count, 1);
+  assert.equal(debug.open_cases_count, 2);
   assert.equal(debug.recent_cases_count, 1);
   assert.equal(debug.has_current_case, true);
+  assert.equal(debug.current_case_resolved, true);
 });
 
 test("case context load failure is non-fatal", async () => {

@@ -41,8 +41,8 @@ test("calls injected client.responses.create with expected payload and active to
   assert.equal(Array.isArray(payload.input), true);
   assert.equal(payload.input[0].role, "user");
   assert.equal(payload.input[0].content[0].type, "input_text");
-  const parsedPayload = JSON.parse(payload.input[0].content[0].text);
-  assert.equal(parsedPayload.message, "Need help");
+  assert.match(payload.input[0].content[0].text, /User message:\nNeed help/);
+  assert.match(payload.input[0].content[0].text, /Runtime context:/);
   assert.equal(payload.tools.length, 2);
   const toolNames = payload.tools.map((t: Record<string, unknown>) => t.name);
   assert.deepEqual(toolNames.sort(), ["availability_check", "kb_search"]);
@@ -192,6 +192,30 @@ test("passes conversation_id and supports continuation with tool_results", async
   const functionOutputs = ((seen[0] as any).input as Array<Record<string, unknown>>).filter((item) => item.type === "function_call_output");
   assert.equal(functionOutputs.length, 0);
   assert.equal(result.conversation_id, "conv_r");
+});
+
+test("formats recent conversation block and caps lines", async () => {
+  let captured: unknown;
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async (input) => ((captured = input), { output_text: "ok" }) } },
+  });
+  const input = makeInput();
+  input.input.context = {
+    clinic_id: "c1",
+    recent_history: [
+      { role: "user", text: " one " },
+      { role: "assistant", text: "two" },
+      { role: "user", text: "three" },
+      { role: "assistant", text: "four" },
+      { role: "user", text: "five" },
+    ],
+  };
+  await caller(input);
+  const text = (captured as any).input[0].content[0].text as string;
+  assert.match(text, /Recent conversation:/);
+  assert.match(text, /User: one/);
+  assert.match(text, /Assistant: two/);
+  assert.equal(text.includes("five"), false);
 });
 
 test("adapter has no forbidden imports or env var reads", async () => {

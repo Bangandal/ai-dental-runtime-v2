@@ -2,6 +2,10 @@ import type { RpcCaller } from "./runtimeRepositories.ts";
 import type { RuntimeResult } from "./runtimeRepositories.ts";
 
 export interface TurnPersistenceRepository {
+  getRecentMessages(input: {
+    contact_id: string;
+    limit?: number;
+  }): Promise<RuntimeResult<Array<{ role: "user" | "assistant"; text: string; created_at?: string }>>>;
   getOrCreateContact(input: {
     clinic_code: string;
     channel: string;
@@ -50,6 +54,21 @@ export interface TurnPersistenceRepository {
 
 export function createSupabaseTurnPersistenceRepository(deps: { rpc: RpcCaller }): TurnPersistenceRepository {
   return {
+    async getRecentMessages(input) {
+      const { data, error } = await deps.rpc<Array<{ role?: unknown; text?: unknown; created_at?: unknown }>>("rpc_get_recent_messages_v1", {
+        p_contact_id: input.contact_id,
+        p_limit: input.limit ?? 4,
+      });
+      if (error) return fail("recent_messages_load_failed", "Failed to load recent messages");
+      const messages = (data ?? [])
+        .map((row) => ({
+          role: row.role === "assistant" ? "assistant" : row.role === "user" ? "user" : null,
+          text: typeof row.text === "string" ? row.text : "",
+          created_at: typeof row.created_at === "string" ? row.created_at : undefined,
+        }))
+        .filter((row): row is { role: "user" | "assistant"; text: string; created_at?: string } => row.role !== null);
+      return { ok: true, data: messages };
+    },
     async getOrCreateContact(input) {
       const { data, error } = await deps.rpc<Array<{ contact_id?: unknown; clinic_id?: unknown }>>("rpc_get_or_create_contact", {
         p_clinic_code: input.clinic_code,

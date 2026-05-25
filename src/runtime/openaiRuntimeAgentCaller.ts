@@ -50,10 +50,7 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
 }
 
 export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string, unknown> {
-  const payload = {
-    message: input.input.message,
-    context: input.input.context,
-  };
+  const promptText = buildPromptText(input.input.message, input.input.context);
 
   const responseInput: Array<Record<string, unknown>> = [
     {
@@ -61,7 +58,7 @@ export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string,
       content: [
         {
           type: "input_text",
-          text: JSON.stringify(payload),
+          text: promptText,
         },
       ],
     },
@@ -85,6 +82,33 @@ export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string,
     input: responseInput,
     tools: buildOpenAIToolDefinitions(input),
   };
+}
+
+function buildPromptText(message: string, context: Record<string, unknown>): string {
+  const sections: string[] = [];
+  sections.push(`User message:\n${message}`);
+  const recentConversation = buildRecentConversationBlock(context.recent_history);
+  if (recentConversation) sections.push(recentConversation);
+
+  const contextForJson = { ...context };
+  delete (contextForJson as Record<string, unknown>).recent_history;
+  sections.push(`Runtime context:\n${JSON.stringify(contextForJson)}`);
+  return sections.join("\n\n");
+}
+
+function buildRecentConversationBlock(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const lines: string[] = [];
+  for (const item of value.slice(0, 4)) {
+    const row = asObject(item);
+    if (!row) continue;
+    const role = readString(row.role);
+    const text = readString(row.text)?.trim();
+    if ((role !== "user" && role !== "assistant") || !text) continue;
+    lines.push(`${role === "user" ? "User" : "Assistant"}: ${text.slice(0, 500)}`);
+  }
+  if (lines.length === 0) return null;
+  return `Recent conversation:\n${lines.join("\n")}`;
 }
 
 export function normalizeOpenAIResponse(raw: unknown, fallbackConversationId?: string | null): RuntimeAgentCallerOutput {

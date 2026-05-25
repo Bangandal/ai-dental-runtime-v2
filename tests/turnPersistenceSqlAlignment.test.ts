@@ -16,6 +16,7 @@ test("repository keeps intended RPC names and does not use stub-only args", asyn
     "rpc_register_inbound_event",
     "rpc_save_message",
     "rpc_merge_conversation_state",
+    "rpc_get_recent_messages_v1",
   ]) {
     assert.equal(repo.includes(rpcName), true, `missing repo RPC call: ${rpcName}`);
   }
@@ -32,6 +33,13 @@ test("repository keeps intended RPC names and does not use stub-only args", asyn
   }
   assert.equal(repo.includes("p_state_json"), false);
   assert.equal(repo.includes("p_patch"), false);
+});
+
+test("recent messages SQL RPC exists with expected ordering and limit", async () => {
+  const sql = await fs.readFile(new URL("../sql/rpc/core.rpc_get_recent_messages_v1.sql", import.meta.url), "utf8");
+  assert.equal(sql.includes("create or replace function core.rpc_get_recent_messages_v1"), true);
+  assert.equal(sql.includes("order by m.created_at desc"), true);
+  assert.equal(sql.includes("limit greatest(p_limit, 1)"), true);
 });
 
 test("docs explicitly record missing SQL definitions in this repository", async () => {

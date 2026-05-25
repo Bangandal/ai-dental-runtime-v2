@@ -180,6 +180,28 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       }).catch(() => ({ ok: false } as const));
       persistenceDebug.save_user_message = userMsgResult.ok ? { ok: true } : { ok: false, code: "message_persist_failed" };
       userMessageId = userMsgResult.ok ? userMsgResult.data.message_id ?? null : null;
+
+      const recentMessagesResult = await deps.turnPersistenceRepository.getRecentMessages({
+        contact_id: contactIdForPre,
+        limit: 4,
+      }).catch(() => ({ ok: false } as const));
+      if (recentMessagesResult.ok) {
+        const normalizedCurrentUserMessage = runtimeTurnInput.user_message.trim();
+        const recentHistory = recentMessagesResult.data
+          .filter((message) => message.text.trim().length > 0)
+          .map((message) => ({
+            role: message.role,
+            text: message.text.trim().slice(0, 500),
+            created_at: message.created_at,
+          }))
+          .filter((message) => !(message.role === "user" && message.text === normalizedCurrentUserMessage))
+          .slice(0, 4)
+          .reverse();
+        runtimeTurnInput.recent_history = recentHistory;
+        persistenceDebug.recent_history_count = recentHistory.length;
+      } else {
+        persistenceDebug.recent_history_count = 0;
+      }
     }
 
     const memoryDebug: Record<string, unknown> = {};

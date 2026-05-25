@@ -445,6 +445,7 @@ test("existing memory does not create new conversation", async () => {
 test("route persists pre/post turn artifacts and keeps response contract", async () => {
   const calls: string[] = [];
   const persistenceRepo: TurnPersistenceRepository = {
+    async getRecentMessages() { calls.push("recent"); return { ok: true, data: [] }; },
     async getOrCreateContact(input) { calls.push("contact"); assert.equal(input.clinic_code, CLINIC_CODE); return { ok: true, data: { contact_id: "c1", clinic_id: CLINIC_UUID } }; },
     async registerInboundEvent(input) { calls.push("inbound"); assert.equal(typeof input.dedupe_key, "string"); return { ok: true, data: {} }; },
     async saveMessage(input) { calls.push(`msg:${input.role}:${input.direction}`); return { ok: true, data: { message_id: input.role === "user" ? "m_user_1" : "m_assistant_1" } }; },
@@ -462,9 +463,41 @@ test("route persists pre/post turn artifacts and keeps response contract", async
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", chat_id: "chat_1", text: "hi" });
   const payload = response.payload as Record<string, any>;
 
-  assert.deepEqual(calls, ["contact", "inbound", "msg:user:inbound", "msg:assistant:outbound", "merge"]);
+  assert.deepEqual(calls, ["contact", "inbound", "msg:user:inbound", "recent", "msg:assistant:outbound", "merge"]);
   assert.equal(payload.reply_text, "Question?");
   assert.equal(payload.final_patient_reply, "Question?");
   assert.equal(payload.side_effects.length, 0);
   assert.deepEqual(payload.debug.persistence_debug.merge_state, { ok: true });
+});
+
+test("injects recent history in chronological order with max 4 and without duplicate current input", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const persistenceRepo: TurnPersistenceRepository = {
+    async getRecentMessages() {
+      return {
+        ok: true,
+        data: [
+          { role: "assistant", text: " latest " },
+          { role: "user", text: "hi" },
+          { role: "assistant", text: "older2" },
+          { role: "user", text: "older1" },
+          { role: "assistant", text: "" },
+        ],
+      };
+    },
+    async getOrCreateContact() { return { ok: true, data: { contact_id: "c1", clinic_id: CLINIC_UUID } }; },
+    async registerInboundEvent() { return { ok: true, data: {} }; },
+    async saveMessage(input) { return { ok: true, data: { message_id: input.role === "user" ? "m_user_1" : "m_assistant_1" } }; },
+    async mergeConversationState() { return { ok: true, data: { ok: true } }; },
+  };
+  const harness = createRouteHarness({
+    async runTurn(input) {
+      calls.push(input as Record<string, unknown>);
+      return { final_patient_reply: "ok", tool_results: [] } as any;
+    },
+  }, createNoopRuntimeTurnLogger(), undefined, undefined, persistenceRepo);
+  await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", chat_id: "chat_1", text: "hi" });
+  const history = (calls[0]?.recent_history ?? []) as Array<Record<string, unknown>>;
+  assert.equal(history.length, 3);
+  assert.deepEqual(history.map((x) => x.text), ["older1", "older2", "latest"]);
 });

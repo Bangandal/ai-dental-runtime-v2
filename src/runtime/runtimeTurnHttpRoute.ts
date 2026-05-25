@@ -6,6 +6,7 @@ import type { OpenAIConversationMemoryRepository } from "./supabaseOpenAIConvers
 import type { TurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import type { RuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
+import { buildModelVisibleRuntimeContext } from "./modelVisibleRuntimeContext.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -234,7 +235,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
           runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
           runtimeTurnInput.business_context = {
             ...(runtimeTurnInput.business_context ?? {}),
-            runtime_context: runtimeContextResult.data,
+            runtime_context: buildModelVisibleRuntimeContext(runtimeContextResult.data),
           };
         } else {
           runtimeContextDebug.error = runtimeContextResult.error;

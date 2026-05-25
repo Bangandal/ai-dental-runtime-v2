@@ -490,8 +490,12 @@ test("runtime context load success hydrates runtime_context and logs debug field
         return {
           ok: true,
           data: {
-            known_contact: { contact_id: "contact_1", clinic_id: CLINIC_UUID },
-            conversation_state: { state_version: 7, intent: "faq" },
+            clinic_id: CLINIC_UUID,
+            contact_id: "contact_1",
+            chat_id: "chat_1",
+            external_user_id: "external_1",
+            known_contact: { contact_id: "contact_1", clinic_id: CLINIC_UUID, first_name: "Ada", last_name: "Lovelace", username: "ada_raw", language_code: "ru", meta: { foo: "bar" } },
+            conversation_state: { state_version: 7, intent: "faq", collected: { problem: "pain", phone_required: true, contact_channel_available: true }, missing_fields: ["phone"], last_user_message_text: "raw", last_bot_question: "q", last_bot_action: "a" },
             runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" },
             recent_history: [],
           },
@@ -503,9 +507,22 @@ test("runtime context load success hydrates runtime_context and logs debug field
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
   assert.equal(response.statusCode, 200);
   const input = calls[0];
-  const runtimeContext = input.business_context.runtime_context;
-  assert.equal(runtimeContext.conversation_state.state_version, 7);
+  const runtimeContext = input.business_context?.runtime_context;
+  assert.ok(runtimeContext);
+  assert.equal(runtimeContext.patient_context.display_name, "Ada Lovelace");
+  assert.equal(runtimeContext.patient_context.preferred_language, "ru");
+  assert.equal(runtimeContext.task_state.last_known_intent, "faq");
+  assert.equal(runtimeContext.task_state.collected.problem, "pain");
+  assert.equal(runtimeContext.runtime_policy.phone_required, true);
   assert.deepEqual(runtimeContext.recent_history, []);
+  assert.equal(runtimeContext.clinic_id, undefined);
+  assert.equal(runtimeContext.contact_id, undefined);
+  assert.equal(runtimeContext.chat_id, undefined);
+  assert.equal(runtimeContext.external_user_id, undefined);
+  assert.equal(runtimeContext.state_version, undefined);
+  assert.equal(runtimeContext.last_user_message_text, undefined);
+  assert.equal(runtimeContext.last_bot_question, undefined);
+  assert.equal(runtimeContext.last_bot_action, undefined);
 
   const debug = (response.payload as any).debug.runtime_context;
   assert.equal(debug.loaded, true);

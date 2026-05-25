@@ -187,3 +187,52 @@ test("runtimeAgentLoop has no forbidden external imports and preserves ownership
   assert.match(docs, /Backend owns tool execution/i);
   assert.match(docs, /business truth.*DB|tool results/i);
 });
+
+test("pure FAQ reply with booking CTA gets CTA removed and debug is set", async () => {
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    final_response: {
+      final_patient_reply: "Профессиональная чистка стоит от 5000 ₽. Если хотите, могу помочь записаться.",
+    },
+  });
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors: {} }).runTurn({
+    ...makeInput(),
+    user_message: "Сколько стоит чистка?",
+  });
+  assert.equal(result.final_patient_reply, "Профессиональная чистка стоит от 5000 ₽.");
+  assert.equal((result.debug as any).reply_policy.mode, "pure_faq");
+  assert.equal((result.debug as any).reply_policy.booking_cta_allowed, false);
+  assert.equal((result.debug as any).reply_policy.cta_suppressed, true);
+});
+
+test("pure FAQ reply without CTA is unchanged", async () => {
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    final_response: {
+      final_patient_reply: "We accept most PPO plans.",
+    },
+  });
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors: {} }).runTurn({
+    ...makeInput(),
+    user_message: "Do you accept PPO?",
+  });
+  assert.equal(result.final_patient_reply, "We accept most PPO plans.");
+  assert.equal((result.debug as any).reply_policy.cta_suppressed, false);
+});
+
+test("explicit booking intent keeps booking CTA allowed", async () => {
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    final_response: {
+      final_patient_reply: "Да, есть варианты на завтра. Могу помочь записаться.",
+    },
+  });
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors: {} }).runTurn({
+    ...makeInput(),
+    user_message: "хочу записаться, можно на завтра?",
+  });
+  assert.equal(result.final_patient_reply, "Да, есть варианты на завтра. Могу помочь записаться.");
+  assert.equal((result.debug as any).reply_policy.mode, "booking_intent");
+  assert.equal((result.debug as any).reply_policy.booking_cta_allowed, true);
+  assert.equal((result.debug as any).reply_policy.cta_suppressed, false);
+});

@@ -53,6 +53,24 @@ export interface CreateRuntimeAgentLoopDeps {
 }
 
 const ACTIVE_TOOL_SET = new Set<string>(ACTIVE_RUNTIME_AGENT_TOOLS);
+const BOOKING_INTENT_PATTERNS = [
+  /хочу записаться/i,
+  /можно записаться/i,
+  /когда есть место/i,
+  /есть свободное время/i,
+  /хочу прийти/i,
+  /можно на завтра/i,
+  /запишите меня/i,
+];
+const CTA_PHRASE_PATTERNS = [
+  /если хотите,\s*могу помочь записаться/i,
+  /могу помочь записаться/i,
+  /хотите записаться/i,
+  /can help you book/i,
+  /i can help you schedule/i,
+];
+
+type ReplyPolicyMode = "pure_faq" | "booking_intent" | "unknown";
 
 export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAIRuntimeAgent {
   return {
@@ -113,9 +131,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       if (firstOutput.type === "final_response") {
+        const policyApplied = applyReplyPolicyGuard(input.user_message, firstOutput.final_response.final_patient_reply, []);
+        debug.reply_policy = policyApplied.debug;
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
-          final_patient_reply: firstOutput.final_response.final_patient_reply,
+          final_patient_reply: policyApplied.final_patient_reply,
           conversation_id: conversationId,
           tool_requests: [],
           tool_results: [],
@@ -206,9 +226,15 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         };
       }
 
+      const policyApplied = applyReplyPolicyGuard(
+        input.user_message,
+        secondOutput.final_response.final_patient_reply,
+        toolRequests.map((request) => request.tool),
+      );
+      debug.reply_policy = policyApplied.debug;
       await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
       return {
-        final_patient_reply: secondOutput.final_response.final_patient_reply,
+        final_patient_reply: policyApplied.final_patient_reply,
         conversation_id: conversationId,
         tool_requests: toolRequests,
         tool_results: toolResults,
@@ -216,6 +242,54 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       };
     },
   };
+}
+
+function applyReplyPolicyGuard(
+  userMessage: string,
+  reply: string,
+  requestedTools: RuntimeAgentToolRequest["tool"][],
+): {
+  final_patient_reply: string;
+  debug: {
+    mode: ReplyPolicyMode;
+    booking_cta_allowed: boolean;
+    cta_suppressed: boolean;
+  };
+} {
+  const mode = classifyReplyPolicyMode(userMessage, requestedTools);
+  const bookingCtaAllowed = mode === "booking_intent";
+  if (bookingCtaAllowed) {
+    return {
+      final_patient_reply: reply,
+      debug: { mode, booking_cta_allowed: true, cta_suppressed: false },
+    };
+  }
+
+  const cleanedReply = removeBookingCtaSentences(reply);
+  return {
+    final_patient_reply: cleanedReply,
+    debug: { mode, booking_cta_allowed: false, cta_suppressed: cleanedReply !== reply },
+  };
+}
+
+function classifyReplyPolicyMode(
+  userMessage: string,
+  requestedTools: RuntimeAgentToolRequest["tool"][],
+): ReplyPolicyMode {
+  if (BOOKING_INTENT_PATTERNS.some((pattern) => pattern.test(userMessage))) {
+    return "booking_intent";
+  }
+  if (requestedTools.length === 0 || requestedTools.every((tool) => tool === "kb.search")) {
+    return "pure_faq";
+  }
+  return "unknown";
+}
+
+function removeBookingCtaSentences(reply: string): string {
+  const parts = reply.split(/(?<=[.!?])\s+/u);
+  const filtered = parts.filter((part) => !CTA_PHRASE_PATTERNS.some((pattern) => pattern.test(part)));
+  const merged = filtered.join(" ").trim();
+  return merged.length > 0 ? merged : reply.trim();
 }
 
 function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): PlannerOutput {

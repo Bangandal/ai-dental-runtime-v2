@@ -26,7 +26,7 @@ export function createOpenAICaseRouterClassifier(deps: { client: OpenAIResponses
 function parseClassifierOutput(raw: unknown): unknown {
   const obj = asObject(raw);
   const outputText = readString(obj?.output_text);
-  if (outputText) return JSON.parse(outputText);
+  if (outputText) return parseClassifierJson(outputText);
   const output = obj?.output;
   if (!Array.isArray(output)) throw new Error("missing_classifier_output");
   for (const item of output) {
@@ -38,10 +38,33 @@ function parseClassifierOutput(raw: unknown): unknown {
       const partObj = asObject(part);
       if (!partObj || readString(partObj.type) !== "output_text") continue;
       const text = readString(partObj.text);
-      if (text) return JSON.parse(text);
+      if (text) return parseClassifierJson(text);
     }
   }
   throw new Error("missing_classifier_output");
+}
+
+export function parseClassifierJson(text: string): unknown {
+  const trimmed = text.trim();
+  const candidate = extractJsonCandidate(trimmed);
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    throw new Error("invalid_classifier_json");
+  }
+}
+
+function extractJsonCandidate(text: string): string {
+  const startFence = "```";
+  const firstFence = text.indexOf(startFence);
+  if (firstFence === -1) return text;
+  const secondFence = text.indexOf(startFence, firstFence + startFence.length);
+  if (secondFence === -1) return text;
+  const fencedBody = text.slice(firstFence + startFence.length, secondFence).trim();
+  if (fencedBody.startsWith("json")) {
+    return fencedBody.slice(4).trim();
+  }
+  return fencedBody;
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {

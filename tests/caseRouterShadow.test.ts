@@ -85,3 +85,65 @@ test("sanitizeCaseRouterContext keeps only model-visible compact fields", () => 
   assert.equal("external_user_id" in sanitized, false);
   assert.equal("trace_id" in sanitized, false);
 });
+
+test("invalid enum classifier output falls back with classifier_invalid_output", async () => {
+  const debug = await runCaseRouterShadow({
+    user_message: "hello",
+    runtime_context: {},
+    classifier: {
+      async classifyCaseTurn() {
+        return {
+          case_relation: "bad",
+          case_action: "reuse_case",
+          case_type: "faq",
+          status: null,
+          priority: "normal",
+          confidence: "high",
+          reason: "x",
+          should_apply: true,
+        };
+      },
+    },
+  });
+  assert.equal(debug.classifier, "fallback");
+  assert.equal(debug.error?.code, "classifier_invalid_output");
+  assert.equal(debug.decision.should_apply, false);
+});
+
+test("classifier openai label used only for semantically valid decision", async () => {
+  const debug = await runCaseRouterShadow({
+    user_message: "hello",
+    runtime_context: {},
+    classifier: {
+      async classifyCaseTurn() {
+        return {
+          case_relation: "same_case",
+          case_action: "reuse_case",
+          case_type: "follow_up",
+          topic: "results",
+          status: "open",
+          priority: "normal",
+          confidence: "high",
+          reason: "Continues current case",
+          should_apply: true,
+        };
+      },
+    },
+  });
+  assert.equal(debug.classifier, "openai");
+  assert.equal(debug.decision.should_apply, false);
+});
+
+test("invalid classifier json is distinguished from classifier exceptions", async () => {
+  const debug = await runCaseRouterShadow({
+    user_message: "hello",
+    runtime_context: {},
+    classifier: {
+      async classifyCaseTurn() {
+        throw new Error("invalid_classifier_json");
+      },
+    },
+  });
+  assert.equal(debug.classifier, "fallback");
+  assert.equal(debug.error?.code, "invalid_classifier_json");
+});

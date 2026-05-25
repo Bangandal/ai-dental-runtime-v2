@@ -102,13 +102,14 @@ export async function runCaseRouterShadow(input: {
       error: null,
     };
   } catch (error) {
+    const code = error instanceof Error && error.message === "invalid_classifier_json" ? "invalid_classifier_json" : "classifier_exception";
     return {
       enabled: true,
       mode: "shadow",
       classifier: "fallback",
       decision: fallback,
       applied: false,
-      error: { code: "classifier_exception", message: error instanceof Error ? error.message : String(error) },
+      error: { code, message: error instanceof Error ? error.message : String(error) },
     };
   }
 }
@@ -148,5 +149,12 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function isValidClassifierDecision(raw: unknown): boolean {
   const value = asRecord(raw);
-  return typeof value.reason === "string" && value.reason.trim().length > 0;
+  if (!(typeof value.reason === "string" && value.reason.trim().length > 0)) return false;
+  if (!RELATIONS.includes(value.case_relation as CaseRelation)) return false;
+  if (!ACTIONS.includes(value.case_action as CaseAction)) return false;
+  if (!TYPES.includes(value.case_type as CaseType)) return false;
+  if (!PRIORITIES.includes(value.priority as CasePriority)) return false;
+  if (!CONFIDENCES.includes(value.confidence as CaseConfidence)) return false;
+  if (value.status !== null && value.status !== undefined && !STATUSES.includes(value.status as Exclude<CaseStatus, null>)) return false;
+  return true;
 }

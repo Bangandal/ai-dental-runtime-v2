@@ -253,7 +253,13 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         if (runtimeContextResult.ok) {
           runtimeContextDebug.state_version = (runtimeContextResult.data.conversation_state as Record<string, unknown>).state_version ?? null;
           runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
-          runtimeTurnInput.business_context = { ...(runtimeTurnInput.business_context ?? {}), runtime_context: mergeCaseContextIntoModelContext(buildModelVisibleRuntimeContext(runtimeContextResult.data), loadedCaseContext) };
+          runtimeTurnInput.business_context = {
+            ...(runtimeTurnInput.business_context ?? {}),
+            runtime_context: mergeCaseContextIntoModelContext(
+              applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data)),
+              loadedCaseContext,
+            ),
+          };
         } else {
           runtimeContextDebug.error = runtimeContextResult.error;
         }
@@ -436,6 +442,26 @@ function mergeCaseContextIntoModelContext(baseContext: Record<string, unknown>, 
       has_active_hold: Object.keys(activeHold).length > 0,
       active_hold: Object.keys(activeHold).length > 0 ? { service_interest: asString(activeHold.service_interest), label: asString(activeHold.label), status: asString(activeHold.status) } : null,
       latest_appointment: Object.keys(latestAppointment).length > 0 ? { service_interest: asString(latestAppointment.service_interest), status: asString(latestAppointment.status), start_at: asString(latestAppointment.start_at) } : null,
+    },
+  };
+}
+
+function applyMessengerPhonePolicy(baseContext: Record<string, unknown>): Record<string, unknown> {
+  const taskState = asRecord(baseContext.task_state);
+  const runtimePolicy = asRecord(baseContext.runtime_policy);
+  const missingFields = Array.isArray(taskState.missing_fields)
+    ? taskState.missing_fields.filter((field): field is string => typeof field === "string" && field !== "phone")
+    : [];
+
+  return {
+    ...baseContext,
+    task_state: {
+      ...taskState,
+      missing_fields: missingFields,
+    },
+    runtime_policy: {
+      ...runtimePolicy,
+      phone_required: false,
     },
   };
 }

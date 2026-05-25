@@ -45,20 +45,18 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
         name: asNullableString(collected.name),
         service_interest: asNullableString(collected.service_interest),
         problem: asNullableString(collected.problem),
-        phone: asNullableString(collected.phone),
         preferred_time: asNullableString(collected.preferred_time),
         preferred_contact: asNullableString(collected.preferred_contact),
         contact_channel_available: contactChannelAvailable ?? undefined,
-        phone_required: asBoolean(collected.phone_required) ?? undefined,
       },
       missing_fields: Array.isArray(conversationState.missing_fields)
-        ? conversationState.missing_fields.filter((field): field is string => typeof field === "string")
+        ? conversationState.missing_fields.filter((field): field is string => typeof field === "string" && field !== "phone")
         : [],
       last_known_intent: asNullableString(conversationState.intent),
       intake_status: asNullableString(conversationState.qualification_stage) ?? asNullableString(conversationState.conversation_stage),
     },
     runtime_policy: {
-      phone_required: asBoolean(collected.phone_required),
+      phone_required: false,
       patient_reachable_in_current_channel: patientReachableInCurrentChannel,
     },
     recent_history: [],

@@ -8,7 +8,7 @@ import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts
 import type { RuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
 import type { CaseContextRepository } from "./supabaseCaseContextRepository.ts";
 import { buildModelVisibleRuntimeContext } from "./modelVisibleRuntimeContext.ts";
-import { runCaseRouterShadow } from "./caseRouterShadow.ts";
+import { runCaseRouterShadow, type CaseRouterClassifier, sanitizeCaseRouterContext } from "./caseRouterShadow.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -45,6 +45,7 @@ export interface RuntimeTurnRouteDeps {
   clinicIdentityResolver?: ClinicIdentityResolver;
   runtimeContextRepository?: RuntimeContextRepository;
   caseContextRepository?: CaseContextRepository;
+  caseRouterClassifier?: CaseRouterClassifier;
 }
 
 export interface RouteRegistrationApp {
@@ -266,7 +267,12 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       runtimeTurnInput.business_context = { ...(runtimeTurnInput.business_context ?? {}), runtime_context: mergeCaseContextIntoModelContext({}, loadedCaseContext) };
     }
 
-    let caseRouterDebug = runCaseRouterShadow();
+    const classifierInputContext = sanitizeCaseRouterContext((runtimeTurnInput.business_context as Record<string, unknown>).runtime_context);
+    let caseRouterDebug = await runCaseRouterShadow({
+      user_message: runtimeTurnInput.user_message,
+      runtime_context: classifierInputContext,
+      classifier: deps.caseRouterClassifier,
+    });
 
     if (!runtimeTurnInput.conversation_id && deps.createOpenAIConversation) {
       try {

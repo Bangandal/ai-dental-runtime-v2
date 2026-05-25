@@ -20,9 +20,17 @@ export interface CaseRouterDecision {
 export interface CaseRouterDebug {
   enabled: true;
   mode: "shadow";
+  classifier: "openai" | "fallback";
   decision: CaseRouterDecision;
   applied: false;
-  error: string | null;
+  error: Record<string, unknown> | null;
+}
+export interface CaseRouterClassifierInput {
+  user_message: string;
+  runtime_context: Record<string, unknown>;
+}
+export interface CaseRouterClassifier {
+  classifyCaseTurn(input: CaseRouterClassifierInput): Promise<unknown>;
 }
 
 const RELATIONS: readonly CaseRelation[] = ["same_case", "new_case", "follow_up", "reopen_case", "no_case", "unknown"];
@@ -64,13 +72,56 @@ export function normalizeCaseRouterDecision(raw: unknown): CaseRouterDecision {
   };
 }
 
-export function runCaseRouterShadow(): CaseRouterDebug {
+export async function runCaseRouterShadow(input: {
+  user_message: string;
+  runtime_context: Record<string, unknown>;
+  classifier?: CaseRouterClassifier;
+}): Promise<CaseRouterDebug> {
+  const fallback = buildFallbackCaseRouterDecision();
+  if (!input.classifier) {
+    return { enabled: true, mode: "shadow", classifier: "fallback", decision: fallback, applied: false, error: null };
+  }
+  try {
+    const raw = await input.classifier.classifyCaseTurn({ user_message: input.user_message, runtime_context: input.runtime_context });
+    if (!isValidClassifierDecision(raw)) {
+      return {
+        enabled: true,
+        mode: "shadow",
+        classifier: "fallback",
+        decision: fallback,
+        applied: false,
+        error: { code: "classifier_invalid_output", message: "Classifier returned invalid decision schema" },
+      };
+    }
+    return {
+      enabled: true,
+      mode: "shadow",
+      classifier: "openai",
+      decision: normalizeCaseRouterDecision(raw),
+      applied: false,
+      error: null,
+    };
+  } catch (error) {
+    const code = error instanceof Error && error.message === "invalid_classifier_json" ? "invalid_classifier_json" : "classifier_exception";
+    return {
+      enabled: true,
+      mode: "shadow",
+      classifier: "fallback",
+      decision: fallback,
+      applied: false,
+      error: { code, message: error instanceof Error ? error.message : String(error) },
+    };
+  }
+}
+
+export function sanitizeCaseRouterContext(rawRuntimeContext: unknown): Record<string, unknown> {
+  const root = asRecord(rawRuntimeContext);
+  const pick = (key: string) => asRecord(root[key]);
   return {
-    enabled: true,
-    mode: "shadow",
-    decision: buildFallbackCaseRouterDecision(),
-    applied: false,
-    error: null,
+    patient_context: pick("patient_context"),
+    task_state: pick("task_state"),
+    case_context: pick("case_context"),
+    booking_context: pick("booking_context"),
   };
 }
 
@@ -94,4 +145,16 @@ function pickOne<T extends string | null>(allowed: readonly T[], raw: unknown, f
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function isValidClassifierDecision(raw: unknown): boolean {
+  const value = asRecord(raw);
+  if (!(typeof value.reason === "string" && value.reason.trim().length > 0)) return false;
+  if (!RELATIONS.includes(value.case_relation as CaseRelation)) return false;
+  if (!ACTIONS.includes(value.case_action as CaseAction)) return false;
+  if (!TYPES.includes(value.case_type as CaseType)) return false;
+  if (!PRIORITIES.includes(value.priority as CasePriority)) return false;
+  if (!CONFIDENCES.includes(value.confidence as CaseConfidence)) return false;
+  if (value.status !== null && value.status !== undefined && !STATUSES.includes(value.status as Exclude<CaseStatus, null>)) return false;
+  return true;
 }

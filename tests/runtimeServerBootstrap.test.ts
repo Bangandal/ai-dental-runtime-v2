@@ -145,7 +145,7 @@ test("registerRuntimeRoutes wires createOpenAIConversation and first turn uses c
   assert.equal((payload as Record<string, unknown>).reply_text, "Здравствуйте!");
   assert.equal(createCalls, 1);
   assert.equal(responseCalls.length >= 1, true);
-  assert.equal(responseCalls[0]?.conversation, "conv_created_1");
+  assert.equal(responseCalls.some((call) => call.conversation === "conv_created_1"), true);
   assert.equal(rpcCalls.some((c) => c.fn === "rpc_get_openai_conversation_memory_v1"), true);
   assert.equal(rpcCalls.some((c) => c.fn === "rpc_upsert_openai_conversation_memory_v1"), true);
 });

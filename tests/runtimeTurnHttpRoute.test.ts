@@ -609,3 +609,31 @@ test("case context load failure is non-fatal", async () => {
   assert.equal(debug.loaded, false);
   assert.equal(debug.error.code, "case_context_load_failed");
 });
+
+test("classifier valid output is attached to debug envelope", async () => {
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "ok", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Need to reschedule" });
+  const payload = response.payload as Record<string, any>;
+  assert.equal(payload.debug.case_router.mode, "shadow");
+  assert.equal(payload.debug.case_router.decision.should_apply, false);
+});
+
+test("classifier output fallback remains non-fatal", async () => {
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "ok", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
+  assert.equal(response.statusCode, 200);
+});

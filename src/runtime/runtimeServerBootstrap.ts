@@ -9,6 +9,7 @@ import { createSupabaseTurnPersistenceRepository } from "./supabaseTurnPersisten
 import { createSupabaseClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import { createSupabaseRuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
 import { createSupabaseCaseContextRepository } from "./supabaseCaseContextRepository.ts";
+import { createOpenAICaseRouterClassifier } from "./openaiCaseRouterClassifier.ts";
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
@@ -60,5 +61,6 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     clinicIdentityResolver,
     runtimeContextRepository,
     caseContextRepository,
+    caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: deps.model }),
   });
 }

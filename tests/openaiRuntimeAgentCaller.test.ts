@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { createOpenAIRuntimeAgentCaller } from "../src/runtime/openaiRuntimeAgentCaller.ts";
+import { createRuntimeAgentLoop } from "../src/runtime/runtimeAgentLoop.ts";
 import { RUNTIME_AGENT_TOOL_DEFINITIONS } from "../src/runtime/openaiRuntimeAgent.ts";
 
 function makeInput() {
@@ -215,15 +216,72 @@ test("openai input includes runtime_context block when provided", async () => {
 
   const input = makeInput();
   (input.input.context as Record<string, unknown>).runtime_context = {
-    known_contact: { contact_id: "contact_1" },
-    conversation_state: { state_version: 3 },
-    runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" },
+    patient_context: { display_name: "Ada" },
+    task_state: { collected: {}, missing_fields: [], last_known_intent: null, intake_status: null },
+    runtime_policy: { phone_required: null, patient_reachable_in_current_channel: false },
     recent_history: [],
   };
 
   await caller(input as any);
   const payload = captured as Record<string, any>;
   const parsedPayload = JSON.parse(payload.input[0].content[0].text);
-  assert.equal(parsedPayload.context.runtime_context.conversation_state.state_version, 3);
+  assert.equal(parsedPayload.context.runtime_context.patient_context.display_name, "Ada");
   assert.deepEqual(parsedPayload.context.runtime_context.recent_history, []);
+});
+
+test("actual OpenAI payload excludes backend/transport/debug ids from context", async () => {
+  let captured: Record<string, any> | undefined;
+  const openAICaller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async (input) => {
+          captured = input as Record<string, any>;
+          return { output_text: "ok", conversation_id: "conv_1" };
+        },
+      },
+    },
+  });
+
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller: openAICaller, executors: {} });
+  await agent.runTurn({
+    trace_id: "trace_1",
+    clinic_id: "clinic_1",
+    contact_id: "contact_1",
+    case_id: "case_1",
+    user_message: "hello",
+    locale: "ru",
+    business_context: {
+      channel: "telegram",
+      chat_id: "chat_1",
+      external_user_id: "ext_1",
+      meta: { username: "raw_u", message_id: "m1", update_id: "u1" },
+      runtime_context: {
+        patient_context: { display_name: "Ada", preferred_language: "ru", reachable_in_current_channel: true },
+        task_state: { collected: { problem: "pain" }, missing_fields: ["phone"], last_known_intent: "faq", intake_status: "intake" },
+        runtime_policy: { phone_required: true, patient_reachable_in_current_channel: true },
+        recent_history: [],
+      },
+    },
+    recent_summary: null,
+  } as any);
+
+  const parsedPayload = JSON.parse(captured?.input?.[0]?.content?.[0]?.text ?? "{}");
+  const context = parsedPayload.context as Record<string, any>;
+
+  const banned = ["trace_id", "clinic_id", "contact_id", "case_id", "chat_id", "external_user_id", "meta", "username", "message_id", "update_id", "state_version", "last_user_message_text", "last_bot_question", "last_bot_action"];
+  const hasBannedKey = (obj: unknown): boolean => {
+    if (!obj || typeof obj !== "object") return false;
+    for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+      if (banned.includes(key)) return true;
+      if (hasBannedKey(value)) return true;
+    }
+    return false;
+  };
+
+  assert.equal(hasBannedKey(parsedPayload), false);
+  assert.equal(context.locale, "ru");
+  assert.equal(context.channel_context.channel, "telegram");
+  assert.equal(context.channel_context.patient_reachable_in_current_channel, true);
+  assert.equal(context.runtime_context.patient_context.display_name, "Ada");
+  assert.deepEqual(context.runtime_context.recent_history, []);
 });

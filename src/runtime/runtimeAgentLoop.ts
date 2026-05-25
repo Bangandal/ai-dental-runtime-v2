@@ -14,6 +14,7 @@ import { executeAllowedTools, type ToolExecutorRegistry, type ToolExecutionConte
 import { buildTruthSnapshot } from "./truthSnapshot.ts";
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
 import type { ToolExecutionResult } from "./toolResults.ts";
+import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -79,16 +80,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
       }
 
-      const callerContext = {
-        trace_id: input.trace_id,
-        clinic_id: input.clinic_id,
-        contact_id: input.contact_id,
-        case_id: input.case_id,
-        locale: input.locale,
-        business_context: input.business_context,
-        truth_snapshot: input.truth_snapshot,
-        recent_summary: input.recent_summary,
-      };
+      const callerContext = buildModelVisibleCallerContext(input);
 
       let firstOutput: RuntimeAgentCallerOutput;
       try {

@@ -6,6 +6,7 @@ import type { OpenAIConversationMemoryRepository } from "./supabaseOpenAIConvers
 import type { TurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import type { RuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
+import type { CaseContextRepository } from "./supabaseCaseContextRepository.ts";
 import { buildModelVisibleRuntimeContext } from "./modelVisibleRuntimeContext.ts";
 
 export interface RuntimeTurnHttpRequestBody {
@@ -42,6 +43,7 @@ export interface RuntimeTurnRouteDeps {
   turnPersistenceRepository?: TurnPersistenceRepository;
   clinicIdentityResolver?: ClinicIdentityResolver;
   runtimeContextRepository?: RuntimeContextRepository;
+  caseContextRepository?: CaseContextRepository;
 }
 
 export interface RouteRegistrationApp {
@@ -216,37 +218,51 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     }
 
 
-    const runtimeContextDebug: Record<string, unknown> = {
-      loaded: false,
-      source: "supabase",
-      recent_history_count: 0,
-    };
+    const caseContextDebug: Record<string, unknown> = { loaded: false, open_cases_count: 0, recent_cases_count: 0, has_current_case: false, current_case_resolved: false, has_active_hold: false, has_latest_appointment: false };
+    let loadedCaseContext: unknown = null;
+    if (deps.caseContextRepository) {
+      try {
+        const caseContextResult = await deps.caseContextRepository.loadCaseContext({ clinic_id: runtimeTurnInput.clinic_id, contact_id: runtimeTurnInput.contact_id ?? `${body.channel.trim()}:${externalUserId ?? chatId}` });
+        caseContextDebug.loaded = caseContextResult.ok;
+        if (caseContextResult.ok) {
+          loadedCaseContext = caseContextResult.data;
+          const openCases = caseContextResult.data.open_cases ?? [];
+          const recentCases = caseContextResult.data.recent_cases ?? [];
+          caseContextDebug.open_cases_count = openCases.length;
+          caseContextDebug.recent_cases_count = recentCases.length;
+          caseContextDebug.has_current_case = Boolean(caseContextResult.data.current_case_id);
+          caseContextDebug.current_case_resolved = openCases.some((openCase) => asString((openCase as Record<string, unknown>).case_id) === asString(caseContextResult.data.current_case_id));
+          caseContextDebug.has_active_hold = Boolean(caseContextResult.data.active_booking_context.active_hold);
+          caseContextDebug.has_latest_appointment = Boolean(caseContextResult.data.active_booking_context.latest_appointment);
+        } else {
+          caseContextDebug.error = caseContextResult.error;
+        }
+      } catch (error) {
+        caseContextDebug.loaded = false;
+        caseContextDebug.error = { code: "case_context_exception", message: error instanceof Error ? error.message : String(error) };
+      }
+    }
 
+    const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0 };
     if (deps.runtimeContextRepository) {
       try {
-        const runtimeContextResult = await deps.runtimeContextRepository.loadRuntimeContext({
-          clinic_id: runtimeTurnInput.clinic_id,
-          contact_id: runtimeTurnInput.contact_id ?? `${body.channel.trim()}:${externalUserId ?? chatId}`,
-        });
-
+        const runtimeContextResult = await deps.runtimeContextRepository.loadRuntimeContext({ clinic_id: runtimeTurnInput.clinic_id, contact_id: runtimeTurnInput.contact_id ?? `${body.channel.trim()}:${externalUserId ?? chatId}` });
         runtimeContextDebug.loaded = runtimeContextResult.ok;
         if (runtimeContextResult.ok) {
           runtimeContextDebug.state_version = (runtimeContextResult.data.conversation_state as Record<string, unknown>).state_version ?? null;
           runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
-          runtimeTurnInput.business_context = {
-            ...(runtimeTurnInput.business_context ?? {}),
-            runtime_context: buildModelVisibleRuntimeContext(runtimeContextResult.data),
-          };
+          runtimeTurnInput.business_context = { ...(runtimeTurnInput.business_context ?? {}), runtime_context: mergeCaseContextIntoModelContext(buildModelVisibleRuntimeContext(runtimeContextResult.data), loadedCaseContext) };
         } else {
           runtimeContextDebug.error = runtimeContextResult.error;
         }
       } catch (error) {
         runtimeContextDebug.loaded = false;
-        runtimeContextDebug.error = {
-          code: "runtime_context_exception",
-          message: error instanceof Error ? error.message : String(error),
-        };
+        runtimeContextDebug.error = { code: "runtime_context_exception", message: error instanceof Error ? error.message : String(error) };
       }
+    }
+
+    if (loadedCaseContext && !(runtimeTurnInput.business_context as Record<string, unknown>).runtime_context) {
+      runtimeTurnInput.business_context = { ...(runtimeTurnInput.business_context ?? {}), runtime_context: mergeCaseContextIntoModelContext({}, loadedCaseContext) };
     }
 
     if (!runtimeTurnInput.conversation_id && deps.createOpenAIConversation) {
@@ -325,7 +341,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),
@@ -386,6 +402,41 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       reply.send(fallbackPayload);
     }
   });
+}
+
+function mergeCaseContextIntoModelContext(baseContext: Record<string, unknown>, caseContext: unknown): Record<string, unknown> {
+  const root = asRecord(caseContext);
+  if (!Object.keys(root).length) return baseContext;
+  const openCases = Array.isArray(root.open_cases) ? root.open_cases.map(asRecord) : [];
+  const recentCases = Array.isArray(root.recent_cases) ? root.recent_cases.map(asRecord) : [];
+  const appointmentContext = asRecord(root.active_booking_context);
+  const activeHold = asRecord(appointmentContext.active_hold);
+  const latestAppointment = asRecord(appointmentContext.latest_appointment);
+  const currentCaseId = asString(root.current_case_id);
+  const currentCase = openCases.find((openCase) => asString(openCase.case_id) === currentCaseId) ?? null;
+
+  return {
+    ...baseContext,
+    case_context: {
+      has_current_case: currentCaseId !== null,
+      current_case: currentCase ? { case_type: asString(currentCase.case_type), topic: asString(currentCase.topic), status: asString(currentCase.status), priority: asString(currentCase.priority) } : null,
+      open_cases_count: openCases.length,
+      recent_cases: recentCases.map((row) => ({ case_type: asString(row.case_type), topic: asString(row.topic), status: asString(row.status) })),
+    },
+    booking_context: {
+      has_active_hold: Object.keys(activeHold).length > 0,
+      active_hold: Object.keys(activeHold).length > 0 ? { service_interest: asString(activeHold.service_interest), label: asString(activeHold.label), status: asString(activeHold.status) } : null,
+      latest_appointment: Object.keys(latestAppointment).length > 0 ? { service_interest: asString(latestAppointment.service_interest), status: asString(latestAppointment.status), start_at: asString(latestAppointment.start_at) } : null,
+    },
+  };
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asString(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function validateRuntimeTurnRequest(body: RuntimeTurnHttpRequestBody | undefined): string | null {

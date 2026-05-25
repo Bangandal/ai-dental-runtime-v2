@@ -32,6 +32,7 @@ function createRouteHarness(
   turnPersistenceRepository?: TurnPersistenceRepository,
   clinicIdentityResolver: ClinicIdentityResolver = defaultClinicIdentityResolver,
   runtimeContextRepository?: { loadRuntimeContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
+  caseContextRepository?: { loadCaseContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -41,7 +42,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository },
   );
 
   assert.ok(handler);
@@ -515,6 +516,7 @@ test("runtime context load success hydrates runtime_context and logs debug field
   assert.equal(runtimeContext.task_state.collected.problem, "pain");
   assert.equal(runtimeContext.runtime_policy.phone_required, true);
   assert.deepEqual(runtimeContext.recent_history, []);
+  assert.equal(runtimeContext.case_context, undefined);
   assert.equal(runtimeContext.clinic_id, undefined);
   assert.equal(runtimeContext.contact_id, undefined);
   assert.equal(runtimeContext.chat_id, undefined);
@@ -552,4 +554,52 @@ test("runtime context load failure is non-fatal and still replies", async () => 
   assert.equal(debug.loaded, false);
   assert.equal(debug.source, "supabase");
   assert.equal(debug.error.code, "runtime_context_load_failed");
+});
+
+
+test("case context load success hydrates slim case/booking context and debug", async () => {
+  const calls: Array<Record<string, any>> = [];
+  const harness = createRouteHarness(
+    { async runTurn(input) { calls.push(input as any); return { final_patient_reply: "ok", tool_results: [] } as any; } },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    { async loadRuntimeContext() { return { ok: true, data: { known_contact: {}, conversation_state: { collected: {}, missing_fields: [] }, runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" }, recent_history: [] } }; } },
+    { async loadCaseContext() { return { ok: true, data: { current_case_id: "case_1", open_cases: [{ case_type: "booking", topic: "crown", status: "open", priority: "high" }], recent_cases: [{ case_type: "faq", topic: "insurance", status: "closed", priority: null }], active_booking_context: { active_hold: { service_interest: "cleaning", label: "Mon 9am", status: "active" }, latest_appointment: { service_interest: "exam", status: "booked", start_at: "2026-06-01T09:00:00Z" } } } }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
+  assert.equal(response.statusCode, 200);
+  const runtimeContext = calls[0].business_context.runtime_context;
+  assert.equal(runtimeContext.case_context.has_current_case, true);
+  assert.equal(runtimeContext.case_context.current_case.case_type, "booking");
+  assert.equal(runtimeContext.booking_context.has_active_hold, true);
+  assert.equal(runtimeContext.booking_context.latest_appointment.start_at, "2026-06-01T09:00:00Z");
+  assert.equal(runtimeContext.current_case_id, undefined);
+
+  const debug = (response.payload as any).debug.case_context;
+  assert.equal(debug.loaded, true);
+  assert.equal(debug.open_cases_count, 1);
+  assert.equal(debug.recent_cases_count, 1);
+  assert.equal(debug.has_current_case, true);
+});
+
+test("case context load failure is non-fatal", async () => {
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "ok", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    { async loadCaseContext() { return { ok: false, error: { code: "case_context_load_failed", message: "rpc failed", retryable: true } }; } },
+  );
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
+  assert.equal(response.statusCode, 200);
+  const debug = (response.payload as any).debug.case_context;
+  assert.equal(debug.loaded, false);
+  assert.equal(debug.error.code, "case_context_load_failed");
 });

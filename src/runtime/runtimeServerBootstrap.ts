@@ -8,6 +8,7 @@ import { createSupabaseOpenAIConversationMemoryRepository } from "./supabaseOpen
 import { createSupabaseTurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import { createSupabaseClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import { createSupabaseRuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
+import { createSupabaseCaseContextRepository } from "./supabaseCaseContextRepository.ts";
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
@@ -30,6 +31,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
   const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const clinicIdentityResolver = createSupabaseClinicIdentityResolver({ rpc: deps.rpc });
   const runtimeContextRepository = createSupabaseRuntimeContextRepository({ rpc: deps.rpc });
+  const caseContextRepository = createSupabaseCaseContextRepository({ rpc: deps.rpc });
   const createOpenAIConversation = async (): Promise<string | null> => {
     const conversations = (deps.openaiClient as unknown as {
       conversations?: { create?: () => Promise<unknown> };
@@ -57,5 +59,6 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     turnPersistenceRepository,
     clinicIdentityResolver,
     runtimeContextRepository,
+    caseContextRepository,
   });
 }

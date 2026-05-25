@@ -516,7 +516,8 @@ test("runtime context load success hydrates runtime_context and logs debug field
   assert.equal(runtimeContext.patient_context.preferred_language, "ru");
   assert.equal(runtimeContext.task_state.last_known_intent, "faq");
   assert.equal(runtimeContext.task_state.collected.problem, "pain");
-  assert.equal(runtimeContext.runtime_policy.phone_required, true);
+  assert.equal(runtimeContext.runtime_policy.phone_required, false);
+  assert.deepEqual(runtimeContext.task_state.missing_fields, []);
   assert.deepEqual(runtimeContext.recent_history, []);
   assert.equal(runtimeContext.case_context, undefined);
   assert.equal(runtimeContext.clinic_id, undefined);

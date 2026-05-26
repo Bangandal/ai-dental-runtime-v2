@@ -121,6 +121,7 @@ export async function runCaseRouterShadow(input: {
       decision: fallback,
       applied: false,
       error: { code, message: error instanceof Error ? error.message : String(error) },
+      classifier_model: typeof errorWithRawOutput.classifier_model === "string" ? errorWithRawOutput.classifier_model : undefined,
       classifier_raw_output: typeof errorWithRawOutput.classifier_raw_output === "string" ? errorWithRawOutput.classifier_raw_output : undefined,
     };
   }

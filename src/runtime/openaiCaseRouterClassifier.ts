@@ -50,10 +50,12 @@ const MAX_DEBUG_OUTPUT_CHARS = 4_000;
 
 class ClassifierOutputParseError extends Error {
   readonly classifier_raw_output: string;
+  readonly classifier_model: string;
 
-  constructor(message: string, rawOutput: string) {
+  constructor(message: string, rawOutput: string, classifierModel: string) {
     super(message);
     this.classifier_raw_output = truncateClassifierDebugOutput(rawOutput);
+    this.classifier_model = classifierModel;
   }
 }
 
@@ -104,7 +106,7 @@ function buildClassifierDebugEnvelope(rawOutput: string, classifierModel: string
     };
   } catch (error) {
     if (error instanceof Error && error.message === "invalid_classifier_json") {
-      throw new ClassifierOutputParseError("invalid_classifier_json", rawOutput);
+      throw new ClassifierOutputParseError("invalid_classifier_json", rawOutput, classifierModel);
     }
     throw error;
   }

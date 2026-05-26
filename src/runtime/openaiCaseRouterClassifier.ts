@@ -41,7 +41,7 @@ export function createOpenAICaseRouterClassifier(deps: { client: OpenAIResponses
         instructions: CASE_ROUTER_INSTRUCTIONS,
         input: [{ role: "user", content: [{ type: "input_text", text: JSON.stringify(input) }] }],
       });
-      return parseClassifierOutput(response);
+      return parseClassifierOutput(response, deps.model);
     },
   };
 }
@@ -50,17 +50,19 @@ const MAX_DEBUG_OUTPUT_CHARS = 4_000;
 
 class ClassifierOutputParseError extends Error {
   readonly classifier_raw_output: string;
+  readonly classifier_model: string;
 
-  constructor(message: string, rawOutput: string) {
+  constructor(message: string, rawOutput: string, classifierModel: string) {
     super(message);
     this.classifier_raw_output = truncateClassifierDebugOutput(rawOutput);
+    this.classifier_model = classifierModel;
   }
 }
 
-function parseClassifierOutput(raw: unknown): unknown {
+function parseClassifierOutput(raw: unknown, classifierModel: string): unknown {
   const obj = asObject(raw);
   const outputText = readString(obj?.output_text);
-  if (outputText) return buildClassifierDebugEnvelope(outputText);
+  if (outputText) return buildClassifierDebugEnvelope(outputText, classifierModel);
   const output = obj?.output;
   if (!Array.isArray(output)) throw new Error("missing_classifier_output");
   for (const item of output) {
@@ -72,7 +74,7 @@ function parseClassifierOutput(raw: unknown): unknown {
       const partObj = asObject(part);
       if (!partObj || readString(partObj.type) !== "output_text") continue;
       const text = readString(partObj.text);
-      if (text) return buildClassifierDebugEnvelope(text);
+      if (text) return buildClassifierDebugEnvelope(text, classifierModel);
     }
   }
   throw new Error("missing_classifier_output");
@@ -88,8 +90,9 @@ export function parseClassifierJson(text: string): unknown {
   }
 }
 
-function buildClassifierDebugEnvelope(rawOutput: string): {
+function buildClassifierDebugEnvelope(rawOutput: string, classifierModel: string): {
   decision: unknown;
+  classifier_model: string;
   classifier_raw_output: string;
   classifier_raw_parsed: unknown;
 } {
@@ -97,12 +100,13 @@ function buildClassifierDebugEnvelope(rawOutput: string): {
     const parsed = parseClassifierJson(rawOutput);
     return {
       decision: parsed,
+      classifier_model: classifierModel,
       classifier_raw_output: truncateClassifierDebugOutput(rawOutput),
       classifier_raw_parsed: parsed,
     };
   } catch (error) {
     if (error instanceof Error && error.message === "invalid_classifier_json") {
-      throw new ClassifierOutputParseError("invalid_classifier_json", rawOutput);
+      throw new ClassifierOutputParseError("invalid_classifier_json", rawOutput, classifierModel);
     }
     throw error;
   }

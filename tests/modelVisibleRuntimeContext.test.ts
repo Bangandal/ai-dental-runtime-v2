@@ -29,3 +29,23 @@ test("model-visible runtime context excludes phone from collected intake fields"
   assert.deepEqual(taskState.missing_fields, ["service_interest"]);
   assert.equal(runtimePolicy.phone_required, false);
 });
+
+test("model-visible runtime context includes compact pending task continuation fields", () => {
+  const result = buildModelVisibleRuntimeContext({
+    conversation_state: {
+      last_bot_question: "Какое время вам удобно?",
+      last_bot_action: "collect_preferred_time",
+      pending_slots: ["preferred_time", "service_interest", "", 1],
+      conversation_intent: "booking_request",
+      missing_fields: ["service_interest"],
+      collected: {},
+    },
+  });
+
+  const taskState = (result.task_state ?? {}) as Record<string, unknown>;
+  assert.equal(taskState.last_bot_question, "Какое время вам удобно?");
+  assert.equal(taskState.last_bot_action, "collect_preferred_time");
+  assert.deepEqual(taskState.pending_slots, ["preferred_time", "service_interest"]);
+  assert.equal(taskState.last_known_intent, "booking_request");
+  assert.equal("recent_history" in taskState, false);
+});

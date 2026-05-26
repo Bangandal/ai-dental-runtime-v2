@@ -12,6 +12,10 @@ function asBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
 export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record<string, unknown> {
   const context = asRecord(runtimeContext);
   const knownContact = asRecord(context.known_contact);
@@ -41,6 +45,13 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
       reachable_in_current_channel: patientReachableInCurrentChannel,
     },
     task_state: {
+      last_bot_question:
+        asNullableString(conversationState.last_bot_question)
+        ?? asNullableString(conversationState.last_assistant_message),
+      last_bot_action:
+        asNullableString(conversationState.last_bot_action)
+        ?? asNullableString(conversationState.requested_action),
+      pending_slots: asStringArray(conversationState.pending_slots),
       collected: {
         name: asNullableString(collected.name),
         service_interest: asNullableString(collected.service_interest),
@@ -52,7 +63,7 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
       missing_fields: Array.isArray(conversationState.missing_fields)
         ? conversationState.missing_fields.filter((field): field is string => typeof field === "string" && field !== "phone")
         : [],
-      last_known_intent: asNullableString(conversationState.intent),
+      last_known_intent: asNullableString(conversationState.intent) ?? asNullableString(conversationState.conversation_intent),
       intake_status: asNullableString(conversationState.qualification_stage) ?? asNullableString(conversationState.conversation_stage),
     },
     runtime_policy: {

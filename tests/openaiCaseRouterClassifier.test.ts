@@ -89,4 +89,46 @@ test("classifier instructions contain required schema fields and forbid legacy k
   assert.match(capturedInstructions, /reason/);
   assert.match(capturedInstructions, /should_apply/);
   assert.match(capturedInstructions, /Do not return these keys: classification, intent, extracted_slots, action, type, booking_intent/);
+  assert.match(capturedInstructions, /short or ambiguous/);
+  assert.match(capturedInstructions, /last_bot_question/);
+});
+
+test("classifier receives compact task continuation context and can return same_case on ambiguous reply", async () => {
+  let capturedInput = "";
+  const classifier = createOpenAICaseRouterClassifier({
+    model: "gpt-test",
+    client: {
+      responses: {
+        create: async (input: unknown) => {
+          const payload = (input as { input?: Array<{ content?: Array<{ text?: string }> }> }).input ?? [];
+          capturedInput = payload[0]?.content?.[0]?.text ?? "";
+          return {
+            output_text:
+              '{"case_relation":"same_case","case_action":"reuse_case","case_type":"booking_request","topic":"appointment booking","status":"collecting","priority":"normal","confidence":"medium","reason":"Short confirmation interpreted using last bot question and pending slots.","should_apply":false}',
+          };
+        },
+      },
+    },
+  });
+
+  const result = await runCaseRouterShadow({
+    user_message: "да",
+    runtime_context: {
+      task_state: {
+        last_bot_question: "Какое время вам удобно?",
+        pending_slots: ["preferred_time"],
+        last_known_intent: "booking_request",
+      },
+      case_context: { current_case: { type: "booking_request", status: "collecting" } },
+      booking_context: { in_progress: true },
+    },
+    classifier,
+  });
+
+  assert.match(capturedInput, /last_bot_question/);
+  assert.match(capturedInput, /pending_slots/);
+  assert.equal(result.classifier, "openai");
+  assert.equal(result.decision.case_relation, "same_case");
+  assert.equal(result.decision.case_action, "reuse_case");
+  assert.equal(result.decision.case_type, "booking_request");
 });

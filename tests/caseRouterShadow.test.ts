@@ -68,7 +68,7 @@ test("source has no rpc_apply_case_decision_v1 or regex intent detection", async
 test("sanitizeCaseRouterContext keeps only model-visible compact fields", () => {
   const sanitized = sanitizeCaseRouterContext({
     patient_context: { locale: "ru" },
-    task_state: { phase: "collecting" },
+    task_state: { phase: "collecting", last_bot_question: "Когда вам удобно?", pending_slots: ["preferred_time"] },
     case_context: { has_current_case: true },
     booking_context: { has_active_hold: false },
     clinic_id: "hidden",
@@ -84,6 +84,7 @@ test("sanitizeCaseRouterContext keeps only model-visible compact fields", () => 
   assert.equal("chat_id" in sanitized, false);
   assert.equal("external_user_id" in sanitized, false);
   assert.equal("trace_id" in sanitized, false);
+  assert.deepEqual((sanitized.task_state as Record<string, unknown>).pending_slots, ["preferred_time"]);
 });
 
 test("invalid enum classifier output falls back with classifier_invalid_output", async () => {

@@ -22,6 +22,8 @@ const CASE_ROUTER_INSTRUCTIONS = [
   "Do not return additional keys.",
   "Do not return these keys: classification, intent, extracted_slots, action, type, booking_intent.",
   "should_apply must always be false.",
+  "When the user message is short or ambiguous (for example: да, ok, подходит, завтра, or slot fragments), interpret it relative to runtime_context.task_state.last_bot_question, runtime_context.task_state.pending_slots, runtime_context.case_context, runtime_context.booking_context, and runtime_context.task_state.last_known_intent.",
+  "If last_bot_question asks for booking details, preferred time, or service, classify as same_case + reuse_case + booking_request with status collecting (or low-confidence same_case if still ambiguous).",
   "Examples:",
   "Price question:",
   '{"case_relation":"no_case","case_action":"no_case","case_type":"faq","topic":"cleaning price","status":"resolved","priority":"low","confidence":"high","reason":"User asks for a price only; no operational case should be opened in shadow mode.","should_apply":false}',

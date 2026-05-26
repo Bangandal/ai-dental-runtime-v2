@@ -41,7 +41,7 @@ export function createOpenAICaseRouterClassifier(deps: { client: OpenAIResponses
         instructions: CASE_ROUTER_INSTRUCTIONS,
         input: [{ role: "user", content: [{ type: "input_text", text: JSON.stringify(input) }] }],
       });
-      return parseClassifierOutput(response);
+      return parseClassifierOutput(response, deps.model);
     },
   };
 }
@@ -57,10 +57,10 @@ class ClassifierOutputParseError extends Error {
   }
 }
 
-function parseClassifierOutput(raw: unknown): unknown {
+function parseClassifierOutput(raw: unknown, classifierModel: string): unknown {
   const obj = asObject(raw);
   const outputText = readString(obj?.output_text);
-  if (outputText) return buildClassifierDebugEnvelope(outputText);
+  if (outputText) return buildClassifierDebugEnvelope(outputText, classifierModel);
   const output = obj?.output;
   if (!Array.isArray(output)) throw new Error("missing_classifier_output");
   for (const item of output) {
@@ -72,7 +72,7 @@ function parseClassifierOutput(raw: unknown): unknown {
       const partObj = asObject(part);
       if (!partObj || readString(partObj.type) !== "output_text") continue;
       const text = readString(partObj.text);
-      if (text) return buildClassifierDebugEnvelope(text);
+      if (text) return buildClassifierDebugEnvelope(text, classifierModel);
     }
   }
   throw new Error("missing_classifier_output");
@@ -88,8 +88,9 @@ export function parseClassifierJson(text: string): unknown {
   }
 }
 
-function buildClassifierDebugEnvelope(rawOutput: string): {
+function buildClassifierDebugEnvelope(rawOutput: string, classifierModel: string): {
   decision: unknown;
+  classifier_model: string;
   classifier_raw_output: string;
   classifier_raw_parsed: unknown;
 } {
@@ -97,6 +98,7 @@ function buildClassifierDebugEnvelope(rawOutput: string): {
     const parsed = parseClassifierJson(rawOutput);
     return {
       decision: parsed,
+      classifier_model: classifierModel,
       classifier_raw_output: truncateClassifierDebugOutput(rawOutput),
       classifier_raw_parsed: parsed,
     };

@@ -24,6 +24,7 @@ export interface CaseRouterDebug {
   decision: CaseRouterDecision;
   applied: false;
   error: Record<string, unknown> | null;
+  classifier_model?: string;
   classifier_raw_output?: string;
   classifier_raw_parsed?: unknown;
 }
@@ -94,6 +95,7 @@ export async function runCaseRouterShadow(input: {
         decision: fallback,
         applied: false,
         error: { code: "classifier_invalid_output", message: "Classifier returned invalid decision schema" },
+        classifier_model: extracted.classifier_model,
         classifier_raw_output: extracted.classifier_raw_output,
         classifier_raw_parsed: extracted.classifier_raw_parsed,
       };
@@ -105,6 +107,7 @@ export async function runCaseRouterShadow(input: {
       decision: normalizeCaseRouterDecision(extracted.decision),
       applied: false,
       error: null,
+      classifier_model: extracted.classifier_model,
       classifier_raw_output: extracted.classifier_raw_output,
       classifier_raw_parsed: extracted.classifier_raw_parsed,
     };
@@ -125,6 +128,7 @@ export async function runCaseRouterShadow(input: {
 
 function extractClassifierDebugResult(raw: unknown): {
   decision: unknown;
+  classifier_model?: string;
   classifier_raw_output?: string;
   classifier_raw_parsed?: unknown;
 } {
@@ -134,6 +138,7 @@ function extractClassifierDebugResult(raw: unknown): {
   }
   return {
     decision: value.decision,
+    classifier_model: typeof value.classifier_model === "string" ? value.classifier_model : undefined,
     classifier_raw_output: typeof value.classifier_raw_output === "string" ? value.classifier_raw_output : undefined,
     classifier_raw_parsed: value.classifier_raw_parsed,
   };

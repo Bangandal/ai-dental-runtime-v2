@@ -28,6 +28,7 @@ function readConversationId(value: unknown): string | null {
 }
 
 export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeServerBootstrapDeps): void {
+  const caseRouterModel = process.env.OPENAI_CASE_ROUTER_MODEL?.trim() || deps.model;
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
   const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const clinicIdentityResolver = createSupabaseClinicIdentityResolver({ rpc: deps.rpc });
@@ -61,6 +62,6 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     clinicIdentityResolver,
     runtimeContextRepository,
     caseContextRepository,
-    caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: deps.model }),
+    caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: caseRouterModel }),
   });
 }

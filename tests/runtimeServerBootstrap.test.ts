@@ -149,3 +149,56 @@ test("registerRuntimeRoutes wires createOpenAIConversation and first turn uses c
   assert.equal(rpcCalls.some((c) => c.fn === "rpc_get_openai_conversation_memory_v1"), true);
   assert.equal(rpcCalls.some((c) => c.fn === "rpc_upsert_openai_conversation_memory_v1"), true);
 });
+
+test("case router classifier uses OPENAI_CASE_ROUTER_MODEL when set", async () => {
+  const previous = process.env.OPENAI_CASE_ROUTER_MODEL;
+  process.env.OPENAI_CASE_ROUTER_MODEL = "gpt-case-router";
+  const responseCalls: Array<Record<string, unknown>> = [];
+  let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
+  try {
+    registerRuntimeRoutes(
+      { post(_path, routeHandler) { handler = routeHandler; } },
+      {
+        model: "gpt-main",
+        openaiClient: {
+          responses: { async create(payload) { responseCalls.push(payload as Record<string, unknown>); return { output_text: "{\"case_relation\":\"unknown\",\"case_action\":\"no_case\",\"case_type\":\"other\",\"topic\":null,\"status\":null,\"priority\":\"low\",\"confidence\":\"low\",\"reason\":\"ok\",\"should_apply\":false}" }; } },
+        } as any,
+        rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
+        embeddingClient: { createEmbedding: async () => [0.1] },
+        embeddingModel: "text-embedding-3-small",
+      },
+    );
+    let payload: unknown;
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    assert.equal((payload as any).debug.case_router.classifier_model, "gpt-case-router");
+  } finally {
+    if (previous === undefined) delete process.env.OPENAI_CASE_ROUTER_MODEL;
+    else process.env.OPENAI_CASE_ROUTER_MODEL = previous;
+  }
+});
+
+test("case router classifier falls back to main model when OPENAI_CASE_ROUTER_MODEL missing", async () => {
+  const previous = process.env.OPENAI_CASE_ROUTER_MODEL;
+  delete process.env.OPENAI_CASE_ROUTER_MODEL;
+  let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
+  let payload: unknown;
+  try {
+    registerRuntimeRoutes(
+      { post(_path, routeHandler) { handler = routeHandler; } },
+      {
+        model: "gpt-main-fallback",
+        openaiClient: {
+          responses: { async create() { return { output_text: "{\"case_relation\":\"unknown\",\"case_action\":\"no_case\",\"case_type\":\"other\",\"topic\":null,\"status\":null,\"priority\":\"low\",\"confidence\":\"low\",\"reason\":\"ok\",\"should_apply\":false}" }; } },
+        } as any,
+        rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
+        embeddingClient: { createEmbedding: async () => [0.1] },
+        embeddingModel: "text-embedding-3-small",
+      },
+    );
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    assert.equal((payload as any).debug.case_router.classifier_model, "gpt-main-fallback");
+  } finally {
+    if (previous === undefined) delete process.env.OPENAI_CASE_ROUTER_MODEL;
+    else process.env.OPENAI_CASE_ROUTER_MODEL = previous;
+  }
+});

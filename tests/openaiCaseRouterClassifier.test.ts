@@ -30,6 +30,7 @@ test("openai classifier exact-schema response validates as classifier openai", a
 
   const result = await runCaseRouterShadow({ user_message: "I want to book", runtime_context: {}, classifier });
   assert.equal(result.classifier, "openai");
+  assert.equal(result.classifier_model, "gpt-test");
   assert.equal(result.decision.case_type, "booking_request");
   assert.equal(result.decision.should_apply, false);
 });

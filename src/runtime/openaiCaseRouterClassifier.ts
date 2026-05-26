@@ -23,10 +23,21 @@ export function createOpenAICaseRouterClassifier(deps: { client: OpenAIResponses
   };
 }
 
+const MAX_DEBUG_OUTPUT_CHARS = 4_000;
+
+class ClassifierOutputParseError extends Error {
+  readonly classifier_raw_output: string;
+
+  constructor(message: string, rawOutput: string) {
+    super(message);
+    this.classifier_raw_output = truncateClassifierDebugOutput(rawOutput);
+  }
+}
+
 function parseClassifierOutput(raw: unknown): unknown {
   const obj = asObject(raw);
   const outputText = readString(obj?.output_text);
-  if (outputText) return parseClassifierJson(outputText);
+  if (outputText) return buildClassifierDebugEnvelope(outputText);
   const output = obj?.output;
   if (!Array.isArray(output)) throw new Error("missing_classifier_output");
   for (const item of output) {
@@ -38,7 +49,7 @@ function parseClassifierOutput(raw: unknown): unknown {
       const partObj = asObject(part);
       if (!partObj || readString(partObj.type) !== "output_text") continue;
       const text = readString(partObj.text);
-      if (text) return parseClassifierJson(text);
+      if (text) return buildClassifierDebugEnvelope(text);
     }
   }
   throw new Error("missing_classifier_output");
@@ -52,6 +63,31 @@ export function parseClassifierJson(text: string): unknown {
   } catch {
     throw new Error("invalid_classifier_json");
   }
+}
+
+function buildClassifierDebugEnvelope(rawOutput: string): {
+  decision: unknown;
+  classifier_raw_output: string;
+  classifier_raw_parsed: unknown;
+} {
+  try {
+    const parsed = parseClassifierJson(rawOutput);
+    return {
+      decision: parsed,
+      classifier_raw_output: truncateClassifierDebugOutput(rawOutput),
+      classifier_raw_parsed: parsed,
+    };
+  } catch (error) {
+    if (error instanceof Error && error.message === "invalid_classifier_json") {
+      throw new ClassifierOutputParseError("invalid_classifier_json", rawOutput);
+    }
+    throw error;
+  }
+}
+
+function truncateClassifierDebugOutput(rawOutput: string): string {
+  if (rawOutput.length <= MAX_DEBUG_OUTPUT_CHARS) return rawOutput;
+  return `${rawOutput.slice(0, MAX_DEBUG_OUTPUT_CHARS)}...[truncated ${rawOutput.length - MAX_DEBUG_OUTPUT_CHARS} chars]`;
 }
 
 function extractJsonCandidate(text: string): string {

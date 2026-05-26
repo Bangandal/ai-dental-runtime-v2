@@ -93,14 +93,27 @@ test("invalid enum classifier output falls back with classifier_invalid_output",
     classifier: {
       async classifyCaseTurn() {
         return {
-          case_relation: "bad",
-          case_action: "reuse_case",
-          case_type: "faq",
-          status: null,
-          priority: "normal",
-          confidence: "high",
-          reason: "x",
-          should_apply: true,
+          decision: {
+            case_relation: "bad",
+            case_action: "reuse_case",
+            case_type: "faq",
+            status: null,
+            priority: "normal",
+            confidence: "high",
+            reason: "x",
+            should_apply: true,
+          },
+          classifier_raw_output: "{\"case_relation\":\"bad\"}",
+          classifier_raw_parsed: {
+            case_relation: "bad",
+            case_action: "reuse_case",
+            case_type: "faq",
+            status: null,
+            priority: "normal",
+            confidence: "high",
+            reason: "x",
+            should_apply: true,
+          },
         };
       },
     },
@@ -108,6 +121,17 @@ test("invalid enum classifier output falls back with classifier_invalid_output",
   assert.equal(debug.classifier, "fallback");
   assert.equal(debug.error?.code, "classifier_invalid_output");
   assert.equal(debug.decision.should_apply, false);
+  assert.equal(debug.classifier_raw_output, "{\"case_relation\":\"bad\"}");
+  assert.deepEqual(debug.classifier_raw_parsed, {
+    case_relation: "bad",
+    case_action: "reuse_case",
+    case_type: "faq",
+    status: null,
+    priority: "normal",
+    confidence: "high",
+    reason: "x",
+    should_apply: true,
+  });
 });
 
 test("classifier openai label used only for semantically valid decision", async () => {
@@ -140,10 +164,41 @@ test("invalid classifier json is distinguished from classifier exceptions", asyn
     runtime_context: {},
     classifier: {
       async classifyCaseTurn() {
-        throw new Error("invalid_classifier_json");
+        const error = new Error("invalid_classifier_json") as Error & { classifier_raw_output?: string };
+        error.classifier_raw_output = "{bad";
+        throw error;
       },
     },
   });
   assert.equal(debug.classifier, "fallback");
   assert.equal(debug.error?.code, "invalid_classifier_json");
+  assert.equal(debug.classifier_raw_output, "{bad");
+});
+
+test("raw classifier output and parsed object are logged in debug envelope", async () => {
+  const debug = await runCaseRouterShadow({
+    user_message: "hello",
+    runtime_context: {},
+    classifier: {
+      async classifyCaseTurn() {
+        return {
+          decision: {
+            case_relation: "same_case",
+            case_action: "reuse_case",
+            case_type: "follow_up",
+            topic: "results",
+            status: "open",
+            priority: "normal",
+            confidence: "high",
+            reason: "Continues current case",
+            should_apply: true,
+          },
+          classifier_raw_output: "```json\n{\"case_relation\":\"same_case\"}\n```",
+          classifier_raw_parsed: { case_relation: "same_case" },
+        };
+      },
+    },
+  });
+  assert.equal(debug.classifier_raw_output, "```json\n{\"case_relation\":\"same_case\"}\n```");
+  assert.deepEqual(debug.classifier_raw_parsed, { case_relation: "same_case" });
 });

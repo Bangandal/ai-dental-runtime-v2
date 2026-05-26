@@ -24,6 +24,8 @@ export interface CaseRouterDebug {
   decision: CaseRouterDecision;
   applied: false;
   error: Record<string, unknown> | null;
+  classifier_raw_output?: string;
+  classifier_raw_parsed?: unknown;
 }
 export interface CaseRouterClassifierInput {
   user_message: string;
@@ -82,8 +84,9 @@ export async function runCaseRouterShadow(input: {
     return { enabled: true, mode: "shadow", classifier: "fallback", decision: fallback, applied: false, error: null };
   }
   try {
-    const raw = await input.classifier.classifyCaseTurn({ user_message: input.user_message, runtime_context: input.runtime_context });
-    if (!isValidClassifierDecision(raw)) {
+    const classifierResult = await input.classifier.classifyCaseTurn({ user_message: input.user_message, runtime_context: input.runtime_context });
+    const extracted = extractClassifierDebugResult(classifierResult);
+    if (!isValidClassifierDecision(extracted.decision)) {
       return {
         enabled: true,
         mode: "shadow",
@@ -91,18 +94,23 @@ export async function runCaseRouterShadow(input: {
         decision: fallback,
         applied: false,
         error: { code: "classifier_invalid_output", message: "Classifier returned invalid decision schema" },
+        classifier_raw_output: extracted.classifier_raw_output,
+        classifier_raw_parsed: extracted.classifier_raw_parsed,
       };
     }
     return {
       enabled: true,
       mode: "shadow",
       classifier: "openai",
-      decision: normalizeCaseRouterDecision(raw),
+      decision: normalizeCaseRouterDecision(extracted.decision),
       applied: false,
       error: null,
+      classifier_raw_output: extracted.classifier_raw_output,
+      classifier_raw_parsed: extracted.classifier_raw_parsed,
     };
   } catch (error) {
     const code = error instanceof Error && error.message === "invalid_classifier_json" ? "invalid_classifier_json" : "classifier_exception";
+    const errorWithRawOutput = asRecord(error);
     return {
       enabled: true,
       mode: "shadow",
@@ -110,8 +118,25 @@ export async function runCaseRouterShadow(input: {
       decision: fallback,
       applied: false,
       error: { code, message: error instanceof Error ? error.message : String(error) },
+      classifier_raw_output: typeof errorWithRawOutput.classifier_raw_output === "string" ? errorWithRawOutput.classifier_raw_output : undefined,
     };
   }
+}
+
+function extractClassifierDebugResult(raw: unknown): {
+  decision: unknown;
+  classifier_raw_output?: string;
+  classifier_raw_parsed?: unknown;
+} {
+  const value = asRecord(raw);
+  if (!("decision" in value)) {
+    return { decision: raw };
+  }
+  return {
+    decision: value.decision,
+    classifier_raw_output: typeof value.classifier_raw_output === "string" ? value.classifier_raw_output : undefined,
+    classifier_raw_parsed: value.classifier_raw_parsed,
+  };
 }
 
 export function sanitizeCaseRouterContext(rawRuntimeContext: unknown): Record<string, unknown> {

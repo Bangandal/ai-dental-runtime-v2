@@ -97,8 +97,8 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(payload.final_patient_reply, "Здравствуйте!");
   assert.equal(payload.side_effects.length, 0);
   assert.equal(typeof payload.trace_id, "string");
-  assert.equal(payload.debug.case_router.mode, "shadow");
-  assert.equal(payload.debug.case_router.decision.should_apply, false);
+  assert.equal(payload.debug.legacy_case_router.mode, "shadow");
+  assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
 
   const input = calls[0] as Record<string, any>;
   assert.equal(input.clinic_id, CLINIC_UUID);
@@ -625,8 +625,8 @@ test("classifier valid output is attached to debug envelope", async () => {
 
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Need to reschedule" });
   const payload = response.payload as Record<string, any>;
-  assert.equal(payload.debug.case_router.mode, "shadow");
-  assert.equal(payload.debug.case_router.decision.should_apply, false);
+  assert.equal(payload.debug.legacy_case_router.mode, "shadow");
+  assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
 });
 
 test("classifier output fallback remains non-fatal", async () => {

@@ -68,6 +68,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
         missing_fields: missingFields,
         last_bot_action: stateJson?.last_bot_action ?? null,
         last_bot_question: stateJson?.last_bot_question ?? null,
+        pending_slots: asStringArray(stateJson?.pending_slots),
         last_user_message_text: stateJson?.last_user_message_text ?? null,
         intent: row?.out_last_intent ?? stateJson?.intent ?? "unknown",
         qualification_stage: stateJson?.qualification_stage ?? null,
@@ -109,4 +110,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function asArray(value: unknown): unknown[] | null {
   return Array.isArray(value) ? value : null;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
 }

@@ -17,6 +17,9 @@ test("model-visible runtime context excludes phone from collected intake fields"
       },
       missing_fields: ["phone", "service_interest", 1],
       intent: "booking",
+      last_bot_question: "When works?",
+      last_bot_action: "ask_time",
+      pending_slots: ["preferred_time"],
     },
   });
 
@@ -27,5 +30,8 @@ test("model-visible runtime context excludes phone from collected intake fields"
   assert.equal("phone" in collected, false);
   assert.equal("phone_required" in collected, false);
   assert.deepEqual(taskState.missing_fields, ["service_interest"]);
+  assert.equal(taskState.last_bot_question, undefined);
+  assert.equal(taskState.last_bot_action, undefined);
+  assert.equal(taskState.pending_slots, undefined);
   assert.equal(runtimePolicy.phone_required, false);
 });

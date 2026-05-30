@@ -147,14 +147,18 @@ export async function runRuntimeGateShadow(input: {
 export function sanitizeRuntimeGateContext(rawRuntimeContext: unknown): Record<string, unknown> {
   const root = asRecord(rawRuntimeContext);
   const taskState = asRecord(root.task_state);
+  const conversationState = asRecord(root.conversation_state);
   const bookingContext = asRecord(root.booking_context);
   const caseContext = asRecord(root.case_context);
   return {
     task_state: {
-      missing_fields: Array.isArray(taskState.missing_fields) ? taskState.missing_fields.filter((field): field is string => typeof field === "string") : [],
-      last_known_intent: readString(taskState.last_known_intent),
-      intake_status: readString(taskState.intake_status),
-      collected: asRecord(taskState.collected),
+      missing_fields: readStringArray(taskState.missing_fields).length > 0 ? readStringArray(taskState.missing_fields) : readStringArray(conversationState.missing_fields),
+      last_known_intent: readString(taskState.last_known_intent) ?? readString(conversationState.intent),
+      intake_status: readString(taskState.intake_status) ?? readString(conversationState.qualification_stage) ?? readString(conversationState.conversation_stage),
+      collected: Object.keys(asRecord(taskState.collected)).length > 0 ? asRecord(taskState.collected) : asRecord(conversationState.collected),
+      last_bot_question: readString(taskState.last_bot_question) ?? readString(conversationState.last_bot_question),
+      last_bot_action: readString(taskState.last_bot_action) ?? readString(conversationState.last_bot_action),
+      pending_slots: readStringArray(taskState.pending_slots).length > 0 ? readStringArray(taskState.pending_slots) : readStringArray(conversationState.pending_slots),
     },
     booking_context: {
       has_active_hold: typeof bookingContext.has_active_hold === "boolean" ? bookingContext.has_active_hold : false,
@@ -272,4 +276,8 @@ function asRecordOrNull(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function readStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
 }

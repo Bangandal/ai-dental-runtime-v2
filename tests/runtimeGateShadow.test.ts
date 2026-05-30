@@ -97,17 +97,86 @@ test("invalid classifier output normalizes conservatively and never applies", ()
 
 test("sanitizes runtime context to pending-task signals without mutating input", () => {
   const raw = {
-    task_state: { missing_fields: ["service_interest", 7], last_known_intent: "booking", intake_status: "collecting", collected: { name: "Ana" } },
+    task_state: {
+      missing_fields: ["service_interest", 7],
+      last_known_intent: "booking",
+      intake_status: "collecting",
+      collected: { name: "Ana" },
+      last_bot_question: "Какой день вам удобен?",
+      last_bot_action: "ask_preferred_day",
+      pending_slots: ["preferred_day", "preferred_time", 5, ""],
+    },
     booking_context: { has_active_hold: true, active_hold: { label: "10:00" } },
     case_context: { has_current_case: true, open_cases_count: 1, current_case: { case_type: "booking" } },
   };
 
   const sanitized = sanitizeRuntimeGateContext(raw);
+  const taskState = sanitized.task_state as Record<string, unknown>;
 
-  assert.deepEqual((sanitized.task_state as any).missing_fields, ["service_interest"]);
+  assert.deepEqual(taskState.missing_fields, ["service_interest"]);
+  assert.equal(taskState.last_bot_question, "Какой день вам удобен?");
+  assert.equal(taskState.last_bot_action, "ask_preferred_day");
+  assert.deepEqual(taskState.pending_slots, ["preferred_day", "preferred_time"]);
   assert.equal((sanitized.booking_context as any).has_active_hold, true);
   assert.equal((sanitized.case_context as any).has_current_case, true);
   assert.deepEqual((raw.task_state as any).missing_fields, ["service_interest", 7]);
+});
+
+test("sanitizes continuation signals from raw conversation_state for runtime gate only", () => {
+  const sanitized = sanitizeRuntimeGateContext({
+    conversation_state: {
+      missing_fields: ["preferred_time", 10],
+      intent: "booking",
+      qualification_stage: "collecting",
+      collected: { service_interest: "cleaning" },
+      last_bot_question: "Когда вам удобно?",
+      last_bot_action: "ask_time",
+      pending_slots: ["preferred_time", "service_interest", null],
+    },
+  });
+
+  const taskState = sanitized.task_state as Record<string, unknown>;
+  assert.deepEqual(taskState.missing_fields, ["preferred_time"]);
+  assert.equal(taskState.last_known_intent, "booking");
+  assert.equal(taskState.intake_status, "collecting");
+  assert.equal(taskState.last_bot_question, "Когда вам удобно?");
+  assert.equal(taskState.last_bot_action, "ask_time");
+  assert.deepEqual(taskState.pending_slots, ["preferred_time", "service_interest"]);
+});
+
+
+test("vague short message with pending context can be shadow-classified as a slot fragment", async () => {
+  let classifierInput: Record<string, unknown> | null = null;
+  const runtimeContext = sanitizeRuntimeGateContext({
+    task_state: {
+      last_bot_question: "Когда вам удобно?",
+      last_bot_action: "ask_time",
+      pending_slots: ["preferred_time"],
+    },
+  });
+
+  const debug = await runRuntimeGateShadow({
+    user_message: "завтра",
+    runtime_context: runtimeContext,
+    classifier: {
+      async classifyRuntimeGateTurn(input) {
+        classifierInput = input.runtime_context;
+        return {
+          route: "operational_candidate",
+          turn_shape: "slot_fragment",
+          confidence: "medium",
+          reason: "Short reply answers the pending time question.",
+          should_apply: false,
+        };
+      },
+    },
+  });
+
+  assert.equal(((classifierInput?.task_state as Record<string, unknown>) ?? {}).last_bot_question, "Когда вам удобно?");
+  assert.deepEqual(((classifierInput?.task_state as Record<string, unknown>) ?? {}).pending_slots, ["preferred_time"]);
+  assert.equal(debug.route, "operational_candidate");
+  assert.equal(debug.turn_shape, "slot_fragment");
+  assert.equal(debug.should_apply, false);
 });
 
 test("OpenAI runtime gate classifier uses the supplied mini model and parses output", async () => {

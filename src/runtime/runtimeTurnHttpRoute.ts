@@ -248,6 +248,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     }
 
     const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0 };
+    let runtimeGateSourceContext: unknown = null;
     if (deps.runtimeContextRepository) {
       try {
         const runtimeContextResult = await deps.runtimeContextRepository.loadRuntimeContext({ clinic_id: runtimeTurnInput.clinic_id, contact_id: runtimeTurnInput.contact_id ?? `${body.channel.trim()}:${externalUserId ?? chatId}` });
@@ -255,6 +256,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         if (runtimeContextResult.ok) {
           runtimeContextDebug.state_version = (runtimeContextResult.data.conversation_state as Record<string, unknown>).state_version ?? null;
           runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
+          runtimeGateSourceContext = mergeCaseContextIntoModelContext(asRecord(runtimeContextResult.data), loadedCaseContext);
           runtimeTurnInput.business_context = {
             ...(runtimeTurnInput.business_context ?? {}),
             runtime_context: mergeCaseContextIntoModelContext(
@@ -272,13 +274,15 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     }
 
     if (loadedCaseContext && !(runtimeTurnInput.business_context as Record<string, unknown>).runtime_context) {
-      runtimeTurnInput.business_context = { ...(runtimeTurnInput.business_context ?? {}), runtime_context: mergeCaseContextIntoModelContext({}, loadedCaseContext) };
+      const caseOnlyContext = mergeCaseContextIntoModelContext({}, loadedCaseContext);
+      runtimeGateSourceContext = caseOnlyContext;
+      runtimeTurnInput.business_context = { ...(runtimeTurnInput.business_context ?? {}), runtime_context: caseOnlyContext };
     }
 
     // Runtime Gate is the first shadow-only step of OPERATIONAL_RUNTIME_CONTOUR_v1.
     // It is observability only and must not mutate state, route turns, open cases,
     // write topic memory, decide booking details, or change patient-facing replies.
-    const runtimeGateContext = sanitizeRuntimeGateContext((runtimeTurnInput.business_context as Record<string, unknown>).runtime_context);
+    const runtimeGateContext = sanitizeRuntimeGateContext(runtimeGateSourceContext ?? (runtimeTurnInput.business_context as Record<string, unknown>).runtime_context);
     const runtimeGateDebug = await runRuntimeGateShadow({
       user_message: runtimeTurnInput.user_message,
       runtime_context: runtimeGateContext,

@@ -516,6 +516,7 @@ test("route persists pre/post turn artifacts and keeps response contract", async
 
 test("runtime context load success hydrates runtime_context and logs debug fields", async () => {
   const calls: Array<Record<string, any>> = [];
+  const runtimeGateInputs: Array<Record<string, any>> = [];
   const harness = createRouteHarness(
     {
       async runTurn(input) {
@@ -538,11 +539,18 @@ test("runtime context load success hydrates runtime_context and logs debug field
             chat_id: "chat_1",
             external_user_id: "external_1",
             known_contact: { contact_id: "contact_1", clinic_id: CLINIC_UUID, first_name: "Ada", last_name: "Lovelace", username: "ada_raw", language_code: "ru", meta: { foo: "bar" } },
-            conversation_state: { state_version: 7, intent: "faq", collected: { problem: "pain", phone_required: true, contact_channel_available: true }, missing_fields: ["phone"], last_user_message_text: "raw", last_bot_question: "q", last_bot_action: "a" },
+            conversation_state: { state_version: 7, intent: "faq", collected: { problem: "pain", phone_required: true, contact_channel_available: true }, missing_fields: ["phone"], last_user_message_text: "raw", last_bot_question: "q", last_bot_action: "a", pending_slots: ["preferred_time", 4, ""] },
             runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" },
             recent_history: [],
           },
         };
+      },
+    },
+    undefined,
+    {
+      async classifyRuntimeGateTurn(input) {
+        runtimeGateInputs.push(input.runtime_context as Record<string, any>);
+        return { route: "non_operational", turn_shape: "faq", confidence: "medium", reason: "debug only", should_apply: false };
       },
     },
   );
@@ -568,6 +576,14 @@ test("runtime context load success hydrates runtime_context and logs debug field
   assert.equal(runtimeContext.last_user_message_text, undefined);
   assert.equal(runtimeContext.last_bot_question, undefined);
   assert.equal(runtimeContext.last_bot_action, undefined);
+  assert.equal(runtimeContext.pending_slots, undefined);
+  assert.equal(runtimeContext.task_state.last_bot_question, undefined);
+  assert.equal(runtimeContext.task_state.last_bot_action, undefined);
+  assert.equal(runtimeContext.task_state.pending_slots, undefined);
+
+  assert.equal(runtimeGateInputs[0]?.task_state.last_bot_question, "q");
+  assert.equal(runtimeGateInputs[0]?.task_state.last_bot_action, "a");
+  assert.deepEqual(runtimeGateInputs[0]?.task_state.pending_slots, ["preferred_time"]);
 
   const debug = (response.payload as any).debug.runtime_context;
   assert.equal(debug.loaded, true);

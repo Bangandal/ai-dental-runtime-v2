@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   buildFallbackTurnUnderstandingDecision,
   createOpenAITurnUnderstandingClassifier,
+  normalizeTurnUnderstandingDecision,
   runTurnUnderstandingShadow,
   sanitizeTurnUnderstandingContext,
   type TurnUnderstandingDecision,
@@ -119,6 +120,67 @@ test("name and time mocked decision extracts first_name, last_name, and preferre
   assert.equal(debug.decision?.slot_updates.last_name, "огар");
 });
 
+
+test("booking request missing_fields filters phone for messenger MVP", async () => {
+  const debug = await runTurnUnderstandingShadow({
+    user_message: "могу записаться?",
+    runtime_gate: operationalGate,
+    runtime_context: {},
+    classifier: {
+      async classifyTurnUnderstanding() {
+        return decision({ missing_fields: ["phone", "service_interest", "preferred_date"] });
+      },
+    },
+  });
+
+  assert.deepEqual(debug.decision?.missing_fields, ["service_interest", "preferred_date"]);
+  assert.equal(debug.decision?.should_apply, false);
+});
+
+test("slot fill missing_fields filters phone for messenger MVP", async () => {
+  const debug = await runTurnUnderstandingShadow({
+    user_message: "чистка зубов на 05.06",
+    runtime_gate: operationalGate,
+    runtime_context: {},
+    classifier: {
+      async classifyTurnUnderstanding() {
+        return decision({ turn_type: "slot_fill", missing_fields: ["phone", "preferred_time", "first_name", "last_name"] });
+      },
+    },
+  });
+
+  assert.deepEqual(debug.decision?.missing_fields, ["preferred_time", "first_name", "last_name"]);
+});
+
+test("reschedule missing_fields filters phone for messenger MVP", async () => {
+  const debug = await runTurnUnderstandingShadow({
+    user_message: "перенести запись",
+    runtime_gate: operationalGate,
+    runtime_context: {},
+    classifier: {
+      async classifyTurnUnderstanding() {
+        return decision({
+          turn_type: "reschedule",
+          case_decision: { action: "update_existing", case_kind: "reschedule", target_case_id: null },
+          missing_fields: ["phone", "preferred_date", "preferred_time"],
+        });
+      },
+    },
+  });
+
+  assert.deepEqual(debug.decision?.missing_fields, ["preferred_date", "preferred_time"]);
+});
+
+test("normalization filters classifier phone and non-MVP booking missing fields", () => {
+  const normalized = normalizeTurnUnderstandingDecision(decision({
+    turn_type: "booking_request",
+    missing_fields: ["phone", "service_interest", "insurance", "first_name", "phone"],
+  }));
+
+  assert.deepEqual(normalized.missing_fields, ["service_interest", "first_name"]);
+  assert.equal(normalized.should_apply, false);
+});
+
 test("invalid classifier output falls back safely", async () => {
   const debug = await runTurnUnderstandingShadow({
     user_message: "запишите",
@@ -180,5 +242,7 @@ test("OpenAI classifier uses turn understanding model and parses output_text", a
 
   const result = await classifier.classifyTurnUnderstanding({ user_message: "администратора", runtime_gate: operationalGate, runtime_context: {} });
   assert.equal((seen[0] as any).model, "tu-model");
+  assert.match((seen[0] as any).instructions, /phone is not a required field for messenger channels/i);
+  assert.match((seen[0] as any).instructions, /Never include phone in missing_fields/i);
   assert.equal((result as any).turn_type, "admin_request");
 });

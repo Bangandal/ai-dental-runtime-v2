@@ -713,7 +713,7 @@ test("debug.turn_understanding appears in response and log payload for operation
     undefined,
     undefined,
     { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "booking", confidence: "high", reason: "booking", should_apply: false }; } },
-    { async classifyTurnUnderstanding() { return { turn_type: "booking_request", topic: "appointment booking", service_interest: null, subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "open_new", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: ["service_interest"], confidence: "high", reason: "User asks to book", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { return { turn_type: "booking_request", topic: "appointment booking", service_interest: null, subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "open_new", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: ["phone", "service_interest"], confidence: "high", reason: "User asks to book", should_apply: false }; } },
   );
 
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "могу записаться?" });
@@ -725,6 +725,7 @@ test("debug.turn_understanding appears in response and log payload for operation
   assert.equal(payload.debug.turn_understanding.skipped, false);
   assert.equal(payload.debug.turn_understanding.decision.turn_type, "booking_request");
   assert.equal(payload.debug.turn_understanding.decision.should_apply, false);
+  assert.deepEqual(payload.debug.turn_understanding.decision.missing_fields, ["service_interest"]);
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
   assert.equal(loggedDebug?.turn_understanding.decision.turn_type, "booking_request");
   assert.deepEqual(calls[0].business_context.meta, undefined);

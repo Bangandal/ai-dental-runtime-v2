@@ -1,6 +1,15 @@
+// LEGACY EXPERIMENTAL CONTOUR (deprecated): Shadow-only exploratory layer.
+// This non-authoritative operational layer is superseded conceptually by the
+// future Operational Runtime / Turn Understanding architecture. See
+// docs/architecture/OPERATIONAL_RUNTIME_CONTOUR_v1.md for target architecture direction.
+// Invariant: classifier output is debug/observation only; no booking confirmation
+// authority, case mutation authority, state ownership, or operational truth mutation.
+
 import type { OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
 import type { CaseRouterClassifier, CaseRouterClassifierInput } from "./caseRouterShadow.ts";
 
+// LEGACY EXPERIMENTAL CONTOUR classifier entrypoint instructions.
+// Shadow-only exploratory layer; handled by future Operational Runtime contour for target architecture.
 const CASE_ROUTER_INSTRUCTIONS = [
   "You are a shadow-only case router classifier.",
   "Classify only. Do not answer the patient.",
@@ -33,6 +42,8 @@ const CASE_ROUTER_INSTRUCTIONS = [
   '{"case_relation":"no_case","case_action":"no_case","case_type":"other","topic":null,"status":null,"priority":"low","confidence":"high","reason":"Greeting only; no case action.","should_apply":false}',
 ].join(" ");
 
+// LEGACY EXPERIMENTAL CONTOUR classifier entrypoint.
+// Output is a non-authoritative operational layer signal for debug/observation only.
 export function createOpenAICaseRouterClassifier(deps: { client: OpenAIResponsesClient; model: string }): CaseRouterClassifier {
   return {
     async classifyCaseTurn(input: CaseRouterClassifierInput): Promise<unknown> {
@@ -90,6 +101,7 @@ export function parseClassifierJson(text: string): unknown {
   }
 }
 
+// LEGACY EXPERIMENTAL CONTOUR debug envelope: keep payload structure stable inside legacy_case_router.
 function buildClassifierDebugEnvelope(rawOutput: string, classifierModel: string): {
   decision: unknown;
   classifier_model: string;

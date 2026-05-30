@@ -1,3 +1,10 @@
+// LEGACY EXPERIMENTAL CONTOUR (deprecated): Shadow-only exploratory layer.
+// This non-authoritative operational layer is superseded conceptually by the
+// future Operational Runtime / Turn Understanding architecture. See
+// docs/architecture/OPERATIONAL_RUNTIME_CONTOUR_v1.md for target architecture direction.
+// Invariant: legacy router decisions are debug/observation only; they must never
+// mutate operational truth, confirm bookings, mutate cases, or own state.
+
 export type CaseRelation = "same_case" | "new_case" | "follow_up" | "reopen_case" | "no_case" | "unknown";
 export type CaseAction = "open_case" | "reuse_case" | "no_case";
 export type CaseType = "faq" | "booking_request" | "availability_request" | "admin_request" | "urgent" | "follow_up" | "reschedule" | "cancel" | "other";
@@ -5,6 +12,9 @@ export type CaseStatus = "open" | "collecting" | "waiting_patient" | "resolved" 
 export type CasePriority = "low" | "normal" | "high" | "urgent";
 export type CaseConfidence = "low" | "medium" | "high";
 
+// LEGACY EXPERIMENTAL CONTOUR contract/type: narrow legacy decision shape only.
+// Shadow-only exploratory layer; should_apply is permanently false and is not
+// booking confirmation authority, case mutation authority, or state ownership.
 export interface CaseRouterDecision {
   case_relation: CaseRelation;
   case_action: CaseAction;
@@ -17,6 +27,7 @@ export interface CaseRouterDecision {
   should_apply: false;
 }
 
+// LEGACY EXPERIMENTAL CONTOUR debug structure: non-authoritative observation envelope only.
 export interface CaseRouterDebug {
   enabled: true;
   mode: "shadow";
@@ -28,10 +39,12 @@ export interface CaseRouterDebug {
   classifier_raw_output?: string;
   classifier_raw_parsed?: unknown;
 }
+// LEGACY EXPERIMENTAL CONTOUR classifier input: compact model-visible context for observation only.
 export interface CaseRouterClassifierInput {
   user_message: string;
   runtime_context: Record<string, unknown>;
 }
+// LEGACY EXPERIMENTAL CONTOUR interface: classifiers may emit shadow decisions, never operational writes.
 export interface CaseRouterClassifier {
   classifyCaseTurn(input: CaseRouterClassifierInput): Promise<unknown>;
 }
@@ -59,6 +72,7 @@ export function buildFallbackCaseRouterDecision(reason = FALLBACK_REASON): CaseR
   };
 }
 
+// LEGACY EXPERIMENTAL CONTOUR normalization keeps the shadow-only invariant intact.
 export function normalizeCaseRouterDecision(raw: unknown): CaseRouterDecision {
   const value = asRecord(raw);
   const fallback = buildFallbackCaseRouterDecision();
@@ -75,6 +89,9 @@ export function normalizeCaseRouterDecision(raw: unknown): CaseRouterDecision {
   };
 }
 
+// LEGACY EXPERIMENTAL CONTOUR runtime usage: emits legacy_case_router debug only.
+// Decisions from this shadow-only exploratory layer must never mutate operational
+// truth, confirm bookings, mutate cases, or own runtime state.
 export async function runCaseRouterShadow(input: {
   user_message: string;
   runtime_context: Record<string, unknown>;
@@ -145,6 +162,7 @@ function extractClassifierDebugResult(raw: unknown): {
   };
 }
 
+// LEGACY EXPERIMENTAL CONTOUR context sanitizer for observation-only classifier input.
 export function sanitizeCaseRouterContext(rawRuntimeContext: unknown): Record<string, unknown> {
   const root = asRecord(rawRuntimeContext);
   const pick = (key: string) => asRecord(root[key]);

@@ -170,7 +170,7 @@ test("case router classifier uses OPENAI_CASE_ROUTER_MODEL when set", async () =
     );
     let payload: unknown;
     await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
-    assert.equal((payload as any).debug.case_router.classifier_model, "gpt-case-router");
+    assert.equal((payload as any).debug.legacy_case_router.classifier_model, "gpt-case-router");
   } finally {
     if (previous === undefined) delete process.env.OPENAI_CASE_ROUTER_MODEL;
     else process.env.OPENAI_CASE_ROUTER_MODEL = previous;
@@ -196,7 +196,7 @@ test("case router classifier falls back to main model when OPENAI_CASE_ROUTER_MO
       },
     );
     await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
-    assert.equal((payload as any).debug.case_router.classifier_model, "gpt-main-fallback");
+    assert.equal((payload as any).debug.legacy_case_router.classifier_model, "gpt-main-fallback");
   } finally {
     if (previous === undefined) delete process.env.OPENAI_CASE_ROUTER_MODEL;
     else process.env.OPENAI_CASE_ROUTER_MODEL = previous;

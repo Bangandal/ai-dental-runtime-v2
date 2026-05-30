@@ -12,6 +12,7 @@ import type { OpenAIConversationMemoryRepository } from "../src/runtime/supabase
 import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
 import type { RuntimeGateClassifier } from "../src/runtime/runtimeGateShadow.ts";
+import type { TurnUnderstandingClassifier } from "../src/runtime/turnUnderstandingShadow.ts";
 
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
 const CLINIC_CODE = "clinic_1";
@@ -35,6 +36,7 @@ function createRouteHarness(
   runtimeContextRepository?: { loadRuntimeContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
   caseContextRepository?: { loadCaseContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
   runtimeGateClassifier?: RuntimeGateClassifier,
+  turnUnderstandingClassifier?: TurnUnderstandingClassifier,
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -44,7 +46,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository, runtimeGateClassifier },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository, runtimeGateClassifier, turnUnderstandingClassifier },
   );
 
   assert.ok(handler);
@@ -696,4 +698,118 @@ test("classifier output fallback remains non-fatal", async () => {
 
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
   assert.equal(response.statusCode, 200);
+});
+
+test("debug.turn_understanding appears in response and log payload for operational candidates", async () => {
+  let loggedDebug: Record<string, any> | null = null;
+  const calls: Array<Record<string, any>> = [];
+  const harness = createRouteHarness(
+    { async runTurn(input) { calls.push(input as any); return { final_patient_reply: "unchanged", tool_results: [], debug: { existing: true } } as any; } },
+    { async logTurn(input) { loggedDebug = input.debug as Record<string, any>; }, async logError() {} },
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "booking", confidence: "high", reason: "booking", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { return { turn_type: "booking_request", topic: "appointment booking", service_interest: null, subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "open_new", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: ["service_interest"], confidence: "high", reason: "User asks to book", should_apply: false }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "могу записаться?" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(payload.final_patient_reply, "unchanged");
+  assert.equal(payload.debug.turn_understanding.enabled, true);
+  assert.equal(payload.debug.turn_understanding.mode, "shadow");
+  assert.equal(payload.debug.turn_understanding.skipped, false);
+  assert.equal(payload.debug.turn_understanding.decision.turn_type, "booking_request");
+  assert.equal(payload.debug.turn_understanding.decision.should_apply, false);
+  assert.equal(payload.debug.legacy_case_router.mode, "shadow");
+  assert.equal(loggedDebug?.turn_understanding.decision.turn_type, "booking_request");
+  assert.deepEqual(calls[0].business_context.meta, undefined);
+});
+
+test("debug.turn_understanding skips for non operational runtime gate", async () => {
+  let classifierCalls = 0;
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "faq reply", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { classifierCalls += 1; throw new Error("should skip"); } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Сколько стоит чистка?" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(payload.final_patient_reply, "faq reply");
+  assert.equal(payload.debug.turn_understanding.skipped, true);
+  assert.equal(payload.debug.turn_understanding.skip_reason, "runtime_gate_non_operational");
+  assert.equal(payload.debug.turn_understanding.decision, null);
+  assert.equal(classifierCalls, 0);
+});
+
+test("turn understanding invalid route classifier output safely falls back without DB writes or reply changes", async () => {
+  const persistenceCalls: string[] = [];
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "same", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    {
+      async getOrCreateContact(input) { persistenceCalls.push("contact"); return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+      async registerInboundEvent() { persistenceCalls.push("inbound"); return { ok: true, data: {} }; },
+      async saveMessage(input) { persistenceCalls.push(`message:${input.role}`); return { ok: true, data: { message_id: `m_${input.role}` } }; },
+      async mergeConversationState() { persistenceCalls.push("merge"); return { ok: true, data: {} }; },
+    },
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "slot_fragment", confidence: "high", reason: "slot", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { return { nope: true }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", chat_id: "chat_1", text: "14.00 михаил огар" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(payload.final_patient_reply, "same");
+  assert.equal(payload.debug.turn_understanding.skipped, false);
+  assert.equal(payload.debug.turn_understanding.decision.turn_type, "unknown");
+  assert.equal(payload.debug.turn_understanding.decision.reply_objective, "safe_fallback");
+  assert.equal(payload.debug.turn_understanding.decision.case_decision.action, "none");
+  assert.equal(payload.debug.turn_understanding.decision.should_apply, false);
+  assert.equal(payload.debug.turn_understanding.error, "classifier_invalid_output");
+  assert.deepEqual(persistenceCalls, ["contact", "inbound", "message:user", "message:assistant", "merge"]);
+});
+
+test("turn understanding sanitizer does not change main agent runtime_context", async () => {
+  const calls: Array<Record<string, any>> = [];
+  const turnUnderstandingInputs: Array<Record<string, any>> = [];
+  const harness = createRouteHarness(
+    { async runTurn(input) { calls.push(input as any); return { final_patient_reply: "ok", tool_results: [] } as any; } },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    { async loadRuntimeContext() { return { ok: true, data: { known_contact: {}, conversation_state: { intent: "booking", collected: {}, missing_fields: [], last_bot_question: "Когда удобно?", pending_slots: ["preferred_date"] }, runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" }, recent_history: [{ role: "assistant", text: "raw" }] } }; } },
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "slot_fragment", confidence: "high", reason: "slot", should_apply: false }; } },
+    { async classifyTurnUnderstanding(input) { turnUnderstandingInputs.push(input.runtime_context as any); return { turn_type: "slot_fill", topic: null, service_interest: "чистка", subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "continue_existing", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: "чистка", preferred_date: "05.06", preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: [], confidence: "medium", reason: "slot details", should_apply: false }; } },
+  );
+
+  await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "чистка зубов на 05.06" });
+
+  const mainContext = calls[0].business_context.runtime_context;
+  assert.equal(mainContext.task_state.last_bot_question, undefined);
+  assert.equal(mainContext.task_state.pending_slots, undefined);
+  assert.deepEqual(mainContext.recent_history, []);
+  assert.equal(turnUnderstandingInputs[0].last_bot_question, "Когда удобно?");
+  assert.deepEqual(turnUnderstandingInputs[0].pending_slots, ["preferred_date"]);
 });

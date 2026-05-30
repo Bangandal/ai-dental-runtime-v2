@@ -11,6 +11,7 @@ import { createSupabaseRuntimeContextRepository } from "./supabaseRuntimeContext
 import { createSupabaseCaseContextRepository } from "./supabaseCaseContextRepository.ts";
 import { createOpenAICaseRouterClassifier } from "./openaiCaseRouterClassifier.ts";
 import { createOpenAIRuntimeGateClassifier } from "./runtimeGateShadow.ts";
+import { createOpenAITurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
@@ -31,6 +32,7 @@ function readConversationId(value: unknown): string | null {
 export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeServerBootstrapDeps): void {
   const caseRouterModel = process.env.OPENAI_CASE_ROUTER_MODEL?.trim() || deps.model;
   const runtimeGateModel = process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
+  const turnUnderstandingModel = process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim() || process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
   const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const clinicIdentityResolver = createSupabaseClinicIdentityResolver({ rpc: deps.rpc });
@@ -65,6 +67,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     runtimeContextRepository,
     caseContextRepository,
     runtimeGateClassifier: createOpenAIRuntimeGateClassifier({ client: deps.openaiClient, model: runtimeGateModel }),
+    turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({ client: deps.openaiClient, model: turnUnderstandingModel }),
     caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: caseRouterModel }),
   });
 }

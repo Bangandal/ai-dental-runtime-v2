@@ -202,3 +202,42 @@ test("case router classifier falls back to main model when OPENAI_CASE_ROUTER_MO
     else process.env.OPENAI_CASE_ROUTER_MODEL = previous;
   }
 });
+
+test("runtime gate classifier uses OPENAI_RUNTIME_GATE_MODEL when set", async () => {
+  const previous = process.env.OPENAI_RUNTIME_GATE_MODEL;
+  process.env.OPENAI_RUNTIME_GATE_MODEL = "gpt-runtime-gate-mini";
+  const responseCalls: Array<Record<string, unknown>> = [];
+  let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
+  try {
+    registerRuntimeRoutes(
+      { post(_path, routeHandler) { handler = routeHandler; } },
+      {
+        model: "gpt-main",
+        openaiClient: {
+          responses: {
+            async create(payload) {
+              responseCalls.push(payload as Record<string, unknown>);
+              if ((payload as Record<string, unknown>).model === "gpt-runtime-gate-mini") {
+                return { output_text: "{\"route\":\"non_operational\",\"turn_shape\":\"greeting\",\"confidence\":\"high\",\"reason\":\"Greeting.\",\"should_apply\":false}" };
+              }
+              if (typeof (payload as Record<string, unknown>).instructions === "string") {
+                return { output_text: "{\"case_relation\":\"unknown\",\"case_action\":\"no_case\",\"case_type\":\"other\",\"topic\":null,\"status\":null,\"priority\":\"low\",\"confidence\":\"low\",\"reason\":\"ok\",\"should_apply\":false}" };
+              }
+              return { output_text: "Здравствуйте!" };
+            },
+          },
+        } as any,
+        rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
+        embeddingClient: { createEmbedding: async () => [0.1] },
+        embeddingModel: "text-embedding-3-small",
+      },
+    );
+    let payload: unknown;
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    assert.equal((payload as any).debug.runtime_gate.route, "non_operational");
+    assert.equal(responseCalls.some((call) => call.model === "gpt-runtime-gate-mini"), true);
+  } finally {
+    if (previous === undefined) delete process.env.OPENAI_RUNTIME_GATE_MODEL;
+    else process.env.OPENAI_RUNTIME_GATE_MODEL = previous;
+  }
+});

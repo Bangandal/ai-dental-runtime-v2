@@ -9,6 +9,7 @@ import type { RuntimeContextRepository } from "./supabaseRuntimeContextRepositor
 import type { CaseContextRepository } from "./supabaseCaseContextRepository.ts";
 import { buildModelVisibleRuntimeContext } from "./modelVisibleRuntimeContext.ts";
 import { runCaseRouterShadow, type CaseRouterClassifier, sanitizeCaseRouterContext } from "./caseRouterShadow.ts";
+import { runRuntimeGateShadow, sanitizeRuntimeGateContext, type RuntimeGateClassifier } from "./runtimeGateShadow.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -46,6 +47,7 @@ export interface RuntimeTurnRouteDeps {
   runtimeContextRepository?: RuntimeContextRepository;
   caseContextRepository?: CaseContextRepository;
   caseRouterClassifier?: CaseRouterClassifier;
+  runtimeGateClassifier?: RuntimeGateClassifier;
 }
 
 export interface RouteRegistrationApp {
@@ -273,6 +275,16 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       runtimeTurnInput.business_context = { ...(runtimeTurnInput.business_context ?? {}), runtime_context: mergeCaseContextIntoModelContext({}, loadedCaseContext) };
     }
 
+    // Runtime Gate is the first shadow-only step of OPERATIONAL_RUNTIME_CONTOUR_v1.
+    // It is observability only and must not mutate state, route turns, open cases,
+    // write topic memory, decide booking details, or change patient-facing replies.
+    const runtimeGateContext = sanitizeRuntimeGateContext((runtimeTurnInput.business_context as Record<string, unknown>).runtime_context);
+    const runtimeGateDebug = await runRuntimeGateShadow({
+      user_message: runtimeTurnInput.user_message,
+      runtime_context: runtimeGateContext,
+      classifier: deps.runtimeGateClassifier,
+    });
+
     // LEGACY EXPERIMENTAL CONTOUR (deprecated) runtime usage: shadow-only exploratory layer.
     // This legacy router is a non-authoritative operational layer superseded
     // conceptually by the future Operational Runtime / Turn Understanding architecture.
@@ -362,7 +374,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, legacy_case_router: caseRouterDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, legacy_case_router: caseRouterDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

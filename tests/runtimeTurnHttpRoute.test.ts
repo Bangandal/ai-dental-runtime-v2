@@ -11,6 +11,7 @@ import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 import type { OpenAIConversationMemoryRepository } from "../src/runtime/supabaseOpenAIConversationMemoryRepository.ts";
 import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
+import type { RuntimeGateClassifier } from "../src/runtime/runtimeGateShadow.ts";
 
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
 const CLINIC_CODE = "clinic_1";
@@ -33,6 +34,7 @@ function createRouteHarness(
   clinicIdentityResolver: ClinicIdentityResolver = defaultClinicIdentityResolver,
   runtimeContextRepository?: { loadRuntimeContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
   caseContextRepository?: { loadCaseContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
+  runtimeGateClassifier?: RuntimeGateClassifier,
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -42,7 +44,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository, runtimeGateClassifier },
   );
 
   assert.ok(handler);
@@ -97,6 +99,9 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(payload.final_patient_reply, "Здравствуйте!");
   assert.equal(payload.side_effects.length, 0);
   assert.equal(typeof payload.trace_id, "string");
+  assert.equal(payload.debug.runtime_gate.mode, "shadow");
+  assert.equal(payload.debug.runtime_gate.route, "non_operational");
+  assert.equal(payload.debug.runtime_gate.should_apply, false);
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
   assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
 
@@ -106,6 +111,41 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(input.case_id, null);
   assert.equal(input.user_message, "Привет");
   assert.equal(input.locale, "ru");
+});
+
+test("debug.runtime_gate appears in runtime response and log payload without changing reply", async () => {
+  let loggedDebug: Record<string, any> | null = null;
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "same reply", tool_results: [], debug: { existing: true } }) as any },
+    {
+      async logTurn(input) { loggedDebug = input.debug as Record<string, any>; },
+      async logError() {},
+    },
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    {
+      async classifyRuntimeGateTurn() {
+        return { route: "operational_candidate", turn_shape: "booking", confidence: "high", reason: "User asks to book.", should_apply: false };
+      },
+    },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Хочу записаться" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(payload.final_patient_reply, "same reply");
+  assert.equal(payload.debug.existing, true);
+  assert.equal(payload.debug.runtime_gate.route, "operational_candidate");
+  assert.equal(payload.debug.runtime_gate.turn_shape, "booking");
+  assert.equal(payload.debug.runtime_gate.should_apply, false);
+  assert.equal(payload.debug.legacy_case_router.mode, "shadow");
+  assert.equal(loggedDebug?.runtime_gate.route, "operational_candidate");
+  assert.equal(loggedDebug?.legacy_case_router.mode, "shadow");
 });
 
 test("invalid request returns 400", async () => {
@@ -625,6 +665,9 @@ test("classifier valid output is attached to debug envelope", async () => {
 
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Need to reschedule" });
   const payload = response.payload as Record<string, any>;
+  assert.equal(payload.debug.runtime_gate.mode, "shadow");
+  assert.equal(payload.debug.runtime_gate.route, "non_operational");
+  assert.equal(payload.debug.runtime_gate.should_apply, false);
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
   assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
 });

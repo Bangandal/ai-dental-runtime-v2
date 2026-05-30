@@ -17,6 +17,7 @@ test("maps real rpc_get_runtime_context out_* shape into compact runtime_context
           turn_count: 4,
           collected: { service: "cleaning" },
           missing_fields: ["date"],
+          pending_slots: ["preferred_time", 7, ""],
         },
         out_state_version: 12,
         out_recent_messages: [{ role: "user", text: "hi" }],
@@ -43,6 +44,7 @@ test("maps real rpc_get_runtime_context out_* shape into compact runtime_context
   assert.deepEqual(result.data.conversation_state.collected, { service: "exam" });
   assert.deepEqual(result.data.conversation_state.missing_fields, ["time"]);
   assert.equal(result.data.conversation_state.intent, "book_visit");
+  assert.deepEqual(result.data.conversation_state.pending_slots, ["preferred_time"]);
   assert.equal(result.data.known_contact.first_name, "Ann");
   assert.equal(result.data.known_contact.chat_id, "chat_1");
   assert.equal(result.data.known_contact.external_user_id, "user_1");

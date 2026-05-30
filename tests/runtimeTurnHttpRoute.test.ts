@@ -11,6 +11,7 @@ import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 import type { OpenAIConversationMemoryRepository } from "../src/runtime/supabaseOpenAIConversationMemoryRepository.ts";
 import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
+import type { RuntimeGateClassifier } from "../src/runtime/runtimeGateShadow.ts";
 
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
 const CLINIC_CODE = "clinic_1";
@@ -33,6 +34,7 @@ function createRouteHarness(
   clinicIdentityResolver: ClinicIdentityResolver = defaultClinicIdentityResolver,
   runtimeContextRepository?: { loadRuntimeContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
   caseContextRepository?: { loadCaseContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
+  runtimeGateClassifier?: RuntimeGateClassifier,
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -42,7 +44,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository, runtimeGateClassifier },
   );
 
   assert.ok(handler);
@@ -97,6 +99,9 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(payload.final_patient_reply, "Здравствуйте!");
   assert.equal(payload.side_effects.length, 0);
   assert.equal(typeof payload.trace_id, "string");
+  assert.equal(payload.debug.runtime_gate.mode, "shadow");
+  assert.equal(payload.debug.runtime_gate.route, "non_operational");
+  assert.equal(payload.debug.runtime_gate.should_apply, false);
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
   assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
 
@@ -106,6 +111,41 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(input.case_id, null);
   assert.equal(input.user_message, "Привет");
   assert.equal(input.locale, "ru");
+});
+
+test("debug.runtime_gate appears in runtime response and log payload without changing reply", async () => {
+  let loggedDebug: Record<string, any> | null = null;
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "same reply", tool_results: [], debug: { existing: true } }) as any },
+    {
+      async logTurn(input) { loggedDebug = input.debug as Record<string, any>; },
+      async logError() {},
+    },
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    {
+      async classifyRuntimeGateTurn() {
+        return { route: "operational_candidate", turn_shape: "booking", confidence: "high", reason: "User asks to book.", should_apply: false };
+      },
+    },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Хочу записаться" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(payload.final_patient_reply, "same reply");
+  assert.equal(payload.debug.existing, true);
+  assert.equal(payload.debug.runtime_gate.route, "operational_candidate");
+  assert.equal(payload.debug.runtime_gate.turn_shape, "booking");
+  assert.equal(payload.debug.runtime_gate.should_apply, false);
+  assert.equal(payload.debug.legacy_case_router.mode, "shadow");
+  assert.equal(loggedDebug?.runtime_gate.route, "operational_candidate");
+  assert.equal(loggedDebug?.legacy_case_router.mode, "shadow");
 });
 
 test("invalid request returns 400", async () => {
@@ -476,6 +516,7 @@ test("route persists pre/post turn artifacts and keeps response contract", async
 
 test("runtime context load success hydrates runtime_context and logs debug fields", async () => {
   const calls: Array<Record<string, any>> = [];
+  const runtimeGateInputs: Array<Record<string, any>> = [];
   const harness = createRouteHarness(
     {
       async runTurn(input) {
@@ -498,11 +539,18 @@ test("runtime context load success hydrates runtime_context and logs debug field
             chat_id: "chat_1",
             external_user_id: "external_1",
             known_contact: { contact_id: "contact_1", clinic_id: CLINIC_UUID, first_name: "Ada", last_name: "Lovelace", username: "ada_raw", language_code: "ru", meta: { foo: "bar" } },
-            conversation_state: { state_version: 7, intent: "faq", collected: { problem: "pain", phone_required: true, contact_channel_available: true }, missing_fields: ["phone"], last_user_message_text: "raw", last_bot_question: "q", last_bot_action: "a" },
+            conversation_state: { state_version: 7, intent: "faq", collected: { problem: "pain", phone_required: true, contact_channel_available: true }, missing_fields: ["phone"], last_user_message_text: "raw", last_bot_question: "q", last_bot_action: "a", pending_slots: ["preferred_time", 4, ""] },
             runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" },
             recent_history: [],
           },
         };
+      },
+    },
+    undefined,
+    {
+      async classifyRuntimeGateTurn(input) {
+        runtimeGateInputs.push(input.runtime_context as Record<string, any>);
+        return { route: "non_operational", turn_shape: "faq", confidence: "medium", reason: "debug only", should_apply: false };
       },
     },
   );
@@ -528,6 +576,14 @@ test("runtime context load success hydrates runtime_context and logs debug field
   assert.equal(runtimeContext.last_user_message_text, undefined);
   assert.equal(runtimeContext.last_bot_question, undefined);
   assert.equal(runtimeContext.last_bot_action, undefined);
+  assert.equal(runtimeContext.pending_slots, undefined);
+  assert.equal(runtimeContext.task_state.last_bot_question, undefined);
+  assert.equal(runtimeContext.task_state.last_bot_action, undefined);
+  assert.equal(runtimeContext.task_state.pending_slots, undefined);
+
+  assert.equal(runtimeGateInputs[0]?.task_state.last_bot_question, "q");
+  assert.equal(runtimeGateInputs[0]?.task_state.last_bot_action, "a");
+  assert.deepEqual(runtimeGateInputs[0]?.task_state.pending_slots, ["preferred_time"]);
 
   const debug = (response.payload as any).debug.runtime_context;
   assert.equal(debug.loaded, true);
@@ -625,6 +681,9 @@ test("classifier valid output is attached to debug envelope", async () => {
 
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Need to reschedule" });
   const payload = response.payload as Record<string, any>;
+  assert.equal(payload.debug.runtime_gate.mode, "shadow");
+  assert.equal(payload.debug.runtime_gate.route, "non_operational");
+  assert.equal(payload.debug.runtime_gate.should_apply, false);
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
   assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
 });

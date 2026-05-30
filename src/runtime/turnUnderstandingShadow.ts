@@ -87,6 +87,8 @@ const CASE_ACTIONS: readonly TurnUnderstandingCaseAction[] = ["none", "continue_
 const CASE_KINDS: readonly TurnUnderstandingCaseKind[] = ["booking", "reschedule", "cancel", "urgent", "admin", "follow_up", "process_status", "unknown", null];
 const CONFIDENCES: readonly TurnUnderstandingConfidence[] = ["low", "medium", "high"];
 const MAX_DEBUG_OUTPUT_CHARS = 4_000;
+const MESSENGER_MVP_MISSING_FIELDS = new Set(["service_interest", "preferred_date", "preferred_time", "first_name", "last_name"]);
+const BOOKING_MVP_TURN_TYPES = new Set<TurnUnderstandingTurnType>(["booking_request", "availability_request", "slot_fill", "reschedule"]);
 
 const TURN_UNDERSTANDING_INSTRUCTIONS = [
   "You are a shadow-only Turn Understanding classifier for a dental frontdesk runtime.",
@@ -109,6 +111,9 @@ const TURN_UNDERSTANDING_INSTRUCTIONS = [
   '  "should_apply": false',
   "}",
   "should_apply must always be false and case_decision.target_case_id must always be null.",
+  "Messenger MVP contact rule: phone is not a required field for messenger channels; channel/chat_id is already the contact channel.",
+  "Never include phone in missing_fields. For booking_request, availability_request, slot_fill, and reschedule, missing_fields may only include service_interest, preferred_date, preferred_time, first_name, and last_name.",
+  "If the user voluntarily provides a phone number, do not mark it as required and do not add phone to missing_fields.",
   "Classification guidance:",
   '"могу записаться?" -> booking_request, ask_missing_field.',
   '"чистка зубов на 05.06" after booking prompt -> slot_fill with service_interest and preferred_date.',
@@ -273,7 +278,7 @@ export function normalizeTurnUnderstandingDecision(raw: unknown): TurnUnderstand
       offered_slot_id: readString(slotUpdates.offered_slot_id),
       confirmation_target: readString(slotUpdates.confirmation_target),
     },
-    missing_fields: readStringArray(value.missing_fields),
+    missing_fields: normalizeMissingFields(readStringArray(value.missing_fields), pickOne(TURN_TYPES, value.turn_type, fallback.turn_type)),
     confidence: pickOne(CONFIDENCES, value.confidence, fallback.confidence),
     reason: typeof value.reason === "string" && value.reason.trim() ? value.reason.trim() : fallback.reason,
     should_apply: false,
@@ -376,6 +381,18 @@ function isValidTurnUnderstandingDecision(raw: unknown): boolean {
     && typeof value.reason === "string"
     && value.reason.trim().length > 0
     && value.should_apply === false;
+}
+
+function normalizeMissingFields(fields: string[], turnType: TurnUnderstandingTurnType): string[] {
+  const normalized: string[] = [];
+  for (const field of fields) {
+    // Phone collection is intentionally disabled for current messenger MVP.
+    // Future callback/clinic-config phone collection must be added explicitly, not as a default slot.
+    if (field === "phone") continue;
+    if (BOOKING_MVP_TURN_TYPES.has(turnType) && !MESSENGER_MVP_MISSING_FIELDS.has(field)) continue;
+    if (!normalized.includes(field)) normalized.push(field);
+  }
+  return normalized;
 }
 
 function sanitizeRecords(value: unknown): Array<Record<string, unknown>> {

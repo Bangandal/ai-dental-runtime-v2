@@ -55,6 +55,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/runtimeAgentLoop.ts",
     "src/runtime/runtimeTurnHttpRoute.ts",
     "src/runtime/runtimeGateShadow.ts",
+    "src/runtime/turnUnderstandingShadow.ts",
     "src/runtime/caseRouterShadow.ts",
     "src/runtime/openaiCaseRouterClassifier.ts",
     "src/runtime/openaiRuntimeAgent.ts",

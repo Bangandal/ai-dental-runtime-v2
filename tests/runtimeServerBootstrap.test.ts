@@ -241,3 +241,90 @@ test("runtime gate classifier uses OPENAI_RUNTIME_GATE_MODEL when set", async ()
     else process.env.OPENAI_RUNTIME_GATE_MODEL = previous;
   }
 });
+
+test("turn understanding classifier uses OPENAI_TURN_UNDERSTANDING_MODEL when set", async () => {
+  const previousTurn = process.env.OPENAI_TURN_UNDERSTANDING_MODEL;
+  const previousGate = process.env.OPENAI_RUNTIME_GATE_MODEL;
+  process.env.OPENAI_TURN_UNDERSTANDING_MODEL = "gpt-turn-understanding";
+  delete process.env.OPENAI_RUNTIME_GATE_MODEL;
+  const responseCalls: Array<Record<string, unknown>> = [];
+  let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
+  try {
+    registerRuntimeRoutes(
+      { post(_path, routeHandler) { handler = routeHandler; } },
+      {
+        model: "gpt-main",
+        openaiClient: {
+          responses: {
+            async create(payload) {
+              responseCalls.push(payload as Record<string, unknown>);
+              if ((payload as Record<string, unknown>).model === "gpt-turn-understanding") {
+                return { output_text: "{\"turn_type\":\"booking_request\",\"topic\":\"booking\",\"service_interest\":null,\"subject\":{\"kind\":\"self\",\"display_name\":null},\"reply_objective\":\"ask_missing_field\",\"case_decision\":{\"action\":\"open_new\",\"case_kind\":\"booking\",\"target_case_id\":null},\"slot_updates\":{\"service_interest\":null,\"preferred_date\":null,\"preferred_time\":null,\"first_name\":null,\"last_name\":null,\"offered_slot_id\":null,\"confirmation_target\":null},\"missing_fields\":[],\"confidence\":\"high\",\"reason\":\"booking\",\"should_apply\":false}" };
+              }
+              if ((payload as Record<string, unknown>).model === "gpt-main" && String((payload as Record<string, unknown>).instructions).includes("Runtime Gate")) {
+                return { output_text: "{\"route\":\"operational_candidate\",\"turn_shape\":\"booking\",\"confidence\":\"high\",\"reason\":\"booking\",\"should_apply\":false}" };
+              }
+              if (String((payload as Record<string, unknown>).instructions).includes("case router")) {
+                return { output_text: "{\"case_relation\":\"unknown\",\"case_action\":\"no_case\",\"case_type\":\"other\",\"topic\":null,\"status\":null,\"priority\":\"low\",\"confidence\":\"low\",\"reason\":\"ok\",\"should_apply\":false}" };
+              }
+              return { output_text: "ok" };
+            },
+          },
+        } as any,
+        rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
+        embeddingClient: { createEmbedding: async () => [0.1] },
+        embeddingModel: "text-embedding-3-small",
+      },
+    );
+    let payload: unknown;
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "хочу записаться" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    assert.equal((payload as any).debug.turn_understanding.decision.turn_type, "booking_request");
+    assert.equal(responseCalls.some((call) => call.model === "gpt-turn-understanding"), true);
+  } finally {
+    if (previousTurn === undefined) delete process.env.OPENAI_TURN_UNDERSTANDING_MODEL;
+    else process.env.OPENAI_TURN_UNDERSTANDING_MODEL = previousTurn;
+    if (previousGate === undefined) delete process.env.OPENAI_RUNTIME_GATE_MODEL;
+    else process.env.OPENAI_RUNTIME_GATE_MODEL = previousGate;
+  }
+});
+
+test("turn understanding classifier falls back to OPENAI_RUNTIME_GATE_MODEL before main model", async () => {
+  const previousTurn = process.env.OPENAI_TURN_UNDERSTANDING_MODEL;
+  const previousGate = process.env.OPENAI_RUNTIME_GATE_MODEL;
+  delete process.env.OPENAI_TURN_UNDERSTANDING_MODEL;
+  process.env.OPENAI_RUNTIME_GATE_MODEL = "gpt-gate-and-turn";
+  const responseCalls: Array<Record<string, unknown>> = [];
+  let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
+  try {
+    registerRuntimeRoutes(
+      { post(_path, routeHandler) { handler = routeHandler; } },
+      {
+        model: "gpt-main",
+        openaiClient: {
+          responses: {
+            async create(payload) {
+              responseCalls.push(payload as Record<string, unknown>);
+              const instructions = String((payload as Record<string, unknown>).instructions);
+              if (instructions.includes("Runtime Gate")) return { output_text: "{\"route\":\"operational_candidate\",\"turn_shape\":\"booking\",\"confidence\":\"high\",\"reason\":\"booking\",\"should_apply\":false}" };
+              if (instructions.includes("Turn Understanding")) return { output_text: "{\"turn_type\":\"booking_request\",\"topic\":null,\"service_interest\":null,\"subject\":{\"kind\":\"self\",\"display_name\":null},\"reply_objective\":\"ask_missing_field\",\"case_decision\":{\"action\":\"open_new\",\"case_kind\":\"booking\",\"target_case_id\":null},\"slot_updates\":{\"service_interest\":null,\"preferred_date\":null,\"preferred_time\":null,\"first_name\":null,\"last_name\":null,\"offered_slot_id\":null,\"confirmation_target\":null},\"missing_fields\":[],\"confidence\":\"medium\",\"reason\":\"booking\",\"should_apply\":false}" };
+              if (instructions.includes("case router")) return { output_text: "{\"case_relation\":\"unknown\",\"case_action\":\"no_case\",\"case_type\":\"other\",\"topic\":null,\"status\":null,\"priority\":\"low\",\"confidence\":\"low\",\"reason\":\"ok\",\"should_apply\":false}" };
+              return { output_text: "ok" };
+            },
+          },
+        } as any,
+        rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
+        embeddingClient: { createEmbedding: async () => [0.1] },
+        embeddingModel: "text-embedding-3-small",
+      },
+    );
+    let payload: unknown;
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "хочу записаться" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    assert.equal((payload as any).debug.turn_understanding.decision.turn_type, "booking_request");
+    assert.equal(responseCalls.filter((call) => call.model === "gpt-gate-and-turn").length >= 2, true);
+  } finally {
+    if (previousTurn === undefined) delete process.env.OPENAI_TURN_UNDERSTANDING_MODEL;
+    else process.env.OPENAI_TURN_UNDERSTANDING_MODEL = previousTurn;
+    if (previousGate === undefined) delete process.env.OPENAI_RUNTIME_GATE_MODEL;
+    else process.env.OPENAI_RUNTIME_GATE_MODEL = previousGate;
+  }
+});

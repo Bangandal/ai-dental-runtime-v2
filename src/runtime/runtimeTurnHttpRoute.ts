@@ -10,6 +10,7 @@ import type { CaseContextRepository } from "./supabaseCaseContextRepository.ts";
 import { buildModelVisibleRuntimeContext } from "./modelVisibleRuntimeContext.ts";
 import { runCaseRouterShadow, type CaseRouterClassifier, sanitizeCaseRouterContext } from "./caseRouterShadow.ts";
 import { runRuntimeGateShadow, sanitizeRuntimeGateContext, type RuntimeGateClassifier } from "./runtimeGateShadow.ts";
+import { runTurnUnderstandingShadow, sanitizeTurnUnderstandingContext, type TurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -48,6 +49,7 @@ export interface RuntimeTurnRouteDeps {
   caseContextRepository?: CaseContextRepository;
   caseRouterClassifier?: CaseRouterClassifier;
   runtimeGateClassifier?: RuntimeGateClassifier;
+  turnUnderstandingClassifier?: TurnUnderstandingClassifier;
 }
 
 export interface RouteRegistrationApp {
@@ -289,6 +291,18 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       classifier: deps.runtimeGateClassifier,
     });
 
+    const turnUnderstandingInput = sanitizeTurnUnderstandingContext({
+      user_message: runtimeTurnInput.user_message,
+      runtime_gate: runtimeGateDebug,
+      runtime_context: runtimeGateSourceContext ?? (runtimeTurnInput.business_context as Record<string, unknown>).runtime_context,
+    });
+    const turnUnderstandingDebug = await runTurnUnderstandingShadow({
+      user_message: runtimeTurnInput.user_message,
+      runtime_gate: runtimeGateDebug,
+      runtime_context: turnUnderstandingInput.runtime_context,
+      classifier: deps.turnUnderstandingClassifier,
+    });
+
     // LEGACY EXPERIMENTAL CONTOUR (deprecated) runtime usage: shadow-only exploratory layer.
     // This legacy router is a non-authoritative operational layer superseded
     // conceptually by the future Operational Runtime / Turn Understanding architecture.
@@ -378,7 +392,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, legacy_case_router: caseRouterDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, legacy_case_router: caseRouterDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

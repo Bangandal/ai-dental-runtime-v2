@@ -114,6 +114,13 @@ const TURN_UNDERSTANDING_INSTRUCTIONS = [
   "Messenger MVP contact rule: phone is not a required field for messenger channels; channel/chat_id is already the contact channel.",
   "Never include phone in missing_fields. For booking_request, availability_request, slot_fill, and reschedule, missing_fields may only include service_interest, preferred_date, preferred_time, first_name, and last_name.",
   "If the user voluntarily provides a phone number, do not mark it as required and do not add phone to missing_fields.",
+  "runtime_context.topic_memory is a sanitized contextual hint from previous turns, not authoritative state.",
+  "topic_memory may include only last_service_interest, source, confidence, and updated_at; never infer ids or contact details from it.",
+  "If the current turn has an explicit service_interest, the current turn wins over topic_memory.",
+  "If the current turn has booking_request or availability_request intent and no explicit service_interest, use topic_memory.last_service_interest as service_interest fallback only when topic_memory.confidence is medium or high and the hint is clearly relevant.",
+  "Do not use topic_memory for unrelated turns, greetings, admin_request, urgent, cancel, or reschedule unless clearly relevant.",
+  "If topic_memory is stale, ambiguous, low confidence, or unrelated, leave service_interest null.",
+  "TODO: enforce a 24h topic_memory.updated_at TTL before using stale hints.",
   "Classification guidance:",
   '"могу записаться?" -> booking_request, ask_missing_field.',
   '"чистка зубов на 05.06" after booking prompt -> slot_fill with service_interest and preferred_date.',
@@ -211,6 +218,7 @@ export function sanitizeTurnUnderstandingContext(input: {
   const conversationState = asRecord(root.conversation_state);
   const bookingContext = asRecord(root.booking_context);
   const caseContext = asRecord(root.case_context);
+  const topicMemory = sanitizeTopicMemory(root.topic_memory);
   const lastBotQuestion = readString(taskState.last_bot_question) ?? readString(conversationState.last_bot_question);
   const pendingSlots = readStringArray(taskState.pending_slots).length > 0 ? readStringArray(taskState.pending_slots) : readStringArray(conversationState.pending_slots);
   const latestAppointment = asRecordOrNull(bookingContext.latest_appointment);
@@ -240,6 +248,7 @@ export function sanitizeTurnUnderstandingContext(input: {
         open_cases_count: typeof caseContext.open_cases_count === "number" ? caseContext.open_cases_count : 0,
         recent_cases: sanitizeRecords(caseContext.recent_cases),
       },
+      ...(topicMemory ? { topic_memory: topicMemory } : {}),
       last_bot_question: lastBotQuestion,
       pending_slots: pendingSlots,
       latest_appointment: sanitizeRecordOrNull(latestAppointment),
@@ -395,6 +404,16 @@ function normalizeMissingFields(fields: string[], turnType: TurnUnderstandingTur
 
 function sanitizeRecords(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value) ? value.map(sanitizeRecord).filter((record) => Object.keys(record).length > 0) : [];
+}
+
+function sanitizeTopicMemory(value: unknown): Record<string, string> | null {
+  const record = asRecord(value);
+  const sanitized: Record<string, string> = {};
+  for (const key of ["last_service_interest", "source", "confidence", "updated_at"] as const) {
+    const fieldValue = readString(record[key]);
+    if (fieldValue) sanitized[key] = truncateDebugOutput(fieldValue);
+  }
+  return Object.keys(sanitized).length > 0 ? sanitized : null;
 }
 
 function sanitizeRecordOrNull(value: unknown): Record<string, unknown> | null {

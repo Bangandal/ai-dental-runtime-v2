@@ -198,7 +198,7 @@ test("invalid classifier output falls back safely", async () => {
   assert.equal(debug.error, "classifier_invalid_output");
 });
 
-test("sanitizer keeps pending continuation fields only in turn understanding context and removes ids/history/topic memory", () => {
+test("sanitizer keeps pending continuation fields only in turn understanding context and removes ids/history while keeping safe topic memory", () => {
   const sanitized = sanitizeTurnUnderstandingContext({
     user_message: "14.00 михаил огар",
     runtime_gate: operationalGate,
@@ -207,7 +207,7 @@ test("sanitizer keeps pending continuation fields only in turn understanding con
       contact_id: "contact_1",
       recent_history: [{ role: "user", text: "raw" }],
       task_state: { last_bot_question: "На какое время?", pending_slots: ["preferred_time", "first_name", 7], collected: { case_id: "case_1", service_interest: "cleaning" } },
-      topic_memory: { last_topic: "booking", contact_id: "contact_1" },
+      topic_memory: { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z", last_topic: "booking", contact_id: "contact_1", raw_state_json: { unsafe: true } },
       booking_context: { latest_appointment: { appointment_id: "apt_1", service_interest: "exam" } },
       case_context: { current_case: { case_id: "case_2", case_type: "booking" }, recent_cases: [{ case_id: "case_3", topic: "x" }] },
     },
@@ -220,10 +220,70 @@ test("sanitizer keeps pending continuation fields only in turn understanding con
   assert.equal(ctx.recent_history, undefined);
   assert.equal(ctx.clinic_id, undefined);
   assert.equal(ctx.task_state.collected.case_id, undefined);
-  assert.equal(ctx.topic_memory, undefined);
+  assert.deepEqual(ctx.topic_memory, { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z" });
+  assert.equal(ctx.topic_memory.contact_id, undefined);
+  assert.equal(ctx.topic_memory.last_topic, undefined);
+  assert.equal(ctx.topic_memory.raw_state_json, undefined);
   assert.equal(ctx.latest_appointment.appointment_id, undefined);
   assert.equal(ctx.case_context.current_case.case_id, undefined);
   assert.equal(ctx.case_context.recent_cases[0].case_id, undefined);
+});
+
+test("booking request classifier can use topic memory fallback without requiring service_interest", async () => {
+  const seenContexts: Array<Record<string, any>> = [];
+  const debug = await runTurnUnderstandingShadow({
+    user_message: "могу записаться?",
+    runtime_gate: operationalGate,
+    runtime_context: sanitizeTurnUnderstandingContext({
+      user_message: "могу записаться?",
+      runtime_gate: operationalGate,
+      runtime_context: {
+        topic_memory: { last_service_interest: "пломба", source: "turn_understanding", confidence: "medium", updated_at: "2026-05-31T00:00:00.000Z", contact_id: "hidden" },
+      },
+    }).runtime_context,
+    classifier: {
+      async classifyTurnUnderstanding(input) {
+        seenContexts.push(input.runtime_context as Record<string, any>);
+        assert.equal((input.runtime_context as Record<string, any>).topic_memory.last_service_interest, "пломба");
+        return decision({
+          service_interest: "пломба",
+          slot_updates: { ...buildFallbackTurnUnderstandingDecision().slot_updates, service_interest: "пломба" },
+          missing_fields: ["preferred_date", "preferred_time"],
+        });
+      },
+    },
+  });
+
+  assert.equal(seenContexts.length, 1);
+  assert.equal(debug.decision?.service_interest, "пломба");
+  assert.equal(debug.decision?.slot_updates.service_interest, "пломба");
+  assert.deepEqual(debug.decision?.missing_fields, ["preferred_date", "preferred_time"]);
+  assert.equal(debug.decision?.should_apply, false);
+});
+
+test("explicit service_interest from current turn beats topic memory", async () => {
+  const debug = await runTurnUnderstandingShadow({
+    user_message: "хочу чистку зубов",
+    runtime_gate: operationalGate,
+    runtime_context: sanitizeTurnUnderstandingContext({
+      user_message: "хочу чистку зубов",
+      runtime_gate: operationalGate,
+      runtime_context: { topic_memory: { last_service_interest: "пломба", source: "turn_understanding", confidence: "high" } },
+    }).runtime_context,
+    classifier: {
+      async classifyTurnUnderstanding() {
+        return decision({
+          service_interest: "чистка зубов",
+          slot_updates: { ...buildFallbackTurnUnderstandingDecision().slot_updates, service_interest: "чистка зубов" },
+          missing_fields: ["preferred_date"],
+        });
+      },
+    },
+  });
+
+  assert.equal(debug.decision?.service_interest, "чистка зубов");
+  assert.equal(debug.decision?.slot_updates.service_interest, "чистка зубов");
+  assert.deepEqual(debug.decision?.missing_fields, ["preferred_date"]);
 });
 
 test("OpenAI classifier uses turn understanding model and parses output_text", async () => {
@@ -244,5 +304,8 @@ test("OpenAI classifier uses turn understanding model and parses output_text", a
   assert.equal((seen[0] as any).model, "tu-model");
   assert.match((seen[0] as any).instructions, /phone is not a required field for messenger channels/i);
   assert.match((seen[0] as any).instructions, /Never include phone in missing_fields/i);
+  assert.match((seen[0] as any).instructions, /runtime_context\.topic_memory is a sanitized contextual hint/i);
+  assert.match((seen[0] as any).instructions, /current turn wins over topic_memory/i);
+  assert.match((seen[0] as any).instructions, /booking_request or availability_request intent and no explicit service_interest/i);
   assert.equal((result as any).turn_type, "admin_request");
 });

@@ -35,6 +35,26 @@ test("final response without tools returns immediate reply", async () => {
   assert.deepEqual(result.tool_results, []);
 });
 
+
+test("debug.llm_calls marks main agent when caller is invoked", async () => {
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    final_response: { final_patient_reply: "Hello" },
+    conversation_id: "conv_1",
+  });
+
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {} });
+  const result = await agent.runTurn(makeInput());
+
+  assert.deepEqual((result.debug as any).llm_calls, {
+    runtime_gate_called: false,
+    turn_understanding_called: false,
+    legacy_case_router_called: false,
+    main_agent_called: true,
+    total_llm_calls: 1,
+  });
+});
+
 test("kb.search tool path executes and returns second-call final reply", async () => {
   const seen: unknown[] = [];
   const caller: RuntimeAgentCaller = async (input) => {

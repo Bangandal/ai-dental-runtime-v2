@@ -15,6 +15,7 @@ import { buildTruthSnapshot } from "./truthSnapshot.ts";
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
 import type { ToolExecutionResult } from "./toolResults.ts";
 import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
+import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -57,7 +58,7 @@ const ACTIVE_TOOL_SET = new Set<string>(ACTIVE_RUNTIME_AGENT_TOOLS);
 export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAIRuntimeAgent {
   return {
     async runTurn(input: RuntimeAgentTurnInput): Promise<RuntimeAgentTurnResult> {
-      const debug: Record<string, unknown> = {};
+      const debug: Record<string, unknown> = { llm_calls: buildRuntimeLlmCallDebug() };
       const systemInstruction = buildRuntimeAgentSystemInstruction();
       let conversationId = input.conversation_id ?? null;
 
@@ -84,6 +85,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       let firstOutput: RuntimeAgentCallerOutput;
       try {
+        debug.llm_calls = buildRuntimeLlmCallDebug({ main_agent_called: true });
         firstOutput = await deps.caller({
           model: deps.model,
           conversation_id: conversationId,

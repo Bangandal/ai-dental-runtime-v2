@@ -267,7 +267,7 @@ test("successful /runtime/turn writes one JSONL event", async () => {
   const harness = createRouteHarness(
     {
       async runTurn() {
-        return { final_patient_reply: "Здравствуйте!", conversation_id: "conv_22", tool_results: [{ ok: true }] } as any;
+        return { final_patient_reply: "Здравствуйте!", conversation_id: "conv_22", tool_results: [{ ok: true }], debug: { llm_calls: { main_agent_called: true } } } as any;
       },
     },
     createFileRuntimeTurnLogger({ logDir }),
@@ -289,6 +289,118 @@ test("successful /runtime/turn writes one JSONL event", async () => {
   assert.equal(event.status, "ok");
   assert.equal(event.channel, "telegram");
   assert.equal(event.input_text, "Привет");
+  assert.deepEqual((event.debug as Record<string, unknown>).llm_calls, {
+    runtime_gate_called: false,
+    turn_understanding_called: false,
+    legacy_case_router_called: false,
+    main_agent_called: true,
+    total_llm_calls: 1,
+  });
+});
+
+
+test("debug.llm_calls counts FAQ non-operational turn with legacy disabled in response and log", async () => {
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
+  let loggedDebug: Record<string, any> | null = null;
+  let turnUnderstandingCalls = 0;
+  let legacyCalls = 0;
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "faq reply", tool_results: [], debug: { llm_calls: { main_agent_called: true } } }) as any },
+    { async logTurn(input) { loggedDebug = input.debug as Record<string, any>; }, async logError() {} },
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { turnUnderstandingCalls += 1; throw new Error("should skip"); } },
+    { async classifyCaseTurn() { legacyCalls += 1; throw new Error("should skip"); } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Сколько стоит чистка?" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.deepEqual(payload.debug.llm_calls, {
+    runtime_gate_called: true,
+    turn_understanding_called: false,
+    legacy_case_router_called: false,
+    main_agent_called: true,
+    total_llm_calls: 2,
+  });
+  assert.deepEqual(loggedDebug?.llm_calls, payload.debug.llm_calls);
+  assert.equal(turnUnderstandingCalls, 0);
+  assert.equal(legacyCalls, 0);
+});
+
+test("debug.llm_calls counts booking operational turn with legacy disabled", async () => {
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "booking reply", tool_results: [], debug: { llm_calls: { main_agent_called: true } } }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "booking", confidence: "high", reason: "booking", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { return { turn_type: "booking_request", topic: "appointment booking", service_interest: null, subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "open_new", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: ["service_interest"], confidence: "high", reason: "booking", should_apply: false }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Хочу записаться" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.deepEqual(payload.debug.llm_calls, {
+    runtime_gate_called: true,
+    turn_understanding_called: true,
+    legacy_case_router_called: false,
+    main_agent_called: true,
+    total_llm_calls: 3,
+  });
+});
+
+test("debug.llm_calls increments for enabled legacy router", async () => {
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "true";
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "reply", tool_results: [], debug: { llm_calls: { main_agent_called: true } } }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false }; } },
+    undefined,
+    { async classifyCaseTurn() { return { case_relation: "no_case", case_action: "no_case", case_type: "faq", topic: null, status: null, priority: "normal", confidence: "high", reason: "faq", should_apply: false }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "цены" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(payload.debug.llm_calls.legacy_case_router_called, true);
+  assert.equal(payload.debug.llm_calls.total_llm_calls, 3);
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
+});
+
+test("debug.llm_calls counts only actual invoked classifiers when classifiers are missing", async () => {
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "true";
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "reply", tool_results: [], debug: { llm_calls: { main_agent_called: true } } }) as any },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hi" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.deepEqual(payload.debug.llm_calls, {
+    runtime_gate_called: false,
+    turn_understanding_called: false,
+    legacy_case_router_called: false,
+    main_agent_called: true,
+    total_llm_calls: 1,
+  });
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
 });
 
 test("validation error writes one error JSONL event", async () => {

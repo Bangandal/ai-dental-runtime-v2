@@ -1,9 +1,16 @@
 import type { RuntimeResult, RpcCaller } from "./runtimeRepositories.ts";
 
+export interface TopicMemory {
+  last_service_interest?: string;
+  updated_at?: string;
+  source?: string;
+  confidence?: string;
+}
+
 export interface RuntimeContext {
   known_contact: Record<string, unknown>;
   conversation_state: Record<string, unknown>;
-  topic_memory: Record<string, unknown> | null;
+  topic_memory: TopicMemory | null;
   runtime_flags: {
     has_durable_context: boolean;
     context_source: "supabase";
@@ -50,7 +57,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
       const collected = asRecord(parseMaybeJson(row?.out_collected)) ?? asRecord(stateJson?.collected) ?? {};
       const missingFields = asArray(parseMaybeJson(row?.out_missing_fields)) ?? asArray(stateJson?.missing_fields) ?? [];
       const recentMessages = asArray(parseMaybeJson(row?.out_recent_messages)) ?? [];
-      const topicMemory = asRecord(stateJson?.topic_memory);
+      const topicMemory = asTopicMemory(stateJson?.topic_memory);
 
       const knownContact: Record<string, unknown> = {
         contact_id: input.contact_id,
@@ -117,4 +124,17 @@ function asArray(value: unknown): unknown[] | null {
 
 function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
+}
+
+function asTopicMemory(value: unknown): TopicMemory | null {
+  const record = asRecord(value);
+  if (!record) return null;
+
+  const topicMemory: TopicMemory = {};
+  if (typeof record.last_service_interest === "string") topicMemory.last_service_interest = record.last_service_interest;
+  if (typeof record.updated_at === "string") topicMemory.updated_at = record.updated_at;
+  if (typeof record.source === "string") topicMemory.source = record.source;
+  if (typeof record.confidence === "string") topicMemory.confidence = record.confidence;
+
+  return Object.keys(topicMemory).length > 0 ? topicMemory : null;
 }

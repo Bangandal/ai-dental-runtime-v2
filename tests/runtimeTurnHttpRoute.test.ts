@@ -542,6 +542,7 @@ test("runtime context load success hydrates runtime_context and logs debug field
             external_user_id: "external_1",
             known_contact: { contact_id: "contact_1", clinic_id: CLINIC_UUID, first_name: "Ada", last_name: "Lovelace", username: "ada_raw", language_code: "ru", meta: { foo: "bar" } },
             conversation_state: { state_version: 7, intent: "faq", collected: { problem: "pain", phone_required: true, contact_channel_available: true }, missing_fields: ["phone"], last_user_message_text: "raw", last_bot_question: "q", last_bot_action: "a", pending_slots: ["preferred_time", 4, ""] },
+            topic_memory: { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z" },
             runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" },
             recent_history: [],
           },
@@ -592,6 +593,7 @@ test("runtime context load success hydrates runtime_context and logs debug field
   assert.equal(debug.source, "supabase");
   assert.equal(debug.state_version, 7);
   assert.equal(debug.recent_history_count, 0);
+  assert.deepEqual(debug.topic_memory, { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z" });
 });
 
 test("runtime context load failure is non-fatal and still replies", async () => {
@@ -615,6 +617,7 @@ test("runtime context load failure is non-fatal and still replies", async () => 
   assert.equal(debug.loaded, false);
   assert.equal(debug.source, "supabase");
   assert.equal(debug.error.code, "runtime_context_load_failed");
+  assert.equal(debug.topic_memory, null);
 });
 
 
@@ -935,8 +938,7 @@ test("turn understanding sanitizer does not change main agent runtime_context", 
   assert.deepEqual(mainContext.recent_history, []);
   assert.equal(calls[0].business_context.topic_memory_candidate, undefined);
   assert.equal(calls[0].business_context.runtime_context.topic_memory, undefined);
-  assert.equal(turnUnderstandingInputs[0].topic_memory.last_service_interest, "пломба");
-  assert.equal(turnUnderstandingInputs[0].topic_memory.contact_id, undefined);
+  assert.equal(turnUnderstandingInputs[0].topic_memory, undefined);
   assert.equal(turnUnderstandingInputs[0].last_bot_question, "Когда удобно?");
   assert.deepEqual(turnUnderstandingInputs[0].pending_slots, ["preferred_date"]);
 });

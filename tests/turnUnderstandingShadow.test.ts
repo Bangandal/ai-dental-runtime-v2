@@ -198,7 +198,7 @@ test("invalid classifier output falls back safely", async () => {
   assert.equal(debug.error, "classifier_invalid_output");
 });
 
-test("sanitizer keeps pending continuation fields only in turn understanding context and removes ids/history", () => {
+test("sanitizer keeps pending continuation fields only in turn understanding context and removes ids/history/topic memory", () => {
   const sanitized = sanitizeTurnUnderstandingContext({
     user_message: "14.00 михаил огар",
     runtime_gate: operationalGate,
@@ -220,7 +220,7 @@ test("sanitizer keeps pending continuation fields only in turn understanding con
   assert.equal(ctx.recent_history, undefined);
   assert.equal(ctx.clinic_id, undefined);
   assert.equal(ctx.task_state.collected.case_id, undefined);
-  assert.equal(ctx.topic_memory.contact_id, undefined);
+  assert.equal(ctx.topic_memory, undefined);
   assert.equal(ctx.latest_appointment.appointment_id, undefined);
   assert.equal(ctx.case_context.current_case.case_id, undefined);
   assert.equal(ctx.case_context.recent_cases[0].case_id, undefined);

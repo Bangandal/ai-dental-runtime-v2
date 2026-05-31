@@ -251,7 +251,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       }
     }
 
-    const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0 };
+    const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0, topic_memory: null };
     let runtimeGateSourceContext: unknown = null;
     if (deps.runtimeContextRepository) {
       try {
@@ -260,6 +260,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         if (runtimeContextResult.ok) {
           runtimeContextDebug.state_version = (runtimeContextResult.data.conversation_state as Record<string, unknown>).state_version ?? null;
           runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
+          runtimeContextDebug.topic_memory = runtimeContextResult.data.topic_memory ?? null;
           runtimeGateSourceContext = mergeCaseContextIntoModelContext(asRecord(runtimeContextResult.data), loadedCaseContext);
           runtimeTurnInput.business_context = {
             ...(runtimeTurnInput.business_context ?? {}),

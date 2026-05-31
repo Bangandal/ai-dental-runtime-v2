@@ -1,3 +1,4 @@
+import type { RuntimeGateDebug } from "./runtimeGateShadow.ts";
 import type { TurnUnderstandingDebug, TurnUnderstandingDecision, TurnUnderstandingConfidence } from "./turnUnderstandingShadow.ts";
 
 // Topic Memory Candidate is a shadow-only observability step.
@@ -17,6 +18,8 @@ export interface TopicMemoryCandidateShadowDebug {
 }
 
 export interface BuildTopicMemoryCandidateShadowInput {
+  user_message?: string;
+  runtime_gate?: RuntimeGateDebug;
   turn_understanding: TurnUnderstandingDebug;
 }
 
@@ -25,7 +28,30 @@ export function buildTopicMemoryCandidateShadow(
 ): TopicMemoryCandidateShadowDebug {
   const turnUnderstanding = input.turn_understanding;
 
+  if (turnUnderstanding.decision) {
+    const serviceInterest = readServiceInterest(turnUnderstanding.decision);
+    if (serviceInterest) {
+      return {
+        enabled: true,
+        mode: "shadow",
+        should_update: true,
+        topic_kind: "service_interest",
+        topic_value: serviceInterest,
+        confidence: turnUnderstanding.decision.confidence,
+        reason: null,
+      };
+    }
+  }
+
   if (turnUnderstanding.skipped) {
+    if (isNonOperationalFaqOrUnclear(input.runtime_gate)) {
+      // TODO: FAQ topic extraction must come from a typed/domain data source later,
+      // such as clinic service catalog or KB metadata, a typed service ontology,
+      // configurable per-clinic service aliases, or a separate approved topic extractor
+      // contract. Do not infer service topics from hardcoded runtime aliases here.
+      return emptyTopicMemoryCandidate("no_typed_topic_source");
+    }
+
     return emptyTopicMemoryCandidate("turn_understanding_skipped");
   }
 
@@ -33,20 +59,7 @@ export function buildTopicMemoryCandidateShadow(
     return emptyTopicMemoryCandidate("turn_understanding_missing_decision");
   }
 
-  const serviceInterest = readServiceInterest(turnUnderstanding.decision);
-  if (!serviceInterest) {
-    return emptyTopicMemoryCandidate(null);
-  }
-
-  return {
-    enabled: true,
-    mode: "shadow",
-    should_update: true,
-    topic_kind: "service_interest",
-    topic_value: serviceInterest,
-    confidence: turnUnderstanding.decision.confidence,
-    reason: null,
-  };
+  return emptyTopicMemoryCandidate(null);
 }
 
 function emptyTopicMemoryCandidate(reason: string | null): TopicMemoryCandidateShadowDebug {
@@ -63,6 +76,10 @@ function emptyTopicMemoryCandidate(reason: string | null): TopicMemoryCandidateS
 
 function readServiceInterest(decision: TurnUnderstandingDecision): string | null {
   return readString(decision.slot_updates.service_interest) ?? readString(decision.service_interest);
+}
+
+function isNonOperationalFaqOrUnclear(runtimeGate: RuntimeGateDebug | undefined): boolean {
+  return runtimeGate?.route === "non_operational" && (runtimeGate.turn_shape === "faq" || runtimeGate.turn_shape === "unclear");
 }
 
 function readString(value: unknown): string | null {

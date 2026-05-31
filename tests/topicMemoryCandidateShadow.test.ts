@@ -115,6 +115,86 @@ test("faq price only emits no topic candidate", () => {
   assert.equal(debug.topic_value, null);
 });
 
+
+test("non operational FAQ with service word but no typed source emits no typed source reason", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    user_message: "какая цена на пломбу?",
+    runtime_gate: { enabled: true, mode: "shadow", route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false },
+    turn_understanding: skippedDebug(),
+  });
+
+  assert.equal(debug.should_update, false);
+  assert.equal(debug.topic_kind, null);
+  assert.equal(debug.topic_value, null);
+  assert.equal(debug.confidence, null);
+  assert.equal(debug.reason, "no_typed_topic_source");
+});
+
+test("non operational unclear with service word but no typed source emits no typed source reason", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    user_message: "брекеты",
+    runtime_gate: { enabled: true, mode: "shadow", route: "non_operational", turn_shape: "unclear", confidence: "medium", reason: "unclear", should_apply: false },
+    turn_understanding: skippedDebug(),
+  });
+
+  assert.equal(debug.should_update, false);
+  assert.equal(debug.topic_kind, null);
+  assert.equal(debug.topic_value, null);
+  assert.equal(debug.confidence, null);
+  assert.equal(debug.reason, "no_typed_topic_source");
+});
+
+test("non operational FAQ generic price emits no topic candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    user_message: "какая цена?",
+    runtime_gate: { enabled: true, mode: "shadow", route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false },
+    turn_understanding: skippedDebug(),
+  });
+
+  assert.equal(debug.should_update, false);
+  assert.equal(debug.topic_kind, null);
+  assert.equal(debug.topic_value, null);
+  assert.equal(debug.confidence, null);
+});
+
+test("non operational greeting emits no topic candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    user_message: "здравствуйте",
+    runtime_gate: { enabled: true, mode: "shadow", route: "non_operational", turn_shape: "greeting", confidence: "high", reason: "greeting", should_apply: false },
+    turn_understanding: skippedDebug(),
+  });
+
+  assert.equal(debug.should_update, false);
+  assert.equal(debug.topic_kind, null);
+  assert.equal(debug.topic_value, null);
+});
+
+test("non operational thanks emits no topic candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    user_message: "спасибо",
+    runtime_gate: { enabled: true, mode: "shadow", route: "non_operational", turn_shape: "other", confidence: "high", reason: "thanks", should_apply: false },
+    turn_understanding: skippedDebug(),
+  });
+
+  assert.equal(debug.should_update, false);
+  assert.equal(debug.topic_kind, null);
+  assert.equal(debug.topic_value, null);
+});
+
+test("turn understanding service_interest wins for non operational FAQ input", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    user_message: "сколько стоит пломба?",
+    runtime_gate: { enabled: true, mode: "shadow", route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false },
+    turn_understanding: debugForDecision({ service_interest: "чистка зубов", confidence: "high" }),
+  });
+
+  assert.equal(debug.should_update, true);
+  assert.equal(debug.topic_kind, "service_interest");
+  assert.equal(debug.topic_value, "чистка зубов");
+  assert.equal(debug.confidence, "high");
+  assert.equal(debug.reason, null);
+});
+
 test("turn_understanding skipped emits skipped reason and no candidate", () => {
   const debug = buildTopicMemoryCandidateShadow({ turn_understanding: skippedDebug() });
 

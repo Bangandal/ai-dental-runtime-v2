@@ -798,7 +798,10 @@ test("debug.turn_understanding skips for non operational runtime gate", async ()
   assert.equal(payload.debug.turn_understanding.skip_reason, "runtime_gate_non_operational");
   assert.equal(payload.debug.turn_understanding.decision, null);
   assert.equal(payload.debug.topic_memory_candidate.should_update, false);
-  assert.equal(payload.debug.topic_memory_candidate.reason, "turn_understanding_skipped");
+  assert.equal(payload.debug.topic_memory_candidate.topic_kind, null);
+  assert.equal(payload.debug.topic_memory_candidate.topic_value, null);
+  assert.equal(payload.debug.topic_memory_candidate.confidence, null);
+  assert.equal(payload.debug.topic_memory_candidate.reason, "no_typed_topic_source");
   assert.equal(payload.debug.reply_context_builder.skipped, true);
   assert.equal(payload.debug.reply_context_builder.skip_reason, "turn_understanding_skipped");
   assert.equal(payload.debug.reply_context_builder.context, null);

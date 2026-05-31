@@ -28,7 +28,7 @@ test("openai classifier exact-schema response validates as classifier openai", a
     },
   });
 
-  const result = await runCaseRouterShadow({ user_message: "I want to book", runtime_context: {}, classifier });
+  const result = await runCaseRouterShadow({ user_message: "I want to book", runtime_context: {}, classifier, enabled: true });
   assert.equal(result.classifier, "openai");
   assert.equal(result.classifier_model, "gpt-test");
   assert.equal(result.decision.case_type, "booking_request");
@@ -45,7 +45,7 @@ test("openai classifier response with legacy classification key falls back", asy
     },
   });
 
-  const result = await runCaseRouterShadow({ user_message: "book me", runtime_context: {}, classifier });
+  const result = await runCaseRouterShadow({ user_message: "book me", runtime_context: {}, classifier, enabled: true });
   assert.equal(result.classifier, "fallback");
   assert.equal(result.error?.code, "classifier_invalid_output");
 });
@@ -60,7 +60,7 @@ test("openai classifier live-like price_inquiry output falls back", async () => 
     },
   });
 
-  const result = await runCaseRouterShadow({ user_message: "how much is cleaning", runtime_context: {}, classifier });
+  const result = await runCaseRouterShadow({ user_message: "how much is cleaning", runtime_context: {}, classifier, enabled: true });
   assert.equal(result.classifier, "fallback");
   assert.equal(result.error?.code, "classifier_invalid_output");
 });
@@ -75,7 +75,7 @@ test("malformed classifier json preserves classifier_model in fallback debug", a
     },
   });
 
-  const result = await runCaseRouterShadow({ user_message: "да", runtime_context: {}, classifier });
+  const result = await runCaseRouterShadow({ user_message: "да", runtime_context: {}, classifier, enabled: true });
   assert.equal(result.classifier, "fallback");
   assert.equal(result.error?.code, "invalid_classifier_json");
   assert.equal(result.classifier_model, "gpt-case-router-mini");

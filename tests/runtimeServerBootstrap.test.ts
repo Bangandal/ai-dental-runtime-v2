@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { registerRuntimeRoutes } from "../src/runtime/runtimeServerBootstrap.ts";
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
+process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
 
 test("registerRuntimeRoutes wires /runtime/turn to RuntimeTurnService built via createDentalRuntimeTurnService", async () => {
   const responseCalls: unknown[] = [];
@@ -152,7 +153,9 @@ test("registerRuntimeRoutes wires createOpenAIConversation and first turn uses c
 
 test("case router classifier uses OPENAI_CASE_ROUTER_MODEL when set", async () => {
   const previous = process.env.OPENAI_CASE_ROUTER_MODEL;
+  const previousEnabled = process.env.LEGACY_CASE_ROUTER_ENABLED;
   process.env.OPENAI_CASE_ROUTER_MODEL = "gpt-case-router";
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "true";
   const responseCalls: Array<Record<string, unknown>> = [];
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   try {
@@ -174,12 +177,15 @@ test("case router classifier uses OPENAI_CASE_ROUTER_MODEL when set", async () =
   } finally {
     if (previous === undefined) delete process.env.OPENAI_CASE_ROUTER_MODEL;
     else process.env.OPENAI_CASE_ROUTER_MODEL = previous;
+    process.env.LEGACY_CASE_ROUTER_ENABLED = previousEnabled ?? "false";
   }
 });
 
 test("case router classifier falls back to main model when OPENAI_CASE_ROUTER_MODEL missing", async () => {
   const previous = process.env.OPENAI_CASE_ROUTER_MODEL;
+  const previousEnabled = process.env.LEGACY_CASE_ROUTER_ENABLED;
   delete process.env.OPENAI_CASE_ROUTER_MODEL;
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "true";
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   let payload: unknown;
   try {
@@ -200,6 +206,7 @@ test("case router classifier falls back to main model when OPENAI_CASE_ROUTER_MO
   } finally {
     if (previous === undefined) delete process.env.OPENAI_CASE_ROUTER_MODEL;
     else process.env.OPENAI_CASE_ROUTER_MODEL = previous;
+    process.env.LEGACY_CASE_ROUTER_ENABLED = previousEnabled ?? "false";
   }
 });
 

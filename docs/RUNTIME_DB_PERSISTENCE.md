@@ -43,17 +43,16 @@ Persistence is best-effort and non-fatal for live chat.
 - JSONL runtime turn logs include the same persistence debug envelope.
 
 
-## Missing SQL in this repo
+## SQL coverage in this repo
 
-The repository does **not** currently include concrete SQL definitions for:
+The repository includes the concrete SQL contract for `rpc_merge_conversation_state` because typed `topic_memory` persistence depends on the RPC merging `p_control_flags.topic_memory` into `core.convo_state.state_json`. The public Supabase RPC wrapper delegates to `core.rpc_merge_conversation_state`, which preserves existing state keys while explicitly handling known merge fields.
+
+The repository still does **not** currently include concrete SQL definitions for:
 
 - `rpc_get_or_create_contact`
 - `rpc_register_inbound_event`
 - `rpc_save_message`
-- `rpc_merge_conversation_state`
 
-Given this gap, Runtime keeps non-fatal RPC calls in the repository layer, but this codebase must **not** add SQL stubs that can shadow/replace real DB functions.
+Runtime keeps non-fatal RPC calls in the repository layer for these remaining gaps, but this codebase must **not** add SQL stubs that can shadow/replace real DB functions.
 
 Action required outside this repo: confirm real function signatures in the live core schema and keep runtime argument mapping aligned to those real RPC contracts.
-
-Short rule: **do not add SQL stubs** for these RPCs here.

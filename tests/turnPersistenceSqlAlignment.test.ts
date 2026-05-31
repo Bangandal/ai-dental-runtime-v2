@@ -34,8 +34,10 @@ test("repository keeps intended RPC names and does not use stub-only args", asyn
   assert.equal(repo.includes("p_patch"), false);
 });
 
-test("docs explicitly record missing SQL definitions in this repository", async () => {
+test("docs record merge SQL coverage and remaining missing SQL definitions", async () => {
   const doc = await fs.readFile(DOC_PATH, "utf8");
-  assert.equal(doc.includes("Missing SQL in this repo"), true);
-  assert.equal(doc.includes("do not add SQL stubs"), true);
+  assert.equal(doc.includes("SQL coverage in this repo"), true);
+  assert.equal(doc.includes("`rpc_merge_conversation_state`"), true);
+  assert.equal(doc.includes("`rpc_get_or_create_contact`"), true);
+  assert.equal(doc.includes("SQL stubs"), true);
 });

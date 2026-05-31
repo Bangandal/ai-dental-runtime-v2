@@ -8,11 +8,12 @@ import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts
 import type { RuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
 import type { CaseContextRepository } from "./supabaseCaseContextRepository.ts";
 import { buildModelVisibleRuntimeContext } from "./modelVisibleRuntimeContext.ts";
-import { runCaseRouterShadow, type CaseRouterClassifier, sanitizeCaseRouterContext } from "./caseRouterShadow.ts";
+import { isLegacyCaseRouterEnabled, runCaseRouterShadow, type CaseRouterClassifier, sanitizeCaseRouterContext } from "./caseRouterShadow.ts";
 import { runRuntimeGateShadow, sanitizeRuntimeGateContext, type RuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import { runTurnUnderstandingShadow, sanitizeTurnUnderstandingContext, type TurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 import { buildReplyContextShadow } from "./replyContextBuilderShadow.ts";
 import { buildTopicMemoryCandidateShadow, buildTopicMemoryPatch } from "./topicMemoryCandidateShadow.ts";
+import { buildRuntimeLlmCallDebug, mergeRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -111,6 +112,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     const chatId = body.chat_id?.trim() || undefined;
 
     const persistenceDebug: Record<string, unknown> = {};
+    const turnLlmCalls = buildRuntimeLlmCallDebug();
 
     const runtimeTurnInput: RuntimeTurnInput = {
       trace_id: traceId,
@@ -293,6 +295,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       runtime_context: runtimeGateContext,
       classifier: deps.runtimeGateClassifier,
     });
+    turnLlmCalls.runtime_gate_called = Boolean(deps.runtimeGateClassifier);
 
     const turnUnderstandingInput = sanitizeTurnUnderstandingContext({
       user_message: runtimeTurnInput.user_message,
@@ -305,6 +308,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       runtime_context: turnUnderstandingInput.runtime_context,
       classifier: deps.turnUnderstandingClassifier,
     });
+    turnLlmCalls.turn_understanding_called = runtimeGateDebug.route === "operational_candidate" && Boolean(deps.turnUnderstandingClassifier);
     const topicMemoryCandidateDebug = buildTopicMemoryCandidateShadow({
       user_message: runtimeTurnInput.user_message,
       runtime_gate: runtimeGateDebug,
@@ -326,11 +330,14 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     // mutate cases, or own state; debug/observation only. See
     // docs/architecture/OPERATIONAL_RUNTIME_CONTOUR_v1.md for target architecture direction.
     const classifierInputContext = sanitizeCaseRouterContext((runtimeTurnInput.business_context as Record<string, unknown>).runtime_context);
+    const legacyCaseRouterEnabled = isLegacyCaseRouterEnabled();
     const caseRouterDebug = await runCaseRouterShadow({
       user_message: runtimeTurnInput.user_message,
       runtime_context: classifierInputContext,
       classifier: deps.caseRouterClassifier,
+      enabled: legacyCaseRouterEnabled,
     });
+    turnLlmCalls.legacy_case_router_called = legacyCaseRouterEnabled && Boolean(deps.caseRouterClassifier);
 
     if (!runtimeTurnInput.conversation_id && deps.createOpenAIConversation) {
       try {
@@ -407,6 +414,9 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         }
       }
 
+      const serviceDebug = result.debug as Record<string, unknown> | undefined;
+      const llmCalls = mergeRuntimeLlmCallDebug(turnLlmCalls, serviceDebug?.llm_calls);
+
       const responsePayload: RuntimeTurnHttpSuccessResponse = {
         trace_id: traceId,
         reply_text: result.final_patient_reply,
@@ -414,7 +424,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

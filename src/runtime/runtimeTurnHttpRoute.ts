@@ -305,6 +305,8 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       classifier: deps.turnUnderstandingClassifier,
     });
     const topicMemoryCandidateDebug = buildTopicMemoryCandidateShadow({
+      user_message: runtimeTurnInput.user_message,
+      runtime_gate: runtimeGateDebug,
       turn_understanding: turnUnderstandingDebug,
     });
     const replyContextBuilderDebug = buildReplyContextShadow({

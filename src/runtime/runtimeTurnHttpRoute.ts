@@ -12,6 +12,7 @@ import { runCaseRouterShadow, type CaseRouterClassifier, sanitizeCaseRouterConte
 import { runRuntimeGateShadow, sanitizeRuntimeGateContext, type RuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import { runTurnUnderstandingShadow, sanitizeTurnUnderstandingContext, type TurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 import { buildReplyContextShadow } from "./replyContextBuilderShadow.ts";
+import { buildTopicMemoryCandidateShadow } from "./topicMemoryCandidateShadow.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -303,6 +304,9 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       runtime_context: turnUnderstandingInput.runtime_context,
       classifier: deps.turnUnderstandingClassifier,
     });
+    const topicMemoryCandidateDebug = buildTopicMemoryCandidateShadow({
+      turn_understanding: turnUnderstandingDebug,
+    });
     const replyContextBuilderDebug = buildReplyContextShadow({
       runtime_gate: runtimeGateDebug,
       turn_understanding: turnUnderstandingDebug,
@@ -397,7 +401,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

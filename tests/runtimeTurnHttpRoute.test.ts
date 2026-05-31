@@ -726,6 +726,10 @@ test("debug.turn_understanding appears in response and log payload for operation
   assert.equal(payload.debug.turn_understanding.decision.turn_type, "booking_request");
   assert.equal(payload.debug.turn_understanding.decision.should_apply, false);
   assert.deepEqual(payload.debug.turn_understanding.decision.missing_fields, ["service_interest"]);
+  assert.equal(payload.debug.topic_memory_candidate.enabled, true);
+  assert.equal(payload.debug.topic_memory_candidate.mode, "shadow");
+  assert.equal(payload.debug.topic_memory_candidate.should_update, false);
+  assert.equal(payload.debug.topic_memory_candidate.topic_kind, null);
   assert.equal(payload.debug.reply_context_builder.enabled, true);
   assert.equal(payload.debug.reply_context_builder.mode, "shadow");
   assert.equal(payload.debug.reply_context_builder.skipped, false);
@@ -733,9 +737,42 @@ test("debug.turn_understanding appears in response and log payload for operation
   assert.ok(payload.debug.reply_context_builder.context.do_not_ask.includes("phone"));
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
   assert.equal(loggedDebug?.turn_understanding.decision.turn_type, "booking_request");
+  assert.equal(loggedDebug?.topic_memory_candidate.should_update, false);
   assert.equal(loggedDebug?.reply_context_builder.context.what_to_do, "ask_missing_fields");
   assert.deepEqual(calls[0].business_context.meta, undefined);
+  assert.equal(calls[0].business_context.topic_memory_candidate, undefined);
   assert.equal(calls[0].business_context.reply_context_builder, undefined);
+});
+
+test("debug.topic_memory_candidate appears after turn understanding and before reply context", async () => {
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "same reply", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    undefined,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "slot_fragment", confidence: "high", reason: "service", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { return { turn_type: "slot_fill", topic: null, service_interest: "пломба", subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "open_new", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: "пломба", preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: [], confidence: "high", reason: "service named", should_apply: false }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "на пломбу" });
+  const payload = response.payload as Record<string, any>;
+  const debugKeys = Object.keys(payload.debug);
+
+  assert.equal(payload.final_patient_reply, "same reply");
+  assert.equal(payload.debug.topic_memory_candidate.enabled, true);
+  assert.equal(payload.debug.topic_memory_candidate.mode, "shadow");
+  assert.equal(payload.debug.topic_memory_candidate.should_update, true);
+  assert.equal(payload.debug.topic_memory_candidate.topic_kind, "service_interest");
+  assert.equal(payload.debug.topic_memory_candidate.topic_value, "пломба");
+  assert.equal(payload.debug.topic_memory_candidate.confidence, "high");
+  assert.equal(payload.debug.topic_memory_candidate.reason, null);
+  assert.ok(debugKeys.indexOf("runtime_gate") < debugKeys.indexOf("turn_understanding"));
+  assert.ok(debugKeys.indexOf("turn_understanding") < debugKeys.indexOf("topic_memory_candidate"));
+  assert.ok(debugKeys.indexOf("topic_memory_candidate") < debugKeys.indexOf("reply_context_builder"));
 });
 
 test("debug.turn_understanding skips for non operational runtime gate", async () => {
@@ -760,6 +797,8 @@ test("debug.turn_understanding skips for non operational runtime gate", async ()
   assert.equal(payload.debug.turn_understanding.skipped, true);
   assert.equal(payload.debug.turn_understanding.skip_reason, "runtime_gate_non_operational");
   assert.equal(payload.debug.turn_understanding.decision, null);
+  assert.equal(payload.debug.topic_memory_candidate.should_update, false);
+  assert.equal(payload.debug.topic_memory_candidate.reason, "turn_understanding_skipped");
   assert.equal(payload.debug.reply_context_builder.skipped, true);
   assert.equal(payload.debug.reply_context_builder.skip_reason, "turn_understanding_skipped");
   assert.equal(payload.debug.reply_context_builder.context, null);
@@ -796,6 +835,7 @@ test("turn understanding invalid route classifier output safely falls back witho
   assert.equal(payload.debug.turn_understanding.decision.case_decision.action, "none");
   assert.equal(payload.debug.turn_understanding.decision.should_apply, false);
   assert.equal(payload.debug.turn_understanding.error, "classifier_invalid_output");
+  assert.equal(payload.debug.topic_memory_candidate.should_update, false);
   assert.equal(payload.debug.reply_context_builder.context.what_to_do, "safe_fallback");
   assert.deepEqual(persistenceCalls, ["contact", "inbound", "message:user", "message:assistant", "merge"]);
 });
@@ -822,6 +862,7 @@ test("turn understanding sanitizer does not change main agent runtime_context", 
   assert.equal(mainContext.task_state.last_bot_question, undefined);
   assert.equal(mainContext.task_state.pending_slots, undefined);
   assert.deepEqual(mainContext.recent_history, []);
+  assert.equal(calls[0].business_context.topic_memory_candidate, undefined);
   assert.equal(turnUnderstandingInputs[0].last_bot_question, "Когда удобно?");
   assert.deepEqual(turnUnderstandingInputs[0].pending_slots, ["preferred_date"]);
 });

@@ -1,0 +1,149 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { buildTopicMemoryCandidateShadow } from "../src/runtime/topicMemoryCandidateShadow.ts";
+import { buildFallbackTurnUnderstandingDecision, type TurnUnderstandingDebug, type TurnUnderstandingDecision } from "../src/runtime/turnUnderstandingShadow.ts";
+
+function debugForDecision(overrides: Partial<TurnUnderstandingDecision> = {}): TurnUnderstandingDebug {
+  return {
+    enabled: true,
+    mode: "shadow",
+    skipped: false,
+    skip_reason: null,
+    decision: {
+      ...buildFallbackTurnUnderstandingDecision("mocked"),
+      turn_type: "booking_request",
+      service_interest: null,
+      subject: { kind: "self", display_name: null },
+      reply_objective: "ask_missing_field",
+      case_decision: { action: "open_new", case_kind: "booking", target_case_id: null },
+      slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null },
+      missing_fields: [],
+      confidence: "high",
+      reason: "mocked",
+      ...overrides,
+      should_apply: false,
+    },
+    error: null,
+  };
+}
+
+function skippedDebug(): TurnUnderstandingDebug {
+  return {
+    enabled: true,
+    mode: "shadow",
+    skipped: true,
+    skip_reason: "runtime_gate_non_operational",
+    decision: null,
+    error: null,
+  };
+}
+
+test("service_interest пломба emits update candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    turn_understanding: debugForDecision({ service_interest: "пломба", confidence: "high" }),
+  });
+
+  assert.equal(debug.enabled, true);
+  assert.equal(debug.mode, "shadow");
+  assert.equal(debug.should_update, true);
+  assert.equal(debug.topic_kind, "service_interest");
+  assert.equal(debug.topic_value, "пломба");
+  assert.equal(debug.confidence, "high");
+  assert.equal(debug.reason, null);
+});
+
+test("slot_updates.service_interest отбеливание зубов emits update candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    turn_understanding: debugForDecision({
+      service_interest: null,
+      slot_updates: { service_interest: "отбеливание зубов", preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null },
+      confidence: "medium",
+    }),
+  });
+
+  assert.equal(debug.should_update, true);
+  assert.equal(debug.topic_kind, "service_interest");
+  assert.equal(debug.topic_value, "отбеливание зубов");
+  assert.equal(debug.confidence, "medium");
+});
+
+test("service_interest брекеты emits update candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    turn_understanding: debugForDecision({ service_interest: "брекеты", confidence: "high" }),
+  });
+
+  assert.equal(debug.should_update, true);
+  assert.equal(debug.topic_kind, "service_interest");
+  assert.equal(debug.topic_value, "брекеты");
+});
+
+test("greeting emits no topic candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    turn_understanding: debugForDecision({
+      turn_type: "unknown",
+      service_interest: null,
+      slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null },
+      confidence: "low",
+    }),
+  });
+
+  assert.equal(debug.should_update, false);
+  assert.equal(debug.topic_kind, null);
+  assert.equal(debug.topic_value, null);
+  assert.equal(debug.confidence, null);
+  assert.equal(debug.reason, null);
+});
+
+test("faq price only emits no topic candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({
+    turn_understanding: debugForDecision({
+      turn_type: "unknown",
+      topic: "price",
+      service_interest: null,
+      slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null },
+      reply_objective: "answer",
+      confidence: "high",
+    }),
+  });
+
+  assert.equal(debug.should_update, false);
+  assert.equal(debug.topic_kind, null);
+  assert.equal(debug.topic_value, null);
+});
+
+test("turn_understanding skipped emits skipped reason and no candidate", () => {
+  const debug = buildTopicMemoryCandidateShadow({ turn_understanding: skippedDebug() });
+
+  assert.deepEqual(debug, {
+    enabled: true,
+    mode: "shadow",
+    should_update: false,
+    topic_kind: null,
+    topic_value: null,
+    confidence: null,
+    reason: "turn_understanding_skipped",
+  });
+});
+
+test("topic memory candidate builder does not mutate turn_understanding", () => {
+  const turnUnderstanding = debugForDecision({ service_interest: "пломба" });
+  const before = structuredClone(turnUnderstanding);
+
+  buildTopicMemoryCandidateShadow({ turn_understanding: turnUnderstanding });
+
+  assert.deepEqual(turnUnderstanding, before);
+});
+
+test("topic memory candidate shadow has no database, model, or persistence calls", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const source = await readFile(resolve(thisDir, "../src/runtime/topicMemoryCandidateShadow.ts"), "utf8");
+
+  assert.doesNotMatch(source, /from\s+["']([^"']*openai[^"']*)["']/i);
+  assert.doesNotMatch(source, /responses\.create|classify[A-Z]/);
+  assert.doesNotMatch(source, /from\s+["']([^"']*supabase[^"']*)["']/i);
+  assert.doesNotMatch(source, /repository|rpc|save[A-Z]|insert[A-Z]|update[A-Z]|delete[A-Z]/);
+});

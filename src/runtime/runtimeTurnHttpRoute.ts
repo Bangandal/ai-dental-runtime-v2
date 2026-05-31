@@ -12,7 +12,7 @@ import { runCaseRouterShadow, type CaseRouterClassifier, sanitizeCaseRouterConte
 import { runRuntimeGateShadow, sanitizeRuntimeGateContext, type RuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import { runTurnUnderstandingShadow, sanitizeTurnUnderstandingContext, type TurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 import { buildReplyContextShadow } from "./replyContextBuilderShadow.ts";
-import { buildTopicMemoryCandidateShadow } from "./topicMemoryCandidateShadow.ts";
+import { buildTopicMemoryCandidateShadow, buildTopicMemoryPatch } from "./topicMemoryCandidateShadow.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -305,8 +305,14 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       classifier: deps.turnUnderstandingClassifier,
     });
     const topicMemoryCandidateDebug = buildTopicMemoryCandidateShadow({
+      user_message: runtimeTurnInput.user_message,
+      runtime_gate: runtimeGateDebug,
       turn_understanding: turnUnderstandingDebug,
     });
+    const topicMemoryPatch = buildTopicMemoryPatch(topicMemoryCandidateDebug, new Date());
+    persistenceDebug.topic_memory = topicMemoryPatch
+      ? { ok: false, skipped: true, reason: "turn_persistence_repository_unavailable" }
+      : { ok: false, skipped: true, reason: topicMemoryCandidateDebug.reason ?? "topic_memory_candidate_no_update" };
     const replyContextBuilderDebug = buildReplyContextShadow({
       runtime_gate: runtimeGateDebug,
       turn_understanding: turnUnderstandingDebug,
@@ -390,8 +396,14 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
           handoff_recommended: Boolean((result.debug as Record<string, unknown> | undefined)?.handoff_recommended ?? false),
           confidence: "medium",
           control_flags: { openai_conversation_id: conversationIdToPersist },
+          topic_memory_patch: topicMemoryPatch,
         }).catch(() => ({ ok: false } as const));
         persistenceDebug.merge_state = mergeState.ok ? { ok: true } : { ok: false, code: "convo_state_persist_failed" };
+        if (topicMemoryPatch) {
+          persistenceDebug.topic_memory = mergeState.ok
+            ? { ok: true, skipped: false, reason: null }
+            : { ok: false, skipped: false, reason: "convo_state_persist_failed" };
+        }
       }
 
       const responsePayload: RuntimeTurnHttpSuccessResponse = {

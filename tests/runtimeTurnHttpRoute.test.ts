@@ -879,6 +879,59 @@ test("debug.turn_understanding skips for non operational runtime gate", async ()
   assert.equal(classifierCalls, 0);
 });
 
+test("hydrated topic memory is sanitized into turn understanding only and reflected by reply context", async () => {
+  const calls: Array<Record<string, any>> = [];
+  const persistenceCalls: string[] = [];
+  const turnUnderstandingInputs: Array<Record<string, any>> = [];
+  const harness = createRouteHarness(
+    { async runTurn(input) { calls.push(input as any); return { final_patient_reply: "ok", tool_results: [] } as any; } },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    {
+      async getOrCreateContact(input) { persistenceCalls.push("contact"); return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+      async registerInboundEvent() { persistenceCalls.push("inbound"); return { ok: true, data: {} }; },
+      async saveMessage(input) { persistenceCalls.push(`message:${input.role}`); return { ok: true, data: { message_id: `m_${input.role}` } }; },
+      async mergeConversationState() { persistenceCalls.push("merge"); return { ok: true, data: {} }; },
+    },
+    defaultClinicIdentityResolver,
+    { async loadRuntimeContext() { return { ok: true, data: { known_contact: {}, conversation_state: { collected: {}, missing_fields: [] }, topic_memory: { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z", contact_id: "hidden", raw_state_json: { unsafe: true } }, runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-05-31T00:00:00.000Z" }, recent_history: [] } }; } },
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "booking", confidence: "high", reason: "booking", should_apply: false }; } },
+    {
+      async classifyTurnUnderstanding(input) {
+        turnUnderstandingInputs.push(input.runtime_context as Record<string, any>);
+        return {
+          turn_type: "booking_request",
+          topic: "appointment booking",
+          service_interest: "пломба",
+          subject: { kind: "self", display_name: null },
+          reply_objective: "ask_missing_field",
+          case_decision: { action: "open_new", case_kind: "booking", target_case_id: null },
+          slot_updates: { service_interest: "пломба", preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null },
+          missing_fields: ["preferred_date", "preferred_time"],
+          confidence: "high",
+          reason: "booking with topic memory fallback",
+          should_apply: false,
+        };
+      },
+    },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", chat_id: "chat_1", text: "могу записаться?" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.deepEqual(turnUnderstandingInputs[0].topic_memory, { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z" });
+  assert.equal(turnUnderstandingInputs[0].topic_memory.contact_id, undefined);
+  assert.equal(turnUnderstandingInputs[0].topic_memory.raw_state_json, undefined);
+  assert.equal(calls[0].business_context.runtime_context.topic_memory, undefined);
+  assert.equal(payload.debug.turn_understanding.decision.service_interest, "пломба");
+  assert.deepEqual(payload.debug.turn_understanding.decision.missing_fields, ["preferred_date", "preferred_time"]);
+  assert.ok(!payload.debug.turn_understanding.decision.missing_fields.includes("service_interest"));
+  assert.ok(payload.debug.reply_context_builder.context.do_not_ask.includes("service_interest"));
+  assert.deepEqual(persistenceCalls, ["contact", "inbound", "message:user", "message:assistant", "merge"]);
+});
+
 test("turn understanding invalid route classifier output safely falls back without DB writes or reply changes", async () => {
   const persistenceCalls: string[] = [];
   const harness = createRouteHarness(
@@ -938,7 +991,8 @@ test("turn understanding sanitizer does not change main agent runtime_context", 
   assert.deepEqual(mainContext.recent_history, []);
   assert.equal(calls[0].business_context.topic_memory_candidate, undefined);
   assert.equal(calls[0].business_context.runtime_context.topic_memory, undefined);
-  assert.equal(turnUnderstandingInputs[0].topic_memory, undefined);
+  assert.deepEqual(turnUnderstandingInputs[0].topic_memory, { last_service_interest: "пломба" });
+  assert.equal(turnUnderstandingInputs[0].topic_memory.contact_id, undefined);
   assert.equal(turnUnderstandingInputs[0].last_bot_question, "Когда удобно?");
   assert.deepEqual(turnUnderstandingInputs[0].pending_slots, ["preferred_date"]);
 });

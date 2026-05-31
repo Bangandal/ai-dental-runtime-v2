@@ -124,6 +124,58 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(input.locale, "ru");
 });
 
+
+
+test("default unset LEGACY_CASE_ROUTER_ENABLED disables legacy router without calling classifier", async () => {
+  const previousEnabled = process.env.LEGACY_CASE_ROUTER_ENABLED;
+  delete process.env.LEGACY_CASE_ROUTER_ENABLED;
+  let legacyCalls = 0;
+  try {
+    const harness = createRouteHarness(
+      {
+        runTurn: async () => ({
+          final_patient_reply: "same patient reply",
+          tool_results: [],
+          debug: { llm_calls: { main_agent_called: true } },
+        }) as any,
+      },
+      createNoopRuntimeTurnLogger(),
+      undefined,
+      undefined,
+      undefined,
+      defaultClinicIdentityResolver,
+      undefined,
+      undefined,
+      { async classifyRuntimeGateTurn() { return { route: "non_operational", turn_shape: "greeting", confidence: "high", reason: "greeting", should_apply: false }; } },
+      undefined,
+      { async classifyCaseTurn() { legacyCalls += 1; throw new Error("legacy router should be disabled by default"); } },
+    );
+
+    const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Привет" });
+    const payload = response.payload as Record<string, any>;
+
+    assert.equal(payload.final_patient_reply, "same patient reply");
+    assert.equal(legacyCalls, 0);
+    assert.equal(payload.debug.legacy_case_router.enabled, false);
+    assert.equal(payload.debug.legacy_case_router.skipped, true);
+    assert.equal(payload.debug.legacy_case_router.skip_reason, "legacy_case_router_disabled");
+    assert.equal(payload.debug.llm_calls.legacy_case_router_called, false);
+    assert.deepEqual(payload.debug.llm_calls, {
+      runtime_gate_called: true,
+      turn_understanding_called: false,
+      legacy_case_router_called: false,
+      main_agent_called: true,
+      total_llm_calls: 2,
+    });
+  } finally {
+    if (previousEnabled === undefined) {
+      delete process.env.LEGACY_CASE_ROUTER_ENABLED;
+    } else {
+      process.env.LEGACY_CASE_ROUTER_ENABLED = previousEnabled;
+    }
+  }
+});
+
 test("debug.runtime_gate appears in runtime response and log payload without changing reply", async () => {
   let loggedDebug: Record<string, any> | null = null;
   const harness = createRouteHarness(
@@ -360,28 +412,57 @@ test("debug.llm_calls counts booking operational turn with legacy disabled", asy
   });
 });
 
-test("debug.llm_calls increments for enabled legacy router", async () => {
+test("debug.llm_calls increments for enabled legacy router and exposes classifier output", async () => {
+  const previousEnabled = process.env.LEGACY_CASE_ROUTER_ENABLED;
   process.env.LEGACY_CASE_ROUTER_ENABLED = "true";
-  const harness = createRouteHarness(
-    { runTurn: async () => ({ final_patient_reply: "reply", tool_results: [], debug: { llm_calls: { main_agent_called: true } } }) as any },
-    createNoopRuntimeTurnLogger(),
-    undefined,
-    undefined,
-    undefined,
-    defaultClinicIdentityResolver,
-    undefined,
-    undefined,
-    { async classifyRuntimeGateTurn() { return { route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false }; } },
-    undefined,
-    { async classifyCaseTurn() { return { case_relation: "no_case", case_action: "no_case", case_type: "faq", topic: null, status: null, priority: "normal", confidence: "high", reason: "faq", should_apply: false }; } },
-  );
+  let legacyCalls = 0;
+  try {
+    const harness = createRouteHarness(
+      { runTurn: async () => ({ final_patient_reply: "reply", tool_results: [], debug: { llm_calls: { main_agent_called: true } } }) as any },
+      createNoopRuntimeTurnLogger(),
+      undefined,
+      undefined,
+      undefined,
+      defaultClinicIdentityResolver,
+      undefined,
+      undefined,
+      { async classifyRuntimeGateTurn() { return { route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false }; } },
+      undefined,
+      {
+        async classifyCaseTurn() {
+          legacyCalls += 1;
+          return {
+            decision: { case_relation: "no_case", case_action: "no_case", case_type: "faq", topic: "prices", status: null, priority: "normal", confidence: "high", reason: "faq price question", should_apply: false },
+            classifier_model: "gpt-case-router-test",
+            classifier_raw_output: '{"case_type":"faq"}',
+            classifier_raw_parsed: { case_type: "faq" },
+          };
+        },
+      },
+    );
 
-  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "цены" });
-  const payload = response.payload as Record<string, any>;
+    const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "цены" });
+    const payload = response.payload as Record<string, any>;
 
-  assert.equal(payload.debug.llm_calls.legacy_case_router_called, true);
-  assert.equal(payload.debug.llm_calls.total_llm_calls, 3);
-  process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
+    assert.equal(payload.final_patient_reply, "reply");
+    assert.equal(legacyCalls, 1);
+    assert.equal(payload.debug.llm_calls.legacy_case_router_called, true);
+    assert.equal(payload.debug.llm_calls.total_llm_calls, 3);
+    assert.equal(payload.debug.legacy_case_router.enabled, true);
+    assert.equal(payload.debug.legacy_case_router.skipped, undefined);
+    assert.equal(payload.debug.legacy_case_router.classifier, "openai");
+    assert.equal(payload.debug.legacy_case_router.classifier_model, "gpt-case-router-test");
+    assert.equal(payload.debug.legacy_case_router.decision.case_type, "faq");
+    assert.equal(payload.debug.legacy_case_router.decision.topic, "prices");
+    assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
+    assert.deepEqual(payload.debug.legacy_case_router.classifier_raw_parsed, { case_type: "faq" });
+  } finally {
+    if (previousEnabled === undefined) {
+      delete process.env.LEGACY_CASE_ROUTER_ENABLED;
+    } else {
+      process.env.LEGACY_CASE_ROUTER_ENABLED = previousEnabled;
+    }
+  }
 });
 
 test("debug.llm_calls counts only actual invoked classifiers when classifiers are missing", async () => {

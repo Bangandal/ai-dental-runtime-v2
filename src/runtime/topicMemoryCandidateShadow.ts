@@ -23,23 +23,6 @@ export interface BuildTopicMemoryCandidateShadowInput {
   turn_understanding: TurnUnderstandingDebug;
 }
 
-interface ServiceKeywordCandidate {
-  topic_value: string;
-}
-
-const FAQ_SERVICE_KEYWORDS: readonly { readonly topic_value: string; readonly terms: readonly string[] }[] = [
-  { topic_value: "удаление зуба", terms: ["удаление зуба", "вырывание зуба", "вырвать зуб", "видалення зуба", "tooth extraction", "extrakce"] },
-  { topic_value: "отбеливание зубов", terms: ["отбеливание зубов", "отбеливание", "відбілювання", "whitening", "bělení"] },
-  { topic_value: "чистка зубов", terms: ["чистка зубов", "чистка", "гигиена", "dentální hygiena", "čištění zubů", "teeth cleaning", "чистка зубів"] },
-  { topic_value: "консультация ортодонта", terms: ["консультация ортодонта", "ортодонт консультация"] },
-  { topic_value: "пломба", terms: ["пломба", "пломбу", "пломбы"] },
-  { topic_value: "tooth filling", terms: ["filling", "výplň"] },
-  { topic_value: "кариес", terms: ["кариес"] },
-  { topic_value: "брекеты", terms: ["брекеты", "брекети", "braces", "rovnátka"] },
-  { topic_value: "коронка", terms: ["коронка"] },
-  { topic_value: "имплант", terms: ["имплант"] },
-];
-
 export function buildTopicMemoryCandidateShadow(
   input: BuildTopicMemoryCandidateShadowInput,
 ): TopicMemoryCandidateShadowDebug {
@@ -60,20 +43,15 @@ export function buildTopicMemoryCandidateShadow(
     }
   }
 
-  const faqKeywordCandidate = buildFaqServiceKeywordCandidate(input);
-  if (faqKeywordCandidate) {
-    return {
-      enabled: true,
-      mode: "shadow",
-      should_update: true,
-      topic_kind: "service_interest",
-      topic_value: faqKeywordCandidate.topic_value,
-      confidence: "medium",
-      reason: "non_operational_service_keyword",
-    };
-  }
-
   if (turnUnderstanding.skipped) {
+    if (isNonOperationalFaqOrUnclear(input.runtime_gate)) {
+      // TODO: FAQ topic extraction must come from a typed/domain data source later,
+      // such as clinic service catalog or KB metadata, a typed service ontology,
+      // configurable per-clinic service aliases, or a separate approved topic extractor
+      // contract. Do not infer service topics from hardcoded runtime aliases here.
+      return emptyTopicMemoryCandidate("no_typed_topic_source");
+    }
+
     return emptyTopicMemoryCandidate("turn_understanding_skipped");
   }
 
@@ -100,27 +78,8 @@ function readServiceInterest(decision: TurnUnderstandingDecision): string | null
   return readString(decision.slot_updates.service_interest) ?? readString(decision.service_interest);
 }
 
-function buildFaqServiceKeywordCandidate(input: BuildTopicMemoryCandidateShadowInput): ServiceKeywordCandidate | null {
-  if (!isFaqServiceKeywordEligible(input.runtime_gate)) return null;
-
-  const normalizedUserMessage = normalizeText(input.user_message);
-  if (!normalizedUserMessage) return null;
-
-  for (const keyword of FAQ_SERVICE_KEYWORDS) {
-    if (keyword.terms.some((term) => normalizedUserMessage.includes(normalizeText(term)))) {
-      return { topic_value: keyword.topic_value };
-    }
-  }
-
-  return null;
-}
-
-function isFaqServiceKeywordEligible(runtimeGate: RuntimeGateDebug | undefined): boolean {
+function isNonOperationalFaqOrUnclear(runtimeGate: RuntimeGateDebug | undefined): boolean {
   return runtimeGate?.route === "non_operational" && (runtimeGate.turn_shape === "faq" || runtimeGate.turn_shape === "unclear");
-}
-
-function normalizeText(value: unknown): string {
-  return typeof value === "string" ? value.trim().toLocaleLowerCase() : "";
 }
 
 function readString(value: unknown): string | null {

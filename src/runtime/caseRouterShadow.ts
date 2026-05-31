@@ -28,7 +28,9 @@ export interface CaseRouterDecision {
 }
 
 // LEGACY EXPERIMENTAL CONTOUR debug structure: non-authoritative observation envelope only.
-export interface CaseRouterDebug {
+export type CaseRouterDebug = CaseRouterEnabledDebug | CaseRouterDisabledDebug;
+
+export interface CaseRouterEnabledDebug {
   enabled: true;
   mode: "shadow";
   classifier: "openai" | "fallback";
@@ -38,6 +40,17 @@ export interface CaseRouterDebug {
   classifier_model?: string;
   classifier_raw_output?: string;
   classifier_raw_parsed?: unknown;
+}
+
+export interface CaseRouterDisabledDebug {
+  enabled: false;
+  mode: "shadow";
+  skipped: true;
+  skip_reason: "legacy_case_router_disabled";
+  classifier: null;
+  decision: null;
+  applied: false;
+  error: null;
 }
 // LEGACY EXPERIMENTAL CONTOUR classifier input: compact model-visible context for observation only.
 export interface CaseRouterClassifierInput {
@@ -57,6 +70,24 @@ const PRIORITIES: readonly CasePriority[] = ["low", "normal", "high", "urgent"];
 const CONFIDENCES: readonly CaseConfidence[] = ["low", "medium", "high"];
 
 const FALLBACK_REASON = "shadow router fallback; classifier not connected";
+const LEGACY_CASE_ROUTER_ENABLED_ENV = "LEGACY_CASE_ROUTER_ENABLED";
+
+export function isLegacyCaseRouterEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env[LEGACY_CASE_ROUTER_ENABLED_ENV] === "true";
+}
+
+export function buildSkippedCaseRouterDebug(): CaseRouterDisabledDebug {
+  return {
+    enabled: false,
+    mode: "shadow",
+    skipped: true,
+    skip_reason: "legacy_case_router_disabled",
+    classifier: null,
+    decision: null,
+    applied: false,
+    error: null,
+  };
+}
 
 export function buildFallbackCaseRouterDecision(reason = FALLBACK_REASON): CaseRouterDecision {
   return {
@@ -96,7 +127,12 @@ export async function runCaseRouterShadow(input: {
   user_message: string;
   runtime_context: Record<string, unknown>;
   classifier?: CaseRouterClassifier;
+  enabled?: boolean;
 }): Promise<CaseRouterDebug> {
+  if (!(input.enabled ?? isLegacyCaseRouterEnabled())) {
+    return buildSkippedCaseRouterDebug();
+  }
+
   const fallback = buildFallbackCaseRouterDecision();
   if (!input.classifier) {
     return { enabled: true, mode: "shadow", classifier: "fallback", decision: fallback, applied: false, error: null };

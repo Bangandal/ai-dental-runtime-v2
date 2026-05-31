@@ -13,9 +13,11 @@ import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersi
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
 import type { RuntimeGateClassifier } from "../src/runtime/runtimeGateShadow.ts";
 import type { TurnUnderstandingClassifier } from "../src/runtime/turnUnderstandingShadow.ts";
+import type { CaseRouterClassifier } from "../src/runtime/caseRouterShadow.ts";
 
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
 const CLINIC_CODE = "clinic_1";
+process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
 
 const defaultClinicIdentityResolver: ClinicIdentityResolver = {
   async resolveClinicIdentity(input) {
@@ -37,6 +39,7 @@ function createRouteHarness(
   caseContextRepository?: { loadCaseContext(input: { clinic_id: string; contact_id: string }): Promise<any> },
   runtimeGateClassifier?: RuntimeGateClassifier,
   turnUnderstandingClassifier?: TurnUnderstandingClassifier,
+  caseRouterClassifier?: CaseRouterClassifier,
 ) {
   let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
@@ -46,7 +49,7 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository, runtimeGateClassifier, turnUnderstandingClassifier },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository, runtimeGateClassifier, turnUnderstandingClassifier, caseRouterClassifier },
   );
 
   assert.ok(handler);
@@ -104,8 +107,14 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
   assert.equal(payload.debug.runtime_gate.mode, "shadow");
   assert.equal(payload.debug.runtime_gate.route, "non_operational");
   assert.equal(payload.debug.runtime_gate.should_apply, false);
+  assert.equal(payload.debug.legacy_case_router.enabled, false);
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
-  assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
+  assert.equal(payload.debug.legacy_case_router.skipped, true);
+  assert.equal(payload.debug.legacy_case_router.skip_reason, "legacy_case_router_disabled");
+  assert.equal(payload.debug.legacy_case_router.classifier, null);
+  assert.equal(payload.debug.legacy_case_router.decision, null);
+  assert.equal(payload.debug.legacy_case_router.applied, false);
+  assert.equal(payload.debug.legacy_case_router.error, null);
 
   const input = calls[0] as Record<string, any>;
   assert.equal(input.clinic_id, CLINIC_UUID);
@@ -146,8 +155,10 @@ test("debug.runtime_gate appears in runtime response and log payload without cha
   assert.equal(payload.debug.runtime_gate.turn_shape, "booking");
   assert.equal(payload.debug.runtime_gate.should_apply, false);
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
+  assert.equal(payload.debug.legacy_case_router.skipped, true);
   assert.equal(loggedDebug?.runtime_gate.route, "operational_candidate");
   assert.equal(loggedDebug?.legacy_case_router.mode, "shadow");
+  assert.equal(loggedDebug?.legacy_case_router.skipped, true);
 });
 
 test("invalid request returns 400", async () => {
@@ -672,7 +683,8 @@ test("case context load failure is non-fatal", async () => {
   assert.equal(debug.error.code, "case_context_load_failed");
 });
 
-test("classifier valid output is attached to debug envelope", async () => {
+test("default disabled legacy case router emits skipped envelope and does not call classifier", async () => {
+  let classifierCalls = 0;
   const harness = createRouteHarness(
     { runTurn: async () => ({ final_patient_reply: "ok", tool_results: [] }) as any },
     createNoopRuntimeTurnLogger(),
@@ -682,15 +694,71 @@ test("classifier valid output is attached to debug envelope", async () => {
     defaultClinicIdentityResolver,
     undefined,
     undefined,
+    undefined,
+    undefined,
+    {
+      async classifyCaseTurn() {
+        classifierCalls += 1;
+        throw new Error("legacy classifier should not run by default");
+      },
+    },
   );
 
   const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Need to reschedule" });
   const payload = response.payload as Record<string, any>;
+  assert.equal(payload.final_patient_reply, "ok");
   assert.equal(payload.debug.runtime_gate.mode, "shadow");
   assert.equal(payload.debug.runtime_gate.route, "non_operational");
   assert.equal(payload.debug.runtime_gate.should_apply, false);
-  assert.equal(payload.debug.legacy_case_router.mode, "shadow");
-  assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
+  assert.equal(classifierCalls, 0);
+  assert.deepEqual(payload.debug.legacy_case_router, {
+    enabled: false,
+    mode: "shadow",
+    skipped: true,
+    skip_reason: "legacy_case_router_disabled",
+    classifier: null,
+    decision: null,
+    applied: false,
+    error: null,
+  });
+});
+
+test("env enabled legacy case router runs classifier and preserves patient reply", async () => {
+  const previous = process.env.LEGACY_CASE_ROUTER_ENABLED;
+  process.env.LEGACY_CASE_ROUTER_ENABLED = "true";
+  let classifierCalls = 0;
+  try {
+    const harness = createRouteHarness(
+      { runTurn: async () => ({ final_patient_reply: "same patient reply", tool_results: [] }) as any },
+      createNoopRuntimeTurnLogger(),
+      undefined,
+      undefined,
+      undefined,
+      defaultClinicIdentityResolver,
+      undefined,
+      undefined,
+      { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "booking", confidence: "high", reason: "booking", should_apply: false }; } },
+      { async classifyTurnUnderstanding() { return { turn_type: "booking_request", topic: "appointment booking", service_interest: null, subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "open_new", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: ["service_interest"], confidence: "high", reason: "User asks to book", should_apply: false }; } },
+      {
+        async classifyCaseTurn() {
+          classifierCalls += 1;
+          return { case_relation: "new_case", case_action: "open_case", case_type: "booking_request", topic: "booking", status: "open", priority: "normal", confidence: "high", reason: "legacy shadow", should_apply: true };
+        },
+      },
+    );
+
+    const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "Need to book" });
+    const payload = response.payload as Record<string, any>;
+    assert.equal(payload.final_patient_reply, "same patient reply");
+    assert.equal(classifierCalls, 1);
+    assert.equal(payload.debug.runtime_gate.route, "operational_candidate");
+    assert.equal(payload.debug.turn_understanding.decision.turn_type, "booking_request");
+    assert.equal(payload.debug.legacy_case_router.enabled, true);
+    assert.equal(payload.debug.legacy_case_router.classifier, "openai");
+    assert.equal(payload.debug.legacy_case_router.decision.should_apply, false);
+  } finally {
+    process.env.LEGACY_CASE_ROUTER_ENABLED = previous ?? "false";
+  }
 });
 
 test("classifier output fallback remains non-fatal", async () => {
@@ -739,6 +807,7 @@ test("debug.turn_understanding appears in response and log payload for operation
   assert.equal(payload.debug.reply_context_builder.context.what_to_do, "ask_missing_fields");
   assert.ok(payload.debug.reply_context_builder.context.do_not_ask.includes("phone"));
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
+  assert.equal(payload.debug.legacy_case_router.skipped, true);
   assert.equal(loggedDebug?.turn_understanding.decision.turn_type, "booking_request");
   assert.equal(loggedDebug?.topic_memory_candidate.should_update, false);
   assert.equal(loggedDebug?.reply_context_builder.context.what_to_do, "ask_missing_fields");

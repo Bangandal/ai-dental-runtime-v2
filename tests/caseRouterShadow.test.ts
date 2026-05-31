@@ -43,8 +43,35 @@ test("invalid classifier output is normalized", () => {
   assert.equal(decision.should_apply, false);
 });
 
+
+test("default disabled debug envelope skips classifier", async () => {
+  let classifierCalls = 0;
+  const debug = await runCaseRouterShadow({
+    user_message: "hi",
+    runtime_context: {},
+    classifier: {
+      async classifyCaseTurn() {
+        classifierCalls += 1;
+        throw new Error("should not be called");
+      },
+    },
+  });
+
+  assert.equal(classifierCalls, 0);
+  assert.deepEqual(debug, {
+    enabled: false,
+    mode: "shadow",
+    skipped: true,
+    skip_reason: "legacy_case_router_disabled",
+    classifier: null,
+    decision: null,
+    applied: false,
+    error: null,
+  });
+});
+
 test("shadow debug envelope is enabled and never applied", () => {
-  const debug = runCaseRouterShadow({ user_message: "hi", runtime_context: {} });
+  const debug = runCaseRouterShadow({ user_message: "hi", runtime_context: {}, enabled: true });
   return debug.then((resolved) => {
     assert.equal(resolved.enabled, true);
     assert.equal(resolved.mode, "shadow");
@@ -90,6 +117,7 @@ test("invalid enum classifier output falls back with classifier_invalid_output",
   const debug = await runCaseRouterShadow({
     user_message: "hello",
     runtime_context: {},
+    enabled: true,
     classifier: {
       async classifyCaseTurn() {
         return {
@@ -138,6 +166,7 @@ test("classifier openai label used only for semantically valid decision", async 
   const debug = await runCaseRouterShadow({
     user_message: "hello",
     runtime_context: {},
+    enabled: true,
     classifier: {
       async classifyCaseTurn() {
         return {
@@ -162,6 +191,7 @@ test("invalid classifier json is distinguished from classifier exceptions", asyn
   const debug = await runCaseRouterShadow({
     user_message: "hello",
     runtime_context: {},
+    enabled: true,
     classifier: {
       async classifyCaseTurn() {
         const error = new Error("invalid_classifier_json") as Error & { classifier_raw_output?: string };
@@ -179,6 +209,7 @@ test("raw classifier output and parsed object are logged in debug envelope", asy
   const debug = await runCaseRouterShadow({
     user_message: "hello",
     runtime_context: {},
+    enabled: true,
     classifier: {
       async classifyCaseTurn() {
         return {

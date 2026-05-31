@@ -23,6 +23,37 @@ export interface BuildTopicMemoryCandidateShadowInput {
   turn_understanding: TurnUnderstandingDebug;
 }
 
+export interface TopicMemoryStatePatch {
+  topic_memory: {
+    last_service_interest: string;
+    updated_at: string;
+    source: "turn_understanding";
+    confidence: TurnUnderstandingConfidence;
+  };
+}
+
+export function buildTopicMemoryPatch(
+  candidate: TopicMemoryCandidateShadowDebug,
+  now: Date,
+): TopicMemoryStatePatch | null {
+  if (!candidate.should_update) return null;
+  if (candidate.topic_kind !== "service_interest") return null;
+  if (candidate.reason !== null) return null;
+  if (!candidate.confidence) return null;
+
+  const serviceInterest = readString(candidate.topic_value);
+  if (!serviceInterest) return null;
+
+  return {
+    topic_memory: {
+      last_service_interest: serviceInterest,
+      updated_at: now.toISOString(),
+      source: "turn_understanding",
+      confidence: candidate.confidence,
+    },
+  };
+}
+
 export function buildTopicMemoryCandidateShadow(
   input: BuildTopicMemoryCandidateShadowInput,
 ): TopicMemoryCandidateShadowDebug {

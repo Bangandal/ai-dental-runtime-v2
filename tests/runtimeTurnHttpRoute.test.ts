@@ -775,6 +775,74 @@ test("debug.topic_memory_candidate appears after turn understanding and before r
   assert.ok(debugKeys.indexOf("topic_memory_candidate") < debugKeys.indexOf("reply_context_builder"));
 });
 
+
+test("typed topic memory candidate persists topic_memory through merge state", async () => {
+  const mergeInputs: Array<Record<string, any>> = [];
+  const persistenceRepo: TurnPersistenceRepository = {
+    async getOrCreateContact(input) { return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+    async registerInboundEvent() { return { ok: true, data: {} }; },
+    async saveMessage(input) { return { ok: true, data: { message_id: `m_${input.role}` } }; },
+    async mergeConversationState(input) { mergeInputs.push(input as Record<string, any>); return { ok: true, data: { ok: true } }; },
+  };
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "same reply", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    persistenceRepo,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "slot_fragment", confidence: "high", reason: "service", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { return { turn_type: "slot_fill", topic: null, service_interest: "пломба", subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "open_new", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: "пломба", preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: [], confidence: "high", reason: "typed service", should_apply: false }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "на пломбу" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(payload.final_patient_reply, "same reply");
+  assert.deepEqual(payload.debug.persistence_debug.topic_memory, { ok: true, skipped: false, reason: null });
+  assert.equal(mergeInputs.length, 1);
+  assert.equal(mergeInputs[0].topic_memory_patch.topic_memory.last_service_interest, "пломба");
+  assert.equal(mergeInputs[0].topic_memory_patch.topic_memory.source, "turn_understanding");
+  assert.equal(mergeInputs[0].topic_memory_patch.topic_memory.confidence, "high");
+  assert.match(mergeInputs[0].topic_memory_patch.topic_memory.updated_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(mergeInputs[0].topic_memory_patch.topic_memory.unrelated, undefined);
+  assert.equal(payload.side_effects.length, 0);
+});
+
+test("no typed topic source does not persist topic_memory patch", async () => {
+  const mergeInputs: Array<Record<string, any>> = [];
+  const persistenceRepo: TurnPersistenceRepository = {
+    async getOrCreateContact(input) { return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+    async registerInboundEvent() { return { ok: true, data: {} }; },
+    async saveMessage(input) { return { ok: true, data: { message_id: `m_${input.role}` } }; },
+    async mergeConversationState(input) { mergeInputs.push(input as Record<string, any>); return { ok: true, data: { ok: true } }; },
+  };
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "faq reply", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    persistenceRepo,
+    defaultClinicIdentityResolver,
+    undefined,
+    undefined,
+    { async classifyRuntimeGateTurn() { return { route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false }; } },
+    { async classifyTurnUnderstanding() { throw new Error("should skip"); } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "какая цена на пломбу?" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(payload.final_patient_reply, "faq reply");
+  assert.equal(payload.debug.topic_memory_candidate.reason, "no_typed_topic_source");
+  assert.deepEqual(payload.debug.persistence_debug.topic_memory, { ok: false, skipped: true, reason: "no_typed_topic_source" });
+  assert.equal(mergeInputs.length, 1);
+  assert.equal(mergeInputs[0].topic_memory_patch, null);
+  assert.equal(payload.side_effects.length, 0);
+});
+
 test("debug.turn_understanding skips for non operational runtime gate", async () => {
   let classifierCalls = 0;
   const harness = createRouteHarness(
@@ -853,7 +921,7 @@ test("turn understanding sanitizer does not change main agent runtime_context", 
     undefined,
     undefined,
     defaultClinicIdentityResolver,
-    { async loadRuntimeContext() { return { ok: true, data: { known_contact: {}, conversation_state: { intent: "booking", collected: {}, missing_fields: [], last_bot_question: "Когда удобно?", pending_slots: ["preferred_date"] }, runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" }, recent_history: [{ role: "assistant", text: "raw" }] } }; } },
+    { async loadRuntimeContext() { return { ok: true, data: { known_contact: {}, conversation_state: { intent: "booking", collected: {}, missing_fields: [], last_bot_question: "Когда удобно?", pending_slots: ["preferred_date"] }, topic_memory: { last_service_interest: "пломба", contact_id: "hidden" }, runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" }, recent_history: [{ role: "assistant", text: "raw" }] } }; } },
     undefined,
     { async classifyRuntimeGateTurn() { return { route: "operational_candidate", turn_shape: "slot_fragment", confidence: "high", reason: "slot", should_apply: false }; } },
     { async classifyTurnUnderstanding(input) { turnUnderstandingInputs.push(input.runtime_context as any); return { turn_type: "slot_fill", topic: null, service_interest: "чистка", subject: { kind: "self", display_name: null }, reply_objective: "ask_missing_field", case_decision: { action: "continue_existing", case_kind: "booking", target_case_id: null }, slot_updates: { service_interest: "чистка", preferred_date: "05.06", preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null }, missing_fields: [], confidence: "medium", reason: "slot details", should_apply: false }; } },
@@ -866,6 +934,9 @@ test("turn understanding sanitizer does not change main agent runtime_context", 
   assert.equal(mainContext.task_state.pending_slots, undefined);
   assert.deepEqual(mainContext.recent_history, []);
   assert.equal(calls[0].business_context.topic_memory_candidate, undefined);
+  assert.equal(calls[0].business_context.runtime_context.topic_memory, undefined);
+  assert.equal(turnUnderstandingInputs[0].topic_memory.last_service_interest, "пломба");
+  assert.equal(turnUnderstandingInputs[0].topic_memory.contact_id, undefined);
   assert.equal(turnUnderstandingInputs[0].last_bot_question, "Когда удобно?");
   assert.deepEqual(turnUnderstandingInputs[0].pending_slots, ["preferred_date"]);
 });

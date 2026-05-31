@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { buildTopicMemoryCandidateShadow } from "../src/runtime/topicMemoryCandidateShadow.ts";
+import { buildTopicMemoryCandidateShadow, buildTopicMemoryPatch } from "../src/runtime/topicMemoryCandidateShadow.ts";
 import { buildFallbackTurnUnderstandingDecision, type TurnUnderstandingDebug, type TurnUnderstandingDecision } from "../src/runtime/turnUnderstandingShadow.ts";
 
 function debugForDecision(overrides: Partial<TurnUnderstandingDecision> = {}): TurnUnderstandingDebug {
@@ -207,6 +207,47 @@ test("turn_understanding skipped emits skipped reason and no candidate", () => {
     confidence: null,
     reason: "turn_understanding_skipped",
   });
+});
+
+
+test("buildTopicMemoryPatch creates service_interest state patch from typed candidate", () => {
+  const candidate = buildTopicMemoryCandidateShadow({
+    turn_understanding: debugForDecision({ service_interest: " пломба ", confidence: "high" }),
+  });
+
+  const patch = buildTopicMemoryPatch(candidate, new Date("2026-05-31T12:00:00.000Z"));
+
+  assert.deepEqual(patch, {
+    topic_memory: {
+      last_service_interest: "пломба",
+      updated_at: "2026-05-31T12:00:00.000Z",
+      source: "turn_understanding",
+      confidence: "high",
+    },
+  });
+});
+
+test("buildTopicMemoryPatch skips no_typed_topic_source candidate", () => {
+  const candidate = buildTopicMemoryCandidateShadow({
+    user_message: "какая цена на пломбу?",
+    runtime_gate: { enabled: true, mode: "shadow", route: "non_operational", turn_shape: "faq", confidence: "high", reason: "faq", should_apply: false },
+    turn_understanding: skippedDebug(),
+  });
+
+  assert.equal(buildTopicMemoryPatch(candidate, new Date("2026-05-31T12:00:00.000Z")), null);
+});
+
+test("buildTopicMemoryPatch skips non-update candidate", () => {
+  const candidate = buildTopicMemoryCandidateShadow({
+    turn_understanding: debugForDecision({
+      turn_type: "unknown",
+      service_interest: null,
+      slot_updates: { service_interest: null, preferred_date: null, preferred_time: null, first_name: null, last_name: null, offered_slot_id: null, confirmation_target: null },
+      confidence: "low",
+    }),
+  });
+
+  assert.equal(buildTopicMemoryPatch(candidate, new Date("2026-05-31T12:00:00.000Z")), null);
 });
 
 test("topic memory candidate builder does not mutate turn_understanding", () => {

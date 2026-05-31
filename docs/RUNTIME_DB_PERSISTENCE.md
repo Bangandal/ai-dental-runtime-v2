@@ -27,7 +27,12 @@ The route sends a minimal patch for:
 - `last_bot_action` (if available)
 - `last_bot_question` (when assistant reply contains a question)
 - `conversation_id` / `openai_conversation_id`
+- `topic_memory.last_service_interest` from typed Turn Understanding topic candidates only
 - `turn_count_increment`
+
+## Topic memory boundary
+
+`topic_memory` persistence is limited to typed `topic_memory_candidate` updates where `topic_kind` is `service_interest`. Runtime must not infer or persist FAQ service topics from user text aliases, legacy router topics, regexes, or keyword lists. FAQ/non-operational turns without a typed topic source are skipped with `reason: "no_typed_topic_source"`.
 
 ## Failure behavior
 

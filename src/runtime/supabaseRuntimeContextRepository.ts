@@ -3,6 +3,7 @@ import type { RuntimeResult, RpcCaller } from "./runtimeRepositories.ts";
 export interface RuntimeContext {
   known_contact: Record<string, unknown>;
   conversation_state: Record<string, unknown>;
+  topic_memory: Record<string, unknown> | null;
   runtime_flags: {
     has_durable_context: boolean;
     context_source: "supabase";
@@ -49,6 +50,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
       const collected = asRecord(parseMaybeJson(row?.out_collected)) ?? asRecord(stateJson?.collected) ?? {};
       const missingFields = asArray(parseMaybeJson(row?.out_missing_fields)) ?? asArray(stateJson?.missing_fields) ?? [];
       const recentMessages = asArray(parseMaybeJson(row?.out_recent_messages)) ?? [];
+      const topicMemory = asRecord(stateJson?.topic_memory);
 
       const knownContact: Record<string, unknown> = {
         contact_id: input.contact_id,
@@ -82,6 +84,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
         data: {
           known_contact: knownContact,
           conversation_state: conversationState,
+          topic_memory: topicMemory,
           runtime_flags: {
             has_durable_context: Boolean(row),
             context_source: "supabase",

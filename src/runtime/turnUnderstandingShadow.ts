@@ -211,7 +211,6 @@ export function sanitizeTurnUnderstandingContext(input: {
   const conversationState = asRecord(root.conversation_state);
   const bookingContext = asRecord(root.booking_context);
   const caseContext = asRecord(root.case_context);
-  const topicMemory = asRecord(root.topic_memory);
   const lastBotQuestion = readString(taskState.last_bot_question) ?? readString(conversationState.last_bot_question);
   const pendingSlots = readStringArray(taskState.pending_slots).length > 0 ? readStringArray(taskState.pending_slots) : readStringArray(conversationState.pending_slots);
   const latestAppointment = asRecordOrNull(bookingContext.latest_appointment);
@@ -230,7 +229,6 @@ export function sanitizeTurnUnderstandingContext(input: {
         last_bot_question: lastBotQuestion,
         pending_slots: pendingSlots,
       },
-      topic_memory: Object.keys(topicMemory).length > 0 ? sanitizeRecord(topicMemory) : null,
       booking_context: {
         has_active_hold: typeof bookingContext.has_active_hold === "boolean" ? bookingContext.has_active_hold : false,
         active_hold: sanitizeRecordOrNull(bookingContext.active_hold),

@@ -18,7 +18,7 @@ test("maps real rpc_get_runtime_context out_* shape into compact runtime_context
           collected: { service: "cleaning" },
           missing_fields: ["date"],
           pending_slots: ["preferred_time", 7, ""],
-          topic_memory: { last_service_interest: "пломба", source: "turn_understanding", contact_id: "hidden" },
+          topic_memory: { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z", contact_id: "hidden" },
         },
         out_state_version: 12,
         out_recent_messages: [{ role: "user", text: "hi" }],
@@ -49,7 +49,40 @@ test("maps real rpc_get_runtime_context out_* shape into compact runtime_context
   assert.equal(result.data.known_contact.first_name, "Ann");
   assert.equal(result.data.known_contact.chat_id, "chat_1");
   assert.equal(result.data.known_contact.external_user_id, "user_1");
-  assert.deepEqual(result.data.topic_memory, { last_service_interest: "пломба", source: "turn_understanding", contact_id: "hidden" });
+  assert.deepEqual(result.data.topic_memory, { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z" });
   assert.deepEqual(result.data.recent_history, []);
   assert.equal(result.data.runtime_flags.available_recent_history_count, 1);
+});
+
+test("returns null when persisted topic_memory is missing", async () => {
+  const repo = createSupabaseRuntimeContextRepository({
+    rpc: async () => ({
+      data: [{ out_state_json: { collected: {}, missing_fields: [] }, out_state_version: 1 }],
+      error: null,
+    }),
+  });
+
+  const result = await repo.loadRuntimeContext({ clinic_id: "clinic_1", contact_id: "contact_1" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  assert.equal(result.data.topic_memory, null);
+});
+
+test("returns null when persisted topic_memory is malformed or has no typed fields", async () => {
+  const malformedValues: unknown[] = ["not-json", ["пломба"], 42, { contact_id: "hidden" }];
+
+  for (const malformedValue of malformedValues) {
+    const repo = createSupabaseRuntimeContextRepository({
+      rpc: async () => ({
+        data: [{ out_state_json: { collected: {}, missing_fields: [], topic_memory: malformedValue }, out_state_version: 1 }],
+        error: null,
+      }),
+    });
+
+    const result = await repo.loadRuntimeContext({ clinic_id: "clinic_1", contact_id: "contact_1" });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.data.topic_memory, null);
+  }
 });

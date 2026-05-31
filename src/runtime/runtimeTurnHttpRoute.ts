@@ -11,6 +11,7 @@ import { buildModelVisibleRuntimeContext } from "./modelVisibleRuntimeContext.ts
 import { runCaseRouterShadow, type CaseRouterClassifier, sanitizeCaseRouterContext } from "./caseRouterShadow.ts";
 import { runRuntimeGateShadow, sanitizeRuntimeGateContext, type RuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import { runTurnUnderstandingShadow, sanitizeTurnUnderstandingContext, type TurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
+import { buildReplyContextShadow } from "./replyContextBuilderShadow.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -302,6 +303,10 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       runtime_context: turnUnderstandingInput.runtime_context,
       classifier: deps.turnUnderstandingClassifier,
     });
+    const replyContextBuilderDebug = buildReplyContextShadow({
+      runtime_gate: runtimeGateDebug,
+      turn_understanding: turnUnderstandingDebug,
+    });
 
     // LEGACY EXPERIMENTAL CONTOUR (deprecated) runtime usage: shadow-only exploratory layer.
     // This legacy router is a non-authoritative operational layer superseded
@@ -392,7 +397,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, legacy_case_router: caseRouterDebug },
+        debug: { ...(result.debug ?? {}), ...memoryDebug, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug },
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

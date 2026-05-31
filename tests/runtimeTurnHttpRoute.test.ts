@@ -726,9 +726,16 @@ test("debug.turn_understanding appears in response and log payload for operation
   assert.equal(payload.debug.turn_understanding.decision.turn_type, "booking_request");
   assert.equal(payload.debug.turn_understanding.decision.should_apply, false);
   assert.deepEqual(payload.debug.turn_understanding.decision.missing_fields, ["service_interest"]);
+  assert.equal(payload.debug.reply_context_builder.enabled, true);
+  assert.equal(payload.debug.reply_context_builder.mode, "shadow");
+  assert.equal(payload.debug.reply_context_builder.skipped, false);
+  assert.equal(payload.debug.reply_context_builder.context.what_to_do, "ask_missing_fields");
+  assert.ok(payload.debug.reply_context_builder.context.do_not_ask.includes("phone"));
   assert.equal(payload.debug.legacy_case_router.mode, "shadow");
   assert.equal(loggedDebug?.turn_understanding.decision.turn_type, "booking_request");
+  assert.equal(loggedDebug?.reply_context_builder.context.what_to_do, "ask_missing_fields");
   assert.deepEqual(calls[0].business_context.meta, undefined);
+  assert.equal(calls[0].business_context.reply_context_builder, undefined);
 });
 
 test("debug.turn_understanding skips for non operational runtime gate", async () => {
@@ -753,6 +760,9 @@ test("debug.turn_understanding skips for non operational runtime gate", async ()
   assert.equal(payload.debug.turn_understanding.skipped, true);
   assert.equal(payload.debug.turn_understanding.skip_reason, "runtime_gate_non_operational");
   assert.equal(payload.debug.turn_understanding.decision, null);
+  assert.equal(payload.debug.reply_context_builder.skipped, true);
+  assert.equal(payload.debug.reply_context_builder.skip_reason, "turn_understanding_skipped");
+  assert.equal(payload.debug.reply_context_builder.context, null);
   assert.equal(classifierCalls, 0);
 });
 
@@ -786,6 +796,7 @@ test("turn understanding invalid route classifier output safely falls back witho
   assert.equal(payload.debug.turn_understanding.decision.case_decision.action, "none");
   assert.equal(payload.debug.turn_understanding.decision.should_apply, false);
   assert.equal(payload.debug.turn_understanding.error, "classifier_invalid_output");
+  assert.equal(payload.debug.reply_context_builder.context.what_to_do, "safe_fallback");
   assert.deepEqual(persistenceCalls, ["contact", "inbound", "message:user", "message:assistant", "merge"]);
 });
 

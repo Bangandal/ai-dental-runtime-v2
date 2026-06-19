@@ -12,11 +12,44 @@ An **Appointment** is a confirmed calendar/CRM object. An appointment can only b
 
 ---
 
-## 2. Ownership
+## 2. Terminology: case_kind vs subject
+
+These two concepts are distinct and must not be conflated.
+
+### case_kind
+
+`case_kind` is the **operational type** of the case — what kind of work the runtime needs to track.
+
+| case_kind | Description |
+|---|---|
+| `booking_intake` | Patient expresses intent to book an appointment. |
+| `reschedule` | Patient requests to move an existing appointment. |
+| `cancel` | Patient requests to cancel an existing appointment. |
+| `admin_handoff` | Patient requests human/admin attention or runtime determines handoff is required. |
+| `process_status` | Patient inquires about the status of a prior request, case, or booking. |
+| `urgent` | Patient expresses urgency or a clinical emergency requiring immediate attention. |
+
+### subject
+
+`subject` is the **person or entity the case is about** — the person who would receive the appointment or service.
+
+| subject_kind | Description |
+|---|---|
+| `self` | The case is about the patient themselves. |
+| `friend` | The case is about a named friend of the patient. |
+| `child` | The case is about the patient's child. |
+| `partner` | The case is about the patient's partner or spouse. |
+| `other` | The case is about another person (relation unspecified). |
+
+A single case has exactly one `case_kind` and exactly one `subject`. Multiple cases in one conversation share a `conversation_id` but each has its own `case_kind` and its own `subject`.
+
+---
+
+## 3. Ownership
 
 **Runtime Core owns:**
 
-- Case identity (case ID, clinic ID, contact ID, subject).
+- Case identity (case ID, clinic ID, contact ID, case_kind, subject).
 - Case state (status, outcome, transitions, timestamps).
 - Case audit records and persistence.
 - Validation of all proposed case updates.
@@ -31,9 +64,9 @@ An **Appointment** is a confirmed calendar/CRM object. An appointment can only b
 
 ---
 
-## 3. Case Kinds for MVP
+## 4. Case Kinds for MVP
 
-| Kind | Description | Status |
+| case_kind | Description | Status |
 |---|---|---|
 | `booking_intake` | Patient expresses intent to book an appointment. | Limited until CRM adapter exists |
 | `reschedule` | Patient requests to move an existing appointment. | Limited until CRM adapter exists |
@@ -46,7 +79,7 @@ An **Appointment** is a confirmed calendar/CRM object. An appointment can only b
 
 ---
 
-## 4. Case Opening Rules
+## 5. Case Opening Rules
 
 ### Open a Case When
 
@@ -61,12 +94,12 @@ Runtime Core should open a case when the conversation contains one of the follow
 
 Examples that open a case:
 
-- "Can I book a cleaning next Tuesday?"
-- "I need to reschedule my Friday appointment."
-- "Please cancel my visit."
-- "Did anyone get back to me yet?"
-- "I need to talk to someone."
-- "My tooth is in serious pain, I need help today."
+- "Can I book a cleaning next Tuesday?" → `case_kind: booking_intake`, `subject_kind: self`
+- "I need to reschedule my Friday appointment." → `case_kind: reschedule`, `subject_kind: self`
+- "Please cancel my visit." → `case_kind: cancel`, `subject_kind: self`
+- "Did anyone get back to me yet?" → `case_kind: process_status`, `subject_kind: self`
+- "I need to talk to someone." → `case_kind: admin_handoff`, `subject_kind: self`
+- "My tooth is in serious pain, I need help today." → `case_kind: urgent`, `subject_kind: self`
 
 ### Do Not Open a Case For
 
@@ -80,29 +113,35 @@ If a FAQ interaction evolves into a booking intent, reschedule, handoff request,
 
 ---
 
-## 5. Case Update Rules
+## 6. Case Update Rules
 
 A case may be updated when new operational facts appear in the conversation. Updates must be proposed by the Patient Agent through `case.upsert` or `case.add_note` and validated by Runtime Core before persistence.
 
 **Updatable fields:**
 
-- `subject` — the operational category of the case (e.g., changed from `process_status` to `booking_intake`).
-- `patient_name` — patient's reported name.
-- `service_interest` — type of service the patient is requesting (cleaning, implant, whitening, etc.).
-- `preferred_date` — patient's stated preferred date.
-- `preferred_time` — patient's stated preferred time.
-- `relation_to_another_person` — whether the booking is for the patient themselves or for someone else.
-- `notes` — additional operational notes relevant to the case.
-- `urgency` — whether urgency has been declared or escalated.
-- `handoff_reason` — the reason a handoff is proposed (admin request, unsupported service, urgent).
+| Field | Description |
+|---|---|
+| `case_kind` | The operational type of the case (e.g. changed from `process_status` to `booking_intake` as conversation evolves). |
+| `subject_kind` | The relationship of the subject to the patient (`self`, `friend`, `child`, `partner`, `other`). |
+| `subject_display_name` | The display name of the person the case is about (e.g. "Vasya"). |
+| `subject_relation` | Free-text description of the subject's relation to the patient ("friend", "son", "wife"). |
+| `subject_contact` | Optional/future: a linked contact record for the subject if they exist in the system. |
+| `service_interest` | Type of service the patient is requesting (cleaning, implant, whitening, etc.). |
+| `preferred_date` | Patient's stated preferred date. |
+| `preferred_time` | Patient's stated preferred time. |
+| `notes` | Additional operational notes relevant to the case. |
+| `urgency` | Whether urgency has been declared or escalated. |
+| `handoff_reason` | The reason a handoff is proposed (admin request, unsupported service, urgent). |
 
 Runtime Core validates that proposed updates are consistent with current case state and allowed transitions before persisting.
 
 ---
 
-## 6. Case Closing Rules
+## 7. Case Closing Rules
 
-A case closes only when a **terminal outcome** is reached. Cases do not close by timeout of the chat or by the patient going silent mid-conversation; they close by explicit outcome.
+A case closes only when a **terminal outcome** is reached.
+
+A case does not close merely because the chat is currently silent. A case may close as `abandoned` or `expired` only when Runtime Core applies a system-defined expiration rule or job and records an auditable terminal outcome. Chat silence alone does not produce a terminal outcome.
 
 **Terminal outcomes:**
 
@@ -112,17 +151,17 @@ A case closes only when a **terminal outcome** is reached. Cases do not close by
 | `handed_off` | `handoff.create` succeeded and the case was transferred to human/admin handling. |
 | `cancelled_by_patient` | Patient's cancellation request was confirmed by backend. |
 | `unsupported_service` | The requested service cannot be served by this clinic or runtime. |
-| `abandoned` | Case was opened but the patient stopped engaging without resolution. |
+| `abandoned` | Runtime Core applied the system-defined abandonment rule after inactivity; recorded as an explicit auditable outcome. |
 | `answered` | Case was a status inquiry or clarification that was fully resolved without further action. |
 | `failed` | A required backend action could not be completed after appropriate retry. |
 | `duplicate` | A duplicate case was identified and merged or discarded. |
-| `expired` | Case reached the system-defined expiration timeout without resolution. |
+| `expired` | Runtime Core applied the system-defined expiration timeout and recorded an explicit auditable terminal outcome. |
 
 Case closure must be auditable. The closing outcome must be explicit enough for an operator to understand why the case ended.
 
 ---
 
-## 7. Status vs. Outcome
+## 8. Status vs. Outcome
 
 Case state has two distinct fields: `status` and `outcome`.
 
@@ -150,17 +189,17 @@ Case state has two distinct fields: `status` and `outcome`.
 | `handed_off` | `handoff.create` confirmed success. |
 | `cancelled_by_patient` | Patient cancellation confirmed by backend. |
 | `unsupported_service` | Service cannot be provided. |
-| `abandoned` | Patient stopped engaging. |
+| `abandoned` | Runtime Core applied abandonment rule; explicit outcome recorded. |
 | `answered` | Status inquiry fully resolved. |
 | `failed` | Required action failed after retry. |
 | `duplicate` | Case identified as duplicate. |
-| `expired` | Timeout reached without resolution. |
+| `expired` | Runtime Core applied expiration timeout; explicit outcome recorded. |
 
 A case in status `closed` must have an outcome set. A case with an outcome set must be in a terminal status (`closed`, `cancelled`, or `expired`).
 
 ---
 
-## 8. AI Responsibility vs. Business Resolution
+## 9. AI Responsibility vs. Business Resolution
 
 `handoff.create` transfers AI responsibility for the case to a human or admin. It does not necessarily mean the underlying business request is resolved.
 
@@ -175,7 +214,7 @@ Post-MVP, Runtime Core may introduce a secondary tracking state for admin-side r
 
 ---
 
-## 9. CRM Blocked State
+## 10. CRM Blocked State
 
 Before the CRM adapter exists, the following constraints apply:
 
@@ -193,37 +232,40 @@ The Patient Agent must not tell a patient their appointment is confirmed while `
 
 ---
 
-## 10. Multi-Subject Cases
+## 11. Multi-Subject Cases
 
 One conversation may produce multiple cases when the patient requests actions for more than one person.
 
-Each subject should have its own case. Subjects are independent operational tasks even when they originate from the same conversation.
+Each subject must have its own case. Each case has its own `case_kind` and its own `subject`. Subjects are independent operational tasks even when they originate from the same conversation.
+
+Related cases may share `conversation_id` and `contact_id` for traceability, but each case has its own identity, status, outcome, and audit trail.
 
 **Example:**
 
 > Mikhail wants a cleaning for himself and also wants to book an appointment for his friend Vasya.
 
-This conversation should produce two cases:
+This conversation produces two cases:
 
-| Case | Subject | Kind |
-|---|---|---|
-| Case A | Mikhail (self) | `booking_intake` |
-| Case B | Vasya (friend of Mikhail) | `booking_intake` |
+| Case | case_kind | subject_kind | subject_display_name |
+|---|---|---|---|
+| Case A | `booking_intake` | `self` | Mikhail |
+| Case B | `booking_intake` | `friend` | Vasya |
 
-Each case tracks its own subject, service interest, preferred date/time, and lifecycle independently.
+Both cases share the same `conversation_id` and `contact_id` (Mikhail's contact). Each case tracks its own service interest, preferred date/time, status, and lifecycle independently.
 
-**Known multi-subject patterns:**
+**Known subject_kind values:**
 
-- `self` — booking for the patient themselves.
-- `friend` — booking for a named friend.
-- `child` — booking for a child.
-- `partner` — booking for a partner or spouse.
-
-Runtime Core should link related cases to the same conversation or contact session for traceability, but each case has its own status, outcome, and audit trail.
+| subject_kind | Meaning |
+|---|---|
+| `self` | The case is about the patient themselves. |
+| `friend` | The case is about a named friend. |
+| `child` | The case is about the patient's child. |
+| `partner` | The case is about the patient's partner or spouse. |
+| `other` | The case is about another person (relation unspecified). |
 
 ---
 
-## 11. Non-Goals
+## 12. Non-Goals
 
 This document defines the Case Logic contract. It intentionally excludes:
 
@@ -243,6 +285,9 @@ This document defines the Case Logic contract. It intentionally excludes:
 
 After reading this document, a developer should be able to answer:
 
+**What is the difference between case_kind and subject?**
+`case_kind` is the operational type of the case (`booking_intake`, `process_status`, etc.). `subject` is the person or entity the case is about (`self`, `friend`, `child`, `partner`). They are independent fields. Mikhail and Vasya are different subjects. `booking_intake` and `process_status` are case kinds.
+
 **When to open a case?**
 When the conversation contains booking intent, reschedule intent, cancel intent, process status inquiry, admin/human handoff request, or urgent request.
 
@@ -256,7 +301,7 @@ Runtime Core. Patient Agent may only propose updates. Runtime Core validates and
 A case is an operational task tracking intent and runtime state. An appointment is a confirmed calendar/CRM object produced only by a successful `booking.apply` backend execution.
 
 **How does a case close?**
-Only by a terminal outcome: `booked`, `handed_off`, `cancelled_by_patient`, `unsupported_service`, `abandoned`, `answered`, `failed`, `duplicate`, or `expired`.
+Only by a terminal outcome: `booked`, `handed_off`, `cancelled_by_patient`, `unsupported_service`, `abandoned`, `answered`, `failed`, `duplicate`, or `expired`. Chat silence alone does not close a case. `abandoned` and `expired` are explicit system outcomes applied by Runtime Core, not casual chat silence.
 
 **What is blocked until CRM?**
 `booking.apply` is disabled. No case may reach outcome `booked`. `availability.check` may be limited or mocked. `case.upsert`, `case.add_note`, and `handoff.create` remain available.

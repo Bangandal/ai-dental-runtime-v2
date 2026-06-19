@@ -114,10 +114,12 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
     const persistenceDebug: Record<string, unknown> = {};
     const turnLlmCalls = buildRuntimeLlmCallDebug();
 
+    const transportContactKey = `${body.channel.trim()}:${externalUserId ?? chatId}`;
+    let canonicalContactId: string | null = null;
     const runtimeTurnInput: RuntimeTurnInput = {
       trace_id: traceId,
       clinic_id: resolvedClinic.data.clinic_id,
-      contact_id: `${body.channel.trim()}:${externalUserId ?? chatId}`,
+      contact_id: null,
       case_id: null,
       user_message: body.text.trim(),
       locale: readLocale(body.meta),
@@ -125,6 +127,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         channel: body.channel.trim(),
         chat_id: chatId,
         external_user_id: externalUserId,
+        transport_contact_key: transportContactKey,
         meta: body.meta,
       },
       recent_summary: null,
@@ -146,55 +149,61 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         first_name: typeof body.meta?.first_name === "string" ? body.meta.first_name : null,
         last_name: typeof body.meta?.last_name === "string" ? body.meta.last_name : null,
       }).catch((error) => ({ ok: false, error: { code: "contact_persist_exception", message: error instanceof Error ? error.message : String(error), retryable: true } } as const));
-      persistenceDebug.contact = contactResult.ok ? { ok: true } : { ok: false, code: contactResult.error.code };
-      if (contactResult.ok) {
-        runtimeTurnInput.contact_id = contactResult.data.contact_id;
+      persistenceDebug.contact = contactResult.ok && isUuid(contactResult.data.contact_id) ? { ok: true } : { ok: false, code: contactResult.ok ? "contact_id_not_uuid" : contactResult.error.code };
+      if (contactResult.ok && isUuid(contactResult.data.contact_id)) {
+        canonicalContactId = contactResult.data.contact_id;
+        runtimeTurnInput.contact_id = canonicalContactId;
         if (typeof (contactResult.data as Record<string, unknown>).clinic_id === "string") {
           runtimeTurnInput.clinic_id = (contactResult.data as Record<string, string>).clinic_id;
         }
       }
-      const contactIdForPre = runtimeTurnInput.contact_id;
+      const contactIdForPre = canonicalContactId;
       const dedupeKey = updateId
         ? `${runtimeTurnInput.business_context.channel}:${externalUserId ?? "unknown"}:upd:${updateId}`
         : `${runtimeTurnInput.business_context.channel}:${externalUserId ?? "unknown"}:msg:${messageId || traceId}`;
-      const inboundResult = await deps.turnPersistenceRepository.registerInboundEvent({
-        clinic_id: runtimeTurnInput.clinic_id,
-        contact_id: contactIdForPre,
-        channel: runtimeTurnInput.business_context.channel,
-        external_user_id: externalUserId ?? null,
-        dedupe_key: dedupeKey,
-        source_message_id: messageId,
-        source_update_id: updateId,
-        payload: {
-          clinic_code: clinicCode,
+      if (contactIdForPre) {
+        const inboundResult = await deps.turnPersistenceRepository.registerInboundEvent({
+          clinic_id: runtimeTurnInput.clinic_id,
+          contact_id: contactIdForPre,
           channel: runtimeTurnInput.business_context.channel,
           external_user_id: externalUserId ?? null,
-          chat_id: chatId ?? null,
-          text: runtimeTurnInput.user_message,
-          meta: body.meta ?? {},
-        },
-        trace_id: traceId,
-      }).catch(() => ({ ok: false } as const));
-      persistenceDebug.inbound_event = inboundResult.ok ? { ok: true } : { ok: false, code: "inbound_event_persist_failed" };
-      const userMsgResult = await deps.turnPersistenceRepository.saveMessage({
-        contact_id: contactIdForPre,
-        direction: "inbound",
-        role: "user",
-        channel: runtimeTurnInput.business_context.channel,
-        text: runtimeTurnInput.user_message,
-        message_type: "text",
-        status: "created",
-        provider_message_id: messageId,
-        reply_to_message_id: null,
-        meta: {
+          dedupe_key: dedupeKey,
+          source_message_id: messageId,
+          source_update_id: updateId,
+          payload: {
+            clinic_code: clinicCode,
+            channel: runtimeTurnInput.business_context.channel,
+            external_user_id: externalUserId ?? null,
+            chat_id: chatId ?? null,
+            text: runtimeTurnInput.user_message,
+            meta: body.meta ?? {},
+          },
           trace_id: traceId,
-          clinic_id: runtimeTurnInput.clinic_id,
-          external_user_id: externalUserId ?? null,
-          chat_id: chatId ?? null,
-        },
-      }).catch(() => ({ ok: false } as const));
-      persistenceDebug.save_user_message = userMsgResult.ok ? { ok: true } : { ok: false, code: "message_persist_failed" };
-      userMessageId = userMsgResult.ok ? userMsgResult.data.message_id ?? null : null;
+        }).catch(() => ({ ok: false } as const));
+        persistenceDebug.inbound_event = inboundResult.ok ? { ok: true } : { ok: false, code: "inbound_event_persist_failed" };
+        const userMsgResult = await deps.turnPersistenceRepository.saveMessage({
+          contact_id: contactIdForPre,
+          direction: "inbound",
+          role: "user",
+          channel: runtimeTurnInput.business_context.channel,
+          text: runtimeTurnInput.user_message,
+          message_type: "text",
+          status: "created",
+          provider_message_id: messageId,
+          reply_to_message_id: null,
+          meta: {
+            trace_id: traceId,
+            clinic_id: runtimeTurnInput.clinic_id,
+            external_user_id: externalUserId ?? null,
+            chat_id: chatId ?? null,
+          },
+        }).catch(() => ({ ok: false } as const));
+        persistenceDebug.save_user_message = userMsgResult.ok ? { ok: true } : { ok: false, code: "message_persist_failed" };
+        userMessageId = userMsgResult.ok ? userMsgResult.data.message_id ?? null : null;
+      } else {
+        persistenceDebug.inbound_event = { ok: false, skipped: true, reason: "contact_unavailable" };
+        persistenceDebug.save_user_message = { ok: false, skipped: true, reason: "contact_unavailable" };
+      }
     }
 
     const memoryDebug: Record<string, unknown> = {};
@@ -230,9 +239,11 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
 
     const caseContextDebug: Record<string, unknown> = { loaded: false, open_cases_count: 0, recent_cases_count: 0, has_current_case: false, current_case_resolved: false, has_active_hold: false, has_latest_appointment: false };
     let loadedCaseContext: unknown = null;
-    if (deps.caseContextRepository) {
+    if (!canonicalContactId) {
+      caseContextDebug.skip_reason = "contact_unavailable";
+    } else if (deps.caseContextRepository) {
       try {
-        const caseContextResult = await deps.caseContextRepository.loadCaseContext({ clinic_id: runtimeTurnInput.clinic_id, contact_id: runtimeTurnInput.contact_id ?? `${body.channel.trim()}:${externalUserId ?? chatId}` });
+        const caseContextResult = await deps.caseContextRepository.loadCaseContext({ clinic_id: runtimeTurnInput.clinic_id, contact_id: canonicalContactId });
         caseContextDebug.loaded = caseContextResult.ok;
         if (caseContextResult.ok) {
           loadedCaseContext = caseContextResult.data;
@@ -255,9 +266,11 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
 
     const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0, topic_memory: null };
     let runtimeGateSourceContext: unknown = null;
-    if (deps.runtimeContextRepository) {
+    if (!canonicalContactId) {
+      runtimeContextDebug.skip_reason = "contact_unavailable";
+    } else if (deps.runtimeContextRepository) {
       try {
-        const runtimeContextResult = await deps.runtimeContextRepository.loadRuntimeContext({ clinic_id: runtimeTurnInput.clinic_id, contact_id: runtimeTurnInput.contact_id ?? `${body.channel.trim()}:${externalUserId ?? chatId}` });
+        const runtimeContextResult = await deps.runtimeContextRepository.loadRuntimeContext({ clinic_id: runtimeTurnInput.clinic_id, contact_id: canonicalContactId });
         runtimeContextDebug.loaded = runtimeContextResult.ok;
         if (runtimeContextResult.ok) {
           runtimeContextDebug.state_version = (runtimeContextResult.data.conversation_state as Record<string, unknown>).state_version ?? null;
@@ -375,9 +388,9 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         }
       }
 
-      if (deps.turnPersistenceRepository) {
+      if (deps.turnPersistenceRepository && canonicalContactId) {
         const assistantSave = await deps.turnPersistenceRepository.saveMessage({
-          contact_id: runtimeTurnInput.contact_id,
+          contact_id: canonicalContactId,
           direction: "outbound",
           role: "assistant",
           channel: runtimeTurnInput.business_context.channel,
@@ -396,7 +409,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         persistenceDebug.save_assistant_message = assistantSave.ok ? { ok: true } : { ok: false, code: "message_persist_failed" };
         const mergeState = await deps.turnPersistenceRepository.mergeConversationState({
           clinic_id: runtimeTurnInput.clinic_id,
-          contact_id: runtimeTurnInput.contact_id,
+          contact_id: canonicalContactId,
           user_text: runtimeTurnInput.user_message,
           reply_text: result.final_patient_reply,
           requested_action: String((result.debug as Record<string, unknown> | undefined)?.requested_action ?? "continue"),
@@ -411,6 +424,12 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
           persistenceDebug.topic_memory = mergeState.ok
             ? { ok: true, skipped: false, reason: null }
             : { ok: false, skipped: false, reason: "convo_state_persist_failed" };
+        }
+      } else if (deps.turnPersistenceRepository) {
+        persistenceDebug.save_assistant_message = { ok: false, skipped: true, reason: "contact_unavailable" };
+        persistenceDebug.merge_state = { ok: false, skipped: true, reason: "contact_unavailable" };
+        if (topicMemoryPatch) {
+          persistenceDebug.topic_memory = { ok: false, skipped: true, reason: "contact_unavailable" };
         }
       }
 
@@ -431,7 +450,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         status: "ok",
         trace_id: traceId,
         clinic_id: runtimeTurnInput.clinic_id,
-        contact_id: runtimeTurnInput.contact_id,
+        contact_id: canonicalContactId ?? "contact_unavailable",
         case_id: runtimeTurnInput.case_id,
         conversation_id: conversationIdToPersist,
         channel: runtimeTurnInput.business_context.channel,
@@ -572,4 +591,8 @@ function readSafeField(value: unknown): string | null {
   }
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }

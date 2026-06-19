@@ -74,6 +74,14 @@ function createRouteHarness(
 
   return { invoke };
 }
+function createUuidContactPersistenceRepository(contactId = "22222222-2222-4222-8222-222222222222"): TurnPersistenceRepository {
+  return {
+    async getOrCreateContact() { return { ok: true, data: { contact_id: contactId, clinic_id: CLINIC_UUID } }; },
+    async registerInboundEvent() { return { ok: true, data: {} }; },
+    async saveMessage(input) { return { ok: true, data: { message_id: `m_${input.role}` } }; },
+    async mergeConversationState() { return { ok: true, data: { ok: true } }; },
+  };
+}
 
 test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", async () => {
   const calls: unknown[] = [];
@@ -118,7 +126,8 @@ test("valid payload maps RuntimeTurnInput and returns n8n-compatible reply", asy
 
   const input = calls[0] as Record<string, any>;
   assert.equal(input.clinic_id, CLINIC_UUID);
-  assert.equal(input.contact_id, "telegram:user_1");
+  assert.equal(input.contact_id, null);
+  assert.equal(input.business_context.transport_contact_key, "telegram:user_1");
   assert.equal(input.case_id, null);
   assert.equal(input.user_message, "Привет");
   assert.equal(input.locale, "ru");
@@ -695,7 +704,7 @@ test("existing memory does not create new conversation", async () => {
 test("route persists pre/post turn artifacts and keeps response contract", async () => {
   const calls: string[] = [];
   const persistenceRepo: TurnPersistenceRepository = {
-    async getOrCreateContact(input) { calls.push("contact"); assert.equal(input.clinic_code, CLINIC_CODE); return { ok: true, data: { contact_id: "c1", clinic_id: CLINIC_UUID } }; },
+    async getOrCreateContact(input) { calls.push("contact"); assert.equal(input.clinic_code, CLINIC_CODE); return { ok: true, data: { contact_id: "22222222-2222-4222-8222-222222222222", clinic_id: CLINIC_UUID } }; },
     async registerInboundEvent(input) { calls.push("inbound"); assert.equal(typeof input.dedupe_key, "string"); return { ok: true, data: {} }; },
     async saveMessage(input) { calls.push(`msg:${input.role}:${input.direction}`); return { ok: true, data: { message_id: input.role === "user" ? "m_user_1" : "m_assistant_1" } }; },
     async mergeConversationState(input) { calls.push("merge"); assert.equal(input.user_text, "hi"); assert.equal(input.reply_text, "Question?"); return { ok: true, data: { ok: true } }; },
@@ -720,6 +729,71 @@ test("route persists pre/post turn artifacts and keeps response contract", async
 });
 
 
+test("contact resolution failure skips UUID-only persistence and context repositories", async () => {
+  const calls: string[] = [];
+  const persistenceRepo: TurnPersistenceRepository = {
+    async getOrCreateContact() { calls.push("contact"); return { ok: false, error: { code: "contact_persist_failed", message: "rpc failed", retryable: true } }; },
+    async registerInboundEvent(input) { calls.push(`inbound:${input.contact_id}`); return { ok: true, data: {} }; },
+    async saveMessage(input) { calls.push(`message:${input.contact_id}`); return { ok: true, data: {} }; },
+    async mergeConversationState(input) { calls.push(`merge:${input.contact_id}`); return { ok: true, data: { ok: true } }; },
+  };
+  const harness = createRouteHarness(
+    { runTurn: async (input) => { calls.push(`service:${input.contact_id ?? "null"}`); return { final_patient_reply: "safe reply", tool_results: [] } as any; } },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    persistenceRepo,
+    defaultClinicIdentityResolver,
+    { async loadRuntimeContext(input) { calls.push(`runtime:${input.contact_id}`); return { ok: true, data: {} }; } },
+    { async loadCaseContext(input) { calls.push(`case:${input.contact_id}`); return { ok: true, data: {} }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(payload.final_patient_reply, "safe reply");
+  assert.deepEqual(calls, ["contact", "service:null"]);
+  assert.deepEqual(payload.debug.persistence_debug.contact, { ok: false, code: "contact_persist_failed" });
+  assert.deepEqual(payload.debug.persistence_debug.inbound_event, { ok: false, skipped: true, reason: "contact_unavailable" });
+  assert.deepEqual(payload.debug.persistence_debug.save_user_message, { ok: false, skipped: true, reason: "contact_unavailable" });
+  assert.deepEqual(payload.debug.persistence_debug.save_assistant_message, { ok: false, skipped: true, reason: "contact_unavailable" });
+  assert.deepEqual(payload.debug.persistence_debug.merge_state, { ok: false, skipped: true, reason: "contact_unavailable" });
+  assert.equal(payload.debug.runtime_context.loaded, false);
+  assert.equal(payload.debug.runtime_context.skip_reason, "contact_unavailable");
+  assert.equal(payload.debug.case_context.loaded, false);
+  assert.equal(payload.debug.case_context.skip_reason, "contact_unavailable");
+});
+
+test("non-UUID contact result never reaches UUID-only repositories", async () => {
+  const seenContactIds: string[] = [];
+  const persistenceRepo: TurnPersistenceRepository = {
+    async getOrCreateContact(input) { return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+    async registerInboundEvent(input) { seenContactIds.push(input.contact_id); return { ok: true, data: {} }; },
+    async saveMessage(input) { seenContactIds.push(input.contact_id); return { ok: true, data: {} }; },
+    async mergeConversationState(input) { seenContactIds.push(input.contact_id); return { ok: true, data: { ok: true } }; },
+  };
+  const harness = createRouteHarness(
+    { runTurn: async () => ({ final_patient_reply: "safe reply", tool_results: [] }) as any },
+    createNoopRuntimeTurnLogger(),
+    undefined,
+    undefined,
+    persistenceRepo,
+    defaultClinicIdentityResolver,
+    { async loadRuntimeContext(input) { seenContactIds.push(input.contact_id); return { ok: true, data: {} }; } },
+    { async loadCaseContext(input) { seenContactIds.push(input.contact_id); return { ok: true, data: {} }; } },
+  );
+
+  const response = await harness.invoke({ clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "user_1", text: "hello" });
+  const payload = response.payload as Record<string, any>;
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(seenContactIds, []);
+  assert.deepEqual(payload.debug.persistence_debug.contact, { ok: false, code: "contact_id_not_uuid" });
+  assert.equal(payload.debug.runtime_context.skip_reason, "contact_unavailable");
+  assert.equal(payload.debug.case_context.skip_reason, "contact_unavailable");
+});
+
 test("runtime context load success hydrates runtime_context and logs debug fields", async () => {
   const calls: Array<Record<string, any>> = [];
   const runtimeGateInputs: Array<Record<string, any>> = [];
@@ -733,7 +807,7 @@ test("runtime context load success hydrates runtime_context and logs debug field
     createNoopRuntimeTurnLogger(),
     undefined,
     undefined,
-    undefined,
+    createUuidContactPersistenceRepository(),
     defaultClinicIdentityResolver,
     {
       async loadRuntimeContext() {
@@ -806,7 +880,7 @@ test("runtime context load failure is non-fatal and still replies", async () => 
     createNoopRuntimeTurnLogger(),
     undefined,
     undefined,
-    undefined,
+    createUuidContactPersistenceRepository(),
     defaultClinicIdentityResolver,
     {
       async loadRuntimeContext() {
@@ -832,7 +906,7 @@ test("case context load success hydrates slim case/booking context and debug", a
     createNoopRuntimeTurnLogger(),
     undefined,
     undefined,
-    undefined,
+    createUuidContactPersistenceRepository(),
     defaultClinicIdentityResolver,
     { async loadRuntimeContext() { return { ok: true, data: { known_contact: {}, conversation_state: { collected: {}, missing_fields: [] }, runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" }, recent_history: [] } }; } },
     { async loadCaseContext() { return { ok: true, data: { current_case_id: "case_2", open_cases: [{ case_id: "case_1", case_type: "faq", topic: "insurance", status: "open", priority: "low" }, { case_id: "case_2", case_type: "booking", topic: "crown", status: "open", priority: "high" }], recent_cases: [{ case_id: "case_7", case_type: "faq", topic: "insurance", status: "closed", priority: null }], active_booking_context: { active_hold: { service_interest: "cleaning", label: "Mon 9am", status: "active" }, latest_appointment: { service_interest: "exam", status: "booked", start_at: "2026-06-01T09:00:00Z" } } } }; } },
@@ -864,7 +938,7 @@ test("case context load failure is non-fatal", async () => {
     createNoopRuntimeTurnLogger(),
     undefined,
     undefined,
-    undefined,
+    createUuidContactPersistenceRepository(),
     defaultClinicIdentityResolver,
     undefined,
     { async loadCaseContext() { return { ok: false, error: { code: "case_context_load_failed", message: "rpc failed", retryable: true } }; } },
@@ -1044,7 +1118,7 @@ test("debug.topic_memory_candidate appears after turn understanding and before r
 test("typed topic memory candidate persists topic_memory through merge state", async () => {
   const mergeInputs: Array<Record<string, any>> = [];
   const persistenceRepo: TurnPersistenceRepository = {
-    async getOrCreateContact(input) { return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+    async getOrCreateContact(input) { return { ok: true, data: { contact_id: "22222222-2222-4222-8222-222222222222", clinic_id: CLINIC_UUID } }; },
     async registerInboundEvent() { return { ok: true, data: {} }; },
     async saveMessage(input) { return { ok: true, data: { message_id: `m_${input.role}` } }; },
     async mergeConversationState(input) { mergeInputs.push(input as Record<string, any>); return { ok: true, data: { ok: true } }; },
@@ -1079,7 +1153,7 @@ test("typed topic memory candidate persists topic_memory through merge state", a
 test("no typed topic source does not persist topic_memory patch", async () => {
   const mergeInputs: Array<Record<string, any>> = [];
   const persistenceRepo: TurnPersistenceRepository = {
-    async getOrCreateContact(input) { return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+    async getOrCreateContact(input) { return { ok: true, data: { contact_id: "22222222-2222-4222-8222-222222222222", clinic_id: CLINIC_UUID } }; },
     async registerInboundEvent() { return { ok: true, data: {} }; },
     async saveMessage(input) { return { ok: true, data: { message_id: `m_${input.role}` } }; },
     async mergeConversationState(input) { mergeInputs.push(input as Record<string, any>); return { ok: true, data: { ok: true } }; },
@@ -1151,7 +1225,7 @@ test("hydrated topic memory is sanitized into turn understanding only and reflec
     undefined,
     undefined,
     {
-      async getOrCreateContact(input) { persistenceCalls.push("contact"); return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+      async getOrCreateContact(input) { persistenceCalls.push("contact"); return { ok: true, data: { contact_id: "22222222-2222-4222-8222-222222222222", clinic_id: CLINIC_UUID } }; },
       async registerInboundEvent() { persistenceCalls.push("inbound"); return { ok: true, data: {} }; },
       async saveMessage(input) { persistenceCalls.push(`message:${input.role}`); return { ok: true, data: { message_id: `m_${input.role}` } }; },
       async mergeConversationState() { persistenceCalls.push("merge"); return { ok: true, data: {} }; },
@@ -1202,7 +1276,7 @@ test("turn understanding invalid route classifier output safely falls back witho
     undefined,
     undefined,
     {
-      async getOrCreateContact(input) { persistenceCalls.push("contact"); return { ok: true, data: { contact_id: `${input.channel}:persisted`, clinic_id: CLINIC_UUID } }; },
+      async getOrCreateContact(input) { persistenceCalls.push("contact"); return { ok: true, data: { contact_id: "22222222-2222-4222-8222-222222222222", clinic_id: CLINIC_UUID } }; },
       async registerInboundEvent() { persistenceCalls.push("inbound"); return { ok: true, data: {} }; },
       async saveMessage(input) { persistenceCalls.push(`message:${input.role}`); return { ok: true, data: { message_id: `m_${input.role}` } }; },
       async mergeConversationState() { persistenceCalls.push("merge"); return { ok: true, data: {} }; },
@@ -1237,7 +1311,7 @@ test("turn understanding sanitizer does not change main agent runtime_context", 
     createNoopRuntimeTurnLogger(),
     undefined,
     undefined,
-    undefined,
+    createUuidContactPersistenceRepository(),
     defaultClinicIdentityResolver,
     { async loadRuntimeContext() { return { ok: true, data: { known_contact: {}, conversation_state: { intent: "booking", collected: {}, missing_fields: [], last_bot_question: "Когда удобно?", pending_slots: ["preferred_date"] }, topic_memory: { last_service_interest: "пломба", contact_id: "hidden" }, runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: "2026-01-01T00:00:00.000Z" }, recent_history: [{ role: "assistant", text: "raw" }] } }; } },
     undefined,

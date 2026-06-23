@@ -25,7 +25,7 @@ A case record must carry the following fields for MVP.
 | `clinic_id` | `string` | The clinic this case belongs to. |
 | `contact_id` | `string` | The contact who initiated this case. |
 | `conversation_id` | `string` | The conversation this case is associated with. |
-| `case_kind` | `CaseKind` | Operational type: `booking_intake`, `reschedule`, `cancel`, `admin_handoff`, `process_status`, `urgent`. |
+| `case_kind` | `CaseKind` | Operational type: `booking_intake`, `reschedule`, `cancel`, `admin_handoff`, `process_status`, `urgent`. Set at open. **Not silently mutable.** See Section 4 for reclassification rules. |
 
 ### Subject Fields (updatable via `mergeCaseState`)
 
@@ -76,7 +76,49 @@ These types are defined in the Case Logic Contract. Repeated here for reference 
 
 ---
 
-## 4. CaseRepository Interface (Minimal MVP)
+## 4. case_kind Reclassification and Duplicate Prevention
+
+### case_kind Reclassification
+
+`case_kind` is set at open and is normally immutable. It must not be silently changed through `mergeCaseState`.
+
+If Runtime Core determines that the operational meaning of a conversation has changed (e.g., a status inquiry evolves into a booking request), it must choose one of two explicit paths:
+
+**Option A — Open a new case.**
+Close or leave the prior case open, and open a new case with the correct `case_kind`. This is the preferred path for MVP. It produces a clean audit trail.
+
+**Option B — Explicit audited reclassification.**
+Call a dedicated reclassification operation (not covered in this MVP contract) that records a `case_kind_changed` event before updating the field. This path requires an explicit `appendCaseEvent` call with `event_kind: case_kind_changed`, the old value, the new value, and the reason. This option is deferred to a future contract unless the owner explicitly requests it.
+
+Silent `case_kind` mutation via generic `mergeCaseState` is not allowed under either path.
+
+---
+
+### Duplicate and Multi-Case Rules
+
+Runtime Core must prevent duplicate active cases for the same identity key:
+
+- `contact_id`
+- `conversation_id`
+- `case_kind`
+- subject identity (`subject_kind` + `subject_display_name` when available)
+
+Before calling `openCase`, Runtime Core must call `findActiveCase` with the full identity key. If a matching case exists, it must resume that case rather than open a duplicate.
+
+**Multiple active cases per conversation are explicitly allowed when subjects differ.**
+
+Example:
+
+| contact_id | conversation_id | case_kind | subject_kind | subject_display_name |
+|---|---|---|---|---|
+| mikhail_001 | conv_abc | `booking_intake` | `self` | Mikhail |
+| mikhail_001 | conv_abc | `booking_intake` | `friend` | Vasya |
+
+These are two distinct valid active cases. They must not overwrite each other. `findActiveCase` must use the full identity key to distinguish them.
+
+---
+
+## 5. CaseRepository Interface (Minimal MVP)
 
 `CaseRepository` is the only allowed path for reading and writing case state. Runtime Core executors call `CaseRepository` methods; they do not call Supabase RPC directly.
 
@@ -95,7 +137,9 @@ Returns the persisted case record.
 
 Updates mutable case fields. Called when the Patient Agent proposes a case update and Runtime Core validates it.
 
-`CaseStatePatch` may include any subset of: `case_kind`, `subject_kind`, `subject_display_name`, `subject_relation`, `service_interest`, `preferred_date`, `preferred_time`, `urgency`, `handoff_reason`, `notes`, `status`.
+`CaseStatePatch` may include any subset of: `subject_kind`, `subject_display_name`, `subject_relation`, `service_interest`, `preferred_date`, `preferred_time`, `urgency`, `handoff_reason`, `notes`, `status`.
+
+**`case_kind` is not a normal patch field.** It must not be silently mutated through `mergeCaseState`. See Section 4 (case_kind reclassification) for the allowed path when operational meaning changes.
 
 Returns the updated case record.
 
@@ -113,13 +157,32 @@ Corresponds to: `rpc_log_case_event` or equivalent event RPC (confirm presence a
 
 ---
 
-### `getActiveCase(contact_id: string, conversation_id: string): Promise<Case | null>`
+### `getActiveCases(contact_id: string, conversation_id: string): Promise<Case[]>`
 
-Returns the most recent non-terminal case for this contact and conversation, or `null` if none exists.
+Returns all non-terminal cases for this contact and conversation.
+
+One conversation may produce multiple active cases when subjects differ (e.g., a patient booking for themselves and a friend). This method must return all of them, not only the most recent.
 
 Used by Runtime Core to determine whether to open a new case or resume an existing one.
 
-Corresponds to: `rpc_get_contact_case_context_v1` (candidate — confirm that it returns active case state in the expected shape).
+Corresponds to: `rpc_get_contact_case_context_v1` (candidate — confirm that it returns all active cases, not only the most recent single record; adapter normalization required if RPC returns a single row).
+
+---
+
+### `findActiveCase(input: FindActiveCaseInput): Promise<Case | null>`
+
+Returns a specific non-terminal case matching the given identity key, or `null` if none exists.
+
+`FindActiveCaseInput` must include:
+- `contact_id`
+- `conversation_id`
+- `case_kind`
+- `subject_kind`
+- `subject_display_name` (optional — used when subject identity is known)
+
+Used by Runtime Core to locate an existing case before deciding to open a new one for the same subject and intent.
+
+Corresponds to: `rpc_get_contact_case_context_v1` with filtered lookup (candidate — confirm filtering capability or implement as client-side filter over `getActiveCases` result).
 
 ---
 
@@ -135,27 +198,18 @@ Corresponds to: `rpc_apply_case_decision_v1` with a terminal transition (confirm
 
 ---
 
-## 5. RPC Candidate Mapping
+## 6. RPC Candidate Mapping
 
 | CaseRepository method | Candidate existing RPC | Status | Action required |
 |---|---|---|---|
 | `openCase` | `rpc_apply_case_decision_v1` | Candidate | Confirm input shape supports initial open |
-| `mergeCaseState` | `rpc_apply_case_decision_v1` | Candidate | Confirm state merge contract; check for hidden semantic routing |
+| `mergeCaseState` | `rpc_apply_case_decision_v1` | Candidate | Confirm state merge contract; check for hidden semantic routing; confirm `case_kind` is not patchable through this path |
 | `appendCaseEvent` | `rpc_log_case_event` | Candidate | Confirm presence and signature in live DB |
-| `getActiveCase` | `rpc_get_contact_case_context_v1` | Candidate | Confirm output includes active case state; confirm subject support |
+| `getActiveCases` | `rpc_get_contact_case_context_v1` | Candidate | Confirm it returns all active cases (not only single most recent); adapter normalization required if single-row RPC |
+| `findActiveCase` | `rpc_get_contact_case_context_v1` (filtered) | Candidate | Confirm filtering by `case_kind` + subject identity; or implement as client-side filter over `getActiveCases` |
 | `closeCase` | `rpc_apply_case_decision_v1` | Candidate | Confirm terminal transition support |
 
 **Do not implement `CaseRepository` against these RPCs until each candidate has been confirmed against the live core schema.** If a candidate is unsuitable, a gap must be recorded and the owner must approve a new RPC before any schema change is made.
-
----
-
-## 6. Multi-Case Boundary
-
-One conversation may have more than one active case (e.g., patient books for themselves and a friend).
-
-`getActiveCase` returns a single case for a given `(contact_id, conversation_id)` pair. If multiple cases are possible, the method signature may need to return `Case[]`. This is a known gap for MVP implementation — the owner must confirm expected behavior before implementation.
-
-For MVP, assume at most one active case per conversation unless the owner directs otherwise.
 
 ---
 
@@ -173,6 +227,7 @@ For MVP, assume at most one active case per conversation unless the owner direct
 
 ## 8. CRM-Blocked State
 
+
 The case store is available before the CRM adapter exists.
 
 | Operation | Available before CRM | Notes |
@@ -189,6 +244,7 @@ No case may reach `outcome: booked` without a confirmed `booking.apply` backend 
 ---
 
 ## 9. Permission Model
+
 
 | Action | Class | Who may perform |
 |---|---|---|
@@ -211,7 +267,13 @@ Identity fields (`case_id`, `clinic_id`, `contact_id`, `conversation_id`, `case_
 `CaseRepository`. Executors do not call Supabase RPC directly.
 
 **What RPC candidates exist for case persistence?**
-`rpc_apply_case_decision_v1` (open/merge/close), `rpc_log_case_event` (events), `rpc_get_contact_case_context_v1` (read active case). All candidates must be confirmed against the live DB before implementation.
+`rpc_apply_case_decision_v1` (open/merge/close), `rpc_log_case_event` (events), `rpc_get_contact_case_context_v1` (read active cases). All candidates must be confirmed against the live DB before implementation.
+
+**Can case_kind be changed through mergeCaseState?**
+No. `case_kind` is set at open and is not a normal patch field. To change operational meaning, Runtime Core must either open a new case (preferred) or perform an explicit audited reclassification (future).
+
+**Can multiple active cases exist in one conversation?**
+Yes. One conversation may have multiple active cases when subjects differ (e.g., Mikhail/self and Vasya/friend). `getActiveCases` returns all of them. `findActiveCase` uses the full identity key (contact_id + conversation_id + case_kind + subject) to locate a specific one. They must not overwrite each other.
 
 **What requires owner approval before implementation begins?**
 Confirming RPC candidate suitability. Any gap that requires a new RPC or schema change requires owner approval before any change is made.

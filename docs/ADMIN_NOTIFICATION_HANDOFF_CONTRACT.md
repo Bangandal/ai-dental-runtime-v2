@@ -6,11 +6,14 @@ Admin notification is a **runtime side effect**, not an agent tool.
 
 - `admin.notify` is never called directly by the Patient Agent or Operator Agent.
 - `admin.notify` is derived by `deriveRuntimeSideEffects(...)` from confirmed backend events.
+- Runtime Core records the notification intent and may audit the delivery result if reported back.
+- **Runtime Core does not directly send or deliver the Telegram message.**
+- The n8n / transport adapter reads the notification intent and delivers the actual message to the admin channel.
 - The agent proposes handoff through `handoff.create`.
 - Runtime Core validates and executes `handoff.create`.
-- Only after `handoff.create` succeeds does Runtime Core derive and dispatch the `admin.notify` side effect.
+- Only after `handoff.create` succeeds does Runtime Core derive and record the `admin.notify` notification intent.
 
-This separation means: the agent cannot trigger admin notifications directly, and a notification is never sent for a handoff that did not succeed.
+This separation means: the agent cannot trigger admin notifications directly, a notification intent is never recorded for a handoff that did not succeed, and the delivery transport is decoupled from Runtime Core.
 
 ---
 
@@ -40,8 +43,10 @@ Patient message
   → Patient Agent proposes handoff (handoff.create tool call)
   → Runtime Core validates: contact identity, case state, policy gates
   → Runtime Core persists handoff case with outcome = handed_off
-  → Runtime Core derives admin.notify side effect
-  → Runtime Core dispatches notification to configured admin channels
+  → Runtime Core derives and records admin.notify notification intent
+  → n8n / transport adapter reads notification intent
+  → n8n / transport adapter delivers Telegram message to admin
+  → Runtime Core may log/audit delivery result if reported back
 ```
 
 The Patient Agent receives a tool result confirming `handoff.create` success. It may then inform the patient that their request has been passed to the clinic team.
@@ -75,17 +80,18 @@ Optional fields may be omitted if not collected. Required fields (`case_id`, `ca
 
 ## 5. Notification Channels
 
-For MVP, the supported admin notification channel is **Telegram**.
+For MVP, the admin notification is delivered to **Telegram** via the **n8n / transport adapter**.
 
-| Channel | MVP Status | Notes |
+Runtime Core does not directly connect to Telegram. It records the notification intent. The n8n / transport adapter reads the intent and delivers the message.
+
+| Channel | MVP Status | Delivered by |
 |---|---|---|
-| Telegram | Active | Primary admin notification channel for MVP. |
-| Email | Not implemented | Future. |
-| SMS | Not implemented | Future. |
-| n8n webhook | Planned | Part of Telegram / n8n adapter layer (Roadmap step 11). |
-| In-app dashboard | Not implemented | Future. |
+| Telegram | Active | n8n / transport adapter (Roadmap step 11) |
+| Email | Not implemented | Future |
+| SMS | Not implemented | Future |
+| In-app dashboard | Not implemented | Future |
 
-Notification channel configuration (Telegram bot token, admin chat ID) is environment-specific and must not be hardcoded in runtime contracts. Configuration is provided via environment variables.
+Notification channel configuration (Telegram bot token, admin chat ID) is environment-specific and must not be hardcoded in runtime contracts. Configuration is provided via environment variables and consumed by the transport adapter, not by Runtime Core directly.
 
 ---
 
@@ -134,16 +140,17 @@ Runtime Core does not know whether the admin has acted. Post-handoff resolution 
 
 ## 8. Retry and Failure Behavior
 
-If the admin notification dispatch fails:
+If the transport adapter reports a notification delivery failure, or if the notification intent is never picked up:
 
 - The `handoff.create` case outcome remains `handed_off` — the case is already persisted.
-- The notification failure must be logged as a runtime error.
-- Runtime Core may retry notification delivery up to a defined limit.
-- After retry exhaustion, the failure is recorded in the case audit log.
+- The notification intent remains recorded in Runtime Core.
+- Delivery failure must be logged as a runtime error (by the transport adapter or via callback to Runtime Core).
+- Runtime Core may audit the delivery result if reported back by the transport adapter.
+- Retry responsibility belongs to the transport adapter layer, not Runtime Core.
 - The Patient Agent is not informed of notification delivery failure.
 - The patient-facing response must not claim that the admin was notified if delivery failed.
 
-Retry behavior details (max attempts, backoff strategy) are an implementation concern and are not defined in this contract.
+Retry behavior details (max attempts, backoff strategy) are transport adapter implementation concerns and are not defined in this contract.
 
 ---
 
@@ -156,8 +163,9 @@ Urgency escalation path:
 ```
 Patient message triggers urgent case
   → Runtime Core opens urgent case
-  → Runtime Core derives admin.notify side effect immediately
-  → Notification dispatched to admin channels
+  → Runtime Core derives and records admin.notify notification intent immediately
+  → n8n / transport adapter reads notification intent and delivers to admin channel
+  → Runtime Core may log/audit delivery result if reported back
   → Patient Agent informs patient that urgent request was received
 ```
 
@@ -173,7 +181,7 @@ Admin notifications are available before the CRM adapter exists.
 
 | State | Admin Notification |
 |---|---|
-| CRM not configured | ✅ Available — `handoff.create` works, notification dispatched |
+| CRM not configured | ✅ Available — `handoff.create` works, notification intent recorded |
 | CRM configured | ✅ Available |
 | `booking.apply` disabled | ✅ Not affected — notification does not depend on booking |
 
@@ -187,9 +195,10 @@ Admin notifications must not include a confirmed booking reference while `bookin
 |---|---|---|
 | Propose `handoff.create` | Proposal | Patient Agent |
 | Execute `handoff.create` | Runtime Core executor | Runtime Core only |
-| Derive `admin.notify` side effect | Side effect | Runtime Core only (`deriveRuntimeSideEffects`) |
-| Dispatch notification | Side effect executor | Runtime Core notification adapter |
-| Configure notification channel | Protected / env config | Owner via environment variables |
+| Derive and record `admin.notify` notification intent | Side effect | Runtime Core only (`deriveRuntimeSideEffects`) |
+| Deliver notification to admin channel | Transport | n8n / transport adapter |
+| Log/audit delivery result | Audit | Runtime Core (if result reported back by adapter) |
+| Configure notification channel | Protected / env config | Owner via environment variables (consumed by transport adapter) |
 | Read notification logs | Read-only | Operator Agent |
 
 The Operator Agent may read notification logs and case state. It may not directly trigger `admin.notify` or reconfigure notification channels without owner approval.
@@ -219,7 +228,7 @@ After this document exists, a developer should be able to answer:
 `handoff.create` success or an urgent case opening by Runtime Core.
 
 **Who sends the notification?**
-Runtime Core, via the `admin.notify` side effect derived in `deriveRuntimeSideEffects`. Never the agent directly.
+Runtime Core derives and records the `admin.notify` notification intent via `deriveRuntimeSideEffects`. The n8n / transport adapter delivers the actual message to the admin channel. Runtime Core does not directly send or deliver the Telegram message. The agent never triggers notification directly.
 
 **What is in the notification?**
 `case_id`, `case_kind`, `contact_id`, `contact_display`, `channel`, `handoff_reason`, `subject_kind`, `service_interest`, `preferred_date`, `urgency`, `notes`, and `case_created_at`.

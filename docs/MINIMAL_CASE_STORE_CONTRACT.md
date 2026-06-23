@@ -235,7 +235,8 @@ The case store is available before the CRM adapter exists.
 | `openCase` | ✅ Yes | |
 | `mergeCaseState` | ✅ Yes | |
 | `appendCaseEvent` | ✅ Yes | |
-| `getActiveCase` | ✅ Yes | |
+| `getActiveCases` | ✅ Yes | |
+| `findActiveCase` | ✅ Yes | |
 | `closeCase` with `outcome: handed_off` | ✅ Yes | |
 | `closeCase` with `outcome: booked` | ❌ No | Only after `booking.apply` succeeds via CRM adapter |
 

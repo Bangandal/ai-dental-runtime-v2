@@ -98,6 +98,7 @@ Silent `case_kind` mutation via generic `mergeCaseState` is not allowed under ei
 
 Runtime Core must prevent duplicate active cases for the same identity key:
 
+- `clinic_id`
 - `contact_id`
 - `conversation_id`
 - `case_kind`
@@ -157,15 +158,15 @@ Corresponds to: `rpc_log_case_event` or equivalent event RPC (confirm presence a
 
 ---
 
-### `getActiveCases(contact_id: string, conversation_id: string): Promise<Case[]>`
+### `getActiveCases(clinic_id: string, contact_id: string, conversation_id: string): Promise<Case[]>`
 
-Returns all non-terminal cases for this contact and conversation.
+Returns all non-terminal cases for this clinic, contact, and conversation.
 
 One conversation may produce multiple active cases when subjects differ (e.g., a patient booking for themselves and a friend). This method must return all of them, not only the most recent.
 
 Used by Runtime Core to determine whether to open a new case or resume an existing one.
 
-Corresponds to: `rpc_get_contact_case_context_v1` (candidate — confirm that it returns all active cases, not only the most recent single record; adapter normalization required if RPC returns a single row).
+Corresponds to: `rpc_get_contact_case_context_v1` (candidate — this RPC is clinic-scoped; implementation must pass `clinic_id` / `p_clinic_id`. Confirm that it returns all active cases, not only the most recent single record; adapter normalization required if RPC returns a single row).
 
 ---
 
@@ -174,6 +175,7 @@ Corresponds to: `rpc_get_contact_case_context_v1` (candidate — confirm that it
 Returns a specific non-terminal case matching the given identity key, or `null` if none exists.
 
 `FindActiveCaseInput` must include:
+- `clinic_id`
 - `contact_id`
 - `conversation_id`
 - `case_kind`
@@ -182,7 +184,7 @@ Returns a specific non-terminal case matching the given identity key, or `null` 
 
 Used by Runtime Core to locate an existing case before deciding to open a new one for the same subject and intent.
 
-Corresponds to: `rpc_get_contact_case_context_v1` with filtered lookup (candidate — confirm filtering capability or implement as client-side filter over `getActiveCases` result).
+Corresponds to: `rpc_get_contact_case_context_v1` with filtered lookup (candidate — this RPC is clinic-scoped; implementation must pass `clinic_id` / `p_clinic_id`. Confirm filtering capability by `case_kind` + subject identity, or implement as client-side filter over `getActiveCases` result).
 
 ---
 
@@ -205,8 +207,8 @@ Corresponds to: `rpc_apply_case_decision_v1` with a terminal transition (confirm
 | `openCase` | `rpc_apply_case_decision_v1` | Candidate | Confirm input shape supports initial open |
 | `mergeCaseState` | `rpc_apply_case_decision_v1` | Candidate | Confirm state merge contract; check for hidden semantic routing; confirm `case_kind` is not patchable through this path |
 | `appendCaseEvent` | `rpc_log_case_event` | Candidate | Confirm presence and signature in live DB |
-| `getActiveCases` | `rpc_get_contact_case_context_v1` | Candidate | Confirm it returns all active cases (not only single most recent); adapter normalization required if single-row RPC |
-| `findActiveCase` | `rpc_get_contact_case_context_v1` (filtered) | Candidate | Confirm filtering by `case_kind` + subject identity; or implement as client-side filter over `getActiveCases` |
+| `getActiveCases` | `rpc_get_contact_case_context_v1` | Candidate | Clinic-scoped — must pass `clinic_id` / `p_clinic_id`. Confirm it returns all active cases (not only single most recent); adapter normalization required if single-row RPC |
+| `findActiveCase` | `rpc_get_contact_case_context_v1` (filtered) | Candidate | Clinic-scoped — must pass `clinic_id` / `p_clinic_id`. Confirm filtering by `case_kind` + subject identity; or implement as client-side filter over `getActiveCases` |
 | `closeCase` | `rpc_apply_case_decision_v1` | Candidate | Confirm terminal transition support |
 
 **Do not implement `CaseRepository` against these RPCs until each candidate has been confirmed against the live core schema.** If a candidate is unsuitable, a gap must be recorded and the owner must approve a new RPC before any schema change is made.
@@ -274,7 +276,7 @@ Identity fields (`case_id`, `clinic_id`, `contact_id`, `conversation_id`, `case_
 No. `case_kind` is set at open and is not a normal patch field. To change operational meaning, Runtime Core must either open a new case (preferred) or perform an explicit audited reclassification (future).
 
 **Can multiple active cases exist in one conversation?**
-Yes. One conversation may have multiple active cases when subjects differ (e.g., Mikhail/self and Vasya/friend). `getActiveCases` returns all of them. `findActiveCase` uses the full identity key (contact_id + conversation_id + case_kind + subject) to locate a specific one. They must not overwrite each other.
+Yes. One conversation may have multiple active cases when subjects differ (e.g., Mikhail/self and Vasya/friend). `getActiveCases` returns all of them. `findActiveCase` uses the full identity key (`clinic_id` + `contact_id` + `conversation_id` + `case_kind` + subject) to locate a specific one. They must not overwrite each other. All active-case reads are clinic-scoped — `clinic_id` is required for both `getActiveCases` and `findActiveCase`.
 
 **What requires owner approval before implementation begins?**
 Confirming RPC candidate suitability. Any gap that requires a new RPC or schema change requires owner approval before any change is made.

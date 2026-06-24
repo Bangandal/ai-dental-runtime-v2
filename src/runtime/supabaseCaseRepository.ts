@@ -133,8 +133,8 @@ function normalizeCaseRow(
   const meta = asRecord(row.meta);
 
   // Helper: read jsonb field from collected first, meta as fallback.
-  const fromJsonb = (key: string): unknown =>
-    collected[key] !== undefined ? collected[key] : meta[key];
+  // Uses nullish coalescing so explicit null in collected also falls back to meta.
+  const fromJsonb = (key: string): unknown => collected[key] ?? meta[key];
 
   return {
     case_id,

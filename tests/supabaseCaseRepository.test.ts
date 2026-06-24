@@ -195,6 +195,26 @@ test("getActiveCases: falls back to meta when collected field is absent", async 
   assert.equal(c.outcome, "answered");
 });
 
+test("getActiveCases: falls back to meta when collected field is null (nullish coalescing)", async () => {
+  const rpc = makeRpc([makeRawCase({
+    collected: {
+      conversation_id: null,     // explicit null → must fall back to meta
+      service_interest: null,    // explicit null → must fall back to meta
+    },
+    meta: {
+      conversation_id: "conv-abc",
+      service_interest: "cleaning",
+    },
+  })]);
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.getActiveCases("clinic-1", "contact-1", "conv-abc");
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data.length, 1, "case should be returned after null fallback to meta");
+  assert.equal(result.data[0].conversation_id, "conv-abc");
+  assert.equal(result.data[0].service_interest, "cleaning");
+});
+
 test("getActiveCases: collected takes precedence over meta when both have same field", async () => {
   const rpc = makeRpc([makeRawCase({
     collected: { conversation_id: "conv-abc", subject_kind: "self" },

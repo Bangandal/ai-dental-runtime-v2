@@ -11,12 +11,15 @@
 
 import type { RpcCaller, RuntimeResult } from "./runtimeRepositories.ts";
 import {
+  type AppendCaseEventInput,
   type Case,
   type CaseKind,
   type CaseOutcome,
   type CaseStatus,
   type FindActiveCaseInput,
+  type OpenCaseInput,
   type SubjectKind,
+  caseKindToPhysicalType,
   physicalCaseTypeToKind,
 } from "./case.ts";
 
@@ -38,6 +41,20 @@ export interface CaseRepository {
    * subject_kind, and subject_display_name.
    */
   findActiveCase(input: FindActiveCaseInput): Promise<RuntimeResult<Case | null>>;
+
+  /**
+   * Opens a new case via rpc_apply_case_decision_v1(open_case).
+   * Stores all logical fields absent from the physical schema in collected jsonb.
+   * Performs a follow-up getActiveCases read to return a fully normalized Case.
+   * Does not create appointments. Does not set outcome=booked.
+   */
+  openCase(input: OpenCaseInput): Promise<RuntimeResult<Case>>;
+
+  /**
+   * Appends an audit event to a case via rpc_log_case_event.
+   * Append-only. Does not mutate case state.
+   */
+  appendCaseEvent(input: AppendCaseEventInput): Promise<RuntimeResult<void>>;
 }
 
 export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepository {
@@ -102,7 +119,138 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
     return { ok: true, data: match ?? null };
   }
 
-  return { getActiveCases, findActiveCase };
+  async function openCase(input: OpenCaseInput): Promise<RuntimeResult<Case>> {
+    // Build collected jsonb — all logical fields missing from the physical schema.
+    // collected is canonical for new writes; outcome is explicitly null at open time.
+    const collected: Record<string, unknown> = {
+      conversation_id: input.conversation_id,
+      subject_kind: input.subject_kind,
+      subject_display_name: input.subject_display_name ?? null,
+      subject_relation: input.subject_relation ?? null,
+      service_interest: input.service_interest ?? null,
+      preferred_date: input.preferred_date ?? null,
+      preferred_time: input.preferred_time ?? null,
+      urgency: input.urgency ?? false,
+      notes: input.notes ?? null,
+      handoff_reason: null,
+      outcome: null,
+    };
+
+    const openResponse = await deps.rpc<unknown[]>("rpc_apply_case_decision_v1", {
+      p_clinic_id: input.clinic_id,
+      p_contact_id: input.contact_id,
+      p_case_action: "open_case",
+      p_case_type: caseKindToPhysicalType(input.case_kind),
+      p_collected: collected,
+    });
+
+    if (openResponse.error) {
+      return {
+        ok: false,
+        error: {
+          code: "case_open_failed",
+          message: String(
+            (openResponse.error as { message?: string } | null)?.message ?? openResponse.error,
+          ),
+          retryable: true,
+        },
+      };
+    }
+
+    // Extract case_id from the RPC response if the shape provides it.
+    // rpc_apply_case_decision_v1 response shape is not guaranteed — fall back
+    // to identity-key matching in the follow-up read if case_id is missing.
+    const responseRow = Array.isArray(openResponse.data)
+      ? (openResponse.data[0] ?? {})
+      : (openResponse.data ?? {});
+    const rawCaseId =
+      (responseRow as Record<string, unknown>).case_id ??
+      (responseRow as Record<string, unknown>).id;
+
+    // Follow-up read: getActiveCases already applies full normalization.
+    // This is the safest path regardless of what the write RPC returns.
+    const readResult = await getActiveCases(
+      input.clinic_id,
+      input.contact_id,
+      input.conversation_id,
+    );
+    if (!readResult.ok) {
+      return {
+        ok: false,
+        error: {
+          code: "case_open_read_back_failed",
+          message: `Case RPC succeeded but follow-up read failed: ${readResult.error.message}`,
+          retryable: true,
+        },
+      };
+    }
+
+    // Prefer matching by case_id from the RPC response; fall back to identity key.
+    const opened = rawCaseId
+      ? readResult.data.find((c) => c.case_id === String(rawCaseId))
+      : readResult.data.find(
+          (c) =>
+            c.case_kind === input.case_kind &&
+            c.subject_kind === input.subject_kind &&
+            (input.subject_display_name === undefined ||
+              c.subject_display_name === input.subject_display_name),
+        );
+
+    if (!opened) {
+      return {
+        ok: false,
+        error: {
+          code: "case_open_not_found_after_write",
+          message:
+            `openCase RPC succeeded but the opened case could not be located in subsequent ` +
+            `getActiveCases. case_kind=${input.case_kind} subject_kind=${input.subject_kind} ` +
+            `rawCaseId=${rawCaseId ?? "unknown"}`,
+          retryable: false,
+        },
+      };
+    }
+
+    return { ok: true, data: opened };
+  }
+
+  async function appendCaseEvent(
+    input: AppendCaseEventInput,
+  ): Promise<RuntimeResult<void>> {
+    // rpc_log_case_event signature confirmed from live schema inspection:
+    // p_clinic_id, p_contact_id, p_case_id, p_event_type, p_event_source,
+    // p_trace_id, p_message_id, p_lead_id, p_notification_id, p_payload.
+    const args: Record<string, unknown> = {
+      p_clinic_id: input.clinic_id,
+      p_contact_id: input.contact_id,
+      p_case_id: input.case_id,
+      p_event_type: input.event_kind,
+      p_event_source: input.actor,
+      p_payload: input.payload ?? {},
+    };
+    if (input.trace_id !== undefined) args.p_trace_id = input.trace_id;
+    if (input.message_id !== undefined) args.p_message_id = input.message_id;
+    if (input.lead_id !== undefined) args.p_lead_id = input.lead_id;
+    if (input.notification_id !== undefined) args.p_notification_id = input.notification_id;
+
+    const response = await deps.rpc<unknown>("rpc_log_case_event", args);
+
+    if (response.error) {
+      return {
+        ok: false,
+        error: {
+          code: "case_event_append_failed",
+          message: String(
+            (response.error as { message?: string } | null)?.message ?? response.error,
+          ),
+          retryable: true,
+        },
+      };
+    }
+
+    return { ok: true, data: undefined };
+  }
+
+  return { getActiveCases, findActiveCase, openCase, appendCaseEvent };
 }
 
 // ---------------------------------------------------------------------------

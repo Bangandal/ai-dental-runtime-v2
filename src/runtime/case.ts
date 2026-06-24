@@ -89,52 +89,67 @@ export type CaseEventActor = "patient_agent" | "runtime_core" | "operator";
 export interface AppendCaseEventInput {
   case_id: string;
   clinic_id: string;
+  contact_id: string;
   event_kind: string;
   actor: CaseEventActor;
   payload?: Record<string, unknown>;
   trace_id?: string;
   message_id?: string;
+  lead_id?: string;
+  notification_id?: string;
 }
 
 /**
  * Maps physical case_type (stored in core.cases) to logical CaseKind.
  *
- * The physical field is set at case open time by the adapter. For new cases
- * created by this runtime the values will match 1:1. Legacy cases may carry
- * old values ("booking", "faq", etc.) which are mapped best-effort.
- *
- * Confirm the full mapping against the live DB before implementing write paths.
+ * Covers both legacy values (booking, faq, post_booking) and the physical
+ * values written by rpc_apply_case_decision_v1 (booking_request, admin_request,
+ * follow_up, etc.). Unknown values fall back to process_status without throwing.
  */
 export function physicalCaseTypeToKind(caseType: string | null | undefined): CaseKind {
   switch (caseType) {
     case "booking_intake":
-    case "booking": // legacy alias
-    case "intake":  // possible legacy alias
+    case "booking_request":     // physical value written by rpc_apply_case_decision_v1
+    case "availability_request":// physical alias
+    case "booking":             // legacy alias
+    case "intake":              // legacy alias
       return "booking_intake";
     case "reschedule":
       return "reschedule";
     case "cancel":
       return "cancel";
     case "admin_handoff":
+    case "admin_request":       // physical value written by rpc_apply_case_decision_v1
       return "admin_handoff";
     case "process_status":
-    case "post_booking": // legacy closest match
-    case "faq":          // legacy closest match
+    case "follow_up":           // physical value written by rpc_apply_case_decision_v1
+    case "post_booking":        // legacy alias
+    case "faq":                 // legacy alias
+    case "other":               // physical fallback
       return "process_status";
     case "urgent":
       return "urgent";
     default:
-      // Unknown physical values default to process_status (safest read fallback).
-      // Log and do not throw — read path must not crash on legacy data.
+      // Unknown physical values default to process_status — read path must not throw.
       return "process_status";
   }
 }
 
 /**
- * Maps logical CaseKind to physical case_type for write operations.
- * Only used by write-path methods (openCase, mergeCaseState, closeCase).
- * Confirm against live DB before implementing write paths.
+ * Maps logical CaseKind to the physical case_type accepted by rpc_apply_case_decision_v1.
+ *
+ * Physical values are drawn from the caseRouterShadow CaseType enum observed in
+ * the live codebase: booking_request, admin_request, follow_up, urgent, reschedule, cancel.
+ * Logical values like booking_intake, admin_handoff, process_status are NOT accepted
+ * by the RPC and must not be passed directly.
  */
 export function caseKindToPhysicalType(kind: CaseKind): string {
-  return kind; // new cases store the logical value directly
+  switch (kind) {
+    case "booking_intake": return "booking_request";
+    case "reschedule":     return "reschedule";
+    case "cancel":         return "cancel";
+    case "admin_handoff":  return "admin_request";
+    case "process_status": return "follow_up";
+    case "urgent":         return "urgent";
+  }
 }

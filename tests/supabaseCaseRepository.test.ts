@@ -145,6 +145,33 @@ test("getActiveCases: maps case_type urgent to CaseKind urgent", async () => {
   assert.equal(result.data[0].case_kind, "urgent");
 });
 
+test("getActiveCases: maps physical case_type booking_request to CaseKind booking_intake", async () => {
+  const rpc = makeRpc([makeRawCase({ case_type: "booking_request" })]);
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.getActiveCases("clinic-1", "contact-1", "conv-abc");
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data[0].case_kind, "booking_intake");
+});
+
+test("getActiveCases: maps physical case_type admin_request to CaseKind admin_handoff", async () => {
+  const rpc = makeRpc([makeRawCase({ case_type: "admin_request" })]);
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.getActiveCases("clinic-1", "contact-1", "conv-abc");
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data[0].case_kind, "admin_handoff");
+});
+
+test("getActiveCases: maps physical case_type follow_up to CaseKind process_status", async () => {
+  const rpc = makeRpc([makeRawCase({ case_type: "follow_up" })]);
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.getActiveCases("clinic-1", "contact-1", "conv-abc");
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data[0].case_kind, "process_status");
+});
+
 // ---------------------------------------------------------------------------
 // jsonb field reading
 // ---------------------------------------------------------------------------
@@ -407,13 +434,44 @@ test("openCase: calls rpc_apply_case_decision_v1 with p_case_action = open_case"
   assert.equal(openCall.args.p_case_action, "open_case");
 });
 
-test("openCase: maps case_kind to p_case_type", async () => {
+test("openCase: maps case_kind to p_case_type (reschedule → reschedule)", async () => {
   const { rpc, calls } = makeOpenCaseRpc({});
   const repo = createSupabaseCaseRepository({ rpc });
   await repo.openCase({ ...BASE_OPEN_INPUT, case_kind: "reschedule" });
   const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
   assert.ok(openCall);
   assert.equal(openCall.args.p_case_type, "reschedule");
+});
+
+test("openCase: maps booking_intake to physical p_case_type = booking_request", async () => {
+  const { rpc, calls } = makeOpenCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.openCase({ ...BASE_OPEN_INPUT, case_kind: "booking_intake" });
+  const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(openCall);
+  assert.equal(openCall.args.p_case_type, "booking_request");
+});
+
+test("openCase: maps admin_handoff to physical p_case_type = admin_request", async () => {
+  const { rpc, calls } = makeOpenCaseRpc({
+    activeCases: [makeRawCase({ case_id: "new-case-id", case_type: "admin_request", collected: { conversation_id: "conv-abc", subject_kind: "self" } })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.openCase({ ...BASE_OPEN_INPUT, case_kind: "admin_handoff" });
+  const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(openCall);
+  assert.equal(openCall.args.p_case_type, "admin_request");
+});
+
+test("openCase: maps process_status to physical p_case_type = follow_up", async () => {
+  const { rpc, calls } = makeOpenCaseRpc({
+    activeCases: [makeRawCase({ case_id: "new-case-id", case_type: "follow_up", collected: { conversation_id: "conv-abc", subject_kind: "self" } })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.openCase({ ...BASE_OPEN_INPUT, case_kind: "process_status" });
+  const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(openCall);
+  assert.equal(openCall.args.p_case_type, "follow_up");
 });
 
 test("openCase: stores all missing logical fields in collected jsonb", async () => {
@@ -512,21 +570,32 @@ function makeAppendEventRpc(opts: { error?: unknown } = {}): {
 const BASE_EVENT_INPUT: AppendCaseEventInput = {
   case_id: "case-001",
   clinic_id: "clinic-1",
+  contact_id: "contact-1",
   event_kind: "status_collected",
   actor: "patient_agent",
   payload: { field: "service_interest", value: "cleaning" },
 };
 
-test("appendCaseEvent: calls rpc_log_case_event with expected args", async () => {
+test("appendCaseEvent: calls rpc_log_case_event with confirmed signature args", async () => {
   const { rpc, calls } = makeAppendEventRpc();
   const repo = createSupabaseCaseRepository({ rpc });
   await repo.appendCaseEvent(BASE_EVENT_INPUT);
   const call = calls.find((c) => c.fn === "rpc_log_case_event");
   assert.ok(call, "rpc_log_case_event must be called");
   assert.equal(call.args.p_clinic_id, "clinic-1");
+  assert.equal(call.args.p_contact_id, "contact-1");
   assert.equal(call.args.p_case_id, "case-001");
   assert.equal(call.args.p_event_type, "status_collected");
   assert.equal(call.args.p_event_source, "patient_agent");
+});
+
+test("appendCaseEvent: passes p_contact_id to RPC", async () => {
+  const { rpc, calls } = makeAppendEventRpc();
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.appendCaseEvent({ ...BASE_EVENT_INPUT, contact_id: "contact-xyz" });
+  const call = calls.find((c) => c.fn === "rpc_log_case_event");
+  assert.ok(call);
+  assert.equal(call.args.p_contact_id, "contact-xyz");
 });
 
 test("appendCaseEvent: passes payload to RPC", async () => {
@@ -538,6 +607,24 @@ test("appendCaseEvent: passes payload to RPC", async () => {
   const payload = call.args.p_payload as Record<string, unknown>;
   assert.equal(payload.field, "service_interest");
   assert.equal(payload.value, "cleaning");
+});
+
+test("appendCaseEvent: passes optional trace_id, message_id, lead_id, notification_id when provided", async () => {
+  const { rpc, calls } = makeAppendEventRpc();
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.appendCaseEvent({
+    ...BASE_EVENT_INPUT,
+    trace_id: "trace-001",
+    message_id: "msg-001",
+    lead_id: "lead-001",
+    notification_id: "notif-001",
+  });
+  const call = calls.find((c) => c.fn === "rpc_log_case_event");
+  assert.ok(call);
+  assert.equal(call.args.p_trace_id, "trace-001");
+  assert.equal(call.args.p_message_id, "msg-001");
+  assert.equal(call.args.p_lead_id, "lead-001");
+  assert.equal(call.args.p_notification_id, "notif-001");
 });
 
 test("appendCaseEvent: propagates RPC error as RuntimeResult error", async () => {

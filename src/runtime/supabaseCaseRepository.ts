@@ -216,11 +216,12 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
   async function appendCaseEvent(
     input: AppendCaseEventInput,
   ): Promise<RuntimeResult<void>> {
-    // rpc_log_case_event signature confirmed from docs/RPC_CANDIDATE_VERIFICATION_REPORT.md.
-    // p_contact_id is included as it appears in adjacent RPCs; confirm against live
-    // signature if the call fails with "unknown argument" from Supabase.
+    // rpc_log_case_event signature confirmed from live schema inspection:
+    // p_clinic_id, p_contact_id, p_case_id, p_event_type, p_event_source,
+    // p_trace_id, p_message_id, p_lead_id, p_notification_id, p_payload.
     const args: Record<string, unknown> = {
       p_clinic_id: input.clinic_id,
+      p_contact_id: input.contact_id,
       p_case_id: input.case_id,
       p_event_type: input.event_kind,
       p_event_source: input.actor,
@@ -228,6 +229,8 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
     };
     if (input.trace_id !== undefined) args.p_trace_id = input.trace_id;
     if (input.message_id !== undefined) args.p_message_id = input.message_id;
+    if (input.lead_id !== undefined) args.p_lead_id = input.lead_id;
+    if (input.notification_id !== undefined) args.p_notification_id = input.notification_id;
 
     const response = await deps.rpc<unknown>("rpc_log_case_event", args);
 

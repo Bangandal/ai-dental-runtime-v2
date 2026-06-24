@@ -69,6 +69,33 @@ export interface FindActiveCaseInput {
   subject_display_name?: string;
 }
 
+export interface OpenCaseInput {
+  clinic_id: string;
+  contact_id: string;
+  conversation_id: string;
+  case_kind: CaseKind;
+  subject_kind: SubjectKind;
+  subject_display_name?: string;
+  subject_relation?: string;
+  service_interest?: string;
+  preferred_date?: string;
+  preferred_time?: string;
+  urgency?: boolean;
+  notes?: string;
+}
+
+export type CaseEventActor = "patient_agent" | "runtime_core" | "operator";
+
+export interface AppendCaseEventInput {
+  case_id: string;
+  clinic_id: string;
+  event_kind: string;
+  actor: CaseEventActor;
+  payload?: Record<string, unknown>;
+  trace_id?: string;
+  message_id?: string;
+}
+
 /**
  * Maps physical case_type (stored in core.cases) to logical CaseKind.
  *

@@ -6,6 +6,7 @@ import {
   createSupabaseCaseRepository,
 } from "../src/runtime/supabaseCaseRepository.ts";
 import type { RpcCaller } from "../src/runtime/runtimeRepositories.ts";
+import type { OpenCaseInput, AppendCaseEventInput } from "../src/runtime/case.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -346,4 +347,216 @@ test("getActiveCases: returns RuntimeResult error when RPC fails", async () => {
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.error.code, "case_context_load_failed");
+});
+
+// ---------------------------------------------------------------------------
+// openCase — write path
+// ---------------------------------------------------------------------------
+
+type RpcCall = { fn: string; args: Record<string, unknown> };
+
+function makeOpenCaseRpc(opts: {
+  openError?: unknown;
+  openResponseCaseId?: string;
+  activeCases?: unknown[];
+  activeCasesError?: unknown;
+}): { rpc: RpcCaller; calls: RpcCall[] } {
+  const calls: RpcCall[] = [];
+  const rpc: RpcCaller = async (fn, args) => {
+    calls.push({ fn, args: args as Record<string, unknown> });
+    if (fn === "rpc_apply_case_decision_v1") {
+      if (opts.openError) return { data: null, error: opts.openError };
+      return { data: [{ case_id: opts.openResponseCaseId ?? "new-case-id" }], error: null };
+    }
+    if (fn === "rpc_get_contact_case_context_v1") {
+      if (opts.activeCasesError) return { data: null, error: opts.activeCasesError };
+      const cases = opts.activeCases ?? [
+        makeRawCase({
+          case_id: opts.openResponseCaseId ?? "new-case-id",
+          collected: { conversation_id: "conv-abc", subject_kind: "self" },
+        }),
+      ];
+      return { data: [{ open_cases: cases }], error: null };
+    }
+    return { data: null, error: { message: `unexpected RPC: ${fn}` } };
+  };
+  return { rpc, calls };
+}
+
+const BASE_OPEN_INPUT: OpenCaseInput = {
+  clinic_id: "clinic-1",
+  contact_id: "contact-1",
+  conversation_id: "conv-abc",
+  case_kind: "booking_intake",
+  subject_kind: "self",
+  subject_display_name: "Mikhail",
+  subject_relation: null,
+  service_interest: "cleaning",
+  preferred_date: "2026-07-01",
+  preferred_time: "10:00",
+  urgency: false,
+  notes: "prefers morning",
+};
+
+test("openCase: calls rpc_apply_case_decision_v1 with p_case_action = open_case", async () => {
+  const { rpc, calls } = makeOpenCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.openCase(BASE_OPEN_INPUT);
+  const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(openCall, "rpc_apply_case_decision_v1 must be called");
+  assert.equal(openCall.args.p_case_action, "open_case");
+});
+
+test("openCase: maps case_kind to p_case_type", async () => {
+  const { rpc, calls } = makeOpenCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.openCase({ ...BASE_OPEN_INPUT, case_kind: "reschedule" });
+  const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(openCall);
+  assert.equal(openCall.args.p_case_type, "reschedule");
+});
+
+test("openCase: stores all missing logical fields in collected jsonb", async () => {
+  const { rpc, calls } = makeOpenCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.openCase(BASE_OPEN_INPUT);
+  const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(openCall);
+  const col = openCall.args.p_collected as Record<string, unknown>;
+  assert.equal(col.subject_kind, "self");
+  assert.equal(col.subject_display_name, "Mikhail");
+  assert.equal(col.service_interest, "cleaning");
+  assert.equal(col.preferred_date, "2026-07-01");
+  assert.equal(col.preferred_time, "10:00");
+  assert.equal(col.urgency, false);
+  assert.equal(col.notes, "prefers morning");
+});
+
+test("openCase: stores conversation_id in collected jsonb", async () => {
+  const { rpc, calls } = makeOpenCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.openCase(BASE_OPEN_INPUT);
+  const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(openCall);
+  const col = openCall.args.p_collected as Record<string, unknown>;
+  assert.equal(col.conversation_id, "conv-abc");
+});
+
+test("openCase: does not set outcome=booked in collected jsonb", async () => {
+  const { rpc, calls } = makeOpenCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.openCase(BASE_OPEN_INPUT);
+  const openCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(openCall);
+  const col = openCall.args.p_collected as Record<string, unknown>;
+  assert.notEqual(col.outcome, "booked");
+});
+
+test("openCase: returns normalized Case from follow-up read", async () => {
+  const { rpc } = makeOpenCaseRpc({
+    openResponseCaseId: "new-case-id",
+    activeCases: [
+      makeRawCase({
+        case_id: "new-case-id",
+        case_type: "booking_intake",
+        collected: {
+          conversation_id: "conv-abc",
+          subject_kind: "self",
+          subject_display_name: "Mikhail",
+          service_interest: "cleaning",
+        },
+      }),
+    ],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.openCase(BASE_OPEN_INPUT);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data.case_id, "new-case-id");
+  assert.equal(result.data.case_kind, "booking_intake");
+  assert.equal(result.data.subject_kind, "self");
+  assert.equal(result.data.service_interest, "cleaning");
+  assert.equal(result.data.clinic_id, "clinic-1");
+  assert.equal(result.data.contact_id, "contact-1");
+});
+
+test("openCase: propagates RPC error as RuntimeResult error", async () => {
+  const { rpc } = makeOpenCaseRpc({ openError: { message: "insert failed" } });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.openCase(BASE_OPEN_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_open_failed");
+});
+
+// ---------------------------------------------------------------------------
+// appendCaseEvent — write path
+// ---------------------------------------------------------------------------
+
+function makeAppendEventRpc(opts: { error?: unknown } = {}): {
+  rpc: RpcCaller;
+  calls: RpcCall[];
+} {
+  const calls: RpcCall[] = [];
+  const rpc: RpcCaller = async (fn, args) => {
+    calls.push({ fn, args: args as Record<string, unknown> });
+    if (fn === "rpc_log_case_event") {
+      if (opts.error) return { data: null, error: opts.error };
+      return { data: null, error: null };
+    }
+    return { data: null, error: { message: `unexpected RPC: ${fn}` } };
+  };
+  return { rpc, calls };
+}
+
+const BASE_EVENT_INPUT: AppendCaseEventInput = {
+  case_id: "case-001",
+  clinic_id: "clinic-1",
+  event_kind: "status_collected",
+  actor: "patient_agent",
+  payload: { field: "service_interest", value: "cleaning" },
+};
+
+test("appendCaseEvent: calls rpc_log_case_event with expected args", async () => {
+  const { rpc, calls } = makeAppendEventRpc();
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.appendCaseEvent(BASE_EVENT_INPUT);
+  const call = calls.find((c) => c.fn === "rpc_log_case_event");
+  assert.ok(call, "rpc_log_case_event must be called");
+  assert.equal(call.args.p_clinic_id, "clinic-1");
+  assert.equal(call.args.p_case_id, "case-001");
+  assert.equal(call.args.p_event_type, "status_collected");
+  assert.equal(call.args.p_event_source, "patient_agent");
+});
+
+test("appendCaseEvent: passes payload to RPC", async () => {
+  const { rpc, calls } = makeAppendEventRpc();
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.appendCaseEvent(BASE_EVENT_INPUT);
+  const call = calls.find((c) => c.fn === "rpc_log_case_event");
+  assert.ok(call);
+  const payload = call.args.p_payload as Record<string, unknown>;
+  assert.equal(payload.field, "service_interest");
+  assert.equal(payload.value, "cleaning");
+});
+
+test("appendCaseEvent: propagates RPC error as RuntimeResult error", async () => {
+  const { rpc } = makeAppendEventRpc({ error: { message: "event insert failed" } });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.appendCaseEvent(BASE_EVENT_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_event_append_failed");
+});
+
+// ---------------------------------------------------------------------------
+// Safety — write scope guard
+// ---------------------------------------------------------------------------
+
+test("safety: mergeCaseState and closeCase are not present on the repository object", () => {
+  const repo = createSupabaseCaseRepository({
+    rpc: async () => ({ data: null, error: null }),
+  });
+  assert.equal("mergeCaseState" in repo, false, "mergeCaseState must not exist in this PR");
+  assert.equal("closeCase" in repo, false, "closeCase must not exist in this PR");
 });

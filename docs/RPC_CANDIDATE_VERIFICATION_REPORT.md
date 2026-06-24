@@ -62,10 +62,17 @@ The following fields are defined in the Minimal Case Store Contract but do **not
 | `case_kind` | Not present — maps to physical `case_type` | Adapter maps `case_kind` ↔ `case_type` |
 | `subject_kind` | Not present | Store in `collected` or `meta` jsonb |
 | `subject_display_name` | Not present | Store in `collected` or `meta` jsonb |
+| `subject_relation` | Not present | Store in `collected` or `meta` jsonb |
+| `service_interest` | Not present as first-class column | Store in `collected` or `meta` jsonb |
+| `preferred_date` | Not present | Store in `collected` or `meta` jsonb |
+| `preferred_time` | Not present | Store in `collected` or `meta` jsonb |
+| `urgency` | Not present as first-class column | Store in `collected` or `meta` jsonb |
+| `handoff_reason` | Not present | Store in `collected` or `meta` jsonb |
+| `notes` | Partially covered by `summary` | Store additional notes in `collected` or `meta` jsonb; `summary` may be used for free-text |
 | `outcome` | Not present | Store in `meta` or `collected` jsonb for MVP |
 | `conversation_id` | Not present | Store in `meta` or `collected` jsonb for MVP; see Section 6 |
 
-These gaps are handled by the adapter layer. No schema migration is required or authorized for MVP.
+All fields from the Minimal Case Store Contract that are not first-class columns are handled by the adapter layer via `collected`/`meta` jsonb. No schema migration is required or authorized for MVP.
 
 ---
 
@@ -97,7 +104,7 @@ Both candidates support opening a new case. `rpc_open_case_v1` is the more expli
 
 **Adapter responsibility:**
 - Map logical `case_kind` → physical `case_type`.
-- Store `subject_kind`, `subject_display_name`, `outcome`, and `conversation_id` in `collected` or `meta` jsonb.
+- Store all logical fields absent from the physical schema in `collected` or `meta` jsonb: `subject_kind`, `subject_display_name`, `subject_relation`, `service_interest`, `preferred_date`, `preferred_time`, `urgency`, `handoff_reason`, `notes` (if beyond `summary`), `outcome`, `conversation_id`.
 
 ---
 
@@ -106,8 +113,8 @@ Both candidates support opening a new case. `rpc_open_case_v1` is the more expli
 **Candidate RPC:** `core.rpc_apply_case_decision_v1` with `reuse_case` action.
 
 **Adapter responsibility:**
-- Map logical mutable fields to physical columns and jsonb bags.
-- Must preserve existing `case_type`. See Section 5 (Critical Risk) for the default mutation risk.
+- Map logical mutable fields to physical columns and jsonb bags: `subject_kind`, `subject_display_name`, `subject_relation`, `service_interest`, `preferred_date`, `preferred_time`, `urgency`, `handoff_reason`, `notes` all go to `collected`/`meta`.
+- Must preserve existing `case_type`. See Section 6 (Critical Risk) for the default mutation risk.
 
 ---
 
@@ -128,7 +135,7 @@ Called with `clinic_id` + `contact_id`. Returns `open_cases` as a JSON array of 
 **Adapter responsibility:**
 - Normalize `open_cases` JSON array → `Case[]`.
 - Map physical `case_type` → logical `case_kind`.
-- Deserialize `subject_kind`, `subject_display_name`, `outcome`, and `conversation_id` from `collected` / `meta` jsonb.
+- Deserialize all jsonb-stored fields from `collected`/`meta`: `subject_kind`, `subject_display_name`, `subject_relation`, `service_interest`, `preferred_date`, `preferred_time`, `urgency`, `handoff_reason`, `notes`, `outcome`, `conversation_id`.
 
 See Section 6 for the conversation scope gap.
 
@@ -149,12 +156,19 @@ See Section 7 for multi-case filtering detail.
 
 ### `closeCase`
 
-**Candidate RPC:** `core.rpc_apply_case_decision_v1` with `reuse_case` action and `case_status` set to `closed` or `handoff`.
+**Candidate RPC:** `core.rpc_apply_case_decision_v1` with `reuse_case` action and `case_status` set to `closed`.
+
+For `closeCase(..., outcome: handed_off)`:
+- The terminal `case_status` must be `closed`, not `handoff`.
+- `handoff` may represent an intermediate lifecycle state only if it is explicitly modeled in a future contract; it must not be used as a terminal close status.
+- A case closed with `outcome: handed_off` must not appear in subsequent `getActiveCases` reads. Setting `case_status` to `closed` ensures this.
+- `outcome: handed_off` is stored in `meta` or `collected` jsonb for MVP.
+- `closed_at` must be set by the RPC or confirmed and handled explicitly by the adapter. Confirm against live function signature before implementation.
 
 **Adapter responsibility:**
 - Write `outcome` to `meta` or `collected` jsonb for MVP.
-- Confirm `closed_at` is managed by the RPC or must be passed explicitly.
-- Must preserve existing `case_type` (same risk as `mergeCaseState` — see Section 5).
+- Confirm `closed_at` is set on every terminal call (RPC-managed or adapter-set).
+- Must preserve existing `case_type` (same risk as `mergeCaseState` — see Section 6).
 
 ---
 
@@ -168,8 +182,14 @@ The physical DB schema is not one-to-one compatible with the Minimal Case Store 
 | `subject_kind` | `collected` or `meta` jsonb | Bidirectional | No physical column |
 | `subject_display_name` | `collected` or `meta` jsonb | Bidirectional | No physical column |
 | `subject_relation` | `collected` or `meta` jsonb | Bidirectional | No physical column |
+| `service_interest` | `collected` or `meta` jsonb | Bidirectional | No physical column |
+| `preferred_date` | `collected` or `meta` jsonb | Bidirectional | No physical column |
+| `preferred_time` | `collected` or `meta` jsonb | Bidirectional | No physical column |
+| `urgency` | `collected` or `meta` jsonb | Bidirectional | No physical column |
+| `handoff_reason` | `collected` or `meta` jsonb | Bidirectional | No physical column |
+| `notes` | `collected`/`meta` jsonb (supplementing `summary`) | Bidirectional | Physical `summary` column may serve free-text; additional structured notes go to jsonb |
 | `outcome` | `meta` or `collected` jsonb | Bidirectional | No physical column for MVP |
-| `conversation_id` | `meta` or `collected` jsonb | Bidirectional | No physical column; see Section 6 |
+| `conversation_id` | `meta` or `collected` jsonb | Bidirectional | No physical column; see Section 7 |
 | `Case[]` | `open_cases` JSON array | Read | Adapter normalizes JSON array to typed `Case[]` |
 
 The adapter must be the only place this translation occurs. `CaseRepository` methods expose the logical contract. Callers must not handle physical field names.
@@ -233,9 +253,24 @@ The following RPCs support admin notification persistence:
 | `core.rpc_mark_notification_sent` | Marks a notification as successfully delivered. |
 | `core.rpc_mark_notification_failed` | Marks a notification as failed. |
 
-`rpc_prepare_admin_notification` is usable for `admin.notify` intent recording after a handoff case is closed with `outcome: handed_off`. n8n or the transport adapter then reads pending notification records and delivers them. Runtime Core does not deliver directly.
+`rpc_prepare_admin_notification` supports two valid admin notification trigger paths:
 
-**handoff.create dependency:** `handoff.create` must define when `need_admin` and `current_case_id` are set before `rpc_prepare_admin_notification` can be called. The notification RPCs are ready, but the call site logic is deferred to the `handoff.create` implementation scope.
+### Trigger Path 1 — Admin Handoff
+
+`handoff.create` closes a case with `outcome: handed_off` and calls `rpc_prepare_admin_notification` with the handoff `case_id` and `need_admin` context. n8n or the transport adapter reads pending notification records and delivers them. Runtime Core does not deliver directly.
+
+### Trigger Path 2 — Urgent Escalation
+
+When Runtime Core accepts an urgent case or receives an explicit urgency escalation, `rpc_prepare_admin_notification` must be called **immediately** — it must not wait for a subsequent `handoff.create` call. Urgent cases may require immediate admin attention before any handoff workflow completes. The notification intent must be prepared and set to `pending` as soon as urgency is accepted by Runtime Core.
+
+### Call-Site Dependency
+
+Both trigger paths require `handoff.create` or the urgency acceptance path to define:
+- `current_case_id` — the case that triggered the notification
+- `need_admin` — flag confirming notification intent is required
+- notification kind — `admin_handoff` or `urgent_escalation` (or equivalent enum)
+
+The notification RPCs are ready. The call-site logic for both paths is deferred to the `handoff.create` and urgency handling implementation scope.
 
 ---
 
@@ -248,7 +283,7 @@ The following RPCs support admin notification persistence:
 | `core.rpc_get_contact_case_context_v1` | **Usable with adapter filtering** | Gap: no `conversation_id` argument. Adapter must filter `open_cases` array by `conversation_id` stored in `collected`/`meta`. |
 | `core.rpc_log_case_event` | **Usable** | Confirm `event_kind`, `actor`, and `payload` field names against live signature before implementation. |
 | `core.rpc_link_runtime_artifacts_to_case_v1` | **Usable** | For linking `conversation_id` and booking artifacts to a case. Confirm input shape before use. |
-| `core.rpc_prepare_admin_notification` | **Usable — deferred to handoff.create scope** | Ready for `admin.notify` integration. Requires `handoff.create` to define `need_admin` / `current_case_id` call site before this RPC is invoked. |
+| `core.rpc_prepare_admin_notification` | **Usable — deferred to handoff.create and urgency handling scope** | Supports two trigger paths: (1) admin handoff closure and (2) urgent case escalation. Must not be narrowed to handoff only. Urgent path must call this RPC immediately on urgency acceptance, without waiting for `handoff.create`. Requires integration with `current_case_id`, notification intent kind, and `need_admin` semantics before either call site is implemented. |
 
 ---
 
@@ -276,13 +311,19 @@ After reading this report, a developer must be able to answer:
 All six `CaseRepository` methods can be mapped to existing RPCs without new functions. `openCase` → `rpc_apply_case_decision_v1` or `rpc_open_case_v1`. `mergeCaseState` and `closeCase` → `rpc_apply_case_decision_v1(reuse_case)`. `appendCaseEvent` → `rpc_log_case_event`. `getActiveCases` and `findActiveCase` → `rpc_get_contact_case_context_v1` with adapter filtering.
 
 **Where is adapter normalization required?**
-Every read and write path. `case_kind` ↔ `case_type`. `subject_kind`, `subject_display_name`, `outcome`, `conversation_id` ↔ `collected`/`meta` jsonb. `open_cases` JSON array ↔ typed `Case[]`.
+Every read and write path. `case_kind` ↔ `case_type`. All Minimal Case Store subject, operational, and outcome fields not present as physical columns — `subject_kind`, `subject_display_name`, `subject_relation`, `service_interest`, `preferred_date`, `preferred_time`, `urgency`, `handoff_reason`, `notes`, `outcome`, `conversation_id` — are read and written via `collected`/`meta` jsonb. `open_cases` JSON array ↔ typed `Case[]`.
 
 **Which DB fields are missing from the logical contract?**
-`case_kind` (physical: `case_type`), `subject_kind`, `subject_display_name`, `outcome`, and `conversation_id` are not first-class columns. They are handled via jsonb for MVP.
+`case_kind` (physical: `case_type`), `subject_kind`, `subject_display_name`, `subject_relation`, `service_interest`, `preferred_date`, `preferred_time`, `urgency`, `handoff_reason`, `notes`, `outcome`, and `conversation_id` are not first-class columns. All are handled via `collected`/`meta` jsonb for MVP.
+
+**What is the correct terminal status for a handed-off case?**
+`closed`. `case_status` must be set to `closed`, not `handoff`, when `closeCase` is called with `outcome: handed_off`. A case in `handoff` status is not terminal and will still appear in active-case reads. Only `closed` guarantees the case is excluded from `getActiveCases` results.
 
 **Why must `reuse_case` preserve `case_type`?**
 `rpc_apply_case_decision_v1` defaults `p_case_type` to `'intake'`. Calling `reuse_case` without passing the existing `case_type` explicitly will silently overwrite the case's type and violate `case_kind` immutability.
 
+**What are the two admin notification trigger paths?**
+(1) Admin handoff: `handoff.create` closes a case with `outcome: handed_off` and prepares a notification. (2) Urgent escalation: Runtime Core accepts urgency and must call `rpc_prepare_admin_notification` immediately, without waiting for a handoff flow. Both paths require `current_case_id` and `need_admin` to be defined at the call site.
+
 **Why must implementation of `handoff.create` not start until this mapping is accepted?**
-`handoff.create` depends on `closeCase`, `appendCaseEvent`, and `rpc_prepare_admin_notification`. The adapter normalization for `closeCase` (including `outcome` in jsonb and `case_type` preservation) and the call-site definition for `rpc_prepare_admin_notification` (`need_admin`, `current_case_id`) must be confirmed and accepted before `handoff.create` implementation begins. Starting without this creates risk of silent case reclassification and incorrect notification state.
+`handoff.create` depends on `closeCase`, `appendCaseEvent`, and `rpc_prepare_admin_notification`. The adapter normalization for `closeCase` (terminal `closed` status, `outcome` in jsonb, `case_type` preservation, `closed_at` behavior) and the call-site definitions for both notification trigger paths must be confirmed and accepted before implementation begins. Starting without this creates risk of silent case reclassification, handed-off cases remaining active, and incorrect notification state.

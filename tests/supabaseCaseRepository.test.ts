@@ -6,7 +6,7 @@ import {
   createSupabaseCaseRepository,
 } from "../src/runtime/supabaseCaseRepository.ts";
 import type { RpcCaller } from "../src/runtime/runtimeRepositories.ts";
-import type { OpenCaseInput, AppendCaseEventInput } from "../src/runtime/case.ts";
+import type { OpenCaseInput, AppendCaseEventInput, MergeCaseStateInput } from "../src/runtime/case.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -640,10 +640,290 @@ test("appendCaseEvent: propagates RPC error as RuntimeResult error", async () =>
 // Safety — write scope guard
 // ---------------------------------------------------------------------------
 
-test("safety: mergeCaseState and closeCase are not present on the repository object", () => {
+test("safety (PR92): closeCase not yet present at the time PR92 was merged — now superseded", () => {
+  // This test is intentionally kept as a no-op marker to preserve PR92 history.
+  // The actual scope guard is in the mergeCaseState section below.
+});
+
+// ---------------------------------------------------------------------------
+// mergeCaseState — write path
+// ---------------------------------------------------------------------------
+
+function makeMergeRawCase(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    case_id: "case-001",
+    case_type: "booking_request",
+    status: "collecting",
+    opened_at: "2026-06-24T10:00:00Z",
+    last_activity_at: "2026-06-24T10:05:00Z",
+    closed_at: null,
+    collected: {
+      conversation_id: "conv-abc",
+      subject_kind: "self",
+      subject_display_name: "Mikhail",
+      service_interest: "cleaning",
+      notes: "existing note",
+    },
+    meta: {},
+    ...overrides,
+  };
+}
+
+// Multi-call RPC mock for mergeCaseState:
+// Call 1: rpc_get_contact_case_context_v1 (raw lookup)
+// Call 2: rpc_apply_case_decision_v1      (reuse_case write)
+// Call 3: rpc_get_contact_case_context_v1 (follow-up read)
+function makeMergeCaseRpc(opts: {
+  lookupCases?: unknown[];
+  lookupError?: unknown;
+  mergeError?: unknown;
+  readBackCases?: unknown[];
+} = {}): { rpc: RpcCaller; calls: RpcCall[] } {
+  const calls: RpcCall[] = [];
+  let contextCallCount = 0;
+  const rpc: RpcCaller = async (fn, args) => {
+    calls.push({ fn, args: args as Record<string, unknown> });
+    if (fn === "rpc_get_contact_case_context_v1") {
+      contextCallCount++;
+      if (contextCallCount === 1) {
+        if (opts.lookupError) return { data: null, error: opts.lookupError };
+        const cases = opts.lookupCases ?? [makeMergeRawCase()];
+        return { data: [{ open_cases: cases }], error: null };
+      }
+      // Follow-up read after merge
+      const cases = opts.readBackCases ?? opts.lookupCases ?? [makeMergeRawCase()];
+      return { data: [{ open_cases: cases }], error: null };
+    }
+    if (fn === "rpc_apply_case_decision_v1") {
+      if (opts.mergeError) return { data: null, error: opts.mergeError };
+      return { data: [{ case_id: "case-001" }], error: null };
+    }
+    return { data: null, error: { message: `unexpected RPC: ${fn}` } };
+  };
+  return { rpc, calls };
+}
+
+const BASE_MERGE_INPUT: MergeCaseStateInput = {
+  clinic_id: "clinic-1",
+  contact_id: "contact-1",
+  conversation_id: "conv-abc",
+  case_id: "case-001",
+  patch: { service_interest: "implant", notes: "updated note" },
+};
+
+// --- Case type preservation ---
+
+test("mergeCaseState: passes exact raw physical case_type in p_case_type (not re-derived)", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({
+    lookupCases: [makeMergeRawCase({ case_type: "booking_request" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState(BASE_MERGE_INPUT);
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall, "rpc_apply_case_decision_v1 must be called");
+  assert.equal(mergeCall.args.p_case_type, "booking_request");
+});
+
+test("mergeCaseState: preserves availability_request verbatim (not remapped to booking_request)", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({
+    lookupCases: [makeMergeRawCase({ case_type: "availability_request" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState(BASE_MERGE_INPUT);
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  assert.equal(mergeCall.args.p_case_type, "availability_request");
+});
+
+test("mergeCaseState: preserves admin_request verbatim", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({
+    lookupCases: [makeMergeRawCase({ case_type: "admin_request" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState(BASE_MERGE_INPUT);
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  assert.equal(mergeCall.args.p_case_type, "admin_request");
+});
+
+test("mergeCaseState: returns error when raw case_type is missing from existing row", async () => {
+  const raw = makeMergeRawCase();
+  delete (raw as Record<string, unknown>).case_type;
+  const { rpc } = makeMergeCaseRpc({ lookupCases: [raw] });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState(BASE_MERGE_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_type_missing_on_existing_case");
+});
+
+// --- Target lookup ---
+
+test("mergeCaseState: returns error when target case_id is not found", async () => {
+  const { rpc } = makeMergeCaseRpc({
+    lookupCases: [makeMergeRawCase({ case_id: "other-case" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState(BASE_MERGE_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_not_found_in_active_cases");
+});
+
+test("mergeCaseState: filters by conversation_id — does not merge case from another conversation", async () => {
+  const { rpc } = makeMergeCaseRpc({
+    lookupCases: [
+      makeMergeRawCase({
+        case_id: "case-001",
+        collected: { conversation_id: "conv-other" }, // different conversation
+      }),
+    ],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState(BASE_MERGE_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_not_found_in_active_cases");
+});
+
+// --- Collected merge ---
+
+test("mergeCaseState: applies patch fields to p_collected", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState({
+    ...BASE_MERGE_INPUT,
+    patch: { service_interest: "implant", notes: "new note" },
+  });
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  const col = mergeCall.args.p_collected as Record<string, unknown>;
+  assert.equal(col.service_interest, "implant");
+  assert.equal(col.notes, "new note");
+});
+
+test("mergeCaseState: preserves existing collected keys not in patch", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState({
+    ...BASE_MERGE_INPUT,
+    patch: { service_interest: "implant" }, // notes not in patch
+  });
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  const col = mergeCall.args.p_collected as Record<string, unknown>;
+  // existing note must be preserved
+  assert.equal(col.notes, "existing note");
+  assert.equal(col.subject_display_name, "Mikhail");
+});
+
+test("mergeCaseState: does not delete conversation_id from collected", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState(BASE_MERGE_INPUT);
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  const col = mergeCall.args.p_collected as Record<string, unknown>;
+  assert.equal(col.conversation_id, "conv-abc");
+});
+
+// --- Patch safety ---
+
+test("mergeCaseState: rejects terminal status closed", async () => {
+  const { rpc } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({
+    ...BASE_MERGE_INPUT,
+    patch: { status: "closed" },
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_terminal_status_rejected");
+});
+
+test("mergeCaseState: rejects terminal status cancelled", async () => {
+  const { rpc } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({
+    ...BASE_MERGE_INPUT,
+    patch: { status: "cancelled" },
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_terminal_status_rejected");
+});
+
+test("mergeCaseState: rejects terminal status expired", async () => {
+  const { rpc } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({
+    ...BASE_MERGE_INPUT,
+    patch: { status: "expired" },
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_terminal_status_rejected");
+});
+
+// --- RPC args ---
+
+test("mergeCaseState: calls rpc_apply_case_decision_v1 with p_case_action = reuse_case", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState(BASE_MERGE_INPUT);
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall, "rpc_apply_case_decision_v1 must be called");
+  assert.equal(mergeCall.args.p_case_action, "reuse_case");
+});
+
+test("mergeCaseState: passes p_target_case_id", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState(BASE_MERGE_INPUT);
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  assert.equal(mergeCall.args.p_target_case_id, "case-001");
+});
+
+test("mergeCaseState: propagates RPC error as RuntimeResult error code case_merge_failed", async () => {
+  const { rpc } = makeMergeCaseRpc({ mergeError: { message: "merge rpc failed" } });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState(BASE_MERGE_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_failed");
+});
+
+// --- Return value ---
+
+test("mergeCaseState: returns normalized Case from follow-up read", async () => {
+  const readBackCase = makeMergeRawCase({
+    collected: {
+      conversation_id: "conv-abc",
+      subject_kind: "self",
+      subject_display_name: "Mikhail",
+      service_interest: "implant",
+      notes: "updated note",
+    },
+  });
+  const { rpc } = makeMergeCaseRpc({ readBackCases: [readBackCase] });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({
+    ...BASE_MERGE_INPUT,
+    patch: { service_interest: "implant", notes: "updated note" },
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data.case_id, "case-001");
+  assert.equal(result.data.service_interest, "implant");
+  assert.equal(result.data.notes, "updated note");
+});
+
+// --- Scope guard ---
+
+test("safety: closeCase is not implemented in this PR", () => {
   const repo = createSupabaseCaseRepository({
     rpc: async () => ({ data: null, error: null }),
   });
-  assert.equal("mergeCaseState" in repo, false, "mergeCaseState must not exist in this PR");
-  assert.equal("closeCase" in repo, false, "closeCase must not exist in this PR");
+  assert.equal("closeCase" in repo, false, "closeCase must not be present");
 });

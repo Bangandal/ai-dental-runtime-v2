@@ -265,11 +265,12 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
   }
 
   // Internal type: carries both normalized Case and the raw row so that
-  // mergeCaseState can read the physical case_type without re-deriving it.
+  // mergeCaseState can read the physical case_type and status without re-deriving them.
   type RawCaseLookupResult = {
     normalized: Case;
     raw: Record<string, unknown>;
     physical_case_type: string;
+    physical_status: string;
   };
 
   async function lookupRawCase(
@@ -345,28 +346,65 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
       };
     }
 
-    return { ok: true, data: { normalized: found.normalized, raw: found.raw, physical_case_type } };
-  }
-
-  async function mergeCaseState(
-    input: MergeCaseStateInput,
-  ): Promise<RuntimeResult<Case>> {
-    // Reject terminal status transitions — those belong to closeCase.
-    const TERMINAL: CaseStatus[] = ["closed", "cancelled", "expired"];
-    if (input.patch.status !== undefined && TERMINAL.includes(input.patch.status)) {
+    // physical_status must also be present — omitting p_case_status would let
+    // rpc_apply_case_decision_v1 default to "open" and silently mutate status.
+    const physical_status = found.raw.status;
+    if (typeof physical_status !== "string" || physical_status.trim() === "") {
       return {
         ok: false,
         error: {
-          code: "case_merge_terminal_status_rejected",
+          code: "case_status_missing_on_existing_case",
           message:
-            `mergeCaseState rejects terminal status "${input.patch.status}". ` +
-            `Use closeCase for terminal transitions.`,
+            `Raw status is missing or empty on case_id=${case_id}. ` +
+            `Cannot preserve status for rpc_apply_case_decision_v1(reuse_case).`,
           retryable: false,
         },
       };
     }
 
-    // Load existing case and its raw physical case_type.
+    return {
+      ok: true,
+      data: { normalized: found.normalized, raw: found.raw, physical_case_type, physical_status },
+    };
+  }
+
+  // Status values mergeCaseState is allowed to write explicitly via patch.
+  const MERGE_ALLOWED_STATUSES: CaseStatus[] = ["collecting", "handoff"];
+  // Terminal statuses are handled by closeCase (separate PR).
+  const TERMINAL_STATUSES: CaseStatus[] = ["closed", "cancelled", "expired"];
+
+  async function mergeCaseState(
+    input: MergeCaseStateInput,
+  ): Promise<RuntimeResult<Case>> {
+    // Validate patch.status before any RPC call.
+    if (input.patch.status !== undefined) {
+      if (TERMINAL_STATUSES.includes(input.patch.status)) {
+        return {
+          ok: false,
+          error: {
+            code: "case_merge_terminal_status_rejected",
+            message:
+              `mergeCaseState rejects terminal status "${input.patch.status}". ` +
+              `Use closeCase for terminal transitions.`,
+            retryable: false,
+          },
+        };
+      }
+      if (!MERGE_ALLOWED_STATUSES.includes(input.patch.status)) {
+        return {
+          ok: false,
+          error: {
+            code: "case_merge_status_not_supported",
+            message:
+              `mergeCaseState does not support patch.status="${input.patch.status}" in this version. ` +
+              `Allowed: ${MERGE_ALLOWED_STATUSES.join(", ")}.`,
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    // Load existing case with raw physical case_type and status.
     const lookupResult = await lookupRawCase(
       input.clinic_id,
       input.contact_id,
@@ -375,7 +413,7 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
     );
     if (!lookupResult.ok) return lookupResult;
 
-    const { raw, physical_case_type } = lookupResult.data;
+    const { raw, physical_case_type, physical_status } = lookupResult.data;
 
     // Build merged collected: spread existing keys, then apply patch on top.
     // Existing keys not in patch are preserved. conversation_id is never removed.
@@ -392,17 +430,17 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
     if (input.patch.notes !== undefined) patchCollected.notes = input.patch.notes;
     const mergedCollected = { ...existingCollected, ...patchCollected };
 
+    // p_case_status is always passed explicitly to prevent rpc_apply_case_decision_v1
+    // from defaulting to "open" and silently mutating the status.
     const rpcArgs: Record<string, unknown> = {
       p_clinic_id: input.clinic_id,
       p_contact_id: input.contact_id,
       p_case_action: "reuse_case",
       p_target_case_id: input.case_id,
-      p_case_type: physical_case_type, // exact raw value — never inferred
+      p_case_type: physical_case_type,   // exact raw value — never inferred
+      p_case_status: input.patch.status !== undefined ? input.patch.status : physical_status,
       p_collected: mergedCollected,
     };
-    if (input.patch.status !== undefined) {
-      rpcArgs.p_case_status = input.patch.status;
-    }
 
     const mergeResponse = await deps.rpc<unknown[]>("rpc_apply_case_decision_v1", rpcArgs);
     if (mergeResponse.error) {

@@ -919,6 +919,117 @@ test("mergeCaseState: returns normalized Case from follow-up read", async () => 
   assert.equal(result.data.notes, "updated note");
 });
 
+// --- Status preservation ---
+
+test("mergeCaseState: when patch.status omitted and raw.status=collecting, sends p_case_status=collecting", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({
+    lookupCases: [makeMergeRawCase({ status: "collecting" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { service_interest: "implant" } });
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  assert.equal(mergeCall.args.p_case_status, "collecting");
+});
+
+test("mergeCaseState: when patch.status omitted and raw.status=waiting_patient, sends p_case_status=waiting_patient", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({
+    lookupCases: [makeMergeRawCase({ status: "waiting_patient" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { service_interest: "implant" } });
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  assert.equal(mergeCall.args.p_case_status, "waiting_patient");
+});
+
+test("mergeCaseState: returns error when raw.status is missing", async () => {
+  const raw = makeMergeRawCase();
+  delete (raw as Record<string, unknown>).status;
+  const { rpc } = makeMergeCaseRpc({ lookupCases: [raw] });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: {} });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_status_missing_on_existing_case");
+});
+
+test("mergeCaseState: returns error when raw.status is empty string", async () => {
+  const { rpc } = makeMergeCaseRpc({
+    lookupCases: [makeMergeRawCase({ status: "" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: {} });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_status_missing_on_existing_case");
+});
+
+// --- Patch status allowed/rejected ---
+
+test("mergeCaseState: patch.status=collecting sends p_case_status=collecting", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { status: "collecting" } });
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  assert.equal(mergeCall.args.p_case_status, "collecting");
+});
+
+test("mergeCaseState: patch.status=handoff sends p_case_status=handoff", async () => {
+  const { rpc, calls } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { status: "handoff" } });
+  const mergeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(mergeCall);
+  assert.equal(mergeCall.args.p_case_status, "handoff");
+});
+
+test("mergeCaseState: patch.status=ready_for_action returns case_merge_status_not_supported", async () => {
+  const { rpc } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { status: "ready_for_action" } });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_status_not_supported");
+});
+
+test("mergeCaseState: patch.status=action_in_progress returns case_merge_status_not_supported", async () => {
+  const { rpc } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { status: "action_in_progress" } });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_status_not_supported");
+});
+
+test("mergeCaseState: patch.status=closed returns case_merge_terminal_status_rejected", async () => {
+  const { rpc } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { status: "closed" } });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_terminal_status_rejected");
+});
+
+test("mergeCaseState: patch.status=cancelled returns case_merge_terminal_status_rejected", async () => {
+  const { rpc } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { status: "cancelled" } });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_terminal_status_rejected");
+});
+
+test("mergeCaseState: patch.status=expired returns case_merge_terminal_status_rejected", async () => {
+  const { rpc } = makeMergeCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.mergeCaseState({ ...BASE_MERGE_INPUT, patch: { status: "expired" } });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_merge_terminal_status_rejected");
+});
+
 // --- Scope guard ---
 
 test("safety: closeCase is not implemented in this PR", () => {

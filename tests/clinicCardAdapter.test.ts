@@ -338,6 +338,12 @@ test("unwrapClinicCardResponse returns data from {data, result:'ok', error:null}
   if (result.ok) assert.deepEqual(result.data, ["a", "b"]);
 });
 
+test("unwrapClinicCardResponse returns data from {data, result:'success', error:null} envelope", () => {
+  const result = unwrapClinicCardResponse<string[]>({ data: ["a", "b"], result: "success", error: null });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.data, ["a", "b"]);
+});
+
 test("unwrapClinicCardResponse returns error from envelope with result!='ok'", () => {
   const result = unwrapClinicCardResponse<string[]>({ data: null, result: "error", error: "Not found" });
   assert.equal(result.ok, false);
@@ -367,9 +373,9 @@ test("unwrapClinicCardResponse treats plain object without envelope shape as raw
 
 // ── Adapter reads with real ClinicCard envelope format ────────────────────────
 
-const WRAPPED_PATIENT = { data: [{ id: 1, name: "Test Patient", phone: "+420111222333" }], result: "ok", error: null };
-const WRAPPED_VISITS = { data: [{ id: 10, patient_id: 1, doctor_id: 10, cabinet_id: 2, date: "2026-07-01", time_start: "09:00", time_end: "09:30", status: "PLANNED" }], result: "ok", error: null };
-const WRAPPED_EMPTY = { data: [], result: "ok", error: null };
+const WRAPPED_PATIENT = { data: [{ id: 1, name: "Test Patient", phone: "+420111222333" }], result: "success", error: null };
+const WRAPPED_VISITS = { data: [{ id: 10, patient_id: 1, doctor_id: 10, cabinet_id: 2, date: "2026-07-01", time_start: "09:00", time_end: "09:30", status: "PLANNED" }], result: "success", error: null };
+const WRAPPED_EMPTY = { data: [], result: "success", error: null };
 
 test("findPatientByPhone unwraps {data:[...], result:'ok', error:null} into array", async () => {
   const { fetch } = mockFetch(WRAPPED_PATIENT);
@@ -395,7 +401,7 @@ test("listVisits unwraps {data:[...], result:'ok', error:null} into array", asyn
 });
 
 test("listPayments unwraps {data:[...], result:'ok', error:null} into array", async () => {
-  const wrappedPayments = { data: [{ id: 5, amount: 2500, date: "2026-07-01" }], result: "ok", error: null };
+  const wrappedPayments = { data: [{ id: 5, amount: 2500, date: "2026-07-01" }], result: "success", error: null };
   const { fetch } = mockFetch(wrappedPayments);
   const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
   const result = await adapter.listPayments("2026-07-01", "2026-07-31");

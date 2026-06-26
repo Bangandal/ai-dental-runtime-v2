@@ -6,7 +6,7 @@ import {
   createSupabaseCaseRepository,
 } from "../src/runtime/supabaseCaseRepository.ts";
 import type { RpcCaller } from "../src/runtime/runtimeRepositories.ts";
-import type { OpenCaseInput, AppendCaseEventInput, MergeCaseStateInput } from "../src/runtime/case.ts";
+import type { OpenCaseInput, AppendCaseEventInput, MergeCaseStateInput, CloseCaseInput } from "../src/runtime/case.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1030,11 +1030,306 @@ test("mergeCaseState: patch.status=expired returns case_merge_terminal_status_re
   assert.equal(result.error.code, "case_merge_terminal_status_rejected");
 });
 
-// --- Scope guard ---
+// ---------------------------------------------------------------------------
+// closeCase — write path
+// ---------------------------------------------------------------------------
 
-test("safety: closeCase is not implemented in this PR", () => {
-  const repo = createSupabaseCaseRepository({
-    rpc: async () => ({ data: null, error: null }),
+// Multi-call RPC mock for closeCase:
+// Call 1: rpc_get_contact_case_context_v1 (raw lookup)
+// Call 2: rpc_apply_case_decision_v1      (reuse_case close write)
+// Call 3: rpc_log_case_event              (case_closed audit event, non-fatal)
+function makeCloseCaseRpc(opts: {
+  lookupCases?: unknown[];
+  lookupError?: unknown;
+  closeError?: unknown;
+  closeResponseRow?: Record<string, unknown>;
+} = {}): { rpc: RpcCaller; calls: RpcCall[] } {
+  const calls: RpcCall[] = [];
+  const rpc: RpcCaller = async (fn, args) => {
+    calls.push({ fn, args: args as Record<string, unknown> });
+    if (fn === "rpc_get_contact_case_context_v1") {
+      if (opts.lookupError) return { data: null, error: opts.lookupError };
+      const cases = opts.lookupCases ?? [makeMergeRawCase()];
+      return { data: [{ open_cases: cases }], error: null };
+    }
+    if (fn === "rpc_apply_case_decision_v1") {
+      if (opts.closeError) return { data: null, error: opts.closeError };
+      return { data: [opts.closeResponseRow ?? { case_id: "case-001", closed_at: "2026-06-26T12:00:00Z" }], error: null };
+    }
+    if (fn === "rpc_log_case_event") {
+      return { data: null, error: null };
+    }
+    return { data: null, error: { message: `unexpected RPC: ${fn}` } };
+  };
+  return { rpc, calls };
+}
+
+const BASE_CLOSE_INPUT: CloseCaseInput = {
+  clinic_id: "clinic-1",
+  contact_id: "contact-1",
+  conversation_id: "conv-abc",
+  case_id: "case-001",
+  outcome: "handed_off",
+  reason: "patient requested human",
+};
+
+// --- outcome='booked' guard ---
+
+test("closeCase: rejects outcome='booked' before any RPC call", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase({ ...BASE_CLOSE_INPUT, outcome: "booked" });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_close_booked_outcome_forbidden");
+  assert.equal(calls.length, 0, "no RPC calls must be made when outcome=booked is rejected");
+});
+
+// --- RPC args ---
+
+test("closeCase: passes p_case_action=reuse_case", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase(BASE_CLOSE_INPUT);
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall, "rpc_apply_case_decision_v1 must be called");
+  assert.equal(closeCall.args.p_case_action, "reuse_case");
+});
+
+test("closeCase: passes p_case_status='closed' always", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase(BASE_CLOSE_INPUT);
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  assert.equal(closeCall.args.p_case_status, "closed", "status must always be closed, not handoff");
+});
+
+test("closeCase: passes p_target_case_id", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase(BASE_CLOSE_INPUT);
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  assert.equal(closeCall.args.p_target_case_id, "case-001");
+});
+
+// --- Physical case_type preservation ---
+
+test("closeCase: preserves physical case_type=booking_request without remapping", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({
+    lookupCases: [makeMergeRawCase({ case_type: "booking_request" })],
   });
-  assert.equal("closeCase" in repo, false, "closeCase must not be present");
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase(BASE_CLOSE_INPUT);
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  assert.equal(closeCall.args.p_case_type, "booking_request");
+});
+
+test("closeCase: preserves physical case_type=urgent without remapping", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({
+    lookupCases: [makeMergeRawCase({ case_type: "urgent" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase(BASE_CLOSE_INPUT);
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  assert.equal(closeCall.args.p_case_type, "urgent");
+});
+
+test("closeCase: preserves physical case_type=admin_request when closing with handoff reason", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({
+    lookupCases: [makeMergeRawCase({ case_type: "admin_request" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase({ ...BASE_CLOSE_INPUT, reason: "patient wants human" });
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  assert.equal(closeCall.args.p_case_type, "admin_request");
+  assert.equal(closeCall.args.p_case_status, "closed");
+});
+
+// --- status='closed' not 'handoff' ---
+
+test("closeCase: passes p_case_status=closed even when reason is handoff-related", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase({ ...BASE_CLOSE_INPUT, outcome: "handed_off", reason: "escalation" });
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  assert.notEqual(closeCall.args.p_case_status, "handoff", "status must be closed, not handoff");
+  assert.equal(closeCall.args.p_case_status, "closed");
+});
+
+// --- outcome and reason in collected ---
+
+test("closeCase: stores outcome in collected", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase({ ...BASE_CLOSE_INPUT, outcome: "handed_off" });
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  const col = closeCall.args.p_collected as Record<string, unknown>;
+  assert.equal(col.outcome, "handed_off");
+});
+
+test("closeCase: stores reason in collected.handoff_reason", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase({ ...BASE_CLOSE_INPUT, reason: "patient escalation" });
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  const col = closeCall.args.p_collected as Record<string, unknown>;
+  assert.equal(col.handoff_reason, "patient escalation");
+});
+
+// --- conversation_id preservation ---
+
+test("closeCase: preserves existing conversation_id in collected — never removed", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({
+    lookupCases: [makeMergeRawCase({
+      collected: {
+        conversation_id: "conv-abc",
+        subject_kind: "self",
+        subject_display_name: "Mikhail",
+        service_interest: "cleaning",
+        notes: "existing note",
+      },
+    })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase(BASE_CLOSE_INPUT);
+  const closeCall = calls.find((c) => c.fn === "rpc_apply_case_decision_v1");
+  assert.ok(closeCall);
+  const col = closeCall.args.p_collected as Record<string, unknown>;
+  assert.equal(col.conversation_id, "conv-abc", "conversation_id must be preserved");
+});
+
+// --- return value ---
+
+test("closeCase: returns normalized Case with status=closed", async () => {
+  const { rpc } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase(BASE_CLOSE_INPUT);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data.status, "closed");
+  assert.equal(result.data.case_id, "case-001");
+});
+
+test("closeCase: return value reflects outcome passed by caller", async () => {
+  const { rpc } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase({ ...BASE_CLOSE_INPUT, outcome: "abandoned" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data.outcome, "abandoned");
+});
+
+test("closeCase: return value reflects reason in handoff_reason", async () => {
+  const { rpc } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase({ ...BASE_CLOSE_INPUT, reason: "escalation reason" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.data.handoff_reason, "escalation reason");
+});
+
+// --- not found / already terminal ---
+
+test("closeCase: returns error when case not found in active cases", async () => {
+  const { rpc } = makeCloseCaseRpc({
+    lookupCases: [makeMergeRawCase({ case_id: "other-case" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase(BASE_CLOSE_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_not_found_in_active_cases");
+});
+
+test("closeCase: returns case_close_already_terminal when status=closed", async () => {
+  const { rpc } = makeCloseCaseRpc({
+    lookupCases: [makeMergeRawCase({ status: "closed" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase(BASE_CLOSE_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_close_already_terminal");
+});
+
+test("closeCase: returns case_close_already_terminal when status=cancelled", async () => {
+  const { rpc } = makeCloseCaseRpc({
+    lookupCases: [makeMergeRawCase({ status: "cancelled" })],
+  });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase(BASE_CLOSE_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_close_already_terminal");
+});
+
+// --- RPC error propagation ---
+
+test("closeCase: propagates RPC error as case_close_failed", async () => {
+  const { rpc } = makeCloseCaseRpc({ closeError: { message: "rpc close error" } });
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase(BASE_CLOSE_INPUT);
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.error.code, "case_close_failed");
+});
+
+// --- Audit event ---
+
+test("closeCase: appends case_closed audit event via rpc_log_case_event", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase(BASE_CLOSE_INPUT);
+  const eventCall = calls.find((c) => c.fn === "rpc_log_case_event");
+  assert.ok(eventCall, "rpc_log_case_event must be called for audit trail");
+  assert.equal(eventCall.args.p_event_type, "case_closed");
+  assert.equal(eventCall.args.p_case_id, "case-001");
+});
+
+test("closeCase: audit event failure does not fail closeCase (non-fatal)", async () => {
+  const calls: RpcCall[] = [];
+  const rpc: RpcCaller = async (fn, args) => {
+    calls.push({ fn, args: args as Record<string, unknown> });
+    if (fn === "rpc_get_contact_case_context_v1") return { data: [{ open_cases: [makeMergeRawCase()] }], error: null };
+    if (fn === "rpc_apply_case_decision_v1") return { data: [{ case_id: "case-001" }], error: null };
+    if (fn === "rpc_log_case_event") return { data: null, error: { message: "audit event failed" } };
+    return { data: null, error: { message: `unexpected RPC: ${fn}` } };
+  };
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase(BASE_CLOSE_INPUT);
+  assert.equal(result.ok, true, "closeCase must succeed even if audit event write fails");
+});
+
+// --- Side-effect safety ---
+
+test("closeCase: does not call any booking, notification, or n8n RPC", async () => {
+  const { rpc, calls } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  await repo.closeCase(BASE_CLOSE_INPUT);
+  const forbidden = calls.filter((c) =>
+    c.fn.includes("booking") ||
+    c.fn.includes("appointment") ||
+    c.fn.includes("slot_hold") ||
+    c.fn.includes("notification") ||
+    c.fn.includes("n8n") ||
+    c.fn.includes("telegram")
+  );
+  assert.equal(forbidden.length, 0, `closeCase must not call booking/notification RPCs: ${JSON.stringify(forbidden.map((c) => c.fn))}`);
+});
+
+test("closeCase: return Case does not include outcome=booked", async () => {
+  const { rpc } = makeCloseCaseRpc({});
+  const repo = createSupabaseCaseRepository({ rpc });
+  const result = await repo.closeCase({ ...BASE_CLOSE_INPUT, outcome: "handed_off" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.notEqual(result.data.outcome, "booked", "outcome=booked must never appear on a closed case via closeCase");
 });

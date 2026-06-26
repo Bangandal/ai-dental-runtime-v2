@@ -86,6 +86,31 @@ export interface OpenCaseInput {
 
 export type CaseEventActor = "patient_agent" | "runtime_core" | "operator";
 
+/**
+ * Mutable fields on an active case. case_kind is immutable after open and must
+ * not appear here. outcome and close fields are handled by closeCase only.
+ */
+export interface CaseStatePatch {
+  subject_kind?: SubjectKind;
+  subject_display_name?: string;
+  subject_relation?: string;
+  service_interest?: string;
+  preferred_date?: string;
+  preferred_time?: string;
+  urgency?: boolean;
+  handoff_reason?: string;
+  notes?: string;
+  status?: CaseStatus;
+}
+
+export interface MergeCaseStateInput {
+  clinic_id: string;
+  contact_id: string;
+  conversation_id: string;
+  case_id: string;
+  patch: CaseStatePatch;
+}
+
 export interface AppendCaseEventInput {
   case_id: string;
   clinic_id: string;

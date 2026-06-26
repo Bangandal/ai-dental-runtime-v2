@@ -17,6 +17,7 @@ import {
   type CaseOutcome,
   type CaseStatus,
   type FindActiveCaseInput,
+  type MergeCaseStateInput,
   type OpenCaseInput,
   type SubjectKind,
   caseKindToPhysicalType,
@@ -55,6 +56,19 @@ export interface CaseRepository {
    * Append-only. Does not mutate case state.
    */
   appendCaseEvent(input: AppendCaseEventInput): Promise<RuntimeResult<void>>;
+
+  /**
+   * Merges mutable fields into an existing active case via
+   * rpc_apply_case_decision_v1(reuse_case).
+   *
+   * Critical safety rule: preserves the existing physical case_type exactly by
+   * reading it from the raw RPC row before calling reuse_case. Never infers or
+   * re-derives case_type from logical case_kind.
+   *
+   * Rejects terminal status values ("closed", "cancelled", "expired") — those
+   * belong to closeCase (separate PR).
+   */
+  mergeCaseState(input: MergeCaseStateInput): Promise<RuntimeResult<Case>>;
 }
 
 export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepository {
@@ -250,7 +264,228 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
     return { ok: true, data: undefined };
   }
 
-  return { getActiveCases, findActiveCase, openCase, appendCaseEvent };
+  // Internal type: carries both normalized Case and the raw row so that
+  // mergeCaseState can read the physical case_type and status without re-deriving them.
+  type RawCaseLookupResult = {
+    normalized: Case;
+    raw: Record<string, unknown>;
+    physical_case_type: string;
+    physical_status: string;
+  };
+
+  async function lookupRawCase(
+    clinic_id: string,
+    contact_id: string,
+    conversation_id: string,
+    case_id: string,
+  ): Promise<RuntimeResult<RawCaseLookupResult>> {
+    const response = await deps.rpc<unknown[]>("rpc_get_contact_case_context_v1", {
+      p_clinic_id: clinic_id,
+      p_contact_id: contact_id,
+      p_limit: 50,
+    });
+
+    if (response.error) {
+      return {
+        ok: false,
+        error: {
+          code: "case_lookup_rpc_failed",
+          message: String(
+            (response.error as { message?: string } | null)?.message ?? response.error,
+          ),
+          retryable: true,
+        },
+      };
+    }
+
+    const row = Array.isArray(response.data) ? (response.data[0] ?? {}) : {};
+    const rawOpenCases = asArray((row as Record<string, unknown>).open_cases);
+
+    // Build (raw, normalized) pairs, filtering by conversation_id.
+    const pairs: Array<{ raw: Record<string, unknown>; normalized: Case }> = [];
+    for (const rawCase of rawOpenCases) {
+      const rawRow = asRecord(rawCase);
+      try {
+        const normalized = normalizeCaseRow(rawRow, clinic_id, contact_id);
+        if (normalized.conversation_id === conversation_id) {
+          pairs.push({ raw: rawRow, normalized });
+        }
+      } catch {
+        // Skip rows that fail normalization (e.g. missing case_id).
+      }
+    }
+
+    const found = pairs.find((p) => p.normalized.case_id === case_id);
+    if (!found) {
+      return {
+        ok: false,
+        error: {
+          code: "case_not_found_in_active_cases",
+          message:
+            `Target case_id=${case_id} not found in active cases for ` +
+            `clinic=${clinic_id} contact=${contact_id} conversation=${conversation_id}. ` +
+            `Cannot proceed with mergeCaseState.`,
+          retryable: false,
+        },
+      };
+    }
+
+    // physical_case_type must be a non-empty string — the adapter cannot safely
+    // call reuse_case without it (default would silently corrupt case_type).
+    const physical_case_type = found.raw.case_type;
+    if (typeof physical_case_type !== "string" || physical_case_type.trim() === "") {
+      return {
+        ok: false,
+        error: {
+          code: "case_type_missing_on_existing_case",
+          message:
+            `Raw case_type is missing or empty on case_id=${case_id}. ` +
+            `Cannot preserve case_type for rpc_apply_case_decision_v1(reuse_case).`,
+          retryable: false,
+        },
+      };
+    }
+
+    // physical_status must also be present — omitting p_case_status would let
+    // rpc_apply_case_decision_v1 default to "open" and silently mutate status.
+    const physical_status = found.raw.status;
+    if (typeof physical_status !== "string" || physical_status.trim() === "") {
+      return {
+        ok: false,
+        error: {
+          code: "case_status_missing_on_existing_case",
+          message:
+            `Raw status is missing or empty on case_id=${case_id}. ` +
+            `Cannot preserve status for rpc_apply_case_decision_v1(reuse_case).`,
+          retryable: false,
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      data: { normalized: found.normalized, raw: found.raw, physical_case_type, physical_status },
+    };
+  }
+
+  // Status values mergeCaseState is allowed to write explicitly via patch.
+  const MERGE_ALLOWED_STATUSES: CaseStatus[] = ["collecting", "handoff"];
+  // Terminal statuses are handled by closeCase (separate PR).
+  const TERMINAL_STATUSES: CaseStatus[] = ["closed", "cancelled", "expired"];
+
+  async function mergeCaseState(
+    input: MergeCaseStateInput,
+  ): Promise<RuntimeResult<Case>> {
+    // Validate patch.status before any RPC call.
+    if (input.patch.status !== undefined) {
+      if (TERMINAL_STATUSES.includes(input.patch.status)) {
+        return {
+          ok: false,
+          error: {
+            code: "case_merge_terminal_status_rejected",
+            message:
+              `mergeCaseState rejects terminal status "${input.patch.status}". ` +
+              `Use closeCase for terminal transitions.`,
+            retryable: false,
+          },
+        };
+      }
+      if (!MERGE_ALLOWED_STATUSES.includes(input.patch.status)) {
+        return {
+          ok: false,
+          error: {
+            code: "case_merge_status_not_supported",
+            message:
+              `mergeCaseState does not support patch.status="${input.patch.status}" in this version. ` +
+              `Allowed: ${MERGE_ALLOWED_STATUSES.join(", ")}.`,
+            retryable: false,
+          },
+        };
+      }
+    }
+
+    // Load existing case with raw physical case_type and status.
+    const lookupResult = await lookupRawCase(
+      input.clinic_id,
+      input.contact_id,
+      input.conversation_id,
+      input.case_id,
+    );
+    if (!lookupResult.ok) return lookupResult;
+
+    const { raw, physical_case_type, physical_status } = lookupResult.data;
+
+    // Build merged collected: spread existing keys, then apply patch on top.
+    // Existing keys not in patch are preserved. conversation_id is never removed.
+    const existingCollected = asRecord(raw.collected);
+    const patchCollected: Record<string, unknown> = {};
+    if (input.patch.subject_kind !== undefined) patchCollected.subject_kind = input.patch.subject_kind;
+    if (input.patch.subject_display_name !== undefined) patchCollected.subject_display_name = input.patch.subject_display_name;
+    if (input.patch.subject_relation !== undefined) patchCollected.subject_relation = input.patch.subject_relation;
+    if (input.patch.service_interest !== undefined) patchCollected.service_interest = input.patch.service_interest;
+    if (input.patch.preferred_date !== undefined) patchCollected.preferred_date = input.patch.preferred_date;
+    if (input.patch.preferred_time !== undefined) patchCollected.preferred_time = input.patch.preferred_time;
+    if (input.patch.urgency !== undefined) patchCollected.urgency = input.patch.urgency;
+    if (input.patch.handoff_reason !== undefined) patchCollected.handoff_reason = input.patch.handoff_reason;
+    if (input.patch.notes !== undefined) patchCollected.notes = input.patch.notes;
+    const mergedCollected = { ...existingCollected, ...patchCollected };
+
+    // p_case_status is always passed explicitly to prevent rpc_apply_case_decision_v1
+    // from defaulting to "open" and silently mutating the status.
+    const rpcArgs: Record<string, unknown> = {
+      p_clinic_id: input.clinic_id,
+      p_contact_id: input.contact_id,
+      p_case_action: "reuse_case",
+      p_target_case_id: input.case_id,
+      p_case_type: physical_case_type,   // exact raw value — never inferred
+      p_case_status: input.patch.status !== undefined ? input.patch.status : physical_status,
+      p_collected: mergedCollected,
+    };
+
+    const mergeResponse = await deps.rpc<unknown[]>("rpc_apply_case_decision_v1", rpcArgs);
+    if (mergeResponse.error) {
+      return {
+        ok: false,
+        error: {
+          code: "case_merge_failed",
+          message: String(
+            (mergeResponse.error as { message?: string } | null)?.message ?? mergeResponse.error,
+          ),
+          retryable: true,
+        },
+      };
+    }
+
+    // Follow-up read returns the post-merge normalized Case.
+    const readResult = await getActiveCases(input.clinic_id, input.contact_id, input.conversation_id);
+    if (!readResult.ok) {
+      return {
+        ok: false,
+        error: {
+          code: "case_merge_read_back_failed",
+          message: `Merge RPC succeeded but follow-up read failed: ${readResult.error.message}`,
+          retryable: true,
+        },
+      };
+    }
+
+    const mergedCase = readResult.data.find((c) => c.case_id === input.case_id);
+    if (!mergedCase) {
+      return {
+        ok: false,
+        error: {
+          code: "case_merge_not_found_after_write",
+          message:
+            `mergeCaseState RPC succeeded but case_id=${input.case_id} not found in follow-up read.`,
+          retryable: false,
+        },
+      };
+    }
+
+    return { ok: true, data: mergedCase };
+  }
+
+  return { getActiveCases, findActiveCase, openCase, appendCaseEvent, mergeCaseState };
 }
 
 // ---------------------------------------------------------------------------

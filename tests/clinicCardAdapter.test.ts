@@ -320,6 +320,16 @@ test("validation error message never contains the API token", async () => {
   }
 });
 
+// ── URL construction with production base URL ────────────────────────────────
+
+test("listVisits builds full URL as https://cliniccards.com/api/visits?from=...&to=...", async () => {
+  const { fetch, calls } = mockFetch([]);
+  const prodConfig: ClinicCardConfig = { ...TEST_CONFIG, api_base_url: "https://cliniccards.com" };
+  const adapter = createClinicCardAdapter(prodConfig, fetch);
+  await adapter.listVisits("2026-07-01", "2026-07-31");
+  assert.equal(calls[0]!.url, "https://cliniccards.com/api/visits?from=2026-07-01&to=2026-07-31");
+});
+
 // ── No live side effects ─────────────────────────────────────────────────────
 
 test("adapter operations do not call Supabase, n8n, or Telegram — only ClinicCard base URL", async () => {

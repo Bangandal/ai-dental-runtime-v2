@@ -88,10 +88,11 @@ test("missing config returns typed error object, not a thrown exception", () => 
 test(".env.example contains placeholder values only — no real token", () => {
   const dir = dirname(fileURLToPath(import.meta.url));
   const envExample = readFileSync(resolve(dir, "../.env.example"), "utf8");
-  assert.match(envExample, /CLINICCARD_API_BASE_URL=/);
+  // Base URL must be the official ClinicCard API root (paths appended by adapter)
+  assert.match(envExample, /CLINICCARD_API_BASE_URL=https:\/\/cliniccards\.com/);
   assert.match(envExample, /CLINICCARD_API_TOKEN=/);
   assert.match(envExample, /CLINICCARD_BOOKING_MODE=disabled/);
-  // Token line must be empty (placeholder only)
+  // Token line must be empty (placeholder only — real token must never be committed)
   const tokenLine = envExample.split("\n").find((l) => l.startsWith("CLINICCARD_API_TOKEN="));
   assert.ok(tokenLine !== undefined, ".env.example must contain CLINICCARD_API_TOKEN line");
   assert.equal(tokenLine, "CLINICCARD_API_TOKEN=", ".env.example must not contain a real token");

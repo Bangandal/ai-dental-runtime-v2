@@ -33,9 +33,12 @@ export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCal
 }
 
 export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Array<Record<string, unknown>> {
-  return ACTIVE_RUNTIME_AGENT_TOOLS.map((toolName) => {
-    const def = input.input.tool_definitions[toolName];
-    return {
+  const defs = input.input.tool_definitions;
+  if (!defs) return [];
+  return ACTIVE_RUNTIME_AGENT_TOOLS.flatMap((toolName) => {
+    const def = defs[toolName];
+    if (!def) return [];
+    return [{
       type: "function",
       name: INTERNAL_TO_OPENAI_TOOL_NAME[toolName],
       description: def.description,
@@ -45,7 +48,7 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
         required: [...def.required_args],
         additionalProperties: true,
       },
-    };
+    }];
   });
 }
 

@@ -24,7 +24,7 @@ export interface RuntimeAgentCallerInput {
   input: {
     message: string;
     context: Record<string, unknown>;
-    tool_definitions: typeof RUNTIME_AGENT_TOOL_DEFINITIONS;
+    tool_definitions?: typeof RUNTIME_AGENT_TOOL_DEFINITIONS;
     tool_results?: RuntimeAgentToolResult[];
   };
 }
@@ -210,8 +210,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               input: {
                 message: input.user_message,
                 context: callerContext,
-                // Empty tool set forces the model to produce a final_response.
-                tool_definitions: {} as typeof RUNTIME_AGENT_TOOL_DEFINITIONS,
+                // No tool_definitions → caller sends tools:[] → model must produce final_response.
                 tool_results: toolResults,
               },
             });

@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
+import { createRuntimeAgentLoop, buildMultiRoundFallbackReply, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
 import type { ConversationMemoryRepository } from "../src/runtime/runtimeRepositories.ts";
 
@@ -185,7 +185,7 @@ test("multi-round tool loop is not implemented", async () => {
     model: "m",
     caller,
     executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [] } }) },
-  }).runTurn(makeInput());
+  }).runTurn({ ...makeInput(), locale: "ru" });
   assert.equal(result.final_patient_reply, "Уточню детали с командой клиники — один момент.");
   assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
 });
@@ -233,4 +233,56 @@ test("CBM/bug2: runtimeAgentLoop source does not contain English 'Let me clarify
   const source = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoop.ts"), "utf8");
 
   assert.ok(!source.includes("Let me clarify that with the clinic team"), "English fallback string must be removed");
+});
+
+// CBM P2 fix — locale-aware multi-round fallback
+
+test("CBM/P2: buildMultiRoundFallbackReply returns Russian for ru locale", () => {
+  assert.equal(buildMultiRoundFallbackReply("ru"), "Уточню детали с командой клиники — один момент.");
+  assert.equal(buildMultiRoundFallbackReply("ru-RU"), "Уточню детали с командой клиники — один момент.");
+  assert.equal(buildMultiRoundFallbackReply("uk"), "Уточню детали с командой клиники — один момент.");
+  assert.equal(buildMultiRoundFallbackReply(null), "Уточню детали с командой клиники — один момент.");
+  assert.equal(buildMultiRoundFallbackReply(undefined), "Уточню детали с командой клиники — один момент.");
+});
+
+test("CBM/P2: buildMultiRoundFallbackReply returns English for en locale", () => {
+  assert.equal(buildMultiRoundFallbackReply("en"), "I'll clarify the details with the clinic team — one moment.");
+  assert.equal(buildMultiRoundFallbackReply("en-US"), "I'll clarify the details with the clinic team — one moment.");
+  assert.equal(buildMultiRoundFallbackReply("en-GB"), "I'll clarify the details with the clinic team — one moment.");
+});
+
+test("CBM/P2: buildMultiRoundFallbackReply returns Czech for cs locale", () => {
+  assert.equal(buildMultiRoundFallbackReply("cs"), "Ověřím podrobnosti s týmem kliniky — chvilku prosím.");
+  assert.equal(buildMultiRoundFallbackReply("cs-CZ"), "Ověřím podrobnosti s týmem kliniky — chvilku prosím.");
+});
+
+test("CBM/P2: runtimeAgentLoop multi-round fallback respects locale in runTurn — en returns English", async () => {
+  let c = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "price" } }] };
+    return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "more" } }] };
+  };
+  const result = await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [] } }) },
+  }).runTurn({ ...makeInput(), locale: "en" });
+
+  assert.equal(result.final_patient_reply, "I'll clarify the details with the clinic team — one moment.");
+  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+});
+
+test("CBM/P2: runtimeAgentLoop runTurn path uses locale-aware helper, not a hard-coded reply string", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const source = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoop.ts"), "utf8");
+
+  assert.ok(
+    source.includes("buildMultiRoundFallbackReply"),
+    "fallback must go through locale-aware helper",
+  );
+  assert.ok(
+    source.includes("buildMultiRoundFallbackReply(input.locale)"),
+    "runTurn must call buildMultiRoundFallbackReply with input.locale",
+  );
 });

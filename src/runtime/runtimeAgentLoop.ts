@@ -200,7 +200,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         debug.reason = "multi_round_tool_loop_not_implemented";
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
-          final_patient_reply: "Let me clarify that with the clinic team.",
+          final_patient_reply: buildMultiRoundFallbackReply(input.locale),
           conversation_id: conversationId,
           tool_requests: toolRequests,
           tool_results: toolResults,
@@ -218,6 +218,17 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       };
     },
   };
+}
+
+export function buildMultiRoundFallbackReply(locale?: string | null): string {
+  const normalized = String(locale ?? "").toLowerCase();
+  if (normalized.startsWith("en")) {
+    return "I'll clarify the details with the clinic team — one moment.";
+  }
+  if (normalized.startsWith("cs")) {
+    return "Ověřím podrobnosti s týmem kliniky — chvilku prosím.";
+  }
+  return "Уточню детали с командой клиники — один момент.";
 }
 
 function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): PlannerOutput {

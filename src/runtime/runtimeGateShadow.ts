@@ -83,9 +83,13 @@ const RUNTIME_GATE_INSTRUCTIONS = [
   "}",
   "Do not return additional keys.",
   "should_apply must always be false.",
-  "Classification guidance:",
+  "CRITICAL SAFETY RULES — these override all other guidance:",
+  "RULE 1 — CLINICAL URGENCY BYPASS: Any message describing pain, bleeding, swelling, injury, post-procedure distress, or acute symptoms MUST be classified as operational_candidate with turn_shape=urgent. This applies even when the patient has not explicitly requested booking or an appointment. Examples: 'Кровит после удаления зуба' -> operational_candidate/urgent. 'Опухла десна' -> operational_candidate/urgent. 'Сильная боль' -> operational_candidate/urgent. Do NOT classify clinical symptoms as non_operational just because no booking request was made.",
+  "RULE 2 — HUMAN OR PERSON REQUEST: Any message requesting to speak with a human, person, operator, live agent, or administrator MUST be classified as operational_candidate with turn_shape=admin_request. This includes phrasing like 'хочу поговорить с человеком', 'нужен живой человек', 'позовите оператора', 'хочу с кем-то поговорить'. Do NOT classify human/person requests as non_operational.",
+  "RULE 3 — CANCEL REQUEST CONSISTENCY: Any message requesting appointment cancellation MUST be classified as operational_candidate with turn_shape=cancel, regardless of whether an existing appointment is known. Both 'Отмените мою запись' and 'Хочу отменить запись' are operational_candidate/cancel.",
+  "General classification guidance (applied after safety rules):",
   "Greeting, thanks, simple FAQ, price, location, insurance, and general information are non_operational.",
-  "Booking, availability, reschedule, cancel, urgent, admin request, follow-up, process status inquiry, postpone, confirmation response, and slot fragments after a pending question are operational_candidate.",
+  "Booking, availability, reschedule, cancel, urgent, admin_request, follow-up, process status inquiry, postpone, confirmation response, and slot fragments after a pending question are operational_candidate.",
   "Mixed turns combining booking intent and FAQ content are operational_candidate with turn_shape mixed.",
   "Ambiguous short replies are operational_candidate as slot_fragment or unclear only when runtime_context indicates pending task or last bot question; otherwise non_operational unclear.",
   "Examples:",
@@ -93,6 +97,9 @@ const RUNTIME_GATE_INSTRUCTIONS = [
   '{"route":"non_operational","turn_shape":"faq","confidence":"high","reason":"User asks for general pricing information only.","should_apply":false}',
   '{"route":"operational_candidate","turn_shape":"booking","confidence":"high","reason":"User asks to book an appointment.","should_apply":false}',
   '{"route":"operational_candidate","turn_shape":"mixed","confidence":"high","reason":"User combines appointment booking intent with a price question.","should_apply":false}',
+  '{"route":"operational_candidate","turn_shape":"urgent","confidence":"high","reason":"Post-procedure bleeding reported; clinical urgency bypass applied.","should_apply":false}',
+  '{"route":"operational_candidate","turn_shape":"admin_request","confidence":"high","reason":"User requests to speak with a human.","should_apply":false}',
+  '{"route":"operational_candidate","turn_shape":"cancel","confidence":"high","reason":"User requests appointment cancellation.","should_apply":false}',
 ].join(" ");
 
 export function buildFallbackRuntimeGateDebug(reason = FALLBACK_REASON): RuntimeGateDebug {

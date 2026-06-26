@@ -60,6 +60,75 @@ test("system instruction includes safety and ownership boundaries", () => {
   assert.match(instruction, /Final patient reply must be in the patient'?s language/i);
 });
 
+// CBM v1 safety hotfix — system instruction reply behaviour rules
+
+test("CBM/bug5: system instruction has greeting/low-signal guidance — no premature intake", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.match(instruction, /Greetings.*low-signal|low-signal.*Greetings/i, "must mention low-signal handling");
+  assert.ok(
+    instruction.includes("Do NOT immediately ask for service") || instruction.includes("Do not immediately ask for service"),
+    "must prohibit immediate service/time intake on greetings",
+  );
+});
+
+test("CBM/bug1: system instruction has urgent clinical signal guidance", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.match(instruction, /urgent clinical signal|pain.*bleeding|bleeding.*pain/i);
+  assert.match(instruction, /empathy and urgency/i);
+});
+
+test("CBM/bug1-safety: urgent instruction must not unconditionally promise staff follow-up", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.ok(
+    !instruction.includes("staff will follow up") && !instruction.includes("с вами свяжутся"),
+    "urgent rule must not unconditionally promise 'staff will follow up' — requires handoff side effect proof",
+  );
+  assert.match(
+    instruction,
+    /unless a handoff or admin notification side effect was actually created or queued/i,
+    "urgent rule must condition any follow-up promise on side effect evidence",
+  );
+});
+
+test("CBM/bug3: system instruction has human/admin request guidance", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.match(instruction, /хочу поговорить с человеком|позовите администратора|Human or admin request/i);
+  assert.ok(
+    instruction.includes("Do not continue with booking intake") || instruction.includes("do not continue with booking intake"),
+    "must prohibit continuing booking intake after human request",
+  );
+});
+
+test("CBM/bug3-safety: admin instruction must not unconditionally promise staff will assist or contact", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.ok(
+    !instruction.includes("staff member will assist") && !instruction.includes("administrator will contact") && !instruction.includes("администратор свяжется"),
+    "admin rule must not unconditionally promise staff assistance — requires handoff side effect proof",
+  );
+  assert.match(
+    instruction,
+    /unless a notification or handoff side effect was actually created or queued/i,
+    "admin rule must condition any notification promise on side effect evidence",
+  );
+});
+
+test("CBM/bug2: system instruction says to reply in patient language and includes no English-only reply", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.match(instruction, /Never reply in English unless the patient wrote in English/i);
+});
+
+test("CBM/bug2: system instruction tells agent not to request extra tools when results are available", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.match(instruction, /tool_results are already provided|results are already available/i);
+});
+
 test("module has contract-only implementation with no external runtime integrations", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const modulePath = resolve(thisDir, "../src/runtime/openaiRuntimeAgent.ts");

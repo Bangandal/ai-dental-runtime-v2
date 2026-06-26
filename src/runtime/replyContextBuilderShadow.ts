@@ -40,6 +40,8 @@ export interface ReplyContextBuilderDebug {
   skipped: boolean;
   skip_reason: string | null;
   context: ReplyContext | null;
+  // true when rc.what_to_do=handoff but TU.reply_objective does not align (unsafe downgrade risk)
+  rc_action_conflict: boolean;
   error: string | null;
 }
 
@@ -75,6 +77,7 @@ export function buildReplyContextShadow(input: BuildReplyContextShadowInput): Re
   const known = buildKnownFields(decision);
   const missingFields = uniqueStrings(decision.missing_fields);
   const whatToDo = mapWhatToDo(decision, missingFields);
+  const rcActionConflict = detectRcActionConflict(whatToDo, decision.reply_objective);
 
   return {
     enabled: true,
@@ -91,6 +94,7 @@ export function buildReplyContextShadow(input: BuildReplyContextShadowInput): Re
       safety_constraints: [...BASE_SAFETY_CONSTRAINTS],
       safe_reply_frame: buildSafeReplyFrame(whatToDo),
     },
+    rc_action_conflict: rcActionConflict,
     error: null,
   };
 }
@@ -102,6 +106,7 @@ function skippedReplyContext(skipReason: string): ReplyContextBuilderDebug {
     skipped: true,
     skip_reason: skipReason,
     context: null,
+    rc_action_conflict: false,
     error: null,
   };
 }
@@ -174,6 +179,14 @@ function buildSafeReplyFrame(whatToDo: ReplyContextWhatToDo): string {
     case "safe_fallback":
       return "Use a safe fallback and avoid promises, confirmations, diagnosis, or operational changes.";
   }
+}
+
+// Detects when rc.what_to_do=handoff but TU.reply_objective points towards intake/answer,
+// indicating a risk that the main agent will downgrade urgency/handoff to a generic intake reply.
+function detectRcActionConflict(whatToDo: ReplyContextWhatToDo, tuReplyObjective: string): boolean {
+  if (whatToDo !== "handoff") return false;
+  const intakeLike = ["ask_missing_field", "answer", "offer_next_step"];
+  return intakeLike.includes(tuReplyObjective);
 }
 
 function uniqueStrings(values: string[]): string[] {

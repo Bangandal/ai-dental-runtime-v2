@@ -16,6 +16,7 @@ import {
   type CaseKind,
   type CaseOutcome,
   type CaseStatus,
+  type CloseCaseInput,
   type FindActiveCaseInput,
   type MergeCaseStateInput,
   type OpenCaseInput,
@@ -66,9 +67,22 @@ export interface CaseRepository {
    * re-derives case_type from logical case_kind.
    *
    * Rejects terminal status values ("closed", "cancelled", "expired") — those
-   * belong to closeCase (separate PR).
+   * belong to closeCase.
    */
   mergeCaseState(input: MergeCaseStateInput): Promise<RuntimeResult<Case>>;
+
+  /**
+   * Closes an active case via rpc_apply_case_decision_v1(reuse_case) with
+   * p_case_status='closed'. Always writes status='closed', never 'handoff'.
+   *
+   * Critical safety rules:
+   * - outcome='booked' is forbidden for MVP (booking outcome requires CRM proof).
+   * - Physical case_type is preserved from the existing case row, never changed.
+   * - conversation_id is never removed from collected.
+   * - p_target_case_id is always passed (explicit target, no accidental open).
+   * - Does not create appointments, slot_holds, notifications, or n8n/CRM writes.
+   */
+  closeCase(input: CloseCaseInput): Promise<RuntimeResult<Case>>;
 }
 
 export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepository {
@@ -485,7 +499,117 @@ export function createSupabaseCaseRepository(deps: { rpc: RpcCaller }): CaseRepo
     return { ok: true, data: mergedCase };
   }
 
-  return { getActiveCases, findActiveCase, openCase, appendCaseEvent, mergeCaseState };
+  // Terminal statuses — a case already in one of these must not be closed again.
+  const TERMINAL_STATUSES_FOR_CLOSE: CaseStatus[] = ["closed", "cancelled", "expired"];
+
+  async function closeCase(input: CloseCaseInput): Promise<RuntimeResult<Case>> {
+    // Reject outcome='booked' fast — booking outcome requires CRM/backend proof.
+    if (input.outcome === "booked") {
+      return {
+        ok: false,
+        error: {
+          code: "case_close_booked_outcome_forbidden",
+          message:
+            `closeCase rejects outcome='booked' for MVP. ` +
+            `Booking outcome may only be set after booking.apply / CRM confirmation exists.`,
+          retryable: false,
+        },
+      };
+    }
+
+    // Load existing case with raw physical case_type.
+    const lookupResult = await lookupRawCase(
+      input.clinic_id,
+      input.contact_id,
+      input.conversation_id,
+      input.case_id,
+    );
+    if (!lookupResult.ok) return lookupResult;
+
+    const { normalized: existingCase, raw, physical_case_type } = lookupResult.data;
+
+    // Reject if already terminal.
+    if (existingCase.status !== null && TERMINAL_STATUSES_FOR_CLOSE.includes(existingCase.status)) {
+      return {
+        ok: false,
+        error: {
+          code: "case_close_already_terminal",
+          message:
+            `Case case_id=${input.case_id} already has terminal status="${existingCase.status}". ` +
+            `Cannot close a case that is already in a terminal state.`,
+          retryable: false,
+        },
+      };
+    }
+
+    // Build merged collected: existing wins for conversation_id, patch adds close fields.
+    const existingCollected = asRecord(raw.collected);
+    const closeCollected: Record<string, unknown> = {};
+    if (input.outcome !== undefined) closeCollected.outcome = input.outcome;
+    if (input.reason !== undefined) closeCollected.handoff_reason = input.reason;
+    if (input.notes !== undefined) closeCollected.notes = input.notes;
+    const mergedCollected: Record<string, unknown> = { ...existingCollected, ...closeCollected };
+    // conversation_id: existing value always wins. Never allow overwrite.
+    if (existingCollected.conversation_id !== undefined && existingCollected.conversation_id !== null) {
+      mergedCollected.conversation_id = existingCollected.conversation_id;
+    }
+
+    const rpcArgs: Record<string, unknown> = {
+      p_clinic_id: input.clinic_id,
+      p_contact_id: input.contact_id,
+      p_case_action: "reuse_case",
+      p_target_case_id: input.case_id,
+      p_case_type: physical_case_type,  // preserved exactly — never inferred
+      p_case_status: "closed",          // always closed, never 'handoff'
+      p_collected: mergedCollected,
+    };
+
+    const closeResponse = await deps.rpc<unknown[]>("rpc_apply_case_decision_v1", rpcArgs);
+    if (closeResponse.error) {
+      return {
+        ok: false,
+        error: {
+          code: "case_close_failed",
+          message: String(
+            (closeResponse.error as { message?: string } | null)?.message ?? closeResponse.error,
+          ),
+          retryable: true,
+        },
+      };
+    }
+
+    // Extract closed_at from RPC response if available.
+    const responseRow = Array.isArray(closeResponse.data)
+      ? asRecord(closeResponse.data[0] ?? {})
+      : asRecord(closeResponse.data ?? {});
+    const closedAt = asNullableString(responseRow.closed_at) ?? asNullableString(responseRow.updated_at);
+
+    // Append audit event — non-fatal: failure does not invalidate the close.
+    await appendCaseEvent({
+      case_id: input.case_id,
+      clinic_id: input.clinic_id,
+      contact_id: input.contact_id,
+      event_kind: "case_closed",
+      actor: "runtime_core",
+      payload: { outcome: input.outcome ?? null, reason: input.reason ?? null },
+    }).catch(() => undefined);
+
+    // Construct the normalized closed Case from pre-close data + terminal updates.
+    // The closed case will not appear in getActiveCases (it's no longer in open_cases),
+    // so we build the return value from the existing normalized case + close patch.
+    const closedCase: Case = {
+      ...existingCase,
+      status: "closed",
+      outcome: input.outcome ?? existingCase.outcome,
+      handoff_reason: input.reason ?? existingCase.handoff_reason,
+      notes: input.notes ?? existingCase.notes,
+      closed_at: closedAt ?? existingCase.closed_at,
+    };
+
+    return { ok: true, data: closedCase };
+  }
+
+  return { getActiveCases, findActiveCase, openCase, appendCaseEvent, mergeCaseState, closeCase };
 }
 
 // ---------------------------------------------------------------------------

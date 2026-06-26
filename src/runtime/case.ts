@@ -103,6 +103,18 @@ export interface CaseStatePatch {
   status?: CaseStatus;
 }
 
+export interface CloseCaseInput {
+  clinic_id: string;
+  contact_id: string;
+  conversation_id: string;
+  case_id: string;
+  /** outcome='booked' is forbidden for MVP — rejected with case_close_booked_outcome_forbidden */
+  outcome?: CaseOutcome;
+  /** Stored in collected.handoff_reason. Used when closing because of a handoff/admin reason. */
+  reason?: string;
+  notes?: string;
+}
+
 export interface MergeCaseStateInput {
   clinic_id: string;
   contact_id: string;

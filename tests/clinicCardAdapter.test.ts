@@ -175,6 +175,151 @@ test("clinicCardAdapter is not imported by runtimeTurnPipeline", () => {
   assert.doesNotMatch(pipelineSrc, /cliniccard/i, "runtimeTurnPipeline must not reference cliniccard adapter");
 });
 
+// ── createPatient validation ─────────────────────────────────────────────────
+
+test("createPatient with blank name returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createPatient({ name: "   " });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+    assert.match(result.error.message, /name/);
+  }
+  assert.equal(calls.length, 0, "fetch must not be called when validation fails");
+});
+
+test("createPatient with missing name returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  // Cast to bypass TypeScript — simulates malformed runtime input
+  const result = await adapter.createPatient({ name: "" } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+  }
+  assert.equal(calls.length, 0);
+});
+
+// phone is explicitly optional for createPatient:
+// ClinicCard allows registering a patient by name only (e.g. booking for a family member
+// whose phone is unknown). Phone can be added after registration via patient update.
+test("createPatient without phone succeeds and sends POST — phone is optional in ClinicCard", async () => {
+  const { fetch, calls } = mockFetch({ id: 7, name: "Anna Nováková" });
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createPatient({ name: "Anna Nováková" });
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal((calls[0]!.body as Record<string, unknown>)?.name, "Anna Nováková");
+  assert.equal((calls[0]!.body as Record<string, unknown>)?.phone, undefined);
+});
+
+// ── createVisit validation ────────────────────────────────────────────────────
+
+const VALID_VISIT: ClinicCardCreateVisitInput = {
+  patient_id: 1,
+  doctor_id: 10,
+  cabinet_id: 2,
+  date: "2026-07-15",
+  time_start: "09:00",
+  time_end: "09:30",
+  status: "PLANNED",
+};
+
+test("createVisit missing patient_id returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createVisit({ ...VALID_VISIT, patient_id: 0 } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+    assert.match(result.error.message, /patient_id/);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("createVisit missing doctor_id returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createVisit({ ...VALID_VISIT, doctor_id: 0 } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+    assert.match(result.error.message, /doctor_id/);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("createVisit missing cabinet_id returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createVisit({ ...VALID_VISIT, cabinet_id: 0 } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+    assert.match(result.error.message, /cabinet_id/);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("createVisit missing date returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createVisit({ ...VALID_VISIT, date: "" } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+    assert.match(result.error.message, /date/);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("createVisit missing time_start returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createVisit({ ...VALID_VISIT, time_start: "" } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+    assert.match(result.error.message, /time_start/);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("createVisit missing time_end returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createVisit({ ...VALID_VISIT, time_end: "" } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+    assert.match(result.error.message, /time_end/);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("createVisit invalid status returns validation error and fetch is not called", async () => {
+  const { fetch, calls } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createVisit({ ...VALID_VISIT, status: "UNKNOWN_STATUS" } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_validation_error");
+    assert.match(result.error.message, /status/);
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("validation error message never contains the API token", async () => {
+  const { fetch } = mockFetch({});
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.createPatient({ name: "" } as never);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.doesNotMatch(result.error.message, new RegExp(TEST_CONFIG.api_token));
+  }
+});
+
 // ── No live side effects ─────────────────────────────────────────────────────
 
 test("adapter operations do not call Supabase, n8n, or Telegram — only ClinicCard base URL", async () => {

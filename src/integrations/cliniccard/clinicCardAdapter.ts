@@ -6,6 +6,7 @@ import type {
   ClinicCardPayment,
   ClinicCardResult,
   ClinicCardVisit,
+  ClinicCardVisitStatus,
 } from "./clinicCardTypes.ts";
 
 export interface ClinicCardFetch {
@@ -22,6 +23,46 @@ export interface ClinicCardAdapter {
   listVisits(from: string, to: string): Promise<ClinicCardResult<ClinicCardVisit[]>>;
   createVisit(input: ClinicCardCreateVisitInput): Promise<ClinicCardResult<ClinicCardVisit>>;
   listPayments(from: string, to: string): Promise<ClinicCardResult<ClinicCardPayment[]>>;
+}
+
+const VALID_VISIT_STATUSES: ReadonlySet<string> = new Set<ClinicCardVisitStatus>([
+  "PLANNED",
+  "CONFIRMED",
+  "VISITED",
+]);
+
+function isBlank(value: unknown): boolean {
+  return typeof value !== "string" || value.trim().length === 0;
+}
+
+function isMissingId(value: unknown): boolean {
+  return typeof value !== "number" || !Number.isFinite(value) || value <= 0;
+}
+
+function validationError(message: string): ClinicCardResult<never> {
+  return { ok: false, error: { code: "cliniccard_validation_error", message } };
+}
+
+// phone is intentionally optional for createPatient:
+// ClinicCard allows registering a patient by name only (e.g. when booking on behalf
+// of a family member whose phone is unknown). The phone can be added after registration.
+// See: POST /api/patients — ClinicCard API accepts name without phone.
+function validateCreatePatientInput(input: ClinicCardCreatePatientInput): ClinicCardResult<never> | null {
+  if (isBlank(input.name)) return validationError("createPatient: name is required and must not be blank");
+  return null;
+}
+
+function validateCreateVisitInput(input: ClinicCardCreateVisitInput): ClinicCardResult<never> | null {
+  if (isMissingId(input.patient_id)) return validationError("createVisit: patient_id must be a positive number");
+  if (isMissingId(input.doctor_id)) return validationError("createVisit: doctor_id must be a positive number");
+  if (isMissingId(input.cabinet_id)) return validationError("createVisit: cabinet_id must be a positive number");
+  if (isBlank(input.date)) return validationError("createVisit: date is required and must not be blank");
+  if (isBlank(input.time_start)) return validationError("createVisit: time_start is required and must not be blank");
+  if (isBlank(input.time_end)) return validationError("createVisit: time_end is required and must not be blank");
+  if (!VALID_VISIT_STATUSES.has(input.status)) {
+    return validationError(`createVisit: status must be one of PLANNED, CONFIRMED, VISITED`);
+  }
+  return null;
 }
 
 export function createClinicCardAdapter(config: ClinicCardConfig, fetchFn?: ClinicCardFetch): ClinicCardAdapter {
@@ -81,6 +122,8 @@ export function createClinicCardAdapter(config: ClinicCardConfig, fetchFn?: Clin
     },
 
     createPatient(input) {
+      const err = validateCreatePatientInput(input);
+      if (err) return Promise.resolve(err as ClinicCardResult<ClinicCardPatient>);
       return request<ClinicCardPatient>("POST", "/api/patients", input);
     },
 
@@ -92,6 +135,8 @@ export function createClinicCardAdapter(config: ClinicCardConfig, fetchFn?: Clin
     },
 
     createVisit(input) {
+      const err = validateCreateVisitInput(input);
+      if (err) return Promise.resolve(err as ClinicCardResult<ClinicCardVisit>);
       return request<ClinicCardVisit>("POST", "/api/visits", input);
     },
 

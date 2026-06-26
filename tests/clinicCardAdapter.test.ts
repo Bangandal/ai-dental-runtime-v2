@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
 
-import { createClinicCardAdapter, type ClinicCardFetch } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
+import { createClinicCardAdapter, unwrapClinicCardResponse, type ClinicCardFetch } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import type { ClinicCardConfig, ClinicCardCreateVisitInput } from "../src/integrations/cliniccard/clinicCardTypes.ts";
 
 const TEST_CONFIG: ClinicCardConfig = {
@@ -328,6 +328,115 @@ test("listVisits builds full URL as https://cliniccards.com/api/visits?from=...&
   const adapter = createClinicCardAdapter(prodConfig, fetch);
   await adapter.listVisits("2026-07-01", "2026-07-31");
   assert.equal(calls[0]!.url, "https://cliniccards.com/api/visits?from=2026-07-01&to=2026-07-31");
+});
+
+// ── unwrapClinicCardResponse ──────────────────────────────────────────────────
+
+test("unwrapClinicCardResponse returns data from {data, result:'ok', error:null} envelope", () => {
+  const result = unwrapClinicCardResponse<string[]>({ data: ["a", "b"], result: "ok", error: null });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.data, ["a", "b"]);
+});
+
+test("unwrapClinicCardResponse returns error from envelope with result!='ok'", () => {
+  const result = unwrapClinicCardResponse<string[]>({ data: null, result: "error", error: "Not found" });
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_api_error");
+    assert.match(result.error.message, /Not found/);
+  }
+});
+
+test("unwrapClinicCardResponse returns generic error when error field is empty", () => {
+  const result = unwrapClinicCardResponse<string[]>({ data: null, result: "error", error: null });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.error.code, "cliniccard_api_error");
+});
+
+test("unwrapClinicCardResponse treats plain array as raw (backward compat)", () => {
+  const result = unwrapClinicCardResponse<string[]>(["x", "y"]);
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.data, ["x", "y"]);
+});
+
+test("unwrapClinicCardResponse treats plain object without envelope shape as raw", () => {
+  const result = unwrapClinicCardResponse<{ id: number }>({ id: 42 });
+  assert.equal(result.ok, true);
+  if (result.ok) assert.deepEqual(result.data, { id: 42 });
+});
+
+// ── Adapter reads with real ClinicCard envelope format ────────────────────────
+
+const WRAPPED_PATIENT = { data: [{ id: 1, name: "Test Patient", phone: "+420111222333" }], result: "ok", error: null };
+const WRAPPED_VISITS = { data: [{ id: 10, patient_id: 1, doctor_id: 10, cabinet_id: 2, date: "2026-07-01", time_start: "09:00", time_end: "09:30", status: "PLANNED" }], result: "ok", error: null };
+const WRAPPED_EMPTY = { data: [], result: "ok", error: null };
+
+test("findPatientByPhone unwraps {data:[...], result:'ok', error:null} into array", async () => {
+  const { fetch } = mockFetch(WRAPPED_PATIENT);
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.findPatientByPhone("+420111222333");
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(Array.isArray(result.data), true);
+    assert.equal(result.data.length, 1);
+    assert.equal(result.data[0]!.id, 1);
+  }
+});
+
+test("listVisits unwraps {data:[...], result:'ok', error:null} into array", async () => {
+  const { fetch } = mockFetch(WRAPPED_VISITS);
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.listVisits("2026-07-01", "2026-07-31");
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(Array.isArray(result.data), true);
+    assert.equal(result.data.length, 1);
+  }
+});
+
+test("listPayments unwraps {data:[...], result:'ok', error:null} into array", async () => {
+  const wrappedPayments = { data: [{ id: 5, amount: 2500, date: "2026-07-01" }], result: "ok", error: null };
+  const { fetch } = mockFetch(wrappedPayments);
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.listPayments("2026-07-01", "2026-07-31");
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(Array.isArray(result.data), true);
+    assert.equal(result.data.length, 1);
+  }
+});
+
+test("listVisits returns empty array when wrapped data is []", async () => {
+  const { fetch } = mockFetch(WRAPPED_EMPTY);
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.listVisits("2026-07-01", "2026-07-31");
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(Array.isArray(result.data), true);
+    assert.equal(result.data.length, 0);
+  }
+});
+
+test("API envelope error returns ok:false with code cliniccard_api_error", async () => {
+  const { fetch } = mockFetch({ data: null, result: "error", error: "Access denied" });
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.listVisits("2026-07-01", "2026-07-31");
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_api_error");
+    assert.match(result.error.message, /Access denied/);
+  }
+});
+
+test("API envelope error message does not expose token", async () => {
+  const { fetch } = mockFetch({ data: null, result: "error", error: `Auth failed: ${TEST_CONFIG.api_token}` });
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.listVisits("2026-07-01", "2026-07-31");
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.doesNotMatch(result.error.message, new RegExp(TEST_CONFIG.api_token));
+    assert.match(result.error.message, /\[REDACTED\]/);
+  }
 });
 
 // ── No live side effects ─────────────────────────────────────────────────────

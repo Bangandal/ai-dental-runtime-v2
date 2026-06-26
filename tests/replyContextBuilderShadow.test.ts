@@ -175,6 +175,84 @@ test("builder does not mutate runtime_gate or turn_understanding", () => {
 });
 
 
+// CBM v1 safety hotfix — rc_action_conflict tests
+
+test("CBM/bug6: rc_action_conflict=true when urgent turn has ask_missing_field reply_objective", () => {
+  const debug = buildReplyContextShadow({
+    runtime_gate: operationalGate,
+    turn_understanding: debugForDecision({
+      turn_type: "urgent",
+      reply_objective: "ask_missing_field",
+      missing_fields: ["service_interest", "preferred_time"],
+      case_decision: { action: "open_new", case_kind: "urgent", target_case_id: null },
+    }),
+  });
+
+  assert.equal(debug.context?.what_to_do, "handoff");
+  assert.equal(debug.rc_action_conflict, true, "urgent + ask_missing_field must flag rc_action_conflict");
+});
+
+test("CBM/bug6: rc_action_conflict=true when urgent turn has answer reply_objective", () => {
+  const debug = buildReplyContextShadow({
+    runtime_gate: operationalGate,
+    turn_understanding: debugForDecision({
+      turn_type: "urgent",
+      reply_objective: "answer",
+      missing_fields: [],
+      case_decision: { action: "none", case_kind: "urgent", target_case_id: null },
+    }),
+  });
+
+  assert.equal(debug.context?.what_to_do, "handoff");
+  assert.equal(debug.rc_action_conflict, true);
+});
+
+test("CBM/bug6: rc_action_conflict=false when urgent turn has handoff reply_objective", () => {
+  const debug = buildReplyContextShadow({
+    runtime_gate: operationalGate,
+    turn_understanding: debugForDecision({
+      turn_type: "urgent",
+      reply_objective: "handoff",
+      missing_fields: [],
+      case_decision: { action: "handoff", case_kind: "urgent", target_case_id: null },
+    }),
+  });
+
+  assert.equal(debug.context?.what_to_do, "handoff");
+  assert.equal(debug.rc_action_conflict, false, "aligned urgent/handoff must not flag conflict");
+});
+
+test("CBM/bug6: rc_action_conflict=false for booking_request with ask_missing_field (no conflict)", () => {
+  const debug = buildReplyContextShadow({
+    runtime_gate: operationalGate,
+    turn_understanding: debugForDecision({
+      turn_type: "booking_request",
+      reply_objective: "ask_missing_field",
+      missing_fields: ["preferred_date"],
+    }),
+  });
+
+  assert.equal(debug.context?.what_to_do, "ask_missing_fields");
+  assert.equal(debug.rc_action_conflict, false);
+});
+
+test("CBM/bug6: rc_action_conflict=false when skipped (non_operational)", () => {
+  const debug = buildReplyContextShadow({
+    runtime_gate: nonOperationalGate,
+    turn_understanding: {
+      enabled: true,
+      mode: "shadow",
+      skipped: true,
+      skip_reason: "runtime_gate_non_operational",
+      decision: null,
+      error: null,
+    },
+  });
+
+  assert.equal(debug.skipped, true);
+  assert.equal(debug.rc_action_conflict, false);
+});
+
 test("reply context builder module has no DB/OpenAI/tool/transport side-effect imports", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const modulePath = resolve(thisDir, "../src/runtime/replyContextBuilderShadow.ts");

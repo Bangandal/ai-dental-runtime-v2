@@ -200,7 +200,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         debug.reason = "multi_round_tool_loop_not_implemented";
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
-          final_patient_reply: "Let me clarify that with the clinic team.",
+          final_patient_reply: "Уточню детали с командой клиники — один момент.",
           conversation_id: conversationId,
           tool_requests: toolRequests,
           tool_results: toolResults,

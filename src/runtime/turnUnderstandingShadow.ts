@@ -126,10 +126,11 @@ const TURN_UNDERSTANDING_INSTRUCTIONS = [
   '"чистка зубов на 05.06" after booking prompt -> slot_fill with service_interest and preferred_date.',
   '"14.00 михаил огар" after booking prompt -> slot_fill with preferred_time, first_name, and last_name.',
   '"перенести запись" -> reschedule.',
-  '"отменить запись" -> cancel.',
+  '"отменить запись", "отмените мою запись", "хочу отменить" -> cancel. Cancel intent applies regardless of whether an appointment is known to exist.',
   '"что с моими брекетами/заказом?" -> process_status_inquiry.',
-  '"позовите администратора" -> admin_request.',
-  "Urgent pain, swelling, or bleeding -> urgent.",
+  '"позовите администратора", "хочу поговорить с человеком", "нужен живой человек", "хочу с кем-то поговорить", "нужен оператор" -> admin_request, reply_objective=handoff.',
+  "Urgent pain, swelling, bleeding, post-procedure distress, or acute symptoms -> urgent, reply_objective=handoff. Do not classify urgent as booking_request or ask_missing_field.",
+  "Mixed urgent plus FAQ -> mixed, but urgent signal must not be lost; if urgency is primary, classify as urgent, not mixed.",
   "Mixed booking plus FAQ -> mixed with case_decision open_new booking, but should_apply false.",
 ].join(" ");
 

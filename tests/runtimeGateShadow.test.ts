@@ -208,3 +208,115 @@ test("runtime gate source has no apply RPC or regex semantic routing", async () 
   assert.equal(source.includes("new RegExp"), false);
   assert.equal(source.includes("BOOKING_INTENT_PATTERNS"), false);
 });
+
+// CBM v1 safety hotfix — classification routing tests
+
+test("CBM/E3: post-extraction bleeding routes operational_candidate/urgent, not non_operational", async () => {
+  const debug = await runRuntimeGateShadow({
+    user_message: "Кровит после удаления зуба",
+    runtime_context: {},
+    classifier: {
+      classifyRuntimeGateTurn: async () => ({
+        route: "operational_candidate",
+        turn_shape: "urgent",
+        confidence: "high",
+        reason: "Post-procedure bleeding reported; clinical urgency bypass applied.",
+        should_apply: false,
+      }),
+    },
+  });
+
+  assert.equal(debug.route, "operational_candidate");
+  assert.equal(debug.turn_shape, "urgent");
+  assert.equal(debug.should_apply, false);
+});
+
+test("CBM/E1: severe tooth pain routes operational_candidate/urgent", async () => {
+  const debug = await runRuntimeGateShadow({
+    user_message: "У меня сильная зубная боль, нужно срочно",
+    runtime_context: {},
+    classifier: {
+      classifyRuntimeGateTurn: async () => ({
+        route: "operational_candidate",
+        turn_shape: "urgent",
+        confidence: "high",
+        reason: "Severe dental pain reported; clinical urgency bypass applied.",
+        should_apply: false,
+      }),
+    },
+  });
+
+  assert.equal(debug.route, "operational_candidate");
+  assert.equal(debug.turn_shape, "urgent");
+  assert.equal(debug.should_apply, false);
+});
+
+test("CBM/F2: human person request routes operational_candidate/admin_request", async () => {
+  const debug = await runRuntimeGateShadow({
+    user_message: "Хочу поговорить с человеком",
+    runtime_context: {},
+    classifier: {
+      classifyRuntimeGateTurn: async () => ({
+        route: "operational_candidate",
+        turn_shape: "admin_request",
+        confidence: "high",
+        reason: "User requests to speak with a human; admin_request route applied.",
+        should_apply: false,
+      }),
+    },
+  });
+
+  assert.equal(debug.route, "operational_candidate");
+  assert.equal(debug.turn_shape, "admin_request");
+  assert.equal(debug.should_apply, false);
+});
+
+test("CBM/H1: imperative cancel ('Отмените мою запись') routes operational_candidate/cancel", async () => {
+  const debug = await runRuntimeGateShadow({
+    user_message: "Отмените мою запись",
+    runtime_context: {},
+    classifier: {
+      classifyRuntimeGateTurn: async () => ({
+        route: "operational_candidate",
+        turn_shape: "cancel",
+        confidence: "high",
+        reason: "Cancel request; operational regardless of appointment existence.",
+        should_apply: false,
+      }),
+    },
+  });
+
+  assert.equal(debug.route, "operational_candidate");
+  assert.equal(debug.turn_shape, "cancel");
+  assert.equal(debug.should_apply, false);
+});
+
+test("CBM/H2: nominal cancel ('Хочу отменить запись') routes operational_candidate/cancel — consistent with H1", async () => {
+  const debug = await runRuntimeGateShadow({
+    user_message: "Хочу отменить запись",
+    runtime_context: {},
+    classifier: {
+      classifyRuntimeGateTurn: async () => ({
+        route: "operational_candidate",
+        turn_shape: "cancel",
+        confidence: "high",
+        reason: "Cancel request.",
+        should_apply: false,
+      }),
+    },
+  });
+
+  assert.equal(debug.route, "operational_candidate");
+  assert.equal(debug.turn_shape, "cancel");
+  assert.equal(debug.should_apply, false);
+});
+
+test("CBM gate safety rules are present in gate instructions source", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const source = await readFile(resolve(thisDir, "../src/runtime/runtimeGateShadow.ts"), "utf8");
+
+  assert.ok(source.includes("CLINICAL URGENCY BYPASS"), "gate instructions must have clinical urgency bypass rule");
+  assert.ok(source.includes("HUMAN OR PERSON REQUEST"), "gate instructions must have human/person request rule");
+  assert.ok(source.includes("CANCEL REQUEST CONSISTENCY"), "gate instructions must have cancel consistency rule");
+  assert.ok(source.includes("operational_candidate"), "gate must define operational_candidate route");
+});

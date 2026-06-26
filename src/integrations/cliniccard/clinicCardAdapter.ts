@@ -57,7 +57,7 @@ export function unwrapClinicCardResponse<T>(payload: unknown): ClinicCardResult<
     "error" in payload
   ) {
     const env = payload as { data: unknown; result: unknown; error: unknown };
-    if (env.result === "ok" && env.error === null) {
+    if ((env.result === "ok" || env.result === "success") && env.error === null) {
       return { ok: true, data: env.data as T };
     }
     const msg = typeof env.error === "string" && env.error.length > 0

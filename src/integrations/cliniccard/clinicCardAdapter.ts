@@ -43,6 +43,31 @@ function validationError(message: string): ClinicCardResult<never> {
   return { ok: false, error: { code: "cliniccard_validation_error", message } };
 }
 
+// ClinicCard API wraps responses in { data: T, result: "ok", error: null } on success
+// and { data: null, result: "error", error: "message" } on failure.
+// Raw responses (plain arrays, objects without the envelope shape) are returned as-is
+// for backward compatibility with mocked fetch responses in tests.
+export function unwrapClinicCardResponse<T>(payload: unknown): ClinicCardResult<T> {
+  if (
+    payload !== null &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    "result" in payload &&
+    "data" in payload &&
+    "error" in payload
+  ) {
+    const env = payload as { data: unknown; result: unknown; error: unknown };
+    if (env.result === "ok" && env.error === null) {
+      return { ok: true, data: env.data as T };
+    }
+    const msg = typeof env.error === "string" && env.error.length > 0
+      ? env.error
+      : "ClinicCard API returned an error result";
+    return { ok: false, error: { code: "cliniccard_api_error", message: msg } };
+  }
+  return { ok: true, data: payload as T };
+}
+
 // phone is intentionally optional for createPatient:
 // ClinicCard allows registering a patient by name only (e.g. when booking on behalf
 // of a family member whose phone is unknown). The phone can be added after registration.
@@ -102,8 +127,12 @@ export function createClinicCardAdapter(config: ClinicCardConfig, fetchFn?: Clin
         };
       }
 
-      const data = await response.json() as T;
-      return { ok: true, data };
+      const json = await response.json();
+      const unwrapped = unwrapClinicCardResponse<T>(json);
+      if (!unwrapped.ok) {
+        return { ok: false, error: { code: unwrapped.error.code, message: redactToken(unwrapped.error.message) } };
+      }
+      return { ok: true, data: unwrapped.data };
     } catch (err) {
       const raw = err instanceof Error ? err.message : String(err);
       return {

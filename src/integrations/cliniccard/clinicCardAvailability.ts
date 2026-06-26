@@ -72,6 +72,16 @@ export async function checkClinicCardAvailability(
   input: AvailabilityInput,
   adapter: AvailabilityAdapter,
 ): Promise<ClinicCardResult<AvailabilityOutput>> {
+  if (!Number.isFinite(input.slot_duration_minutes) || input.slot_duration_minutes <= 0) {
+    return {
+      ok: false,
+      error: {
+        code: "cliniccard_availability_error",
+        message: "slot_duration_minutes must be a positive finite number",
+      },
+    };
+  }
+
   const dateTo = input.date_to ?? input.date;
   const visitsResult = await adapter.listVisits(input.date, dateTo);
 
@@ -85,8 +95,10 @@ export async function checkClinicCardAvailability(
     };
   }
 
+  // A slot is blocked if the same doctor is busy in any cabinet,
+  // or the same cabinet is busy with any doctor.
   const relevantVisits = visitsResult.data.filter(
-    (v) => v.doctor_id === input.doctor_id && v.cabinet_id === input.cabinet_id,
+    (v) => v.doctor_id === input.doctor_id || v.cabinet_id === input.cabinet_id,
   );
 
   const dates = dateRange(input.date, dateTo);

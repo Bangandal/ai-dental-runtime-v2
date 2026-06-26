@@ -205,13 +205,64 @@ test("date_to extends range across multiple days", async () => {
   }
 });
 
-// ── 13. Visits for different doctor/cabinet do not block slots ────────────────
+// ── 13. Conflict filtering: OR logic ─────────────────────────────────────────
 
-test("visit for different doctor_id does not block slot", async () => {
-  const visit = makeVisit({ doctor_id: 999, cabinet_id: 2, status: "PLANNED" });
+test("visit with same doctor_id but different cabinet_id blocks slot (doctor busy)", async () => {
+  const visit = makeVisit({ doctor_id: 10, cabinet_id: 999, status: "PLANNED", time_start: "09:00", time_end: "09:30" });
   const result = await checkClinicCardAvailability(BASE_INPUT, makeAdapter([visit]));
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.equal(result.data.free_slots_count, result.data.total_slots, "all slots must be free when visit is for different doctor");
+    const blocked = result.data.slots.find((s) => s.time_start === "09:00");
+    assert.equal(blocked, undefined, "slot must be blocked when doctor is busy in another cabinet");
+    assert.equal(result.data.free_slots_count, 5);
+  }
+});
+
+test("visit with different doctor_id but same cabinet_id blocks slot (cabinet busy)", async () => {
+  const visit = makeVisit({ doctor_id: 999, cabinet_id: 2, status: "PLANNED", time_start: "09:00", time_end: "09:30" });
+  const result = await checkClinicCardAvailability(BASE_INPUT, makeAdapter([visit]));
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    const blocked = result.data.slots.find((s) => s.time_start === "09:00");
+    assert.equal(blocked, undefined, "slot must be blocked when cabinet is busy with another doctor");
+    assert.equal(result.data.free_slots_count, 5);
+  }
+});
+
+test("visit with different doctor_id and different cabinet_id does not block slot", async () => {
+  const visit = makeVisit({ doctor_id: 999, cabinet_id: 999, status: "PLANNED" });
+  const result = await checkClinicCardAvailability(BASE_INPUT, makeAdapter([visit]));
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.data.free_slots_count, result.data.total_slots, "all slots must be free when visit is for different doctor and different cabinet");
+  }
+});
+
+// ── 14. slot_duration_minutes validation ──────────────────────────────────────
+
+test("slot_duration_minutes = 0 returns ok:false and does not hang", async () => {
+  const input: AvailabilityInput = { ...BASE_INPUT, slot_duration_minutes: 0 };
+  const result = await checkClinicCardAvailability(input, makeAdapter([]));
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_availability_error");
+  }
+});
+
+test("slot_duration_minutes < 0 returns ok:false and does not hang", async () => {
+  const input: AvailabilityInput = { ...BASE_INPUT, slot_duration_minutes: -30 };
+  const result = await checkClinicCardAvailability(input, makeAdapter([]));
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_availability_error");
+  }
+});
+
+test("slot_duration_minutes = NaN returns ok:false", async () => {
+  const input: AvailabilityInput = { ...BASE_INPUT, slot_duration_minutes: NaN };
+  const result = await checkClinicCardAvailability(input, makeAdapter([]));
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.equal(result.error.code, "cliniccard_availability_error");
   }
 });

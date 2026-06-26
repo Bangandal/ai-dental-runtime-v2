@@ -197,30 +197,37 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       if (secondOutput.type === "tool_requests") {
-        // If successful useful tool_results exist, attempt one forced finalization call
-        // with no tool_definitions so the model must produce a final_response.
+        // When round 2 requests more tools but useful results from round 1 exist,
+        // attempt one forced finalization call (round 3). Protocol rules:
+        // - conversation_id is null: fresh context so we don't continue a thread
+        //   that has round-2 tool calls pending (which we cannot resolve here).
+        // - No tool_results: avoids sending function_call_output for round-1 call_ids
+        //   into a conversation whose last model turn requested different call_ids.
+        // - Tool results are embedded as resolved_context in plain JSON — readable by
+        //   the model without requiring tool-call protocol mechanics.
+        // - No tool_definitions: model cannot request tools and must produce final_response.
         // Bounded: max 3 LLM calls total. Does not implement a recursive loop.
         if (hasUsefulToolResults(toolResults)) {
           let forcedOutput: RuntimeAgentCallerOutput | undefined;
           try {
             forcedOutput = await deps.caller({
               model: deps.model,
-              conversation_id: conversationId,
+              conversation_id: null,
               system_instruction: systemInstruction,
               input: {
                 message: input.user_message,
-                context: callerContext,
+                context: { ...callerContext, resolved_context: toolResults },
                 // No tool_definitions → caller sends tools:[] → model must produce final_response.
-                tool_results: toolResults,
+                // No tool_results → no function_call_output protocol messages.
               },
             });
           } catch {
             // Forced finalization failed — fall through to locale-aware fallback.
           }
           if (forcedOutput !== undefined && forcedOutput.type === "final_response") {
-            if (forcedOutput.conversation_id !== undefined) {
-              conversationId = forcedOutput.conversation_id;
-            }
+            // Do not update conversationId: forced finalization used a fresh conversation,
+            // unrelated to the patient's rounds 1-2 thread. The original conversationId
+            // is preserved so memory save and result are consistent.
             debug.reason = "forced_finalization_after_tool_results";
             await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
             return {

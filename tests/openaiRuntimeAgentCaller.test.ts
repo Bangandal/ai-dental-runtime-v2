@@ -285,7 +285,7 @@ test("real createOpenAIRuntimeAgentCaller does not throw when tool_definitions a
   assert.equal((capturedPayload!.tools as unknown[]).length, 0);
 });
 
-test("forced finalization path: runtimeAgentLoop uses real caller without dereferencing empty tool map", async () => {
+test("forced finalization path: real caller is protocol-safe — no function_call_output, null conversation, resolved_context present", async () => {
   let callCount = 0;
   const caller = createOpenAIRuntimeAgentCaller({
     client: {
@@ -310,9 +310,27 @@ test("forced finalization path: runtimeAgentLoop uses real caller without derefe
               tool_calls: [{ name: "kb_search", arguments: JSON.stringify({ query: "hours2" }), call_id: "c2" }],
             };
           }
-          // call 3: forced finalization — NO tools must be sent
+          // call 3: forced finalization — verify full OpenAI protocol safety
           assert.equal(tools.length, 0, "forced finalization must send no tools");
-          return { output_text: "Hours are 9–17.", conversation_id: "conv_x" };
+
+          // No function_call_output: would violate protocol — round-2 call_ids differ from round-1
+          const inputMessages = payload.input as Array<Record<string, unknown>>;
+          const functionOutputs = inputMessages.filter((m) => m.type === "function_call_output");
+          assert.equal(functionOutputs.length, 0, "forced finalization must not send function_call_output (protocol violation)");
+
+          // Fresh conversation: null conversation_id → buildOpenAIInput sends conversation: undefined
+          assert.equal(payload.conversation, undefined, "forced finalization must not continue conversation with pending round-2 calls");
+
+          // Tool results must be in plain JSON context, not as protocol messages
+          const userMsg = inputMessages[0];
+          const contentText = ((userMsg?.content as Array<Record<string, unknown>>)?.[0] as Record<string, unknown>)?.text as string;
+          const parsedPayload = JSON.parse(contentText ?? "{}");
+          assert.ok(
+            "resolved_context" in (parsedPayload.context ?? {}),
+            "forced finalization must embed tool results as resolved_context in plain JSON context",
+          );
+
+          return { output_text: "Hours are 9–17.", conversation_id: "conv_finalization_new" };
         },
       },
     },
@@ -338,6 +356,8 @@ test("forced finalization path: runtimeAgentLoop uses real caller without derefe
   assert.equal(callCount, 3, "must be exactly 3 LLM calls");
   assert.equal(result.final_patient_reply, "Hours are 9–17.");
   assert.equal(result.debug?.reason, "forced_finalization_after_tool_results");
+  // Result conversation_id must be from rounds 1-2, not from the fresh finalization call
+  assert.equal(result.conversation_id, "conv_x", "result conversation_id must be from rounds 1-2, not forced finalization");
 });
 
 // ── End forced-finalization contract ──────────────────────────────────────────

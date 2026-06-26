@@ -438,6 +438,57 @@ test("failed tool result + multi-round: locale-aware fallback, no forced finaliz
   assert.equal(c, 2, "only 2 caller invocations — no forced finalization when tool failed");
 });
 
+test("M1: forced finalization call is protocol-safe — no tool_results, null conversation_id, resolved_context in context", async () => {
+  let c = 0;
+  let round3Input: Parameters<RuntimeAgentCaller>[0] | undefined;
+  const caller: RuntimeAgentCaller = async (inp) => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "hours" }, call_id: "c1" }], conversation_id: "conv_main" };
+    if (c === 2) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "book" }, call_id: "c2" }], conversation_id: "conv_main" };
+    round3Input = inp;
+    return { type: "final_response", final_response: { final_patient_reply: "Answer." } };
+  };
+  await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "c1", text: "9-17" }] } }) },
+  }).runTurn(makeInput());
+
+  assert.ok(round3Input !== undefined, "round 3 must be called");
+  // No function_call_output: tool_results must be absent
+  assert.equal(round3Input!.input.tool_results, undefined, "round 3 must not pass tool_results (no function_call_output)");
+  // Fresh context: no conversation with pending round-2 tool calls
+  assert.equal(round3Input!.conversation_id, null, "round 3 must use null conversation_id (fresh context)");
+  // No tool definitions: model cannot request tools
+  assert.equal(round3Input!.input.tool_definitions, undefined, "round 3 must have no tool_definitions");
+  // Tool results embedded as plain JSON, not as protocol messages
+  assert.ok(
+    round3Input!.input.context != null && "resolved_context" in round3Input!.input.context,
+    "round 3 must embed tool results as resolved_context in plain JSON context",
+  );
+  const resolved = (round3Input!.input.context as Record<string, unknown>).resolved_context as unknown[];
+  assert.ok(Array.isArray(resolved) && resolved.length > 0, "resolved_context must contain round-1 tool results");
+});
+
+test("M1: forced finalization does not update conversationId with fresh-call conversation", async () => {
+  let c = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    c++;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "q" }, call_id: "c1" }], conversation_id: "conv_r1" };
+    if (c === 2) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "q2" }, call_id: "c2" }], conversation_id: "conv_r2" };
+    // Forced finalization opens a fresh conversation — must not leak this ID into result
+    return { type: "final_response", final_response: { final_patient_reply: "Answer" }, conversation_id: "conv_finalization_fresh" };
+  };
+  const result = await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "c1", text: "info" }] } }) },
+  }).runTurn(makeInput());
+
+  assert.equal(result.conversation_id, "conv_r2", "result conversation_id must be from rounds 1-2, not forced finalization");
+  assert.notEqual(result.conversation_id, "conv_finalization_fresh", "forced finalization conversation_id must not leak into result");
+});
+
 test("safety: forced finalization does not call booking.confirm, hold.create, or notification RPCs", async () => {
   let c = 0;
   const forbiddenCalls: string[] = [];

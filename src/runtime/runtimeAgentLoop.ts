@@ -24,7 +24,7 @@ export interface RuntimeAgentCallerInput {
   input: {
     message: string;
     context: Record<string, unknown>;
-    tool_definitions: typeof RUNTIME_AGENT_TOOL_DEFINITIONS;
+    tool_definitions?: typeof RUNTIME_AGENT_TOOL_DEFINITIONS;
     tool_results?: RuntimeAgentToolResult[];
   };
 }
@@ -197,6 +197,49 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       if (secondOutput.type === "tool_requests") {
+        // When round 2 requests more tools but useful results from round 1 exist,
+        // attempt one forced finalization call (round 3). Protocol rules:
+        // - conversation_id is null: fresh context so we don't continue a thread
+        //   that has round-2 tool calls pending (which we cannot resolve here).
+        // - No tool_results: avoids sending function_call_output for round-1 call_ids
+        //   into a conversation whose last model turn requested different call_ids.
+        // - Tool results are embedded as resolved_context in plain JSON — readable by
+        //   the model without requiring tool-call protocol mechanics.
+        // - No tool_definitions: model cannot request tools and must produce final_response.
+        // Bounded: max 3 LLM calls total. Does not implement a recursive loop.
+        if (hasUsefulToolResults(toolResults)) {
+          let forcedOutput: RuntimeAgentCallerOutput | undefined;
+          try {
+            forcedOutput = await deps.caller({
+              model: deps.model,
+              conversation_id: null,
+              system_instruction: systemInstruction,
+              input: {
+                message: input.user_message,
+                context: { ...callerContext, resolved_context: toolResults },
+                // No tool_definitions → caller sends tools:[] → model must produce final_response.
+                // No tool_results → no function_call_output protocol messages.
+              },
+            });
+          } catch {
+            // Forced finalization failed — fall through to locale-aware fallback.
+          }
+          if (forcedOutput !== undefined && forcedOutput.type === "final_response") {
+            // Do not update conversationId: forced finalization used a fresh conversation,
+            // unrelated to the patient's rounds 1-2 thread. The original conversationId
+            // is preserved so memory save and result are consistent.
+            debug.reason = "forced_finalization_after_tool_results";
+            await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+            return {
+              final_patient_reply: forcedOutput.final_response.final_patient_reply,
+              conversation_id: conversationId,
+              tool_requests: toolRequests,
+              tool_results: toolResults,
+              debug,
+            };
+          }
+        }
+
         debug.reason = "multi_round_tool_loop_not_implemented";
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
@@ -218,6 +261,20 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       };
     },
   };
+}
+
+// Returns true when at least one tool result has status=success with non-empty
+// payload data. Empty chunks/slots are excluded — they provide no answer for
+// the model to synthesize, so the generic fallback is still appropriate.
+export function hasUsefulToolResults(results: RuntimeAgentToolResult[]): boolean {
+  return results.some((r) => {
+    if (r.status !== "success") return false;
+    const data = r.data as Record<string, unknown> | null | undefined;
+    if (!data || typeof data !== "object") return false;
+    if ("chunks" in data && Array.isArray(data.chunks)) return data.chunks.length > 0;
+    if ("slots" in data && Array.isArray(data.slots)) return data.slots.length > 0;
+    return true;
+  });
 }
 
 export function buildMultiRoundFallbackReply(locale?: string | null): string {

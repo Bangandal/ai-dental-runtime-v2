@@ -79,6 +79,20 @@ test("CBM/bug1: system instruction has urgent clinical signal guidance", () => {
   assert.match(instruction, /empathy and urgency/i);
 });
 
+test("CBM/bug1-safety: urgent instruction must not unconditionally promise staff follow-up", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.ok(
+    !instruction.includes("staff will follow up") && !instruction.includes("с вами свяжутся"),
+    "urgent rule must not unconditionally promise 'staff will follow up' — requires handoff side effect proof",
+  );
+  assert.match(
+    instruction,
+    /unless a handoff or admin notification side effect was actually created or queued/i,
+    "urgent rule must condition any follow-up promise on side effect evidence",
+  );
+});
+
 test("CBM/bug3: system instruction has human/admin request guidance", () => {
   const instruction = buildRuntimeAgentSystemInstruction();
 
@@ -86,6 +100,20 @@ test("CBM/bug3: system instruction has human/admin request guidance", () => {
   assert.ok(
     instruction.includes("Do not continue with booking intake") || instruction.includes("do not continue with booking intake"),
     "must prohibit continuing booking intake after human request",
+  );
+});
+
+test("CBM/bug3-safety: admin instruction must not unconditionally promise staff will assist or contact", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.ok(
+    !instruction.includes("staff member will assist") && !instruction.includes("administrator will contact") && !instruction.includes("администратор свяжется"),
+    "admin rule must not unconditionally promise staff assistance — requires handoff side effect proof",
+  );
+  assert.match(
+    instruction,
+    /unless a notification or handoff side effect was actually created or queued/i,
+    "admin rule must condition any notification promise on side effect evidence",
   );
 });
 

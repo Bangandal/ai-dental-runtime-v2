@@ -1,0 +1,15 @@
+# Sudoers rules for runtime-agent — Service Operator access only.
+#
+# Install path: /etc/sudoers.d/runtime-agent
+# Install with: chmod 440 /etc/sudoers.d/runtime-agent
+# Validate with: visudo -cf /etc/sudoers.d/runtime-agent
+#
+# Allows runtime-agent to manage only runtime-v2.service and read its logs.
+# Does NOT allow: arbitrary sudo, editing service files, daemon-reload, or
+# any other systemctl commands.
+
+runtime-agent ALL=(root) NOPASSWD: /bin/systemctl start runtime-v2.service
+runtime-agent ALL=(root) NOPASSWD: /bin/systemctl stop runtime-v2.service
+runtime-agent ALL=(root) NOPASSWD: /bin/systemctl restart runtime-v2.service
+runtime-agent ALL=(root) NOPASSWD: /bin/systemctl status runtime-v2.service
+runtime-agent ALL=(root) NOPASSWD: /bin/journalctl -u runtime-v2.service *

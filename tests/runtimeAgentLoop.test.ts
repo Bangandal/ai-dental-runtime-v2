@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createRuntimeAgentLoop, buildMultiRoundFallbackReply, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
+import { createRuntimeAgentLoop, buildMultiRoundFallbackReply, hasUsefulToolResults, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
 import type { ConversationMemoryRepository } from "../src/runtime/runtimeRepositories.ts";
 
@@ -285,4 +285,173 @@ test("CBM/P2: runtimeAgentLoop runTurn path uses locale-aware helper, not a hard
     source.includes("buildMultiRoundFallbackReply(input.locale)"),
     "runTurn must call buildMultiRoundFallbackReply with input.locale",
   );
+});
+
+// ---------------------------------------------------------------------------
+// PR #97 — forced finalization when useful tool_results exist
+// ---------------------------------------------------------------------------
+
+// hasUsefulToolResults unit tests
+
+test("hasUsefulToolResults: returns true for kb.search with non-empty chunks", () => {
+  const results = [{ tool: "kb.search", status: "success" as const, data: { chunks: [{ chunk_id: "c1", text: "Air-Flow 2500 Kč" }] } }];
+  assert.equal(hasUsefulToolResults(results), true);
+});
+
+test("hasUsefulToolResults: returns false for kb.search with empty chunks", () => {
+  const results = [{ tool: "kb.search", status: "success" as const, data: { chunks: [] } }];
+  assert.equal(hasUsefulToolResults(results), false);
+});
+
+test("hasUsefulToolResults: returns true for availability.check with non-empty slots", () => {
+  const results = [{ tool: "availability.check", status: "success" as const, data: { slots: [{ slot_id: "s1", starts_at: "10:00", ends_at: "11:00" }] } }];
+  assert.equal(hasUsefulToolResults(results), true);
+});
+
+test("hasUsefulToolResults: returns false for availability.check with empty slots", () => {
+  const results = [{ tool: "availability.check", status: "success" as const, data: { slots: [] } }];
+  assert.equal(hasUsefulToolResults(results), false);
+});
+
+test("hasUsefulToolResults: returns false when status=denied", () => {
+  const results = [{ tool: "kb.search", status: "denied" as const, error: { code: "tool_not_active", message: "denied" } }];
+  assert.equal(hasUsefulToolResults(results), false);
+});
+
+test("hasUsefulToolResults: returns false for empty results array", () => {
+  assert.equal(hasUsefulToolResults([]), false);
+});
+
+// M1 mixed FAQ+booking — forced finalization integration tests
+
+test("M1: kb.search with non-empty chunks triggers forced finalization, not generic fallback", async () => {
+  let c = 0;
+  const caller: RuntimeAgentCaller = async (inp) => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "чистка цена" } }] };
+    if (c === 2) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "запись" } }] };
+    // Call 3: forced finalization (tool_definitions should be empty)
+    return { type: "final_response", final_response: { final_patient_reply: "Чистка стоит 2500 Kč. Хотите записаться?" } };
+  };
+  const result = await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "c1", text: "Air-Flow 2500 Kč" }] } }) },
+  }).runTurn(makeInput());
+
+  assert.equal(result.final_patient_reply, "Чистка стоит 2500 Kč. Хотите записаться?");
+  assert.equal((result.debug as any).reason, "forced_finalization_after_tool_results");
+  assert.equal(c, 3, "exactly 3 caller invocations: round1, round2, forced finalization");
+});
+
+test("M1: forced finalization reply does not contain generic Russian fallback text", async () => {
+  let c = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "чистка" } }] };
+    if (c === 2) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "запись" } }] };
+    return { type: "final_response", final_response: { final_patient_reply: "Чистка — 2500 Kč. Хотите записаться?" } };
+  };
+  const result = await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "c1", text: "2500 Kč" }] } }) },
+  }).runTurn(makeInput());
+
+  assert.ok(
+    !result.final_patient_reply.includes("Уточню детали с командой клиники"),
+    "forced finalization must not return generic fallback when useful KB result exists",
+  );
+});
+
+test("M1: forced finalization does not trigger a fourth tool call", async () => {
+  let c = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "чистка" } }] };
+    if (c === 2) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "запись" } }] };
+    return { type: "final_response", final_response: { final_patient_reply: "Ответ из KB." } };
+  };
+  let toolCallCount = 0;
+  const result = await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => { toolCallCount++; return { tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "c1", text: "info" }] } }; } },
+  }).runTurn(makeInput());
+
+  assert.equal(c, 3, "max 3 LLM calls");
+  assert.equal(toolCallCount, 1, "tool executor runs only once — forced finalization skips tool execution");
+  assert.equal((result.debug as any).reason, "forced_finalization_after_tool_results");
+});
+
+// Locale tests: forced finalization uses caller reply, fallback uses locale when chunks are empty
+
+test("en locale + empty chunks: fallback is English, not Russian", async () => {
+  let c = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "price" } }] };
+    return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "booking" } }] };
+  };
+  const result = await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [] } }) },
+  }).runTurn({ ...makeInput(), locale: "en" });
+
+  assert.equal(result.final_patient_reply, "I'll clarify the details with the clinic team — one moment.");
+  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+});
+
+test("cs locale + empty chunks: fallback is Czech, not Russian", async () => {
+  let c = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "cena" } }] };
+    return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "objednat" } }] };
+  };
+  const result = await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [] } }) },
+  }).runTurn({ ...makeInput(), locale: "cs" });
+
+  assert.equal(result.final_patient_reply, "Ověřím podrobnosti s týmem kliniky — chvilku prosím.");
+  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+});
+
+test("failed tool result + multi-round: locale-aware fallback, no forced finalization", async () => {
+  let c = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "q" } }] };
+    return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "q2" } }] };
+  };
+  const result = await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: { "kb.search": async () => ({ tool: "kb.search", status: "error" as any, error: { code: "kb_failed", message: "KB unavailable" } }) },
+  }).runTurn({ ...makeInput(), locale: "ru" });
+
+  assert.equal(result.final_patient_reply, "Уточню детали с командой клиники — один момент.");
+  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+  assert.equal(c, 2, "only 2 caller invocations — no forced finalization when tool failed");
+});
+
+test("safety: forced finalization does not call booking.confirm, hold.create, or notification RPCs", async () => {
+  let c = 0;
+  const forbiddenCalls: string[] = [];
+  const caller: RuntimeAgentCaller = async () => {
+    c += 1;
+    if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "чистка" } }] };
+    if (c === 2) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "запись" } }] };
+    return { type: "final_response", final_response: { final_patient_reply: "Ответ." } };
+  };
+  const executors: ToolExecutorRegistry = {
+    "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "c1", text: "info" }] } }),
+    "booking.confirm": async () => { forbiddenCalls.push("booking.confirm"); return { tool: "booking.confirm", status: "success", data: {} }; },
+    "hold.create": async () => { forbiddenCalls.push("hold.create"); return { tool: "hold.create", status: "success", data: {} }; },
+  };
+  await createRuntimeAgentLoop({ model: "m", caller, executors }).runTurn(makeInput());
+  assert.deepEqual(forbiddenCalls, [], "no booking/hold/notification executors must be called during forced finalization");
 });

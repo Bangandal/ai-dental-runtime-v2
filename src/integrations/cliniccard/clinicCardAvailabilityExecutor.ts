@@ -9,11 +9,19 @@ const DEFAULT_WORKING_HOURS_START = "09:00";
 const DEFAULT_WORKING_HOURS_END = "18:00";
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
-// Returns the time string if it looks like HH:MM, null otherwise.
-// Avoids acting on natural-language times like "afternoon" or "evening".
+// Parses a time string to zero-padded "HH:MM" if valid, null otherwise.
+// Normalises single-digit hours: "9:00" -> "09:00".
+// Rejects out-of-range values ("99:99", "24:00", "12:99") and
+// natural-language strings ("afternoon", "evening") — returns null for both,
+// which the caller treats as "no time filter, return all slots".
 function parseHHMM(val: string | null | undefined): string | null {
   if (!val) return null;
-  return /^\d{1,2}:\d{2}$/.test(val.trim()) ? val.trim() : null;
+  const m = val.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
 }
 
 export interface ClinicCardAvailabilityExecutorDeps {

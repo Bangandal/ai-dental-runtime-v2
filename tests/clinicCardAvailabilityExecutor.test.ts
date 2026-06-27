@@ -231,6 +231,51 @@ test("requested_time=natural-language string is ignored — all slots returned",
   }
 });
 
+test("requested_time=9:00 (single-digit hour) normalises to 09:00 and returns all-day slots", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const withPad = await executor({ requested_date: "2026-07-01", requested_time: "09:00" });
+  const withoutPad = await executor({ requested_date: "2026-07-01", requested_time: "9:00" });
+  assert.equal(withPad.status, "success");
+  assert.equal(withoutPad.status, "success");
+  if (withPad.status === "success" && withoutPad.status === "success") {
+    assert.equal(withoutPad.data.slots.length, withPad.data.slots.length, "9:00 and 09:00 must produce the same slot set");
+    for (const slot of withoutPad.data.slots) {
+      assert.ok(slot.starts_at >= "2026-07-01T09:00", `slot ${slot.starts_at} must be at or after 09:00`);
+    }
+  }
+});
+
+test("requested_time=99:99 is ignored — all slots returned", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const all = await executor({ requested_date: "2026-07-01" });
+  const invalid = await executor({ requested_date: "2026-07-01", requested_time: "99:99" });
+  assert.equal(all.status, "success");
+  assert.equal(invalid.status, "success");
+  if (all.status === "success" && invalid.status === "success") {
+    assert.equal(invalid.data.slots.length, all.data.slots.length, "out-of-range time must not filter slots");
+  }
+});
+
+test("requested_time=24:00 is ignored — all slots returned", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const all = await executor({ requested_date: "2026-07-01" });
+  const invalid = await executor({ requested_date: "2026-07-01", requested_time: "24:00" });
+  assert.equal(all.status, "success");
+  assert.equal(invalid.status, "success");
+  if (all.status === "success" && invalid.status === "success") {
+    assert.equal(invalid.data.slots.length, all.data.slots.length, "24:00 must be ignored (invalid hour)");
+  }
+});
+
 // ── 12. limit caps returned slots; counts remain full-day ─────────────────────
 
 test("limit=3 returns at most 3 slots while total_slots and free_slots_count reflect the full day", async () => {

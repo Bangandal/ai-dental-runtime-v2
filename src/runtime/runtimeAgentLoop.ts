@@ -59,7 +59,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
   return {
     async runTurn(input: RuntimeAgentTurnInput): Promise<RuntimeAgentTurnResult> {
       const debug: Record<string, unknown> = { llm_calls: buildRuntimeLlmCallDebug() };
-      const systemInstruction = buildRuntimeAgentSystemInstruction();
+      const systemInstruction = buildRuntimeAgentSystemInstruction({ now: deps.now });
       let conversationId = input.conversation_id ?? null;
 
       if (!conversationId && deps.conversationMemoryRepository) {

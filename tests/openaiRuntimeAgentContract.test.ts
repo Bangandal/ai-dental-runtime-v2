@@ -129,6 +129,29 @@ test("CBM/bug2: system instruction tells agent not to request extra tools when r
   assert.match(instruction, /tool_results are already provided|results are already available/i);
 });
 
+test("system instruction greeting rule is language-neutral — no single-language hardcoded example", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  // Greeting rule must instruct the model to reply in the patient's language,
+  // not hardcode only one language as the sole example.
+  assert.match(instruction, /in the patient'?s language/i, "greeting rule must reference patient language");
+  assert.doesNotMatch(
+    instruction,
+    /Привет! Чем могу помочь\?/,
+    "greeting rule must not hardcode a Russian-only example without language context",
+  );
+});
+
+test("system instruction contains booking confirmation proof guard", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  assert.match(
+    instruction,
+    /Do not claim booking is confirmed without explicit backend proof/i,
+    "must guard against claiming booking confirmed without backend proof",
+  );
+});
+
 test("module has contract-only implementation with no external runtime integrations", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const modulePath = resolve(thisDir, "../src/runtime/openaiRuntimeAgent.ts");

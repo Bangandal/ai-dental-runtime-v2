@@ -50,6 +50,8 @@ test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService
         external_user_id: "user_1",
         text: "Здравствуйте",
       },
+      headers: {},
+      ip: "127.0.0.1",
     },
     reply,
   );

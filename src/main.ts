@@ -15,6 +15,9 @@ export interface BuildRuntimeAppDeps {
   embeddingModel: string;
   model: string;
   runtimeTurnLogger?: RuntimeTurnLogger;
+  apiKey?: string | undefined;
+  isProduction?: boolean;
+  debugEnabled?: boolean;
 }
 
 export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
@@ -29,6 +32,9 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
     rpc: deps.rpc,
     embeddingClient: deps.embeddingClient,
     runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
+    apiKey: deps.apiKey,
+    isProduction: deps.isProduction,
+    debugEnabled: deps.debugEnabled,
   });
 
   return app;
@@ -74,6 +80,10 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
   const port = Number(env.PORT?.trim() || "3000");
   const runtimeLogDir = env.RUNTIME_LOG_DIR?.trim() || "./logs";
 
+  const isProduction = env.NODE_ENV?.trim() === "production";
+  const apiKey = env.RUNTIME_API_KEY?.trim() || undefined;
+  const debugEnabled = env.RUNTIME_DEBUG_RESPONSE?.trim() === "true";
+
   const app = buildRuntimeApp({
     openaiClient,
     model: runtimeEnv.runtimeModel,
@@ -81,6 +91,9 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
     rpc,
     embeddingClient,
     runtimeTurnLogger: createFileRuntimeTurnLogger({ logDir: runtimeLogDir }),
+    apiKey,
+    isProduction,
+    debugEnabled,
   });
 
   await app.listen({ port, host: "0.0.0.0" });

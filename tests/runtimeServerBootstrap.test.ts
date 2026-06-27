@@ -57,6 +57,8 @@ test("registerRuntimeRoutes wires /runtime/turn to RuntimeTurnService built via 
         external_user_id: "user_1",
         text: "Привет",
       },
+      headers: {},
+      ip: "127.0.0.1",
     },
     reply,
   );
@@ -139,6 +141,8 @@ test("registerRuntimeRoutes wires createOpenAIConversation and first turn uses c
         external_user_id: "user_1",
         text: "Привет",
       },
+      headers: {},
+      ip: "127.0.0.1",
     },
     reply,
   );
@@ -169,10 +173,11 @@ test("case router classifier uses OPENAI_CASE_ROUTER_MODEL when set", async () =
         rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
         embeddingClient: { createEmbedding: async () => [0.1] },
         embeddingModel: "text-embedding-3-small",
+        debugEnabled: true,
       },
     );
     let payload: unknown;
-    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" }, headers: {}, ip: "127.0.0.1" }, { code() { return this; }, send(v: unknown) { payload = v; } });
     assert.equal((payload as any).debug.legacy_case_router.classifier_model, "gpt-case-router");
   } finally {
     if (previous === undefined) delete process.env.OPENAI_CASE_ROUTER_MODEL;
@@ -199,9 +204,10 @@ test("case router classifier falls back to main model when OPENAI_CASE_ROUTER_MO
         rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
         embeddingClient: { createEmbedding: async () => [0.1] },
         embeddingModel: "text-embedding-3-small",
+        debugEnabled: true,
       },
     );
-    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" }, headers: {}, ip: "127.0.0.1" }, { code() { return this; }, send(v: unknown) { payload = v; } });
     assert.equal((payload as any).debug.legacy_case_router.classifier_model, "gpt-main-fallback");
   } finally {
     if (previous === undefined) delete process.env.OPENAI_CASE_ROUTER_MODEL;
@@ -237,10 +243,11 @@ test("runtime gate classifier uses OPENAI_RUNTIME_GATE_MODEL when set", async ()
         rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
         embeddingClient: { createEmbedding: async () => [0.1] },
         embeddingModel: "text-embedding-3-small",
+        debugEnabled: true,
       },
     );
     let payload: unknown;
-    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "hi" }, headers: {}, ip: "127.0.0.1" }, { code() { return this; }, send(v: unknown) { payload = v; } });
     assert.equal((payload as any).debug.runtime_gate.route, "non_operational");
     assert.equal(responseCalls.some((call) => call.model === "gpt-runtime-gate-mini"), true);
   } finally {
@@ -281,10 +288,11 @@ test("turn understanding classifier uses OPENAI_TURN_UNDERSTANDING_MODEL when se
         rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
         embeddingClient: { createEmbedding: async () => [0.1] },
         embeddingModel: "text-embedding-3-small",
+        debugEnabled: true,
       },
     );
     let payload: unknown;
-    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "хочу записаться" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "хочу записаться" }, headers: {}, ip: "127.0.0.1" }, { code() { return this; }, send(v: unknown) { payload = v; } });
     assert.equal((payload as any).debug.turn_understanding.decision.turn_type, "booking_request");
     assert.equal(responseCalls.some((call) => call.model === "gpt-turn-understanding"), true);
   } finally {
@@ -322,10 +330,11 @@ test("turn understanding classifier falls back to OPENAI_RUNTIME_GATE_MODEL befo
         rpc: async (fn) => fn === "rpc_resolve_clinic_identity_v1" ? { data: [{ clinic_id: CLINIC_UUID, clinic_code: "clinic_1" }], error: null } : { data: [], error: null },
         embeddingClient: { createEmbedding: async () => [0.1] },
         embeddingModel: "text-embedding-3-small",
+        debugEnabled: true,
       },
     );
     let payload: unknown;
-    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "хочу записаться" } }, { code() { return this; }, send(v: unknown) { payload = v; } });
+    await handler!({ body: { clinic_code: CLINIC_UUID, channel: "telegram", external_user_id: "u1", text: "хочу записаться" }, headers: {}, ip: "127.0.0.1" }, { code() { return this; }, send(v: unknown) { payload = v; } });
     assert.equal((payload as any).debug.turn_understanding.decision.turn_type, "booking_request");
     assert.equal(responseCalls.filter((call) => call.model === "gpt-gate-and-turn").length >= 2, true);
   } finally {

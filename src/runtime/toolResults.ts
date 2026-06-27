@@ -43,6 +43,8 @@ export interface AvailabilityCheckSuccessResult extends ToolExecutionBase {
     }>;
     timezone?: string;
     provider?: string | null;
+    total_slots?: number;
+    free_slots_count?: number;
   };
 }
 

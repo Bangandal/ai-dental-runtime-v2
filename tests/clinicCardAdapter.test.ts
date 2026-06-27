@@ -163,10 +163,12 @@ test("clinicCardAdapter is not imported by runtimeAgentLoop", () => {
   assert.doesNotMatch(loopSrc, /cliniccard/i, "runtimeAgentLoop must not reference cliniccard adapter");
 });
 
-test("clinicCardAdapter is not imported by dentalRuntimeAgentFactory", () => {
+test("clinicCardAdapter HTTP client is not imported directly by dentalRuntimeAgentFactory", () => {
   const dir = dirname(fileURLToPath(import.meta.url));
   const factorySrc = readFileSync(resolve(dir, "../src/runtime/dentalRuntimeAgentFactory.ts"), "utf8");
-  assert.doesNotMatch(factorySrc, /cliniccard/i, "dentalRuntimeAgentFactory must not reference cliniccard adapter");
+  // The factory wires the ClinicCard availability executor (ok) but must not import the raw HTTP adapter
+  assert.doesNotMatch(factorySrc, /clinicCardAdapter/, "dentalRuntimeAgentFactory must not import the raw ClinicCard HTTP adapter");
+  assert.doesNotMatch(factorySrc, /createClinicCardAdapter/, "dentalRuntimeAgentFactory must not call createClinicCardAdapter directly");
 });
 
 test("clinicCardAdapter is not imported by runtimeTurnPipeline", () => {

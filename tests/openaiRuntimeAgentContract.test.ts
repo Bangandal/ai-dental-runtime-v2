@@ -277,6 +277,93 @@ test("date grounding: explicit date 2026-07-01 passes through unchanged", async 
   assert.equal(executedDates[0], "2026-07-01", "explicit ISO date must pass through unchanged");
 });
 
+// Date grounding P2 — timezone threading
+
+test("P2: createRuntimeAgentLoop with timezone=America/New_York passes that timezone into system_instruction", async () => {
+  let capturedInstruction: string | undefined;
+  const caller: RuntimeAgentCaller = async (input) => {
+    capturedInstruction = input.system_instruction;
+    return { type: "final_response", final_response: { final_patient_reply: "Ok" } };
+  };
+  await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: {},
+    now: new Date("2026-06-27T10:00:00Z"),
+    timezone: "America/New_York",
+  }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Hello",
+    locale: "en",
+    truth_snapshot: {},
+  });
+  assert.ok(capturedInstruction?.includes("America/New_York"), "system instruction must include the configured timezone");
+  assert.ok(!capturedInstruction?.includes("Europe/Prague"), "must not fall back to Prague when timezone is explicitly set");
+});
+
+test("P2: date around midnight differs between America/New_York and Europe/Prague", () => {
+  // 2026-06-28T03:00Z = 2026-06-27 23:00 New York (EDT, UTC-4), 2026-06-28 05:00 Prague (CEST, UTC+2)
+  const now = new Date("2026-06-28T03:00:00Z");
+  const nyInstruction = buildRuntimeAgentSystemInstruction({ now, timezone: "America/New_York" });
+  const pragueInstruction = buildRuntimeAgentSystemInstruction({ now, timezone: "Europe/Prague" });
+  assert.match(nyInstruction, /2026-06-27/, "New York still on 2026-06-27 at 03:00 UTC");
+  assert.match(pragueInstruction, /2026-06-28/, "Prague is already 2026-06-28 at 03:00 UTC");
+});
+
+test("P2: default remains Europe/Prague when no timezone provided to createRuntimeAgentLoop", async () => {
+  let capturedInstruction: string | undefined;
+  const caller: RuntimeAgentCaller = async (input) => {
+    capturedInstruction = input.system_instruction;
+    return { type: "final_response", final_response: { final_patient_reply: "Ok" } };
+  };
+  await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: {},
+    now: new Date("2026-06-27T10:00:00Z"),
+  }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Hello",
+    locale: "ru",
+    truth_snapshot: {},
+  });
+  assert.ok(capturedInstruction?.includes("Europe/Prague"), "default timezone must be Europe/Prague");
+});
+
+test("P2: завтра → ISO date test still passes with non-Prague timezone", async () => {
+  const now = new Date("2026-06-27T10:00:00Z"); // 2026-06-27 06:00 New York
+  const executedDates: Array<string | undefined> = [];
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", arguments: { requested_date: "2026-06-28" }, call_id: "call_tz" }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Tomorrow has slots." } };
+  };
+  const executors = {
+    "availability.check": async (ctx: import("../src/runtime/toolExecutor.ts").ToolExecutionContext) => {
+      executedDates.push(ctx.requested_date);
+      return { tool: "availability.check" as const, status: "success" as const, data: { slots: [] } };
+    },
+  };
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors, now, timezone: "America/New_York" }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Есть слоты завтра?",
+    locale: "ru",
+    truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+  });
+  assert.equal(executedDates[0], "2026-06-28", "executor receives resolved ISO date regardless of timezone");
+  assert.equal(result.final_patient_reply, "Tomorrow has slots.");
+});
+
 test("module has contract-only implementation with no external runtime integrations", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const modulePath = resolve(thisDir, "../src/runtime/openaiRuntimeAgent.ts");

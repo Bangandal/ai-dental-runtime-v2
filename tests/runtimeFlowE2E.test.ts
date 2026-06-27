@@ -85,28 +85,34 @@ test("Availability flow via RuntimeTurnService executes availability.check and r
     },
     { final_response: { final_patient_reply: "На завтра вечером есть окна в 18:00 и 19:00." } },
   ]);
-  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+  const rpcCalls: string[] = [];
+  // ClinicCard availability executor injected — no Supabase RPC for availability.check
+  const mockClinicCardAvailabilityExecutor = async () => ({
+    tool: "availability.check" as const,
+    status: "success" as const,
+    data: {
+      slots: [{ slot_id: "2026-05-23T18:00", starts_at: "2026-05-23T18:00:00", ends_at: "2026-05-23T18:30:00" }],
+      timezone: "Europe/Prague",
+      total_slots: 18,
+      free_slots_count: 17,
+    },
+  });
   const service = createDentalRuntimeTurnService({
     model: "gpt-test",
     openaiClient: client,
-    rpc: async (fn, args) => {
-      rpcCalls.push({ fn, args });
-      if (fn === "rpc_check_availability_v1") {
-        return {
-          data: [{ slot_key: "slot_1", starts_at: "2026-05-23T18:00:00+03:00", ends_at: "2026-05-23T18:30:00+03:00" }],
-          error: null,
-        };
-      }
-      return { data: null, error: { code: "unexpected_fn", message: fn, retryable: false } };
+    rpc: async (fn) => {
+      rpcCalls.push(fn);
+      return { data: null, error: null };
     },
     embeddingClient: { createEmbedding: async () => [0.1, 0.2] },
     embeddingModel: "text-embedding-3-small",
+    clinicCardAvailabilityExecutor: mockClinicCardAvailabilityExecutor,
   });
 
   const result = await service.runTurn(makeBaseInput("Есть завтра вечером?"));
 
   assert.equal(result.tool_results[0]?.status, "success");
-  assert.equal(rpcCalls[0]?.fn, "rpc_check_availability_v1");
+  assert.equal(rpcCalls.length, 0); // ClinicCard executor; no Supabase RPC for availability
   const availabilityOutput = ((calls[1] as any).input as Array<Record<string, unknown>>).find((item) => item.type === "function_call_output");
   assert.equal(typeof availabilityOutput?.output, "string");
   assert.equal(JSON.parse(availabilityOutput?.output as string).tool, "availability.check");

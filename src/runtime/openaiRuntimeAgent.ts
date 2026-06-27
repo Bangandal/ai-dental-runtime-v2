@@ -78,9 +78,27 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
   },
 } as const;
 
-export function buildRuntimeAgentSystemInstruction(): string {
+export interface RuntimeAgentSystemInstructionOptions {
+  now?: Date;
+  timezone?: string;
+}
+
+function formatDateInTimezone(date: Date, timezone: string): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInstructionOptions): string {
+  const timezone = opts?.timezone ?? "Europe/Prague";
+  const todayDate = formatDateInTimezone(opts?.now ?? new Date(), timezone);
   return [
     "You are the AI Front Desk agent for a dental clinic.",
+    `Today is ${todayDate} (timezone: ${timezone}).`,
+    "When calling tools, always convert relative date expressions (\"tomorrow\", \"завтра\", \"в пятницу\", \"next week\", etc.) into ISO YYYY-MM-DD before passing to availability.check. Never pass natural-language date strings to availability.check.",
     "Final patient reply must be in the patient's language. Never reply in English unless the patient wrote in English.",
     "You may answer naturally and briefly.",
     "Use tools for facts and availability.",

@@ -51,6 +51,7 @@ export interface CreateRuntimeAgentLoopDeps {
   executors: ToolExecutorRegistry;
   conversationMemoryRepository?: ConversationMemoryRepository;
   now?: Date;
+  timezone?: string;
 }
 
 const ACTIVE_TOOL_SET = new Set<string>(ACTIVE_RUNTIME_AGENT_TOOLS);
@@ -59,7 +60,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
   return {
     async runTurn(input: RuntimeAgentTurnInput): Promise<RuntimeAgentTurnResult> {
       const debug: Record<string, unknown> = { llm_calls: buildRuntimeLlmCallDebug() };
-      const systemInstruction = buildRuntimeAgentSystemInstruction();
+      const systemInstruction = buildRuntimeAgentSystemInstruction({ now: deps.now, timezone: deps.timezone });
       let conversationId = input.conversation_id ?? null;
 
       if (!conversationId && deps.conversationMemoryRepository) {

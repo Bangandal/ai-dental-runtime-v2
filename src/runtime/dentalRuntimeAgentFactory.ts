@@ -15,6 +15,7 @@ export interface CreateDentalRuntimeAgentDeps {
   embeddingModel: string;
   conversationMemoryRepository?: ConversationMemoryRepository;
   now?: Date;
+  timezone?: string;
   clinicCardAvailabilityExecutor?: ToolExecutor;
 }
 
@@ -41,5 +42,6 @@ export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): Op
     executors,
     conversationMemoryRepository: deps.conversationMemoryRepository,
     now: deps.now,
+    timezone: deps.timezone,
   });
 }

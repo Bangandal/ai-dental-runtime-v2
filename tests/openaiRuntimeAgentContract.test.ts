@@ -11,6 +11,7 @@ import {
   buildRuntimeAgentSystemInstruction,
   type RuntimeAgentTurnResult,
 } from "../src/runtime/openaiRuntimeAgent.ts";
+import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 
 test("RuntimeAgentTurnResult requires final_patient_reply in type examples", () => {
   const result: RuntimeAgentTurnResult = {
@@ -150,6 +151,217 @@ test("system instruction contains booking confirmation proof guard", () => {
     /Do not claim booking is confirmed without explicit backend proof/i,
     "must guard against claiming booking confirmed without backend proof",
   );
+});
+
+// Date grounding tests — PR #107
+
+test("date grounding: system instruction includes today's YYYY-MM-DD date when now is provided", () => {
+  // 2026-06-27 10:00 UTC = 2026-06-27 12:00 Prague (CEST, UTC+2)
+  const now = new Date("2026-06-27T10:00:00Z");
+  const instruction = buildRuntimeAgentSystemInstruction({ now });
+  assert.match(instruction, /2026-06-27/, "instruction must include the current date in YYYY-MM-DD");
+});
+
+test("date grounding: system instruction includes Europe/Prague timezone", () => {
+  const now = new Date("2026-06-27T10:00:00Z");
+  const instruction = buildRuntimeAgentSystemInstruction({ now });
+  assert.match(instruction, /Europe\/Prague/, "instruction must include the configured timezone");
+});
+
+test("date grounding: system instruction warns against natural-language dates in availability.check", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(instruction, /Never pass natural-language date strings to availability\.check/i);
+  assert.match(instruction, /YYYY-MM-DD/, "must specify the required format");
+});
+
+test("date grounding: relative date examples listed (tomorrow, завтра, в пятницу, next week)", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(instruction, /tomorrow/i);
+  assert.match(instruction, /завтра/);
+  assert.match(instruction, /next week/i);
+});
+
+test("date grounding: same-day boundary — 2026-06-27T23:00Z = 2026-06-28 01:00 Prague (next day)", () => {
+  const now = new Date("2026-06-27T23:00:00Z"); // UTC+2 → 2026-06-28 01:00 Prague
+  const instruction = buildRuntimeAgentSystemInstruction({ now });
+  assert.match(instruction, /2026-06-28/, "instruction must reflect Prague date, not UTC date");
+  assert.doesNotMatch(instruction, /Today is 2026-06-27/, "UTC date must not appear when Prague date is next day");
+});
+
+test("date grounding: agent loop passes deps.now into system_instruction shown to caller", async () => {
+  const now = new Date("2026-06-27T10:00:00Z");
+  let capturedInstruction: string | undefined;
+  const caller: RuntimeAgentCaller = async (input) => {
+    capturedInstruction = input.system_instruction;
+    return { type: "final_response", final_response: { final_patient_reply: "Ok" } };
+  };
+  await createRuntimeAgentLoop({ model: "m", caller, executors: {}, now }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Есть слоты завтра?",
+    locale: "ru",
+    truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+  });
+  assert.ok(capturedInstruction?.includes("2026-06-27"), "system instruction seen by model must include today (2026-06-27)");
+  assert.ok(capturedInstruction?.includes("Europe/Prague"), "system instruction must include timezone");
+});
+
+test("date grounding: with now=2026-06-27 and mock caller resolving 'завтра' to 2026-06-28, executor receives resolved date", async () => {
+  const now = new Date("2026-06-27T10:00:00Z");
+  const executedDates: Array<string | undefined> = [];
+  const callerInputs: Parameters<RuntimeAgentCaller>[0][] = [];
+
+  const caller: RuntimeAgentCaller = async (input) => {
+    callerInputs.push(input);
+    if (!input.input.tool_results) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", arguments: { requested_date: "2026-06-28" }, call_id: "call_zavtra" }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Завтра есть слоты." } };
+  };
+
+  const executors = {
+    "availability.check": async (ctx: import("../src/runtime/toolExecutor.ts").ToolExecutionContext) => {
+      executedDates.push(ctx.requested_date);
+      return { tool: "availability.check" as const, status: "success" as const, data: { slots: [] } };
+    },
+  };
+
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors, now }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Есть слоты завтра?",
+    locale: "ru",
+    truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+  });
+
+  assert.ok(callerInputs[0]?.system_instruction.includes("2026-06-27"), "model must see today (2026-06-27) in system instruction");
+  assert.equal(executedDates[0], "2026-06-28", "executor must receive the ISO-resolved date 2026-06-28");
+  assert.equal(result.final_patient_reply, "Завтра есть слоты.");
+});
+
+test("date grounding: explicit date 2026-07-01 passes through unchanged", async () => {
+  const now = new Date("2026-06-27T10:00:00Z");
+  const executedDates: Array<string | undefined> = [];
+
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", arguments: { requested_date: "2026-07-01" }, call_id: "call_explicit" }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "1 июля есть слоты." } };
+  };
+
+  const executors = {
+    "availability.check": async (ctx: import("../src/runtime/toolExecutor.ts").ToolExecutionContext) => {
+      executedDates.push(ctx.requested_date);
+      return { tool: "availability.check" as const, status: "success" as const, data: { slots: [] } };
+    },
+  };
+
+  await createRuntimeAgentLoop({ model: "m", caller, executors, now }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Есть слоты на 2026-07-01?",
+    locale: "ru",
+    truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+  });
+
+  assert.equal(executedDates[0], "2026-07-01", "explicit ISO date must pass through unchanged");
+});
+
+// Date grounding P2 — timezone threading
+
+test("P2: createRuntimeAgentLoop with timezone=America/New_York passes that timezone into system_instruction", async () => {
+  let capturedInstruction: string | undefined;
+  const caller: RuntimeAgentCaller = async (input) => {
+    capturedInstruction = input.system_instruction;
+    return { type: "final_response", final_response: { final_patient_reply: "Ok" } };
+  };
+  await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: {},
+    now: new Date("2026-06-27T10:00:00Z"),
+    timezone: "America/New_York",
+  }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Hello",
+    locale: "en",
+    truth_snapshot: {},
+  });
+  assert.ok(capturedInstruction?.includes("America/New_York"), "system instruction must include the configured timezone");
+  assert.ok(!capturedInstruction?.includes("Europe/Prague"), "must not fall back to Prague when timezone is explicitly set");
+});
+
+test("P2: date around midnight differs between America/New_York and Europe/Prague", () => {
+  // 2026-06-28T03:00Z = 2026-06-27 23:00 New York (EDT, UTC-4), 2026-06-28 05:00 Prague (CEST, UTC+2)
+  const now = new Date("2026-06-28T03:00:00Z");
+  const nyInstruction = buildRuntimeAgentSystemInstruction({ now, timezone: "America/New_York" });
+  const pragueInstruction = buildRuntimeAgentSystemInstruction({ now, timezone: "Europe/Prague" });
+  assert.match(nyInstruction, /2026-06-27/, "New York still on 2026-06-27 at 03:00 UTC");
+  assert.match(pragueInstruction, /2026-06-28/, "Prague is already 2026-06-28 at 03:00 UTC");
+});
+
+test("P2: default remains Europe/Prague when no timezone provided to createRuntimeAgentLoop", async () => {
+  let capturedInstruction: string | undefined;
+  const caller: RuntimeAgentCaller = async (input) => {
+    capturedInstruction = input.system_instruction;
+    return { type: "final_response", final_response: { final_patient_reply: "Ok" } };
+  };
+  await createRuntimeAgentLoop({
+    model: "m",
+    caller,
+    executors: {},
+    now: new Date("2026-06-27T10:00:00Z"),
+  }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Hello",
+    locale: "ru",
+    truth_snapshot: {},
+  });
+  assert.ok(capturedInstruction?.includes("Europe/Prague"), "default timezone must be Europe/Prague");
+});
+
+test("P2: завтра → ISO date test still passes with non-Prague timezone", async () => {
+  const now = new Date("2026-06-27T10:00:00Z"); // 2026-06-27 06:00 New York
+  const executedDates: Array<string | undefined> = [];
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", arguments: { requested_date: "2026-06-28" }, call_id: "call_tz" }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Tomorrow has slots." } };
+  };
+  const executors = {
+    "availability.check": async (ctx: import("../src/runtime/toolExecutor.ts").ToolExecutionContext) => {
+      executedDates.push(ctx.requested_date);
+      return { tool: "availability.check" as const, status: "success" as const, data: { slots: [] } };
+    },
+  };
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors, now, timezone: "America/New_York" }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: "case_1",
+    user_message: "Есть слоты завтра?",
+    locale: "ru",
+    truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+  });
+  assert.equal(executedDates[0], "2026-06-28", "executor receives resolved ISO date regardless of timezone");
+  assert.equal(result.final_patient_reply, "Tomorrow has slots.");
 });
 
 test("module has contract-only implementation with no external runtime integrations", async () => {

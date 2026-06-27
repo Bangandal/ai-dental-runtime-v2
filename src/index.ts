@@ -19,6 +19,9 @@ export interface RuntimeServerDeps {
   rpc: RuntimeServerBootstrapDeps["rpc"];
   embeddingClient: RuntimeServerBootstrapDeps["embeddingClient"];
   env?: RuntimeServerEnv;
+  apiKey?: string | undefined;
+  isProduction?: boolean;
+  debugEnabled?: boolean;
 }
 
 export function bootstrapRuntimeServer(deps: RuntimeServerDeps): RouteRegistrationApp {
@@ -29,6 +32,9 @@ export function bootstrapRuntimeServer(deps: RuntimeServerDeps): RouteRegistrati
     embeddingModel: runtimeEnv.runtimeEmbeddingModel,
     rpc: deps.rpc,
     embeddingClient: deps.embeddingClient,
+    apiKey: deps.apiKey,
+    isProduction: deps.isProduction,
+    debugEnabled: deps.debugEnabled,
   });
   return deps.app;
 }

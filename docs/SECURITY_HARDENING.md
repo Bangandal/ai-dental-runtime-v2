@@ -46,6 +46,12 @@ Install nginx if not present:
 sudo apt install nginx
 ```
 
+Create `/etc/nginx/conf.d/runtime-v2-rate-limit.conf` (http context, loaded automatically):
+
+```nginx
+limit_req_zone $binary_remote_addr zone=runtime_limit:10m rate=30r/m;
+```
+
 Create `/etc/nginx/sites-available/runtime-v2`:
 
 ```nginx
@@ -56,9 +62,6 @@ server {
     # SSL certs (Let's Encrypt recommended)
     ssl_certificate     /etc/letsencrypt/live/<your-domain>/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/<your-domain>/privkey.pem;
-
-    # Rate limit at nginx level (defence-in-depth)
-    limit_req_zone $binary_remote_addr zone=runtime_limit:10m rate=30r/m;
 
     location /runtime/turn {
         limit_req zone=runtime_limit burst=10 nodelay;

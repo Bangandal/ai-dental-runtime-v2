@@ -41,7 +41,7 @@ function createRouteHarness(
   turnUnderstandingClassifier?: TurnUnderstandingClassifier,
   caseRouterClassifier?: CaseRouterClassifier,
 ) {
-  let handler: ((request: { body: any }, reply: any) => Promise<void>) | undefined;
+  let handler: ((request: { body: any; headers: Record<string, string>; ip?: string }, reply: any) => Promise<void>) | undefined;
   registerRuntimeTurnRoute(
     {
       post(path, routeHandler) {
@@ -49,12 +49,12 @@ function createRouteHarness(
         handler = routeHandler;
       },
     },
-    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository, runtimeGateClassifier, turnUnderstandingClassifier, caseRouterClassifier },
+    { runtimeTurnService: service, runtimeTurnLogger: logger, openAIConversationMemoryRepository, createOpenAIConversation, turnPersistenceRepository, clinicIdentityResolver, runtimeContextRepository, caseContextRepository, runtimeGateClassifier, turnUnderstandingClassifier, caseRouterClassifier, debugEnabled: true },
   );
 
   assert.ok(handler);
 
-  async function invoke(body: Record<string, unknown>) {
+  async function invoke(body: Record<string, unknown>, headers: Record<string, string> = {}) {
     let statusCode = 200;
     let payload: unknown;
     const reply = {
@@ -67,7 +67,7 @@ function createRouteHarness(
       },
     };
 
-    await handler!({ body }, reply);
+    await handler!({ body, headers, ip: "127.0.0.1" }, reply);
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 20));
     return { statusCode, payload };
   }

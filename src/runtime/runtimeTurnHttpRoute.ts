@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { checkRuntimeApiKey, extractBearerToken } from "./runtimeApiAuth.ts";
+import type { RateLimiter } from "./runtimeRateLimiter.ts";
 import type { RuntimeTurnInput, RuntimeTurnService } from "./runtimeTurnService.ts";
 import type { RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 import type { OpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
@@ -53,18 +55,28 @@ export interface RuntimeTurnRouteDeps {
   caseRouterClassifier?: CaseRouterClassifier;
   runtimeGateClassifier?: RuntimeGateClassifier;
   turnUnderstandingClassifier?: TurnUnderstandingClassifier;
+  apiKey?: string | undefined;
+  isProduction?: boolean;
+  rateLimiter?: RateLimiter;
+  debugEnabled?: boolean;
+}
+
+export interface RouteRequest {
+  body: RuntimeTurnHttpRequestBody;
+  headers: Record<string, string | string[] | undefined>;
+  ip?: string;
 }
 
 export interface RouteRegistrationApp {
   post(
     path: string,
-    handler: (request: { body: RuntimeTurnHttpRequestBody }, reply: RouteReply) => Promise<void>,
+    handler: (request: RouteRequest, reply: RouteReply) => Promise<void>,
   ): void;
 }
 
 export interface RouteReply {
   code(statusCode: number): RouteReply;
-  send(payload: RuntimeTurnHttpSuccessResponse | RuntimeTurnHttpErrorResponse): void;
+  send(payload: RuntimeTurnHttpSuccessResponse | RuntimeTurnHttpErrorResponse | { error: { code: string; message: string } }): void;
 }
 
 const RUNTIME_FALLBACK_REPLY =
@@ -73,6 +85,32 @@ const RUNTIME_FALLBACK_REPLY =
 export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: RuntimeTurnRouteDeps): void {
   app.post("/runtime/turn", async (request, reply) => {
     const startTime = Date.now();
+
+    // Auth check — before any business logic.
+    const authResult = checkRuntimeApiKey({
+      configuredKey: deps.apiKey,
+      authHeader: asHeaderString(request.headers["authorization"]),
+      apiKeyHeader: asHeaderString(request.headers["x-runtime-api-key"]),
+      isProduction: deps.isProduction ?? false,
+    });
+    if (!authResult.ok) {
+      reply.code(401).send({ error: { code: "unauthorized", message: "Unauthorized" } });
+      return;
+    }
+
+    // Rate limit check — key is API key when present, else IP.
+    if (deps.rateLimiter) {
+      const rateLimitKey =
+        extractBearerToken(asHeaderString(request.headers["authorization"])) ??
+        asHeaderString(request.headers["x-runtime-api-key"]) ??
+        request.ip ??
+        "unknown";
+      if (!deps.rateLimiter.check(rateLimitKey)) {
+        reply.code(429).send({ error: { code: "rate_limit_exceeded", message: "Too many requests" } });
+        return;
+      }
+    }
+
     const validationError = validateRuntimeTurnRequest(request.body);
     if (validationError) {
       void deps.runtimeTurnLogger.logError({
@@ -436,14 +474,20 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       const serviceDebug = result.debug as Record<string, unknown> | undefined;
       const llmCalls = mergeRuntimeLlmCallDebug(turnLlmCalls, serviceDebug?.llm_calls);
 
+      const debugPayload = deps.debugEnabled
+        ? { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug }
+        : undefined;
+
       const responsePayload: RuntimeTurnHttpSuccessResponse = {
         trace_id: traceId,
         reply_text: result.final_patient_reply,
         final_patient_reply: result.final_patient_reply,
-        conversation_id: conversationIdToPersist,
-        tool_results: result.tool_results,
         side_effects: [],
-        debug: { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug },
+        ...(deps.debugEnabled ? {
+          conversation_id: conversationIdToPersist,
+          tool_results: result.tool_results,
+          debug: debugPayload,
+        } : {}),
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),
@@ -483,9 +527,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
             },
           },
         ],
-        debug: {
-          runtime_error: runtimeError,
-        },
+        ...(deps.debugEnabled ? { debug: { runtime_error: runtimeError } } : {}),
       };
       void deps.runtimeTurnLogger.logError({
         ts: new Date().toISOString(),
@@ -555,6 +597,11 @@ function applyMessengerPhonePolicy(baseContext: Record<string, unknown>): Record
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function asHeaderString(value: string | string[] | undefined): string | undefined {
+  if (Array.isArray(value)) return value[0];
+  return value;
 }
 
 function asString(value: unknown): string | null {

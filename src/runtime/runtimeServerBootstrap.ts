@@ -1,4 +1,5 @@
 import { registerRuntimeTurnRoute, type RouteRegistrationApp } from "./runtimeTurnHttpRoute.ts";
+import { createRateLimiter } from "./runtimeRateLimiter.ts";
 import { createDentalRuntimeTurnService } from "./runtimeTurnService.ts";
 import type { OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
 import type { RpcCaller } from "./runtimeRepositories.ts";
@@ -20,6 +21,9 @@ export interface RuntimeServerBootstrapDeps {
   rpc: RpcCaller;
   embeddingClient: EmbeddingClient;
   runtimeTurnLogger?: RuntimeTurnLogger;
+  apiKey?: string | undefined;
+  isProduction?: boolean;
+  debugEnabled?: boolean;
 }
 
 
@@ -51,6 +55,8 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     return readConversationId(created);
   };
 
+  const rateLimiter = createRateLimiter({ maxRequests: 60, windowMs: 60_000 });
+
   registerRuntimeTurnRoute(app, {
     runtimeTurnService: createDentalRuntimeTurnService({
       openaiClient: deps.openaiClient,
@@ -69,5 +75,9 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     runtimeGateClassifier: createOpenAIRuntimeGateClassifier({ client: deps.openaiClient, model: runtimeGateModel }),
     turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({ client: deps.openaiClient, model: turnUnderstandingModel }),
     caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: caseRouterModel }),
+    apiKey: deps.apiKey,
+    isProduction: deps.isProduction,
+    rateLimiter,
+    debugEnabled: deps.debugEnabled,
   });
 }

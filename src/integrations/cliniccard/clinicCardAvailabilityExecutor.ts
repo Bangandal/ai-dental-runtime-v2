@@ -5,6 +5,17 @@ import { checkClinicCardAvailability, type AvailabilityAdapter } from "./clinicC
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import { makeFailedToolResult } from "../../runtime/toolResults.ts";
 
+const DEFAULT_WORKING_HOURS_START = "09:00";
+const DEFAULT_WORKING_HOURS_END = "18:00";
+const DEFAULT_SLOT_DURATION_MINUTES = 30;
+
+// Returns the time string if it looks like HH:MM, null otherwise.
+// Avoids acting on natural-language times like "afternoon" or "evening".
+function parseHHMM(val: string | null | undefined): string | null {
+  if (!val) return null;
+  return /^\d{1,2}:\d{2}$/.test(val.trim()) ? val.trim() : null;
+}
+
 export interface ClinicCardAvailabilityExecutorDeps {
   env?: Record<string, string | undefined>;
   adapterFactory?: (config: ClinicCardConfig) => AvailabilityAdapter;
@@ -63,9 +74,9 @@ export function createClinicCardAvailabilityExecutor(
     const result = await checkClinicCardAvailability(
       {
         date: requestedDate,
-        working_hours_start: "09:00",
-        working_hours_end: "18:00",
-        slot_duration_minutes: 30,
+        working_hours_start: DEFAULT_WORKING_HOURS_START,
+        working_hours_end: DEFAULT_WORKING_HOURS_END,
+        slot_duration_minutes: DEFAULT_SLOT_DURATION_MINUTES,
         doctor_id: doctorId,
         cabinet_id: cabinetId,
         timezone,
@@ -82,18 +93,36 @@ export function createClinicCardAvailabilityExecutor(
       );
     }
 
+    // total_slots and free_slots_count always reflect the full day — before any filtering.
+    const total_slots = result.data.total_slots;
+    const free_slots_count = result.data.free_slots_count;
+
+    // Filter free slots to at/after requested_time if it is a parseable HH:MM value.
+    const requestedTime = parseHHMM(context.requested_time);
+    let freeSlots = result.data.slots;
+    if (requestedTime !== null) {
+      freeSlots = freeSlots.filter((s) => s.time_start >= requestedTime);
+    }
+
+    // Map to output format.
+    const mappedSlots = freeSlots.map((s) => ({
+      slot_id: `${s.date}T${s.time_start}`,
+      starts_at: `${s.date}T${s.time_start}:00`,
+      ends_at: `${s.date}T${s.time_end}:00`,
+    }));
+
+    // Cap to limit if provided.
+    const limit = context.limit;
+    const limitedSlots = limit !== undefined && limit > 0 ? mappedSlots.slice(0, limit) : mappedSlots;
+
     return {
       tool: "availability.check",
       status: "success",
       data: {
-        slots: result.data.slots.map((s) => ({
-          slot_id: `${s.date}T${s.time_start}`,
-          starts_at: `${s.date}T${s.time_start}:00`,
-          ends_at: `${s.date}T${s.time_end}:00`,
-        })),
+        slots: limitedSlots,
         timezone,
-        total_slots: result.data.total_slots,
-        free_slots_count: result.data.free_slots_count,
+        total_slots,
+        free_slots_count,
       },
     };
   };

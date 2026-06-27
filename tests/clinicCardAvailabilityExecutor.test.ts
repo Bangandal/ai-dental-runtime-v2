@@ -194,3 +194,69 @@ test("executor reads doctor_id and cabinet_id from config, not from context", ()
   assert.doesNotMatch(src, /context\.doctor_id/, "must not read doctor_id from context");
   assert.doesNotMatch(src, /context\.cabinet_id/, "must not read cabinet_id from context");
 });
+
+// ── 11. requested_time HH:MM filters morning slots ───────────────────────────
+
+test("requested_time=15:00 excludes slots before 15:00 from returned slots", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const result = await executor({ requested_date: "2026-07-01", requested_time: "15:00" });
+  assert.equal(result.status, "success");
+  if (result.status === "success") {
+    for (const slot of result.data.slots) {
+      assert.ok(
+        slot.starts_at >= "2026-07-01T15:00",
+        `slot ${slot.starts_at} must not be before 15:00`,
+      );
+    }
+    assert.ok(result.data.slots.length > 0, "must have at least one slot at/after 15:00");
+    // full-day counts are unaffected by time filter
+    assert.ok(result.data.total_slots > result.data.slots.length, "total_slots reflects the full day");
+  }
+});
+
+test("requested_time=natural-language string is ignored — all slots returned", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const all = await executor({ requested_date: "2026-07-01" });
+  const filtered = await executor({ requested_date: "2026-07-01", requested_time: "afternoon" });
+  assert.equal(all.status, "success");
+  assert.equal(filtered.status, "success");
+  if (all.status === "success" && filtered.status === "success") {
+    assert.equal(filtered.data.slots.length, all.data.slots.length, "natural-language time must not filter slots");
+  }
+});
+
+// ── 12. limit caps returned slots; counts remain full-day ─────────────────────
+
+test("limit=3 returns at most 3 slots while total_slots and free_slots_count reflect the full day", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const result = await executor({ requested_date: "2026-07-01", limit: 3 });
+  assert.equal(result.status, "success");
+  if (result.status === "success") {
+    assert.ok(result.data.slots.length <= 3, "slots must be capped to limit=3");
+    assert.ok(result.data.total_slots > 3, "total_slots must reflect full day, not the limit");
+    assert.ok(result.data.free_slots_count > 3, "free_slots_count must reflect full day, not the limit");
+  }
+});
+
+test("limit=0 is ignored — all slots returned", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const all = await executor({ requested_date: "2026-07-01" });
+  const limited = await executor({ requested_date: "2026-07-01", limit: 0 });
+  assert.equal(all.status, "success");
+  assert.equal(limited.status, "success");
+  if (all.status === "success" && limited.status === "success") {
+    assert.equal(limited.data.slots.length, all.data.slots.length, "limit=0 must not cap slots");
+  }
+});

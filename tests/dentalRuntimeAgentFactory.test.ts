@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createDentalRuntimeAgent } from "../src/runtime/dentalRuntimeAgentFactory.ts";
 import type { OpenAIResponsesClient } from "../src/runtime/openaiRuntimeAgentCaller.ts";
 import type { ConversationMemoryRepository } from "../src/runtime/runtimeRepositories.ts";
+import type { ToolExecutor } from "../src/runtime/toolExecutor.ts";
 
 function makeTurnInput() {
   return {
@@ -92,9 +93,20 @@ test("kb.search path executes RPC and returns final response", async () => {
   assert.equal(result.final_patient_reply, "We accept PPO.");
 });
 
-test("availability.check path executes RPC and returns final response", async () => {
-  const rpcCalls: Array<{ fn: string; args: Record<string, unknown> }> = [];
+test("availability.check path uses ClinicCard executor and returns final response", async () => {
+  const rpcCalls: string[] = [];
   let callCount = 0;
+
+  const mockClinicCardAvailabilityExecutor: ToolExecutor = async () => ({
+    tool: "availability.check",
+    status: "success",
+    data: {
+      slots: [{ slot_id: "2026-05-23T10:00", starts_at: "2026-05-23T10:00:00", ends_at: "2026-05-23T10:30:00" }],
+      timezone: "Europe/Prague",
+      total_slots: 18,
+      free_slots_count: 17,
+    },
+  });
 
   const agent = createDentalRuntimeAgent({
     model: "gpt-test",
@@ -111,21 +123,18 @@ test("availability.check path executes RPC and returns final response", async ()
         },
       },
     },
-    rpc: async (fn, args) => {
-      rpcCalls.push({ fn, args });
-      return {
-        data: [{ slot_key: "slot_1", starts_at: "2026-05-23T10:00:00Z", ends_at: "2026-05-23T10:30:00Z", timezone: "UTC" }],
-        error: null,
-      };
+    rpc: async (fn) => {
+      rpcCalls.push(fn);
+      return { data: null, error: null };
     },
     embeddingClient: { createEmbedding: async () => [0.1, 0.2] },
     embeddingModel: "text-embedding-3-small",
+    clinicCardAvailabilityExecutor: mockClinicCardAvailabilityExecutor,
   });
 
   const result = await agent.runTurn(makeTurnInput());
 
-  assert.equal(rpcCalls.length, 1);
-  assert.equal(rpcCalls[0]?.fn, "rpc_check_availability_v1");
+  assert.equal(rpcCalls.length, 0); // ClinicCard executor; no Supabase RPC for availability
   assert.equal(result.final_patient_reply, "We have openings tomorrow.");
 });
 

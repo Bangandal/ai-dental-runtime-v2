@@ -13,8 +13,12 @@ Add to `/opt/runtime-v2/app/.env`:
 #   openssl rand -hex 32
 RUNTIME_API_KEY=<your-secret>
 
-# Set in production to strip internal debug fields from API responses.
-# Remove or set to "false" to hide debug output.
+# Bind host. Set to 127.0.0.1 to block direct public access on port 3000.
+# Traffic must then flow through nginx (see section 3).
+RUNTIME_HOST=127.0.0.1
+
+# Set to "true" only to expose debug/conversation_id/tool_results in API responses.
+# Leave unset or "false" in production.
 RUNTIME_DEBUG_RESPONSE=false
 ```
 
@@ -28,19 +32,9 @@ sudo systemctl restart runtime-v2
 
 ## 2. Bind runtime to localhost only
 
-Edit `/opt/runtime-v2/app/src/main.ts` line:
+Set `RUNTIME_HOST=127.0.0.1` in `.env` (see section 1). No source edit required.
 
-```typescript
-// Change:
-await app.listen({ port, host: "0.0.0.0" });
-
-// To:
-await app.listen({ port, host: "127.0.0.1" });
-```
-
-This prevents direct public access on port 3000. Traffic must flow through nginx.
-
-Rebuild and restart after the change.
+This prevents direct public access on port 3000. Traffic must flow through nginx (section 3).
 
 ---
 

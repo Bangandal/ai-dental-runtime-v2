@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { bootstrapRuntimeServer, readRuntimeServerEnv } from "../src/index.ts";
+import { readHostFromEnv } from "../src/main.ts";
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
 
 test("bootstrapRuntimeServer registers POST /runtime/turn via RuntimeTurnService stack", async () => {
@@ -70,4 +71,15 @@ test("readRuntimeServerEnv keeps model wiring from process env", () => {
   const fallback = readRuntimeServerEnv({});
   assert.equal(fallback.runtimeModel, "gpt-4.1-mini");
   assert.equal(fallback.runtimeEmbeddingModel, "text-embedding-3-small");
+});
+
+test("readHostFromEnv: returns RUNTIME_HOST when set", () => {
+  assert.equal(readHostFromEnv({ RUNTIME_HOST: "127.0.0.1" }), "127.0.0.1");
+  assert.equal(readHostFromEnv({ RUNTIME_HOST: "  127.0.0.1  " }), "127.0.0.1");
+});
+
+test("readHostFromEnv: returns 0.0.0.0 as default when RUNTIME_HOST not set", () => {
+  assert.equal(readHostFromEnv({}), "0.0.0.0");
+  assert.equal(readHostFromEnv({ RUNTIME_HOST: "" }), "0.0.0.0");
+  assert.equal(readHostFromEnv({ RUNTIME_HOST: "   " }), "0.0.0.0");
 });

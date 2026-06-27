@@ -482,10 +482,12 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         trace_id: traceId,
         reply_text: result.final_patient_reply,
         final_patient_reply: result.final_patient_reply,
-        conversation_id: conversationIdToPersist,
-        tool_results: result.tool_results,
         side_effects: [],
-        ...(debugPayload !== undefined ? { debug: debugPayload } : {}),
+        ...(deps.debugEnabled ? {
+          conversation_id: conversationIdToPersist,
+          tool_results: result.tool_results,
+          debug: debugPayload,
+        } : {}),
       };
       void deps.runtimeTurnLogger.logTurn({
         ts: new Date().toISOString(),

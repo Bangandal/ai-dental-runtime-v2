@@ -147,7 +147,7 @@ const defaultClinicResolver: ClinicIdentityResolver = {
 };
 const stubService: RuntimeTurnService = {
   async runTurn() {
-    return { final_patient_reply: "Hi", tool_results: [], debug: { llm_calls: { main_agent_called: true, total_llm_calls: 1, runtime_gate_called: false, turn_understanding_called: false, legacy_case_router_called: false } } };
+    return { final_patient_reply: "Hi", conversation_id: "conv_stub_1", tool_results: [{ tool: "kb.search", ok: true }], debug: { llm_calls: { main_agent_called: true, total_llm_calls: 1, runtime_gate_called: false, turn_understanding_called: false, legacy_case_router_called: false } } };
   },
 };
 
@@ -239,11 +239,35 @@ test("route: debug field absent from response by default (debugEnabled not set)"
   assert.equal("debug" in (payload as any), false, "debug must be absent when debugEnabled is not set");
 });
 
+test("route: conversation_id absent from response when debugEnabled not set", async () => {
+  const { invoke } = makeRouteHarness({});
+  const { payload } = await invoke(VALID_BODY, {});
+  assert.equal("conversation_id" in (payload as any), false, "conversation_id must be absent when debugEnabled is not set");
+});
+
+test("route: tool_results absent from response when debugEnabled not set", async () => {
+  const { invoke } = makeRouteHarness({});
+  const { payload } = await invoke(VALID_BODY, {});
+  assert.equal("tool_results" in (payload as any), false, "tool_results must be absent when debugEnabled is not set");
+});
+
 test("route: debug field present when debugEnabled=true", async () => {
   const { invoke } = makeRouteHarness({ debugEnabled: true });
   const { statusCode, payload } = await invoke(VALID_BODY, {});
   assert.equal(statusCode, 200);
   assert.equal("debug" in (payload as any), true, "debug must be present when debugEnabled=true");
+});
+
+test("route: conversation_id present when debugEnabled=true", async () => {
+  const { invoke } = makeRouteHarness({ debugEnabled: true });
+  const { payload } = await invoke(VALID_BODY, {});
+  assert.equal("conversation_id" in (payload as any), true, "conversation_id must be present when debugEnabled=true");
+});
+
+test("route: tool_results present when debugEnabled=true", async () => {
+  const { invoke } = makeRouteHarness({ debugEnabled: true });
+  const { payload } = await invoke(VALID_BODY, {});
+  assert.equal("tool_results" in (payload as any), true, "tool_results must be present when debugEnabled=true");
 });
 
 test("route: API key value does not appear in response body", async () => {

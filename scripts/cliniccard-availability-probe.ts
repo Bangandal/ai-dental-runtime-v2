@@ -37,6 +37,14 @@ const DEFAULT_DEPS: AvailabilityProbeDeps = {
   createAdapter: createClinicCardAdapter,
 };
 
+// Strict positive integer: rejects "10abc", "2x", "30.5", "30min", 0, negatives.
+// parseInt silently truncates trailing chars — Number() is exact.
+function parseStrictPositiveInt(val: string): number | undefined {
+  const n = Number(val);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return undefined;
+  return n;
+}
+
 export function parseAvailabilityArgs(argv: string[]): AvailabilityProbeArgs {
   const result: AvailabilityProbeArgs = {};
   for (const arg of argv) {
@@ -49,15 +57,37 @@ export function parseAvailabilityArgs(argv: string[]): AvailabilityProbeArgs {
     switch (key) {
       case "date": result.date = val; break;
       case "date-to": result.date_to = val; break;
-      case "doctor-id": { const n = parseInt(val, 10); if (!isNaN(n)) result.doctor_id = n; break; }
-      case "cabinet-id": { const n = parseInt(val, 10); if (!isNaN(n)) result.cabinet_id = n; break; }
+      case "doctor-id": result.doctor_id = parseStrictPositiveInt(val); break;
+      case "cabinet-id": result.cabinet_id = parseStrictPositiveInt(val); break;
       case "working-hours-start": result.working_hours_start = val; break;
       case "working-hours-end": result.working_hours_end = val; break;
-      case "duration-minutes": { const n = parseInt(val, 10); if (!isNaN(n)) result.duration_minutes = n; break; }
+      case "duration-minutes": result.duration_minutes = parseStrictPositiveInt(val); break;
       case "timezone": result.timezone = val; break;
     }
   }
   return result;
+}
+
+function hasFlag(argv: string[], flag: string): boolean {
+  return argv.some((a) => a.startsWith(`--${flag}=`));
+}
+
+function failClosed(
+  error: string,
+  config_loaded: boolean,
+  writeLine: (text: string) => void,
+): { output: AvailabilityProbeOutput; exitCode: number } {
+  const output: AvailabilityProbeOutput = {
+    config_loaded,
+    api_ok: false,
+    availability_ok: false,
+    total_slots: 0,
+    free_slots_count: 0,
+    sample_slots: [],
+    error,
+  };
+  writeLine(JSON.stringify(output, null, 2));
+  return { output, exitCode: 1 };
 }
 
 export async function runAvailabilityProbeRunner(
@@ -67,62 +97,34 @@ export async function runAvailabilityProbeRunner(
 ): Promise<{ output: AvailabilityProbeOutput; exitCode: number }> {
   const args = parseAvailabilityArgs(argv);
 
-  const configResult = deps.loadConfig();
-  if (!configResult.ok) {
-    const output: AvailabilityProbeOutput = {
-      config_loaded: false,
-      api_ok: false,
-      availability_ok: false,
-      total_slots: 0,
-      free_slots_count: 0,
-      sample_slots: [],
-      error: configResult.error.message,
-    };
-    writeLine(JSON.stringify(output, null, 2));
-    return { output, exitCode: 1 };
+  // Detect invalid (present but rejected) numeric args before loading config —
+  // fail closed immediately without any API call.
+  if (hasFlag(argv, "doctor-id") && args.doctor_id === undefined) {
+    return failClosed("invalid_numeric_argument: --doctor-id must be a positive integer", false, writeLine);
+  }
+  if (hasFlag(argv, "cabinet-id") && args.cabinet_id === undefined) {
+    return failClosed("invalid_numeric_argument: --cabinet-id must be a positive integer", false, writeLine);
+  }
+  if (hasFlag(argv, "duration-minutes") && args.duration_minutes === undefined) {
+    return failClosed("invalid_numeric_argument: --duration-minutes must be a positive integer", false, writeLine);
   }
 
-  // Validate required args — fail closed on missing/invalid inputs
+  const configResult = deps.loadConfig();
+  if (!configResult.ok) {
+    return failClosed(configResult.error.message, false, writeLine);
+  }
+
+  // Validate required args — fail closed on missing inputs
   if (!args.date) {
-    const output: AvailabilityProbeOutput = {
-      config_loaded: true,
-      api_ok: false,
-      availability_ok: false,
-      total_slots: 0,
-      free_slots_count: 0,
-      sample_slots: [],
-      error: "--date is required",
-    };
-    writeLine(JSON.stringify(output, null, 2));
-    return { output, exitCode: 1 };
+    return failClosed("--date is required", true, writeLine);
   }
 
   if (args.doctor_id === undefined) {
-    const output: AvailabilityProbeOutput = {
-      config_loaded: true,
-      api_ok: false,
-      availability_ok: false,
-      total_slots: 0,
-      free_slots_count: 0,
-      sample_slots: [],
-      error: "--doctor-id is required",
-    };
-    writeLine(JSON.stringify(output, null, 2));
-    return { output, exitCode: 1 };
+    return failClosed("--doctor-id is required", true, writeLine);
   }
 
   if (args.cabinet_id === undefined) {
-    const output: AvailabilityProbeOutput = {
-      config_loaded: true,
-      api_ok: false,
-      availability_ok: false,
-      total_slots: 0,
-      free_slots_count: 0,
-      sample_slots: [],
-      error: "--cabinet-id is required",
-    };
-    writeLine(JSON.stringify(output, null, 2));
-    return { output, exitCode: 1 };
+    return failClosed("--cabinet-id is required", true, writeLine);
   }
 
   const duration = args.duration_minutes ?? 30;

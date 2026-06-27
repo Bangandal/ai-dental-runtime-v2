@@ -81,6 +81,68 @@ function capture(): { lines: string[]; writeLine: (t: string) => void } {
   return { lines, writeLine: (t) => lines.push(t) };
 }
 
+// ── Strict numeric validation ─────────────────────────────────────────────────
+
+test("--doctor-id=10abc is rejected — strict int parse", () => {
+  const args = parseAvailabilityArgs(["--doctor-id=10abc"]);
+  assert.equal(args.doctor_id, undefined, "10abc must not parse as 10");
+});
+
+test("--cabinet-id=2x is rejected — strict int parse", () => {
+  const args = parseAvailabilityArgs(["--cabinet-id=2x"]);
+  assert.equal(args.cabinet_id, undefined, "2x must not parse as 2");
+});
+
+test("--duration-minutes=30min is rejected — strict int parse", () => {
+  const args = parseAvailabilityArgs(["--duration-minutes=30min"]);
+  assert.equal(args.duration_minutes, undefined, "30min must not parse as 30");
+});
+
+test("--duration-minutes=30.5 is rejected — not an integer", () => {
+  const args = parseAvailabilityArgs(["--duration-minutes=30.5"]);
+  assert.equal(args.duration_minutes, undefined, "30.5 must be rejected");
+});
+
+test("--doctor-id=-1 is rejected — not positive", () => {
+  const args = parseAvailabilityArgs(["--doctor-id=-1"]);
+  assert.equal(args.doctor_id, undefined);
+});
+
+test("--cabinet-id=0 is rejected — not positive", () => {
+  const args = parseAvailabilityArgs(["--cabinet-id=0"]);
+  assert.equal(args.cabinet_id, undefined);
+});
+
+test("invalid --doctor-id does not call createAdapter or listVisits", async () => {
+  let adapterCalled = false;
+  const deps: AvailabilityProbeDeps = {
+    loadConfig: () => ({ ok: true, data: TEST_CONFIG }),
+    createAdapter: () => {
+      adapterCalled = true;
+      return { listVisits: async () => ({ ok: true, data: [] }) };
+    },
+  };
+  const argv = ["--date=2026-07-01", "--doctor-id=10abc", "--cabinet-id=2", "--duration-minutes=30"];
+  const { writeLine } = capture();
+  const { output, exitCode } = await runAvailabilityProbeRunner(argv, deps, writeLine);
+  assert.equal(adapterCalled, false, "createAdapter must not be called for invalid doctor_id");
+  assert.equal(output.availability_ok, false);
+  assert.equal(exitCode, 1);
+});
+
+test("invalid numeric arg produces sanitized output — only allowed fields, error set", async () => {
+  const argv = ["--date=2026-07-01", "--doctor-id=10abc", "--cabinet-id=2", "--duration-minutes=30"];
+  const { lines, writeLine } = capture();
+  await runAvailabilityProbeRunner(argv, makeOkDeps(), writeLine);
+  const parsed = JSON.parse(lines[0]!);
+  assert.equal(parsed.availability_ok, false);
+  assert.ok(typeof parsed.error === "string" && parsed.error.length > 0);
+  const allowed = new Set(["config_loaded", "api_ok", "availability_ok", "total_slots", "free_slots_count", "sample_slots", "error"]);
+  for (const key of Object.keys(parsed)) {
+    assert.ok(allowed.has(key), `unexpected key: ${key}`);
+  }
+});
+
 // ── parseAvailabilityArgs ─────────────────────────────────────────────────────
 
 test("parseAvailabilityArgs parses all supported flags", () => {

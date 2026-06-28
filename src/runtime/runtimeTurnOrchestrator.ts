@@ -210,6 +210,13 @@ export async function runRuntimeTurnOrchestrated(
     }
   }
 
+  // Determine first-patient-turn BEFORE createOpenAIConversation may assign a fresh conversation_id.
+  // True only when a memory repository is wired (so we have a reliable signal) and no prior
+  // conversation was found for this contact. This flag is passed to runTurn so the agent can
+  // give a first-turn self-introduction without relying on conversation_id being null.
+  runtimeTurnInput.is_first_patient_turn =
+    deps.openAIConversationMemoryRepository != null && !runtimeTurnInput.conversation_id;
+
   const caseContextDebug: Record<string, unknown> = { loaded: false, open_cases_count: 0, recent_cases_count: 0, has_current_case: false, current_case_resolved: false, has_active_hold: false, has_latest_appointment: false };
   let loadedCaseContext: unknown = null;
   if (!canonicalContactId) {

@@ -63,7 +63,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const systemInstruction = buildRuntimeAgentSystemInstruction({
         now: deps.now,
         timezone: deps.timezone,
-        is_new_conversation: !input.conversation_id,
+        is_new_conversation: input.is_first_patient_turn ?? false,
       });
       let conversationId = input.conversation_id ?? null;
 

@@ -406,24 +406,27 @@ test("first-turn greeting: default (no option) omits clinic assistant self-intro
   assert.doesNotMatch(instruction, /помощник администратора клиники/i, "default must NOT include self-introduction");
 });
 
-test("first-turn greeting: agent loop passes is_new_conversation=true when input has no conversation_id", async () => {
+test("first-turn greeting: agent loop uses is_first_patient_turn=true (not conversation_id) as signal", async () => {
   let capturedInstruction: string | undefined;
   const caller: RuntimeAgentCaller = async (input) => {
     capturedInstruction = input.system_instruction;
     return { type: "final_response", final_response: { final_patient_reply: "Здравствуйте!" } };
   };
+  // is_first_patient_turn=true with a pre-created conversation_id (simulates orchestrator
+  // calling createOpenAIConversation before runTurn on a genuine first patient turn)
   await createRuntimeAgentLoop({ model: "m", caller, executors: {} }).runTurn({
     clinic_id: "clinic_1",
     contact_id: "c1",
     case_id: null,
-    conversation_id: null,
+    conversation_id: "conv_newly_created_before_runturn",
+    is_first_patient_turn: true,
     user_message: "Привет",
     locale: "ru",
   });
-  assert.ok(capturedInstruction?.includes("помощник администратора клиники"), "new conversation must get first-turn greeting rule");
+  assert.ok(capturedInstruction?.includes("помощник администратора клиники"), "explicit is_first_patient_turn=true must show greeting even if conversation_id is already set");
 });
 
-test("first-turn greeting: agent loop passes is_new_conversation=false when input has existing conversation_id", async () => {
+test("first-turn greeting: agent loop uses is_first_patient_turn=false to suppress self-introduction", async () => {
   let capturedInstruction: string | undefined;
   const caller: RuntimeAgentCaller = async (input) => {
     capturedInstruction = input.system_instruction;
@@ -434,8 +437,27 @@ test("first-turn greeting: agent loop passes is_new_conversation=false when inpu
     contact_id: "c1",
     case_id: null,
     conversation_id: "conv_existing_123",
+    is_first_patient_turn: false,
     user_message: "Привет ещё раз",
     locale: "ru",
   });
-  assert.ok(!capturedInstruction?.includes("помощник администратора клиники"), "continuing conversation must NOT get first-turn greeting rule");
+  assert.ok(!capturedInstruction?.includes("помощник администратора клиники"), "is_first_patient_turn=false must NOT include self-introduction");
+});
+
+test("first-turn greeting: is_first_patient_turn unset defaults to no self-introduction", async () => {
+  let capturedInstruction: string | undefined;
+  const caller: RuntimeAgentCaller = async (input) => {
+    capturedInstruction = input.system_instruction;
+    return { type: "final_response", final_response: { final_patient_reply: "Окей" } };
+  };
+  // No is_first_patient_turn field — agent loop should default to false (safe)
+  await createRuntimeAgentLoop({ model: "m", caller, executors: {} }).runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c1",
+    case_id: null,
+    conversation_id: null,
+    user_message: "Привет",
+    locale: "ru",
+  });
+  assert.ok(!capturedInstruction?.includes("помощник администратора клиники"), "missing is_first_patient_turn must default to no self-introduction");
 });

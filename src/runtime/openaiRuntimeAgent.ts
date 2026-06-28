@@ -9,6 +9,8 @@ export interface RuntimeAgentTurnInput {
   business_context?: Record<string, unknown>;
   truth_snapshot?: Record<string, unknown>;
   recent_summary?: string | null;
+  /** True only when the stateful pipeline confirmed no prior conversation memory exists for this contact. Set by RuntimeTurnOrchestrator before runTurn is called. */
+  is_first_patient_turn?: boolean;
 }
 
 export type RuntimeAgentToolName =

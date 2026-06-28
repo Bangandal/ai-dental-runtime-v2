@@ -71,6 +71,16 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
+    location /webhooks/telegram {
+        # No authentication header required — Telegram authenticates via X-Telegram-Bot-Api-Secret-Token.
+        # Rate-limit to protect against bot abuse (separate zone from /runtime/turn).
+        limit_req zone=runtime_limit burst=30 nodelay;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
     location /health {
         proxy_pass http://127.0.0.1:3000;
     }

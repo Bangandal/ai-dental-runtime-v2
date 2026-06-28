@@ -8,7 +8,7 @@ test("startup audit: package.json defines start and preserves test command", asy
   const packageJsonRaw = await fs.readFile(packageJsonPath, "utf8");
   const packageJson = JSON.parse(packageJsonRaw) as { scripts?: Record<string, string> };
 
-  assert.equal(packageJson.scripts?.test, "node --test tests/*.test.ts");
+  assert.equal(packageJson.scripts?.test, "node --import tsx/esm --test tests/*.test.ts");
   assert.equal(packageJson.scripts?.start, "node src/main.ts");
 });
 

@@ -11,7 +11,7 @@ Telegram → POST /webhooks/telegram → runtime-v2 → Telegram Bot API (sendMe
 The adapter:
 1. Verifies `X-Telegram-Bot-Api-Secret-Token` header against `TELEGRAM_WEBHOOK_SECRET`
 2. Normalizes the Telegram update into a runtime turn input
-3. Calls the same internal LLM service as `/runtime/turn`
+3. Calls the shared stateful `RuntimeTurnOrchestrator` used by `/runtime/turn` — same persistence, memory, context, and dedupe pipeline
 4. Sends `final_patient_reply` back via `sendMessage` — no debug/internals exposed
 
 ## Env vars

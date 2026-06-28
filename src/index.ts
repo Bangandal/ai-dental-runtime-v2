@@ -22,6 +22,7 @@ export interface RuntimeServerDeps {
   apiKey?: string | undefined;
   isProduction?: boolean;
   debugEnabled?: boolean;
+  telegram?: RuntimeServerBootstrapDeps["telegram"];
 }
 
 export function bootstrapRuntimeServer(deps: RuntimeServerDeps): RouteRegistrationApp {
@@ -35,6 +36,7 @@ export function bootstrapRuntimeServer(deps: RuntimeServerDeps): RouteRegistrati
     apiKey: deps.apiKey,
     isProduction: deps.isProduction,
     debugEnabled: deps.debugEnabled,
+    telegram: deps.telegram,
   });
   return deps.app;
 }

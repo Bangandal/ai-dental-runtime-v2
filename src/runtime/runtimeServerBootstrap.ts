@@ -1,4 +1,5 @@
 import { registerRuntimeTurnRoute, type RouteRegistrationApp } from "./runtimeTurnHttpRoute.ts";
+import { registerTelegramWebhookRoute, type TelegramRouteApp } from "./telegramWebhookRoute.ts";
 import { createRateLimiter } from "./runtimeRateLimiter.ts";
 import { createDentalRuntimeTurnService } from "./runtimeTurnService.ts";
 import type { OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
@@ -14,6 +15,12 @@ import { createOpenAICaseRouterClassifier } from "./openaiCaseRouterClassifier.t
 import { createOpenAIRuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import { createOpenAITurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 
+export interface TelegramBootstrapConfig {
+  botToken: string;
+  webhookSecret: string | undefined;
+  defaultClinicCode: string;
+}
+
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
   model: string;
@@ -24,6 +31,7 @@ export interface RuntimeServerBootstrapDeps {
   apiKey?: string | undefined;
   isProduction?: boolean;
   debugEnabled?: boolean;
+  telegram?: TelegramBootstrapConfig;
 }
 
 
@@ -33,7 +41,7 @@ function readConversationId(value: unknown): string | null {
   return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
 }
 
-export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeServerBootstrapDeps): void {
+export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteApp, deps: RuntimeServerBootstrapDeps): void {
   const caseRouterModel = process.env.OPENAI_CASE_ROUTER_MODEL?.trim() || deps.model;
   const runtimeGateModel = process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
   const turnUnderstandingModel = process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim() || process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
@@ -80,4 +88,22 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp, deps: RuntimeSe
     rateLimiter,
     debugEnabled: deps.debugEnabled,
   });
+
+  if (deps.telegram) {
+    const { botToken, webhookSecret, defaultClinicCode } = deps.telegram;
+    registerTelegramWebhookRoute(app, {
+      runtimeTurnService: createDentalRuntimeTurnService({
+        openaiClient: deps.openaiClient,
+        model: deps.model,
+        embeddingModel: deps.embeddingModel,
+        rpc: deps.rpc,
+        embeddingClient: deps.embeddingClient,
+      }),
+      clinicIdentityResolver,
+      botToken,
+      webhookSecret,
+      defaultClinicCode,
+      isProduction: deps.isProduction ?? false,
+    });
+  }
 }

@@ -18,6 +18,7 @@ export interface BuildRuntimeAppDeps {
   apiKey?: string | undefined;
   isProduction?: boolean;
   debugEnabled?: boolean;
+  telegram?: import("./runtime/runtimeServerBootstrap.ts").TelegramBootstrapConfig;
 }
 
 export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
@@ -35,6 +36,7 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
     apiKey: deps.apiKey,
     isProduction: deps.isProduction,
     debugEnabled: deps.debugEnabled,
+    telegram: deps.telegram,
   });
 
   return app;
@@ -84,6 +86,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
   const isProduction = env.NODE_ENV?.trim() === "production";
   const apiKey = env.RUNTIME_API_KEY?.trim() || undefined;
   const debugEnabled = env.RUNTIME_DEBUG_RESPONSE?.trim() === "true";
+  const telegramConfig = readTelegramConfig(env, isProduction);
 
   const app = buildRuntimeApp({
     openaiClient,
@@ -95,6 +98,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
     apiKey,
     isProduction,
     debugEnabled,
+    telegram: telegramConfig,
   });
 
   await app.listen({ port, host });
@@ -102,6 +106,28 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
 
 export function readHostFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   return env.RUNTIME_HOST?.trim() || "0.0.0.0";
+}
+
+export function readTelegramConfig(
+  env: NodeJS.ProcessEnv,
+  isProduction: boolean,
+): import("./runtime/runtimeServerBootstrap.ts").TelegramBootstrapConfig | undefined {
+  const botToken = env.TELEGRAM_BOT_TOKEN?.trim();
+  if (!botToken) {
+    if (isProduction && env.TELEGRAM_WEBHOOK_SECRET?.trim()) {
+      throw new Error("TELEGRAM_WEBHOOK_SECRET is set but TELEGRAM_BOT_TOKEN is missing");
+    }
+    return undefined;
+  }
+  const webhookSecret = env.TELEGRAM_WEBHOOK_SECRET?.trim() || undefined;
+  if (isProduction && !webhookSecret) {
+    throw new Error("TELEGRAM_WEBHOOK_SECRET is required in production when TELEGRAM_BOT_TOKEN is set");
+  }
+  return {
+    botToken,
+    webhookSecret,
+    defaultClinicCode: env.TELEGRAM_DEFAULT_CLINIC_CODE?.trim() || "clinic_1",
+  };
 }
 
 const isEntrypoint = process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href;

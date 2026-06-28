@@ -4,13 +4,16 @@
   "type": "module",
   "scripts": {
     "start": "node src/main.ts",
-    "test": "node --test tests/*.test.ts",
+    "test": "node --import tsx/esm --test tests/*.test.ts",
     "cliniccard:probe": "node scripts/cliniccard-probe.ts",
     "cliniccard:availability-probe": "node scripts/cliniccard-availability-probe.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.50.0",
     "fastify": "^5.0.0",
-    "openai": "^6.0.0",
-    "@supabase/supabase-js": "^2.50.0"
+    "openai": "^6.0.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.4"
   }
 }

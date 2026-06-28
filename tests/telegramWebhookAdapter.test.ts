@@ -9,6 +9,7 @@ import {
 import { registerTelegramWebhookRoute } from "../src/runtime/telegramWebhookRoute.ts";
 import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
+import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 
 // ── checkTelegramWebhookSecret ───────────────────────────────────────────────
 
@@ -340,6 +341,160 @@ test("route: no debug/conversation_id/tool_results sent to Telegram", async () =
   assert.equal("debug" in sent, false);
   assert.equal(sent.text, "reply");
 });
+
+// ── persistence / dedupe path tests ──────────────────────────────────────────
+
+const CONTACT_UUID = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const CLINIC_UUID_P = "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa";
+
+function makePersistenceHarness(opts: {
+  dedupeReturnsNull?: boolean;
+  replyText?: string;
+} = {}) {
+  const contactCalls: unknown[] = [];
+  const inboundEventCalls: unknown[] = [];
+  const saveMessageCalls: unknown[] = [];
+  const llmCalls: unknown[] = [];
+  const sendCalls: Array<{ chatId: string; text: string }> = [];
+
+  const stubPersistence: TurnPersistenceRepository = {
+    async getOrCreateContact(input) {
+      contactCalls.push(input);
+      return { ok: true, data: { contact_id: CONTACT_UUID, clinic_id: CLINIC_UUID_P } };
+    },
+    async registerInboundEvent(input) {
+      inboundEventCalls.push(input);
+      if (opts.dedupeReturnsNull) {
+        return { ok: true, data: { inbound_event_id: null } };
+      }
+      return { ok: true, data: { inbound_event_id: "evt_123" } };
+    },
+    async saveMessage(input) {
+      saveMessageCalls.push(input);
+      return { ok: true, data: { message_id: "msg_" + input.direction } };
+    },
+    async mergeConversationState() {
+      return { ok: true, data: { ok: true } };
+    },
+  };
+
+  const stubClinicRes: ClinicIdentityResolver = {
+    async resolveClinicIdentity(input) {
+      if (input.clinic_identifier === CLINIC) {
+        return { ok: true, data: { clinic_id: CLINIC_UUID_P, clinic_code: CLINIC } };
+      }
+      return { ok: false, error: { code: "clinic_not_found", message: "not found", retryable: false } };
+    },
+  };
+
+  const stubService: RuntimeTurnService = {
+    async runTurn(input) {
+      llmCalls.push(input);
+      return {
+        final_patient_reply: opts.replyText ?? "Ответ клиники",
+        conversation_id: null,
+        tool_requests: [],
+        tool_results: [],
+      };
+    },
+  };
+
+  const fakeFetch = async (_url: string, init: RequestInit) => {
+    const body = JSON.parse(init.body as string);
+    sendCalls.push({ chatId: String(body.chat_id), text: body.text });
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+
+  let handler: ((request: any, reply: any) => Promise<void>) | undefined;
+  registerTelegramWebhookRoute(
+    { post(_path, h) { handler = h; } },
+    {
+      runtimeTurnService: stubService,
+      clinicIdentityResolver: stubClinicRes,
+      turnPersistenceRepository: stubPersistence,
+      botToken: "bot123",
+      webhookSecret: undefined,
+      defaultClinicCode: CLINIC,
+      isProduction: false,
+      fetch: fakeFetch as unknown as typeof globalThis.fetch,
+    },
+  );
+  assert.ok(handler);
+
+  async function invoke(update: unknown, headers: Record<string, string> = {}) {
+    let statusCode = 200;
+    let payload: unknown;
+    const reply = {
+      code(c: number) { statusCode = c; return reply; },
+      send(p: unknown) { payload = p; },
+    };
+    await handler!({ body: update, headers, ip: "127.0.0.1" }, reply);
+    await new Promise((r) => setTimeout(r, 30));
+    return { statusCode, payload, contactCalls, inboundEventCalls, saveMessageCalls, llmCalls, sendCalls };
+  }
+
+  return { invoke };
+}
+
+const PERSISTENCE_UPDATE: TelegramUpdate = {
+  update_id: 500,
+  message: {
+    message_id: 99,
+    chat: { id: 888, type: "private" },
+    from: { id: 222, username: "user222", first_name: "Ivan" },
+    text: "Запишите меня на чистку",
+  },
+};
+
+test("route: contact is created/resolved via persistence repository", async () => {
+  const { invoke } = makePersistenceHarness();
+  const { contactCalls } = await invoke(PERSISTENCE_UPDATE);
+  assert.equal(contactCalls.length, 1);
+  const call = contactCalls[0] as Record<string, unknown>;
+  assert.equal(call.clinic_code, CLINIC);
+  assert.equal(call.channel, "telegram");
+  assert.equal(call.external_user_id, "222");
+  assert.equal(call.chat_id, "888");
+  assert.equal(call.username, "user222");
+  assert.equal(call.first_name, "Ivan");
+});
+
+test("route: inbound event is persisted with dedupe_key", async () => {
+  const { invoke } = makePersistenceHarness();
+  const { inboundEventCalls } = await invoke(PERSISTENCE_UPDATE);
+  assert.equal(inboundEventCalls.length, 1);
+  const call = inboundEventCalls[0] as Record<string, unknown>;
+  assert.equal(call.contact_id, CONTACT_UUID);
+  assert.equal(call.channel, "telegram");
+  assert.equal(typeof call.dedupe_key, "string");
+  assert.ok((call.dedupe_key as string).includes("500"), "dedupe_key must reference update_id");
+});
+
+test("route: outbound assistant message is persisted after LLM response", async () => {
+  const { invoke } = makePersistenceHarness({ replyText: "Готово!" });
+  const { saveMessageCalls } = await invoke(PERSISTENCE_UPDATE);
+  const outbound = (saveMessageCalls as Array<Record<string, unknown>>).filter((m) => m.direction === "outbound");
+  assert.equal(outbound.length, 1);
+  assert.equal(outbound[0]!.role, "assistant");
+  assert.equal(outbound[0]!.text, "Готово!");
+  assert.equal(outbound[0]!.contact_id, CONTACT_UUID);
+});
+
+test("route: duplicate update_id returns 200 without calling LLM", async () => {
+  const { invoke } = makePersistenceHarness({ dedupeReturnsNull: true });
+  const { statusCode, llmCalls } = await invoke(PERSISTENCE_UPDATE);
+  assert.equal(statusCode, 200);
+  assert.equal(llmCalls.length, 0);
+});
+
+test("route: duplicate update_id returns 200 without sending Telegram message", async () => {
+  const { invoke } = makePersistenceHarness({ dedupeReturnsNull: true });
+  const { statusCode, sendCalls } = await invoke(PERSISTENCE_UPDATE);
+  assert.equal(statusCode, 200);
+  assert.equal(sendCalls.length, 0);
+});
+
+// ── scope guard ───────────────────────────────────────────────────────────────
 
 test("route: no ClinicCard write actions in Telegram adapter scope", () => {
   const src = `

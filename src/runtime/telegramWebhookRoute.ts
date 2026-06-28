@@ -1,17 +1,12 @@
-import { randomUUID } from "node:crypto";
-
-import type { RuntimeTurnService } from "./runtimeTurnService.ts";
-import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import {
   checkTelegramWebhookSecret,
   normalizeTelegramUpdate,
   type TelegramUpdate,
 } from "./telegramWebhookAdapter.ts";
 import { sendTelegramMessage } from "./telegramSender.ts";
+import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 
-export interface TelegramWebhookRouteDeps {
-  runtimeTurnService: RuntimeTurnService;
-  clinicIdentityResolver?: ClinicIdentityResolver;
+export interface TelegramWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
   botToken: string;
   webhookSecret: string | undefined;
   defaultClinicCode: string;
@@ -58,51 +53,34 @@ export function registerTelegramWebhookRoute(
     const update = request.body as TelegramUpdate;
     const normalized = normalizeTelegramUpdate(update, deps.defaultClinicCode);
     if (!normalized.ok) {
+      // Unsupported update type — ack without calling LLM.
       reply.code(200).send({ ok: true });
       return;
     }
 
-    const { body } = normalized;
+    const result = await runRuntimeTurnOrchestrated(normalized.body, deps);
 
-    const clinicResult = await deps.clinicIdentityResolver?.resolveClinicIdentity({
-      clinic_identifier: body.clinic_code,
-    });
-    if (!clinicResult?.ok) {
+    if (result.outcome === "duplicate") {
+      // Already processed this update_id — return 200 without sending another message.
       reply.code(200).send({ ok: true });
       return;
     }
 
-    const traceId = randomUUID();
-
-    try {
-      const result = await deps.runtimeTurnService.runTurn({
-        trace_id: traceId,
-        clinic_id: clinicResult.data.clinic_id,
-        contact_id: null,
-        case_id: null,
-        user_message: body.text,
-        locale: null,
-        recent_summary: null,
-        business_context: {
-          channel: "telegram",
-          chat_id: body.chat_id,
-          external_user_id: body.external_user_id,
-          transport_contact_key: `telegram:${body.external_user_id}`,
-          meta: body.meta,
-        },
-      });
-
+    if (result.outcome === "success" || result.outcome === "error") {
+      const replyText =
+        result.outcome === "success"
+          ? result.payload.final_patient_reply
+          : result.fallbackPayload.final_patient_reply;
       void sendTelegramMessage({
         botToken: deps.botToken,
-        chatId: body.chat_id,
-        text: result.final_patient_reply,
+        chatId: normalized.body.chat_id,
+        text: replyText,
         fetch: deps.fetch,
       });
-
-      reply.code(200).send({ ok: true });
-    } catch {
-      reply.code(200).send({ ok: true });
     }
+
+    // Always return 200 to Telegram to prevent retry loops.
+    reply.code(200).send({ ok: true });
   });
 }
 

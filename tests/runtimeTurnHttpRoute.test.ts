@@ -320,7 +320,9 @@ test("route module keeps transport/business boundaries", async () => {
   assert.doesNotMatch(source, /from\s+["'][^"']*telegram[^"']*["']/i);
   assert.doesNotMatch(source, /from\s+["'][^"']*n8n[^"']*["']/i);
   assert.doesNotMatch(source, /booking\./i);
-  assert.match(source, /runtimeTurnService\.runTurn/);
+  // Business logic lives in the orchestrator — the route delegates, never calls runTurn directly.
+  assert.doesNotMatch(source, /runtimeTurnService\.runTurn/);
+  assert.match(source, /runRuntimeTurnOrchestrated/);
 });
 
 test("successful /runtime/turn writes one JSONL event", async () => {

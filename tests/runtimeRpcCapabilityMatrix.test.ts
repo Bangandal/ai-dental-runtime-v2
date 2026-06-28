@@ -78,6 +78,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/telegramWebhookAdapter.ts",
     "src/runtime/telegramWebhookRoute.ts",
     "src/runtime/telegramSender.ts",
+    "src/runtime/runtimeTurnOrchestrator.ts",
     "Dockerfile",
     ".env.example",
     "sql/rpc/public.rpc_kb_search_v1.sql",

@@ -85,3 +85,4 @@ If you need to stop using the native adapter and go back to n8n:
 - Edited messages, non-text updates, and updates without a sender are silently ignored (200, no LLM call)
 - No ClinicCard write actions are triggered from this adapter — read-only runtime only
 - The bot token is never logged or included in responses
+- **nginx**: expose `/webhooks/telegram` via the nginx reverse proxy — see `docs/SECURITY_HARDENING.md` for the required `location` block

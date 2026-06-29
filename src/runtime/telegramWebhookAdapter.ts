@@ -85,6 +85,7 @@ export function checkTelegramWebhookSecret(opts: {
 export type TelegramNormalizeResult =
   | { ok: true; type: "text"; body: TelegramTurnBody }
   | { ok: true; type: "contact"; capture: TelegramContactCapture; chat_id: string; external_user_id: string; update_id: string; message_id: string; clinic_code: string }
+  | { ok: true; type: "contact_foreign"; chat_id: string; external_user_id: string; message_id: string; clinic_code: string }
   | { ok: false; reason: "no_message" | "no_text" | "no_contact_phone" | "edited_message" | "no_from" };
 
 export function normalizeTelegramUpdate(
@@ -109,6 +110,19 @@ export function normalizeTelegramUpdate(
     const phone = message.contact.phone_number;
     if (!phone) {
       return { ok: false, reason: "no_contact_phone" };
+    }
+    // Ownership check: if contact.user_id is present it must match the sender.
+    // Prevents storing a third-party phone as if it belonged to the current user.
+    const contactUserId = message.contact.user_id;
+    if (contactUserId !== undefined && contactUserId !== from.id) {
+      return {
+        ok: true,
+        type: "contact_foreign",
+        chat_id: String(message.chat.id),
+        external_user_id: String(from.id),
+        message_id: String(message.message_id),
+        clinic_code: clinicCode,
+      };
     }
     const capture: TelegramContactCapture = {
       phone_number: phone,

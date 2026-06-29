@@ -1,4 +1,5 @@
 import type { RuntimeResult, RpcCaller } from "./runtimeRepositories.ts";
+import type { ChannelContact } from "./openaiRuntimeAgent.ts";
 
 export interface TopicMemory {
   last_service_interest?: string;
@@ -11,6 +12,7 @@ export interface RuntimeContext {
   known_contact: Record<string, unknown>;
   conversation_state: Record<string, unknown>;
   topic_memory: TopicMemory | null;
+  channel_contact: ChannelContact | null;
   runtime_flags: {
     has_durable_context: boolean;
     context_source: "supabase";
@@ -59,6 +61,18 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
       const recentMessages = asArray(parseMaybeJson(row?.out_recent_messages)) ?? [];
       const topicMemory = asTopicMemory(stateJson?.topic_memory);
 
+      const channelContactRaw = asRecord(stateJson?.channel_contact);
+      const channelContactPhone = asStr(channelContactRaw?.phone_number);
+      const channelContactSource = asStr(channelContactRaw?.phone_source);
+      const channelContact: ChannelContact | null = channelContactPhone && channelContactSource
+        ? {
+            phone_number: channelContactPhone,
+            phone_source: channelContactSource as ChannelContact["phone_source"],
+            phone_consent: channelContactRaw?.phone_consent === true ? true : undefined,
+            phone_collected_at: asStr(channelContactRaw?.phone_collected_at) ?? undefined,
+          }
+        : null;
+
       const knownContact: Record<string, unknown> = {
         contact_id: input.contact_id,
         clinic_id: input.clinic_id,
@@ -92,6 +106,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
           known_contact: knownContact,
           conversation_state: conversationState,
           topic_memory: topicMemory,
+          channel_contact: channelContact,
           runtime_flags: {
             has_durable_context: Boolean(row),
             context_source: "supabase",
@@ -103,6 +118,10 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
       };
     },
   };
+}
+
+function asStr(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function parseMaybeJson(value: unknown): unknown {

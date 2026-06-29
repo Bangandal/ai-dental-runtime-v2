@@ -1,4 +1,5 @@
 import type {
+  AgentUiActions,
   OpenAIRuntimeAgent,
   RuntimeAgentToolRequest,
   RuntimeAgentToolResult,
@@ -18,6 +19,7 @@ export interface RuntimeTurnResult {
   tool_requests: RuntimeAgentToolRequest[];
   tool_results: RuntimeAgentToolResult[];
   debug?: Record<string, unknown>;
+  ui?: AgentUiActions;
 }
 
 export interface RuntimeTurnService {
@@ -42,7 +44,7 @@ export function createDentalRuntimeTurnService(deps: CreateDentalRuntimeAgentDep
   return createRuntimeTurnService({ agent });
 }
 
-function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): RuntimeTurnResult {
+export function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): RuntimeTurnResult {
   const finalPatientReply = result.final_patient_reply?.trim();
   if (!finalPatientReply) {
     throw new Error("runtime_turn_result_missing_final_patient_reply");
@@ -54,5 +56,6 @@ function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): RuntimeTurn
     tool_requests: result.tool_requests,
     tool_results: result.tool_results,
     debug: result.debug,
+    ...(result.ui !== undefined ? { ui: result.ui } : {}),
   };
 }

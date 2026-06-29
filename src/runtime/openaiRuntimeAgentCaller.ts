@@ -1,5 +1,6 @@
 import {
   ACTIVE_RUNTIME_AGENT_TOOLS,
+  type AgentUiActions,
   type RuntimeAgentFinalResponse,
   type RuntimeAgentToolRequest,
 } from "./openaiRuntimeAgent.ts";
@@ -182,11 +183,24 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     readResponseOutputText(response?.output) ??
     readString(final?.final_patient_reply) ??
     "";
+
+  const uiRaw = asObject(final?.ui);
+  const uiTelegramRaw = asObject(uiRaw?.telegram);
+  const ui: AgentUiActions | undefined = uiTelegramRaw
+    ? {
+        telegram: {
+          ...(uiTelegramRaw.request_contact === true ? { request_contact: true } : {}),
+          ...(typeof uiTelegramRaw.button_text === "string" ? { button_text: uiTelegramRaw.button_text } : {}),
+        },
+      }
+    : undefined;
+
   return {
     final_patient_reply: outputText,
     language: readString(final?.language) ?? null,
     reply_reason: readString(final?.reply_reason) ?? null,
     safety_notes: toStringArray(final?.safety_notes),
+    ...(ui !== undefined ? { ui } : {}),
   };
 }
 

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   createDentalRuntimeTurnService,
   createRuntimeTurnService,
+  normalizeRuntimeTurnResult,
 } from "../src/runtime/runtimeTurnService.ts";
 import type { OpenAIRuntimeAgent } from "../src/runtime/openaiRuntimeAgent.ts";
 
@@ -97,6 +98,62 @@ test("final_patient_reply is required", async () => {
   });
 
   await assert.rejects(() => service.runTurn(makeInput()), /runtime_turn_result_missing_final_patient_reply/);
+});
+
+test("normalizeRuntimeTurnResult: ui is passed through when present", () => {
+  const result = normalizeRuntimeTurnResult({
+    final_patient_reply: "Поделитесь номером.",
+    tool_requests: [],
+    tool_results: [],
+    ui: { telegram: { request_contact: true, button_text: "📞 Поделиться номером" } },
+  });
+  assert.equal(result.ui?.telegram?.request_contact, true);
+  assert.equal(result.ui?.telegram?.button_text, "📞 Поделиться номером");
+});
+
+test("normalizeRuntimeTurnResult: ui is absent when not provided", () => {
+  const result = normalizeRuntimeTurnResult({
+    final_patient_reply: "Чем помочь?",
+    tool_requests: [],
+    tool_results: [],
+  });
+  assert.equal(result.ui, undefined);
+});
+
+test("createDentalRuntimeTurnService: ui.telegram from model JSON is preserved end-to-end", async () => {
+  const service = createDentalRuntimeTurnService({
+    model: "gpt-test",
+    openaiClient: {
+      responses: {
+        create: async () => ({
+          final_response: {
+            final_patient_reply: "Поделитесь номером телефона кнопкой ниже.",
+            ui: {
+              telegram: {
+                request_contact: true,
+                button_text: "📞 Поделиться номером",
+              },
+            },
+          },
+        }),
+      },
+    },
+    rpc: async () => ({ data: null, error: null }),
+  });
+
+  const result = await service.runTurn({
+    trace_id: "trace_ui",
+    clinic_id: "clinic_1",
+    contact_id: "contact_1",
+    case_id: "case_1",
+    conversation_id: "conv_1",
+    user_message: "Запишите меня",
+    locale: "ru",
+  });
+
+  assert.equal(result.final_patient_reply, "Поделитесь номером телефона кнопкой ниже.");
+  assert.equal(result.ui?.telegram?.request_contact, true);
+  assert.equal(result.ui?.telegram?.button_text, "📞 Поделиться номером");
 });
 
 test("service module has no forbidden external imports", async () => {

@@ -20,7 +20,6 @@ const SAFE_FALLBACK_REPLY = "Sorry, I’m having trouble processing that right n
 const INTERNAL_TO_OPENAI_TOOL_NAME: Record<(typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number], string> = {
   "kb.search": "kb_search",
   "availability.check": "availability_check",
-  "booking.apply": "booking_apply",
 };
 const OPENAI_TO_INTERNAL_TOOL_NAME = Object.fromEntries(
   Object.entries(INTERNAL_TO_OPENAI_TOOL_NAME).map(([internalName, openAIName]) => [openAIName, internalName]),

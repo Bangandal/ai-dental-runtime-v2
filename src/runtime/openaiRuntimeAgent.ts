@@ -40,7 +40,7 @@ export type RuntimeAgentToolName =
   | "appointment.lookup"
   | "booking.apply";
 
-export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.apply"] as const;
+export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check"] as const;
 
 export const FUTURE_RUNTIME_AGENT_TOOLS = [
   "hold.create",
@@ -48,6 +48,14 @@ export const FUTURE_RUNTIME_AGENT_TOOLS = [
   "cancel_hold",
   "appointment.lookup",
 ] as const;
+
+// booking.apply executor is implemented and tested but intentionally NOT in ACTIVE_RUNTIME_AGENT_TOOLS.
+// The tool requires phone_number from channel_contact to be persisted and passed through
+// RuntimeAgentTurnInput before a visit can be created. Until that plumbing exists (Telegram
+// contact capture → turn input → executor context), activating the tool would always return
+// missing_phone. Activate by moving "booking.apply" to ACTIVE_RUNTIME_AGENT_TOOLS once
+// phone pass-through is wired end-to-end.
+export const INACTIVE_BOOKING_APPLY_TOOL = "booking.apply" as const;
 
 export interface RuntimeAgentToolRequest {
   tool: RuntimeAgentToolName;

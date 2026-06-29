@@ -427,3 +427,97 @@ test("booking.apply: calls listVisits to re-read availability before every write
   await executor(makeContext());
   assert.equal(listVisitsCalled, true, "listVisits must be called before createVisit");
 });
+
+// Fix 2: Strict HH:MM validation.
+test("booking.apply: returns config_missing for invalid time '10am'", async () => {
+  const executor = createBookingApplyExecutor({ env: LIVE_ENV, adapterFactory: () => makeAdapter() });
+  const result = await executor(makeContext({ requested_time: "10am" }));
+  assert.equal(result.data.booking_status, "config_missing");
+  assert.match(result.data.reason, /HH:MM/);
+  assert.equal(result.data.created_visit, false);
+  assert.equal(result.data.may_claim_booked, false);
+});
+
+test("booking.apply: returns config_missing for single-digit hour '9:00'", async () => {
+  const executor = createBookingApplyExecutor({ env: LIVE_ENV, adapterFactory: () => makeAdapter() });
+  const result = await executor(makeContext({ requested_time: "9:00" }));
+  assert.equal(result.data.booking_status, "config_missing");
+  assert.match(result.data.reason, /HH:MM/);
+});
+
+test("booking.apply: returns config_missing for natural-language time 'morning'", async () => {
+  const executor = createBookingApplyExecutor({ env: LIVE_ENV, adapterFactory: () => makeAdapter() });
+  const result = await executor(makeContext({ requested_time: "morning" }));
+  assert.equal(result.data.booking_status, "config_missing");
+  assert.match(result.data.reason, /HH:MM/);
+});
+
+test("booking.apply: accepts strict HH:MM '09:00' and proceeds to visit_created", async () => {
+  const executor = createBookingApplyExecutor({ env: LIVE_ENV, adapterFactory: () => makeAdapter() });
+  const result = await executor(makeContext({ requested_time: "09:00" }));
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.equal(result.data.time_start, "09:00");
+  assert.equal(result.data.time_end, "09:30");
+});
+
+// Fix 3: Reuse existing patient by phone.
+test("booking.apply: reuses existing patient when findPatientByPhone returns a match", async () => {
+  let createPatientCalled = false;
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({
+          ok: true,
+          data: [{ id: 55, name: "Ivan Petrov", phone: "+420777123456" }],
+        }),
+        createPatient: async () => {
+          createPatientCalled = true;
+          return { ok: true, data: { id: 99, name: "Should not reach here" } };
+        },
+      }),
+  });
+
+  const result = await executor(makeContext());
+  assert.equal(createPatientCalled, false, "createPatient must not be called when patient exists");
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.equal(result.data.cliniccard_patient_id, 55);
+});
+
+test("booking.apply: calls createPatient when findPatientByPhone returns empty list", async () => {
+  let createPatientCalled = false;
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({ ok: true, data: [] }),
+        createPatient: async (input) => {
+          createPatientCalled = true;
+          return { ok: true, data: { id: 42, name: input.name } };
+        },
+      }),
+  });
+
+  const result = await executor(makeContext());
+  assert.equal(createPatientCalled, true);
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.equal(result.data.cliniccard_patient_id, 42);
+});
+
+test("booking.apply: returns cliniccard_write_failed when findPatientByPhone fails", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({
+          ok: false,
+          error: { code: "cliniccard_http_error", message: "HTTP 502" },
+        }),
+      }),
+  });
+
+  const result = await executor(makeContext());
+  assert.equal(result.data.booking_status, "cliniccard_write_failed");
+  assert.match(result.data.reason, /Patient lookup failed/);
+  assert.equal(result.data.created_visit, false);
+});

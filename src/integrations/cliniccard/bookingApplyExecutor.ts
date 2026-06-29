@@ -7,11 +7,22 @@ import type { BookingApplyResult, BookingApplySuccessResult } from "../../runtim
 
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
+// Strict HH:MM — exactly two-digit hour and minute, valid range.
+// Rejects "9:00", "10am", "morning", and any natural-language string.
+function parseStrictHHMM(val: string): string | null {
+  const m = val.trim().match(/^(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+  return `${m[1]}:${m[2]}`;
+}
+
 function timeToMinutes(time: string): number {
   const sep = time.indexOf(":");
   const h = parseInt(time.slice(0, sep), 10);
   const m = parseInt(time.slice(sep + 1), 10);
-  return (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m);
+  return h * 60 + m;
 }
 
 function minutesToHHMM(minutes: number): string {
@@ -102,7 +113,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // Missing patient name fields also surface as config_missing — createVisit cannot proceed.
+    // Missing patient name fields — createVisit cannot proceed without them.
     const firstName = context.first_name;
     const lastName = context.last_name;
     if (!firstName || !lastName) {
@@ -118,15 +129,27 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
     }
 
     const requestedDate = context.requested_date;
-    const requestedTime = context.requested_time;
-    if (!requestedDate || !requestedTime) {
-      const missing = [!requestedDate && "requested_date", !requestedTime && "requested_time"].filter(Boolean).join(", ");
+    if (!requestedDate) {
       return bookingResult({
         booking_status: "config_missing",
         created_visit: false,
         may_claim_booked: false,
         cliniccard_visit_id: null,
-        reason: `Slot fields required: ${missing}`,
+        reason: "requested_date is required",
+        proof: null,
+      });
+    }
+
+    // Strict HH:MM validation — rejects "9:00", "10am", "morning", or any non-exact format.
+    const rawTime = context.requested_time;
+    const timeStart = rawTime ? parseStrictHHMM(rawTime) : null;
+    if (!timeStart) {
+      return bookingResult({
+        booking_status: "config_missing",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: `requested_time must be strict HH:MM (got: ${JSON.stringify(rawTime)})`,
         proof: null,
       });
     }
@@ -135,7 +158,6 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
 
-    const timeStart = requestedTime;
     const timeEnd = addMinutes(timeStart, DEFAULT_SLOT_DURATION_MINUTES);
 
     // D. Fresh re-read of ClinicCard visits for the requested date — never trust stale availability.
@@ -170,24 +192,41 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // F. Create patient then visit.
-    const patientResult = await adapter.createPatient({
-      name: `${firstName} ${lastName}`,
-      phone: phoneNumber,
-    });
-
-    if (!patientResult.ok) {
+    // F1. Reuse existing patient by phone — avoids duplicate patient records for returning callers.
+    const findResult = await adapter.findPatientByPhone(phoneNumber);
+    if (!findResult.ok) {
       return bookingResult({
         booking_status: "cliniccard_write_failed",
         created_visit: false,
         may_claim_booked: false,
         cliniccard_visit_id: null,
-        reason: patientResult.error.message,
+        reason: `Patient lookup failed: ${findResult.error.message}`,
         proof: null,
       });
     }
 
-    const patientId = patientResult.data.id;
+    let patientId: number;
+    if (findResult.data.length > 0) {
+      patientId = findResult.data[0].id;
+    } else {
+      const patientResult = await adapter.createPatient({
+        name: `${firstName} ${lastName}`,
+        phone: phoneNumber,
+      });
+      if (!patientResult.ok) {
+        return bookingResult({
+          booking_status: "cliniccard_write_failed",
+          created_visit: false,
+          may_claim_booked: false,
+          cliniccard_visit_id: null,
+          reason: patientResult.error.message,
+          proof: null,
+        });
+      }
+      patientId = patientResult.data.id;
+    }
+
+    // F2. Create visit.
     const visitResult = await adapter.createVisit({
       patient_id: patientId,
       doctor_id: doctorId,

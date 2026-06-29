@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { normalizeTelegramUpdate, type TelegramUpdate } from "../src/runtime/telegramWebhookAdapter.ts";
 import { registerTelegramWebhookRoute, persistChannelContactPhone } from "../src/runtime/telegramWebhookRoute.ts";
 import { createSupabaseRuntimeContextRepository } from "../src/runtime/supabaseRuntimeContextRepository.ts";
-import { createSupabaseTurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 import { ACTIVE_RUNTIME_AGENT_TOOLS } from "../src/runtime/openaiRuntimeAgent.ts";
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
 import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
@@ -132,57 +131,49 @@ test("contact update without phone_number does not persist phone (returns no_con
   if (!result.ok) assert.equal(result.reason, "no_contact_phone");
 });
 
-// ── test 5: persistence round-trip contract ───────────────────────────────────
-// Proves write shape (mergeConversationState control_flags.channel_contact) is consistent
-// with read shape (RuntimeContext channel_contact from out_state_json.channel_contact).
-// rpc_merge_conversation_state merges p_control_flags into the state JSON blob.
-// rpc_get_runtime_context returns that blob as out_state_json.
-// This is the same contract as topic_memory (also stored via control_flags, read via stateJson.topic_memory).
+// ── test 5: SQL contract — RPC explicitly handles channel_contact ─────────────
+// Proves that core.rpc_merge_conversation_state.sql has explicit channel_contact support,
+// so p_control_flags->'channel_contact' is persisted into state_json.channel_contact
+// by the real database function (same style as topic_memory).
 
-test("next runtime text turn receives channel_contact from persisted state — write/read path contract", async () => {
-  // STEP 1: capture what mergeConversationState writes to p_control_flags
-  let capturedControlFlags: Record<string, unknown> | undefined;
-  const writeRepo = createSupabaseTurnPersistenceRepository({
-    rpc: async (fn, args) => {
-      if (fn === "rpc_merge_conversation_state") {
-        capturedControlFlags = args.p_control_flags as Record<string, unknown>;
-      }
-      return { data: [{ ok: true }], error: null };
-    },
-  });
+test("SQL contract: core.rpc_merge_conversation_state.sql explicitly handles channel_contact", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const sqlPath = resolve(thisDir, "../sql/rpc/core.rpc_merge_conversation_state.sql");
+  const sql = await readFile(sqlPath, "utf8");
 
-  await writeRepo.mergeConversationState({
-    clinic_id: CLINIC_UUID,
-    contact_id: CONTACT_UUID,
-    user_text: "[contact_shared]",
-    reply_text: "Спасибо, номер получен. Можем продолжить запись.",
-    requested_action: "phone_captured",
-    conversation_intent: "booking",
-    handoff_recommended: false,
-    confidence: "high",
-    control_flags: {
-      channel_contact: {
-        phone_number: "+380991234567",
-        phone_source: "telegram_contact_button",
-        phone_consent: true,
-        phone_collected_at: "2026-06-29T10:00:00.000Z",
-      },
-    },
-  });
+  assert.ok(
+    sql.includes("channel_contact"),
+    "SQL must reference channel_contact",
+  );
+  assert.ok(
+    sql.includes("v_control_flags->'channel_contact'"),
+    "SQL must read channel_contact from v_control_flags",
+  );
+  assert.ok(
+    sql.includes("'{channel_contact}'"),
+    "SQL must write channel_contact into state via jsonb_set",
+  );
+  assert.ok(
+    sql.includes("jsonb_typeof(v_control_flags->'channel_contact') = 'object'"),
+    "SQL must guard channel_contact write with jsonb_typeof = object check",
+  );
+});
 
-  assert.ok(capturedControlFlags, "rpc_merge_conversation_state must have been called");
-  const writtenCc = capturedControlFlags.channel_contact as Record<string, unknown>;
-  assert.equal(writtenCc.phone_number, "+380991234567", "write: phone_number must be in control_flags.channel_contact");
-  assert.equal(writtenCc.phone_source, "telegram_contact_button", "write: phone_source must be in control_flags.channel_contact");
+// ── test 5b: RuntimeContext.channel_contact is read from out_state_json ───────
 
-  // STEP 2: simulate DB round-trip — rpc_merge_conversation_state merges p_control_flags
-  // into the state JSON; rpc_get_runtime_context returns that blob as out_state_json.
-  // Read using exactly the captured write data to prove write key = read key = channel_contact.
-  const readRepo = createSupabaseRuntimeContextRepository({
+test("RuntimeContext.channel_contact is read from out_state_json.channel_contact", async () => {
+  const repo = createSupabaseRuntimeContextRepository({
     rpc: async () => ({
       data: [{
-        out_state_version: 1,
-        out_state_json: capturedControlFlags, // DB merges control_flags into state_json
+        out_state_version: 5,
+        out_state_json: {
+          channel_contact: {
+            phone_number: "+380991234567",
+            phone_source: "telegram_contact_button",
+            phone_consent: true,
+            phone_collected_at: "2026-06-29T10:00:00.000Z",
+          },
+        },
         out_contact_meta: null,
         out_collected: null,
         out_missing_fields: null,
@@ -194,18 +185,16 @@ test("next runtime text turn receives channel_contact from persisted state — w
     }),
   });
 
-  const result = await readRepo.loadRuntimeContext({ clinic_id: CLINIC_UUID, contact_id: CONTACT_UUID });
+  const result = await repo.loadRuntimeContext({ clinic_id: CLINIC_UUID, contact_id: CONTACT_UUID });
   assert.equal(result.ok, true);
   if (!result.ok) return;
-
-  // STEP 3: verify RuntimeContext.channel_contact is populated from the same key
-  assert.equal(result.data.channel_contact?.phone_number, "+380991234567", "read: phone_number from channel_contact");
-  assert.equal(result.data.channel_contact?.phone_source, "telegram_contact_button", "read: phone_source from channel_contact");
-  assert.equal(result.data.channel_contact?.phone_consent, true, "read: phone_consent from channel_contact");
-  assert.equal(result.data.channel_contact?.phone_collected_at, "2026-06-29T10:00:00.000Z", "read: phone_collected_at from channel_contact");
+  assert.equal(result.data.channel_contact?.phone_number, "+380991234567");
+  assert.equal(result.data.channel_contact?.phone_source, "telegram_contact_button");
+  assert.equal(result.data.channel_contact?.phone_consent, true);
+  assert.equal(result.data.channel_contact?.phone_collected_at, "2026-06-29T10:00:00.000Z");
 });
 
-// ── test 5b: persist failure sends fallback, not success message ──────────────
+// ── test 5c: persist failure sends fallback, not success message ──────────────
 
 test("contact persist failure sends fallback message (not success acknowledgement)", async () => {
   const sendCalls: Array<{ chatId: string; text: string }> = [];
@@ -255,7 +244,7 @@ test("booking.apply remains inactive — not in ACTIVE_RUNTIME_AGENT_TOOLS", () 
   );
 });
 
-// ── test 7: ACTIVE_RUNTIME_AGENT_TOOLS still equals ["kb.search", "availability.check"]
+// ── test 7: ACTIVE_RUNTIME_AGENT_TOOLS invariant ─────────────────────────────
 
 test('ACTIVE_RUNTIME_AGENT_TOOLS equals ["kb.search", "availability.check"]', () => {
   assert.deepEqual(
@@ -285,7 +274,6 @@ test("patient-facing contact confirmation text does not claim booked or confirme
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const routeSrc = await readFile(resolve(thisDir, "../src/runtime/telegramWebhookRoute.ts"), "utf8");
 
-  // Extract the success confirmation message sent on contact capture
   const confirmMatch = routeSrc.match(/Спасибо, номер получен[^"']*/);
   assert.ok(confirmMatch, "Confirmation message must be present in route");
   const confirmText = confirmMatch[0];

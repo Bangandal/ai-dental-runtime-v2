@@ -1,0 +1,26 @@
+[Unit]
+Description=AI Dental Runtime V2
+Documentation=https://github.com/Bangandal/ai-dental-runtime-v2
+After=network.target
+
+[Service]
+Type=simple
+User=runtime-agent
+WorkingDirectory=/opt/runtime-v2/app
+EnvironmentFile=/opt/runtime-v2/app/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/runtime-v2/app
+
+[Install]
+WantedBy=multi-user.target

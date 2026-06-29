@@ -9,6 +9,8 @@ export interface RuntimeAgentTurnInput {
   business_context?: Record<string, unknown>;
   truth_snapshot?: Record<string, unknown>;
   recent_summary?: string | null;
+  /** True only when the stateful pipeline confirmed no prior conversation memory exists for this contact. Set by RuntimeTurnOrchestrator before runTurn is called. */
+  is_first_patient_turn?: boolean;
 }
 
 export type RuntimeAgentToolName =
@@ -81,6 +83,7 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
 export interface RuntimeAgentSystemInstructionOptions {
   now?: Date;
   timezone?: string;
+  is_new_conversation?: boolean;
 }
 
 function formatDateInTimezone(date: Date, timezone: string): string {
@@ -95,6 +98,12 @@ function formatDateInTimezone(date: Date, timezone: string): string {
 export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInstructionOptions): string {
   const timezone = opts?.timezone ?? "Europe/Prague";
   const todayDate = formatDateInTimezone(opts?.now ?? new Date(), timezone);
+  const isNewConversation = opts?.is_new_conversation ?? false;
+
+  const firstTurnRule = isNewConversation
+    ? "0. First-turn self-introduction: This is the very first message in a new conversation. Introduce yourself as the clinic's virtual assistant (\"помощник администратора клиники\" in Russian, or equivalent in the patient's language). Use a warm, concise opening — e.g. in Russian: \"Здравствуйте! Я помощник администратора клиники. Помогу записаться на приём, подобрать удобное время или ответить на вопросы об услугах. Что вас интересует?\" — adapt phrasing to the patient's language. Do NOT claim to be a human administrator. Do NOT repeat this introduction on subsequent turns."
+    : null;
+
   return [
     "You are the AI Front Desk agent for a dental clinic.",
     `Today is ${todayDate} (timezone: ${timezone}).`,
@@ -112,6 +121,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "Do not collect phone as a required field right now.",
     "When booking details are missing, ask only for: first name, last name, service/reason, preferred day/time.",
     "REPLY BEHAVIOUR RULES:",
+    ...(firstTurnRule ? [firstTurnRule] : []),
     "1. Greetings, simple thanks, low-signal messages (single emoji, punctuation only, filler sounds like 'эээ', 'ну'), or passive acknowledgements ('ok', 'жду', 'спасибо'): reply briefly and politely in the patient's language — a short warm greeting followed by 'How can I help?' translated to the patient's language. Do NOT immediately ask for service, name, or appointment time. Wait for the patient to state their need.",
     "2. Urgent clinical signals (pain, bleeding, swelling, post-procedure distress): express empathy and urgency first. Tell the patient to contact the clinic immediately or seek emergency care if severe. Do not make any promise of staff callback or clinic outreach unless a handoff or admin notification side effect was actually created or queued. Do NOT ask for service and preferred time as the main response to an urgent symptom.",
     "3. Human or admin requests ('хочу поговорить с человеком', 'позовите администратора'): acknowledge the request and ask what should be passed to the clinic team, or explain that clinic staff can help directly. Do not claim that an administrator was notified or will contact the patient unless a notification or handoff side effect was actually created or queued. Do not continue with booking intake.",

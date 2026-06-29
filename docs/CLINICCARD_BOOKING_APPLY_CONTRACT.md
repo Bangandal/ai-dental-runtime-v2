@@ -16,9 +16,11 @@ This contract governs the future implementation. Until `booking.apply` is implem
 
 ---
 
-## 2. Required patient inputs
+## 2. Required inputs
 
-The following fields must all be present before `booking.apply` may run. Missing any field → return `validation_error`, ask patient for the missing information.
+### Patient text inputs
+
+Collected through conversation. Missing any → `validation_error`, ask patient.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -28,13 +30,42 @@ The following fields must all be present before `booking.apply` may run. Missing
 | `requested_date` | ISO YYYY-MM-DD | Must be in the future |
 | `requested_time` | HH:mm | Slot start time |
 
-`doctor_id`, `cabinet_id`, and `duration_minutes` are **not patient inputs**. They are resolved by the runtime from server-side config and service rules (see §3). The patient never provides or influences these values.
+### Runtime/contact fields (resolved before write)
 
-### Phone number policy
+These are **not patient text inputs**. They are resolved by the runtime before `booking.apply` runs the createPatient/createVisit sequence. Missing any → `needs_more_info` or `config_missing` (see §6).
 
-- **Do not require phone for MVP Telegram flow** unless ClinicCard rejects patient creation without it.
-- If ClinicCard's actual API requires phone to create a patient, `booking.apply` must return `needs_more_info` with `required_field: "phone"`.
-- **Do not collect phone preemptively** in a messenger channel before this proof of requirement exists.
+| Field | Source |
+|---|---|
+| `phone_number` | Channel-native capture or manual fallback (see below) |
+| `phone_source` | How phone was obtained (see below) |
+| `phone_consent` | True when patient explicitly shared via contact button; implicit for adapter-provided numbers |
+| `duration_minutes` | Config / service_to_duration rule — never from patient |
+| `doctor_id` | Config / service_to_doctor rule — never from patient |
+| `cabinet_id` | Config — never from patient |
+| `timezone` | Clinic config |
+
+### Phone capture policy
+
+`phone_number` is required before `createPatient`/`createVisit`. The clinic needs a reliable contact channel for appointment confirmation, changes, and patient identification. Phone must be collected through channel-native mechanisms when available.
+
+**Telegram:**
+- Use `KeyboardButton` with `request_contact=true`.
+- The patient must explicitly tap the contact sharing button — phone is not provided automatically.
+- Store: `phone_number`, `phone_source="telegram_contact_button"`, `phone_consent=true`, `phone_collected_at`.
+
+**WhatsApp:**
+- The adapter may provide sender/contact phone from WhatsApp message metadata.
+- If available, use as `phone_source="whatsapp_sender"`. No explicit consent button needed; the send act is implicit proof.
+- If not available, fall through to manual input.
+- Exact WhatsApp payload handling is adapter-specific and must be verified before implementation.
+
+**Manual fallback** (any channel, if native contact sharing is unavailable or refused):
+- Ask the patient to type their phone number.
+- Store as `phone_source="manual_input"`.
+- Validate format before write.
+
+**Existing ClinicCard patient:**
+- If a matching patient is found in ClinicCard and already has a usable phone on record, the runtime may use it as `phone_source="existing_cliniccard_patient"` without asking the patient again.
 
 ---
 
@@ -55,7 +86,7 @@ The following fields must all be present before `booking.apply` may run. Missing
 | `clinic.service_to_duration_rules` | No | Override duration per service |
 | `clinic.service_to_doctor_rules` | No | Override doctor per service |
 
-`CLINICCARD_BOOKING_MODE=live` is the master gate. If this key is absent or set to any value other than `live` (e.g. `disabled`, `dry_run`), `booking.apply` must return `config_missing` immediately without making any ClinicCard API calls.
+`CLINICCARD_BOOKING_MODE=live` is the master gate. If this key is absent or set to any value other than `live` (e.g. `disabled`, `dry_run`), `booking.apply` must return `booking_write_disabled` immediately without making any ClinicCard API calls (see §6).
 
 If any required config is missing:
 - Return `config_missing` (see §6).
@@ -69,20 +100,28 @@ If any required config is missing:
 Steps must run in this exact order. No skipping, no reordering.
 
 ```
-A. Validate collected inputs
-   └── All required fields present? → continue
+A. Validate patient text inputs
+   └── All required fields present (first_name, last_name, service, date, time)? → continue
    └── Any missing? → return validation_error, ask patient
 
-B. Resolve config
-   └── CLINICCARD_BOOKING_MODE must equal "live" → else return config_missing
+B. Resolve config and mode gate
+   └── CLINICCARD_BOOKING_MODE must equal "live" → else return booking_write_disabled
    └── doctor_id / cabinet_id / duration_minutes / timezone from config (never from patient)
    └── Apply service_to_duration / service_to_doctor rules if available
    └── Config missing required key? → return config_missing
 
+B2. Resolve phone
+   └── Try channel-native: Telegram contact button / WhatsApp sender metadata
+   └── Try existing ClinicCard patient match
+   └── Fallback: ask patient to type phone manually
+   └── phone_number still missing? → return needs_more_info, required_field="phone"
+       (if channel=Telegram: response must request contact via native contact button)
+   └── Do not proceed to createPatient/createVisit without phone_number
+
 C. Search/create patient in ClinicCard
-   └── Search by first_name + last_name (+ phone if available)
-   └── Patient found → use existing cliniccard_patient_id
-   └── Patient not found → createPatient
+   └── Search by first_name + last_name + phone
+   └── Patient found with phone → use existing cliniccard_patient_id, set phone_source="existing_cliniccard_patient"
+   └── Patient not found → createPatient (phone_number required)
    └── createPatient fails → return patient_create_failed (no visit created)
 
 D. Re-read ClinicCard visits immediately before createVisit
@@ -189,9 +228,10 @@ Every failure response must include `created_visit: false` and `may_claim_booked
 
 | Error code | Meaning |
 |---|---|
-| `validation_error` | One or more required patient input fields are missing |
-| `config_missing` | A required server-side config key is absent |
-| `needs_more_info` | ClinicCard requires an additional field (e.g. phone); `required_field` names it |
+| `booking_write_disabled` | `CLINICCARD_BOOKING_MODE` is not `live` — write operations are disabled |
+| `validation_error` | One or more required patient text fields are missing |
+| `config_missing` | A required server-side config key (other than BOOKING_MODE) is absent |
+| `needs_more_info` | A required contact field is missing (e.g. phone); `required_field` names it |
 | `patient_create_failed` | ClinicCard rejected createPatient; no visit was attempted |
 | `availability_conflict` | Slot is taken after re-read; propose alternatives |
 | `cliniccard_unavailable` | ClinicCard API is unreachable or returned a 5xx error |
@@ -253,16 +293,21 @@ These tests must pass before `booking.apply` may ship to production.
 
 | # | Test | Expected |
 |---|---|---|
-| 1 | Missing required field (e.g. `last_name`) | `validation_error`, `may_claim_booked: false` |
+| 1 | Missing required patient text field (e.g. `last_name`) | `validation_error`, `may_claim_booked: false` |
 | 2 | Required config key absent | `config_missing`, no patient created, no visit created |
-| 3 | Slot conflicts after fresh re-read | `availability_conflict`, no visit created, propose alternatives |
-| 4 | Booking succeeds only after createVisit proof | `ok: true`, `cliniccard_visit_id` present in result |
-| 5 | Duplicate Telegram update replayed | Returns original proof, no second visit created |
-| 6 | ClinicCard status PLANNED | Patient reply says "создана", not "подтверждена" |
-| 7 | ClinicCard API unavailable | `cliniccard_unavailable`, `may_claim_booked: false` |
-| 8 | ClinicCard rejects createPatient | `patient_create_failed`, no visit attempted |
-| 9 | Phone not pre-collected unless required | No phone prompt until ClinicCard returns phone requirement |
+| 3 | `CLINICCARD_BOOKING_MODE` absent or not `live` | `booking_write_disabled`, no API call made |
+| 4 | Slot conflicts after fresh re-read | `availability_conflict`, no visit created, propose alternatives |
+| 5 | Booking succeeds only after createVisit proof | `ok: true`, `cliniccard_visit_id` present in result |
+| 6 | Duplicate Telegram update replayed | Returns original proof, no second visit created |
+| 7 | ClinicCard status PLANNED | Patient reply says "создана", not "подтверждена" |
+| 8 | ClinicCard API unavailable | `cliniccard_unavailable`, `may_claim_booked: false` |
+| 9 | ClinicCard rejects createPatient | `patient_create_failed`, no visit attempted |
 | 10 | createPatient succeeds but createVisit rejected | `visit_create_failed`, `created_visit: false` |
+| 11 | Phone missing, channel=Telegram | `needs_more_info`, `required_field="phone"`, response requests contact button |
+| 12 | Telegram contact button payload received | `phone_source="telegram_contact_button"`, `phone_consent=true` stored |
+| 13 | Native contact sharing unavailable or refused | Manual phone input requested, `phone_source="manual_input"` on success |
+| 14 | WhatsApp adapter provides sender phone | Phone requirement satisfied, `phone_source="whatsapp_sender"` |
+| 15 | Phone missing (any channel) | `needs_more_info`, no createPatient/createVisit attempted |
 
 ---
 

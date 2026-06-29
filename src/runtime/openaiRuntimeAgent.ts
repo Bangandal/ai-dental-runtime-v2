@@ -27,7 +27,7 @@ export interface RuntimeAgentTurnInput {
   recent_summary?: string | null;
   /** True only when the stateful pipeline confirmed no prior conversation memory exists for this contact. Set by RuntimeTurnOrchestrator before runTurn is called. */
   is_first_patient_turn?: boolean;
-  /** Phone captured from the channel (e.g. Telegram contact button). Set by the channel adapter before runTurn. Not yet used by booking.apply. */
+  /** Phone captured from the channel (e.g. Telegram contact button). Forwarded to booking.apply executor via ToolExecutionContext. */
   channel_contact?: ChannelContact;
 }
 
@@ -37,9 +37,10 @@ export type RuntimeAgentToolName =
   | "hold.create"
   | "booking.confirm"
   | "cancel_hold"
-  | "appointment.lookup";
+  | "appointment.lookup"
+  | "booking.apply";
 
-export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check"] as const;
+export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.apply"] as const;
 
 export const FUTURE_RUNTIME_AGENT_TOOLS = [
   "hold.create",
@@ -97,6 +98,11 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     description: "Use for checking available appointment slots.",
     required_args: ["requested_date"],
     optional_args: ["requested_time", "service_interest", "limit"],
+  },
+  "booking.apply": {
+    description: "Create a visit in ClinicCard when the patient has provided all required details (first name, last name, service, date, time) and the channel has captured their phone number. Returns booking_status indicating whether the visit was created or why it could not be.",
+    required_args: ["first_name", "last_name", "service", "requested_date", "requested_time"],
+    optional_args: [],
   },
 } as const;
 

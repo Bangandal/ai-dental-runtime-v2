@@ -4,6 +4,7 @@ import { createOpenAIRuntimeAgentCaller, type OpenAIResponsesClient } from "./op
 import { createSupabaseKnowledgeRepository, type EmbeddingClient, type RpcCaller } from "./supabaseKnowledgeRepository.ts";
 import { createKbSearchExecutor } from "./kbSearchExecutor.ts";
 import { createClinicCardAvailabilityExecutor } from "../integrations/cliniccard/clinicCardAvailabilityExecutor.ts";
+import { createBookingApplyExecutor } from "../integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ToolExecutor } from "./toolExecutor.ts";
 import type { OpenAIRuntimeAgent } from "./openaiRuntimeAgent.ts";
 
@@ -17,6 +18,7 @@ export interface CreateDentalRuntimeAgentDeps {
   now?: Date;
   timezone?: string;
   clinicCardAvailabilityExecutor?: ToolExecutor;
+  bookingApplyExecutor?: ToolExecutor;
 }
 
 export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): OpenAIRuntimeAgent {
@@ -30,10 +32,12 @@ export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): Op
 
   const kbExecutor = createKbSearchExecutor({ knowledgeRepository });
   const availabilityExecutor = deps.clinicCardAvailabilityExecutor ?? createClinicCardAvailabilityExecutor();
+  const bookingExecutor = deps.bookingApplyExecutor ?? createBookingApplyExecutor();
 
   const executors = {
     "kb.search": kbExecutor,
     "availability.check": availabilityExecutor,
+    "booking.apply": bookingExecutor,
   };
 
   return createRuntimeAgentLoop({

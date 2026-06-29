@@ -86,6 +86,40 @@ export interface CancelHoldSuccessResult extends ToolExecutionBase {
   };
 }
 
+export type BookingApplyStatus =
+  | "booking_write_disabled"
+  | "validation_error"
+  | "config_missing"
+  | "missing_phone"
+  | "cliniccard_unavailable"
+  | "patient_create_failed"
+  | "availability_conflict"
+  | "visit_create_failed"
+  | "visit_created";
+
+export interface BookingApplyResult {
+  booking_action: "booking_apply";
+  booking_status: BookingApplyStatus;
+  created_visit: boolean;
+  may_claim_booked: boolean;
+  cliniccard_visit_id: number | null;
+  cliniccard_patient_id?: number;
+  date?: string;
+  time_start?: string;
+  time_end?: string;
+  doctor_id?: number;
+  cabinet_id?: number;
+  timezone?: string;
+  reason: string | null;
+  proof: Record<string, unknown> | null;
+}
+
+export interface BookingApplySuccessResult extends ToolExecutionBase {
+  tool: "booking.apply";
+  status: "success";
+  data: BookingApplyResult;
+}
+
 export interface AppointmentMutateNotImplementedResult extends ToolExecutionBase {
   tool: "appointment.mutate";
   status: "not_implemented";
@@ -102,7 +136,8 @@ export type ToolSuccessResult =
   | AvailabilityCheckSuccessResult
   | HoldCreateSuccessResult
   | BookingConfirmSuccessResult
-  | CancelHoldSuccessResult;
+  | CancelHoldSuccessResult
+  | BookingApplySuccessResult;
 
 export interface ToolFailedResult extends ToolExecutionBase {
   tool: ToolName;

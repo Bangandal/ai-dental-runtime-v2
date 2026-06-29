@@ -21,6 +21,14 @@ export interface ToolExecutionContext {
   now?: Date;
   planner?: PlannerOutput;
   truth_snapshot?: TruthSnapshot;
+  /** Patient first name — extracted from booking.apply tool arguments. */
+  first_name?: string;
+  /** Patient last name — extracted from booking.apply tool arguments. */
+  last_name?: string;
+  /** Phone number captured from the channel contact mechanism (e.g. contact button). */
+  phone_number?: string;
+  /** Source of the captured phone number. */
+  phone_source?: string;
 }
 
 export type ToolExecutor = (

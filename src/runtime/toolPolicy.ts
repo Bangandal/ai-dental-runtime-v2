@@ -6,7 +6,8 @@ export type ToolName =
   | "hold.create"
   | "booking.confirm"
   | "cancel_hold"
-  | "appointment.mutate";
+  | "appointment.mutate"
+  | "booking.apply";
 
 export type RawToolName = string;
 
@@ -126,6 +127,9 @@ export const TOOL_POLICY_MATRIX: Record<ToolName, { class: ToolClass }> = {
   "availability.check": { class: "read" },
   "hold.create": { class: "write" },
   "booking.confirm": { class: "write" },
+  // booking.apply is the direct ClinicCard write path (no hold/confirm round-trip).
+  // The executor performs its own CLINICCARD_BOOKING_MODE gate as the first check.
+  "booking.apply": { class: "write" },
   "cancel_hold": { class: "destructive" },
   "appointment.mutate": { class: "destructive" },
 };
@@ -237,6 +241,15 @@ export function applyToolPolicy(
       }
       if (!truth.contact_case_match) {
         denied.push({ tool, allowed: false, reason: "booking_confirm_contact_case_mismatch" });
+        continue;
+      }
+      allowed.push(tool);
+      continue;
+    }
+
+    if (tool === "booking.apply") {
+      if (!truth.scheduling_intent_present) {
+        denied.push({ tool, allowed: false, reason: "scheduling_intent_missing" });
         continue;
       }
       allowed.push(tool);

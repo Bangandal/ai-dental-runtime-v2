@@ -307,6 +307,22 @@ function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): Pla
     };
   }
 
+  if (request.tool === "booking.apply") {
+    return {
+      confidence: "high",
+      tools_requested: ["booking.apply"],
+      reply_strategy: "answer_only",
+      turn_type: "booking",
+      booking_action: "confirm",
+      explicit_patient_confirmation: true,
+      booking_request: {
+        service: typeof request.arguments.service === "string" ? request.arguments.service : null,
+        preferred_date_text: typeof request.arguments.requested_date === "string" ? request.arguments.requested_date : null,
+        preferred_time_text: typeof request.arguments.requested_time === "string" ? request.arguments.requested_time : null,
+      },
+    };
+  }
+
   return {
     confidence: "high",
     tools_requested: ["kb.search"],
@@ -334,7 +350,7 @@ function resolveTruthSnapshot(
     planner,
     now,
     current_turn_flags: {
-      scheduling_intent_present: request.tool === "availability.check",
+      scheduling_intent_present: request.tool === "availability.check" || request.tool === "booking.apply",
       date_or_time_present: typeof request.arguments.requested_date === "string"
         || typeof request.arguments.requested_time === "string",
     },
@@ -348,6 +364,14 @@ function buildExecutionContext(
   truth_snapshot: TruthSnapshot,
   now?: Date,
 ): ToolExecutionContext {
+  // service_interest: availability.check uses "service_interest"; booking.apply uses "service".
+  const serviceInterest =
+    typeof request.arguments.service_interest === "string"
+      ? request.arguments.service_interest
+      : typeof request.arguments.service === "string"
+        ? request.arguments.service
+        : null;
+
   return {
     trace_id: input.trace_id,
     clinic_id: input.clinic_id,
@@ -357,12 +381,17 @@ function buildExecutionContext(
     query_text: typeof request.arguments.query === "string" ? request.arguments.query : undefined,
     requested_date: typeof request.arguments.requested_date === "string" ? request.arguments.requested_date : undefined,
     requested_time: typeof request.arguments.requested_time === "string" ? request.arguments.requested_time : null,
-    service_interest: typeof request.arguments.service_interest === "string" ? request.arguments.service_interest : null,
+    service_interest: serviceInterest,
     limit: typeof request.arguments.limit === "number" ? request.arguments.limit : undefined,
     timezone: typeof request.arguments.timezone === "string" ? request.arguments.timezone : undefined,
     planner,
     truth_snapshot,
     now,
+    // booking.apply fields — from model args and channel_contact.
+    first_name: typeof request.arguments.first_name === "string" ? request.arguments.first_name : undefined,
+    last_name: typeof request.arguments.last_name === "string" ? request.arguments.last_name : undefined,
+    phone_number: input.channel_contact?.phone_number,
+    phone_source: input.channel_contact?.phone_source,
   } as ToolExecutionContext;
 }
 

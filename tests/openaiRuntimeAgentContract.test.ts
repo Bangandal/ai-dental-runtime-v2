@@ -33,6 +33,12 @@ test("active tool definitions include kb.search and availability.check only", ()
   assert.equal("admin.notify" in RUNTIME_AGENT_TOOL_DEFINITIONS, false);
 });
 
+test("booking.apply is defined but not yet active (phone plumbing pending)", () => {
+  assert.equal("booking.apply" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
+  assert.equal(ACTIVE_RUNTIME_AGENT_TOOLS.includes("kb.search" as never), true);
+  assert.equal((ACTIVE_RUNTIME_AGENT_TOOLS as readonly string[]).includes("booking.apply"), false);
+});
+
 test("future tools are listed but not active", () => {
   assert.deepEqual(FUTURE_RUNTIME_AGENT_TOOLS, [
     "hold.create",

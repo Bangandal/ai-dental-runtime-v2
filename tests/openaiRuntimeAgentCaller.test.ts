@@ -138,6 +138,66 @@ test("maps final output text and structured fields to final_response", async () 
   assert.equal(result.final_response.language, "es");
 });
 
+test("readFinalResponse: ui.telegram.request_contact is hydrated from model JSON", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          final_response: {
+            final_patient_reply: "Поделитесь номером телефона кнопкой ниже.",
+            ui: {
+              telegram: {
+                request_contact: true,
+                button_text: "📞 Поделиться номером",
+              },
+            },
+          },
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.ui?.telegram?.request_contact, true);
+  assert.equal(result.final_response.ui?.telegram?.button_text, "📞 Поделиться номером");
+});
+
+test("readFinalResponse: ui absent → final_response.ui is undefined", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          final_response: { final_patient_reply: "Чем помочь?" },
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.ui, undefined);
+});
+
+test("readFinalResponse: ui.telegram.request_contact must be exactly true (not truthy string)", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          final_response: {
+            final_patient_reply: "Reply",
+            ui: { telegram: { request_contact: "yes" } },
+          },
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.ui?.telegram?.request_contact, undefined);
+});
+
 
 test("maps responses-style output message content output_text to final_response", async () => {
   const caller = createOpenAIRuntimeAgentCaller({

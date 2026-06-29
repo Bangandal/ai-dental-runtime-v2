@@ -29,6 +29,7 @@ export interface RuntimeTurnHttpSuccessResponse {
   tool_results?: unknown[];
   side_effects: unknown[];
   debug?: unknown;
+  ui?: { telegram?: { request_contact?: boolean; button_text?: string } };
 }
 
 export interface RuntimeTurnHttpErrorResponse {

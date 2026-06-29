@@ -3,7 +3,7 @@ import {
   normalizeTelegramUpdate,
   type TelegramUpdate,
 } from "./telegramWebhookAdapter.ts";
-import { sendTelegramMessage } from "./telegramSender.ts";
+import { sendTelegramMessage, buildContactRequestReplyMarkup } from "./telegramSender.ts";
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 
 export interface TelegramWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
@@ -58,6 +58,16 @@ export function registerTelegramWebhookRoute(
       return;
     }
 
+    // Contact update: patient shared phone via Telegram contact button.
+    // Phone capture is normalized and available in normalized.capture.
+    // Persistence gap: contact capture is not yet wired to the booking pipeline
+    // (booking.apply is not implemented). See docs/TELEGRAM_CONTACT_CAPTURE.md.
+    if (normalized.type === "contact") {
+      reply.code(200).send({ ok: true });
+      return;
+    }
+
+    // Text update — standard pipeline.
     const result = await runRuntimeTurnOrchestrated(normalized.body, deps);
 
     if (result.outcome === "duplicate") {
@@ -71,10 +81,18 @@ export function registerTelegramWebhookRoute(
         result.outcome === "success"
           ? result.payload.final_patient_reply
           : result.fallbackPayload.final_patient_reply;
+
+      // If the runtime response requests a Telegram contact button, send reply_markup.
+      const uiTelegram = result.outcome === "success" ? result.payload.ui?.telegram : undefined;
+      const replyMarkup = uiTelegram?.request_contact === true
+        ? buildContactRequestReplyMarkup(uiTelegram.button_text)
+        : undefined;
+
       void sendTelegramMessage({
         botToken: deps.botToken,
         chatId: normalized.body.chat_id,
         text: replyText,
+        replyMarkup,
         fetch: deps.fetch,
       });
     }

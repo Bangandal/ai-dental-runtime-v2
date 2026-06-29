@@ -1,5 +1,12 @@
 import { timingSafeEqual } from "node:crypto";
 
+export interface TelegramContact {
+  phone_number?: string;
+  first_name?: string;
+  last_name?: string;
+  user_id?: number;
+}
+
 export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
@@ -11,6 +18,7 @@ export interface TelegramMessage {
   chat: { id: number; type: string };
   from?: TelegramFrom;
   text?: string;
+  contact?: TelegramContact;
 }
 
 export interface TelegramFrom {
@@ -18,6 +26,19 @@ export interface TelegramFrom {
   username?: string;
   first_name?: string;
   last_name?: string;
+}
+
+export interface TelegramContactCapture {
+  phone_number: string;
+  phone_source: "telegram_contact_button";
+  phone_consent: true;
+  phone_collected_at: string;
+  telegram_contact: {
+    phone_number: string;
+    first_name?: string;
+    last_name?: string;
+    user_id?: number;
+  };
 }
 
 export interface TelegramTurnBody {
@@ -62,12 +83,14 @@ export function checkTelegramWebhookSecret(opts: {
 }
 
 export type TelegramNormalizeResult =
-  | { ok: true; body: TelegramTurnBody }
-  | { ok: false; reason: "no_message" | "no_text" | "edited_message" | "no_from" };
+  | { ok: true; type: "text"; body: TelegramTurnBody }
+  | { ok: true; type: "contact"; capture: TelegramContactCapture; chat_id: string; external_user_id: string; update_id: string; message_id: string; clinic_code: string }
+  | { ok: false; reason: "no_message" | "no_text" | "no_contact_phone" | "edited_message" | "no_from" };
 
 export function normalizeTelegramUpdate(
   update: TelegramUpdate,
   clinicCode: string,
+  now?: Date,
 ): TelegramNormalizeResult {
   if (update.edited_message !== undefined) {
     return { ok: false, reason: "edited_message" };
@@ -76,15 +99,48 @@ export function normalizeTelegramUpdate(
   if (!message) {
     return { ok: false, reason: "no_message" };
   }
-  if (!message.text?.trim()) {
-    return { ok: false, reason: "no_text" };
-  }
   const from = message.from;
   if (!from) {
     return { ok: false, reason: "no_from" };
   }
+
+  // Contact update — patient shared phone via contact button
+  if (message.contact !== undefined) {
+    const phone = message.contact.phone_number;
+    if (!phone) {
+      return { ok: false, reason: "no_contact_phone" };
+    }
+    const capture: TelegramContactCapture = {
+      phone_number: phone,
+      phone_source: "telegram_contact_button",
+      phone_consent: true,
+      phone_collected_at: (now ?? new Date()).toISOString(),
+      telegram_contact: {
+        phone_number: phone,
+        first_name: message.contact.first_name,
+        last_name: message.contact.last_name,
+        user_id: message.contact.user_id,
+      },
+    };
+    return {
+      ok: true,
+      type: "contact",
+      capture,
+      chat_id: String(message.chat.id),
+      external_user_id: String(from.id),
+      update_id: String(update.update_id),
+      message_id: String(message.message_id),
+      clinic_code: clinicCode,
+    };
+  }
+
+  // Text update
+  if (!message.text?.trim()) {
+    return { ok: false, reason: "no_text" };
+  }
   return {
     ok: true,
+    type: "text",
     body: {
       clinic_code: clinicCode,
       channel: "telegram",

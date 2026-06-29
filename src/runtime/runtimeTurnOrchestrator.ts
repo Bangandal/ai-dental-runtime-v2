@@ -416,6 +416,7 @@ export async function runRuntimeTurnOrchestrated(
       reply_text: result.final_patient_reply,
       final_patient_reply: result.final_patient_reply,
       side_effects: [],
+      ...(result.ui !== undefined ? { ui: result.ui } : {}),
       ...(deps.debugEnabled ? {
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,

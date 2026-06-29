@@ -127,6 +127,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_requests: [],
           tool_results: [],
           debug,
+          ui: firstOutput.final_response.ui,
         };
       }
 
@@ -241,6 +242,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               tool_requests: toolRequests,
               tool_results: toolResults,
               debug,
+              ui: forcedOutput.final_response.ui,
             };
           }
         }
@@ -263,6 +265,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         tool_requests: toolRequests,
         tool_results: toolResults,
         debug,
+        ui: secondOutput.final_response.ui,
       };
     },
   };

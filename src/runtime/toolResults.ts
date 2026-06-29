@@ -88,13 +88,10 @@ export interface CancelHoldSuccessResult extends ToolExecutionBase {
 
 export type BookingApplyStatus =
   | "booking_write_disabled"
-  | "validation_error"
-  | "config_missing"
   | "missing_phone"
-  | "cliniccard_unavailable"
-  | "patient_create_failed"
-  | "availability_conflict"
-  | "visit_create_failed"
+  | "config_missing"
+  | "slot_conflict"
+  | "cliniccard_write_failed"
   | "visit_created";
 
 export interface BookingApplyResult {
@@ -102,7 +99,7 @@ export interface BookingApplyResult {
   booking_status: BookingApplyStatus;
   created_visit: boolean;
   may_claim_booked: boolean;
-  cliniccard_visit_id: number | null;
+  cliniccard_visit_id: string | null;
   cliniccard_patient_id?: number;
   date?: string;
   time_start?: string;
@@ -110,7 +107,7 @@ export interface BookingApplyResult {
   doctor_id?: number;
   cabinet_id?: number;
   timezone?: string;
-  reason: string | null;
+  reason: string;
   proof: Record<string, unknown> | null;
 }
 

@@ -57,8 +57,8 @@ function makeAdapter(overrides: Partial<ClinicCardAdapter> = {}): ClinicCardAdap
   };
 }
 
-// Path 1: booking_write_disabled — mode is not live.
-test("booking.apply: returns booking_write_disabled when mode is not live", async () => {
+// booking_write_disabled — mode is disabled.
+test("booking.apply: returns booking_write_disabled when mode is disabled", async () => {
   const executor = createBookingApplyExecutor({
     env: { ...LIVE_ENV, CLINICCARD_BOOKING_MODE: "disabled" },
     adapterFactory: () => makeAdapter(),
@@ -71,10 +71,10 @@ test("booking.apply: returns booking_write_disabled when mode is not live", asyn
   assert.equal(result.data.may_claim_booked, false);
   assert.equal(result.data.cliniccard_visit_id, null);
   assert.equal(result.data.booking_action, "booking_apply");
-  assert.match(result.data.reason ?? "", /disabled/);
+  assert.match(result.data.reason, /disabled/);
 });
 
-// Path 1b: shadow mode also triggers booking_write_disabled.
+// booking_write_disabled — shadow mode also blocked.
 test("booking.apply: shadow mode also returns booking_write_disabled", async () => {
   const executor = createBookingApplyExecutor({
     env: { ...LIVE_ENV, CLINICCARD_BOOKING_MODE: "shadow" },
@@ -83,9 +83,27 @@ test("booking.apply: shadow mode also returns booking_write_disabled", async () 
 
   const result = await executor(makeContext());
   assert.equal(result.data.booking_status, "booking_write_disabled");
+  assert.equal(result.data.created_visit, false);
+  assert.equal(result.data.may_claim_booked, false);
 });
 
-// Path 2: missing_phone — channel_contact not set.
+// no write when mode != live — adapter must never be called.
+test("booking.apply: no ClinicCard write calls occur when mode is not live", async () => {
+  let writeCalled = false;
+  const executor = createBookingApplyExecutor({
+    env: { ...LIVE_ENV, CLINICCARD_BOOKING_MODE: "disabled" },
+    adapterFactory: () =>
+      makeAdapter({
+        createPatient: async () => { writeCalled = true; return { ok: true, data: { id: 1, name: "x" } }; },
+        createVisit: async () => { writeCalled = true; return { ok: false, error: { code: "e", message: "e" } }; },
+      }),
+  });
+
+  await executor(makeContext());
+  assert.equal(writeCalled, false, "no write call should have been made");
+});
+
+// missing_phone — channel_contact not set.
 test("booking.apply: returns missing_phone when phone_number is absent", async () => {
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
@@ -98,7 +116,7 @@ test("booking.apply: returns missing_phone when phone_number is absent", async (
   assert.equal(result.data.may_claim_booked, false);
 });
 
-// Path 3: config_missing — doctor_id not set.
+// config_missing — doctor_id not set.
 test("booking.apply: returns config_missing when CLINICCARD_DEFAULT_DOCTOR_ID is absent", async () => {
   const executor = createBookingApplyExecutor({
     env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "" },
@@ -107,11 +125,11 @@ test("booking.apply: returns config_missing when CLINICCARD_DEFAULT_DOCTOR_ID is
 
   const result = await executor(makeContext());
   assert.equal(result.data.booking_status, "config_missing");
-  assert.match(result.data.reason ?? "", /DOCTOR_ID/);
+  assert.match(result.data.reason, /DOCTOR_ID/);
 });
 
-// Path 3b: config_missing — cabinet_id not set.
-test("booking.apply: returns config_missing when CLINICCARD_DEFAULT_CABINET_ID is absent", async () => {
+// config_missing — cabinet_id not set.
+test("booking.apply: returns config_missing when CLINICCARD_DEFAULT_CABINET_ID is zero", async () => {
   const executor = createBookingApplyExecutor({
     env: { ...LIVE_ENV, CLINICCARD_DEFAULT_CABINET_ID: "0" },
     adapterFactory: () => makeAdapter(),
@@ -119,11 +137,11 @@ test("booking.apply: returns config_missing when CLINICCARD_DEFAULT_CABINET_ID i
 
   const result = await executor(makeContext());
   assert.equal(result.data.booking_status, "config_missing");
-  assert.match(result.data.reason ?? "", /CABINET_ID/);
+  assert.match(result.data.reason, /CABINET_ID/);
 });
 
-// Path 4: availability_conflict — overlapping visit for same doctor.
-test("booking.apply: returns availability_conflict when doctor slot is taken", async () => {
+// slot_conflict — overlapping visit for same doctor.
+test("booking.apply: returns slot_conflict when doctor slot is taken", async () => {
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
     adapterFactory: () =>
@@ -148,12 +166,40 @@ test("booking.apply: returns availability_conflict when doctor slot is taken", a
 
   // Slot 10:00–10:30 overlaps with 09:45–10:15 for doctor_id=1.
   const result = await executor(makeContext());
-  assert.equal(result.data.booking_status, "availability_conflict");
+  assert.equal(result.data.booking_status, "slot_conflict");
   assert.equal(result.data.created_visit, false);
   assert.equal(result.data.may_claim_booked, false);
 });
 
-// Path 4b: no conflict when a visit for a different doctor AND different cabinet.
+// slot_conflict — overlapping visit for same cabinet.
+test("booking.apply: returns slot_conflict when cabinet is taken by a different doctor", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        listVisits: async () => ({
+          ok: true,
+          data: [
+            {
+              id: 8,
+              patient_id: 5,
+              doctor_id: 99,
+              cabinet_id: 2,
+              date: "2026-07-15",
+              time_start: "10:00",
+              time_end: "10:30",
+              status: "PLANNED",
+            },
+          ],
+        }),
+      }),
+  });
+
+  const result = await executor(makeContext());
+  assert.equal(result.data.booking_status, "slot_conflict");
+});
+
+// No conflict when visit is for a completely different doctor AND cabinet.
 test("booking.apply: no conflict when visit is for a different doctor and cabinet", async () => {
   let visitCreated = false;
   const executor = createBookingApplyExecutor({
@@ -199,8 +245,8 @@ test("booking.apply: no conflict when visit is for a different doctor and cabine
   assert.equal(visitCreated, true);
 });
 
-// Path 5: visit_created — full happy path.
-test("booking.apply: returns visit_created with proof on success", async () => {
+// visit_created — full happy path with proof.
+test("booking.apply: returns visit_created with proof and correct fields on success", async () => {
   let patientInput: unknown;
   let visitInput: unknown;
 
@@ -237,7 +283,7 @@ test("booking.apply: returns visit_created with proof on success", async () => {
   assert.equal(result.data.booking_status, "visit_created");
   assert.equal(result.data.created_visit, true);
   assert.equal(result.data.may_claim_booked, true);
-  assert.equal(result.data.cliniccard_visit_id, 99);
+  assert.equal(result.data.cliniccard_visit_id, "99");   // string, not number
   assert.equal(result.data.cliniccard_patient_id, 42);
   assert.equal(result.data.date, "2026-07-15");
   assert.equal(result.data.time_start, "10:00");
@@ -245,8 +291,8 @@ test("booking.apply: returns visit_created with proof on success", async () => {
   assert.equal(result.data.doctor_id, 1);
   assert.equal(result.data.cabinet_id, 2);
   assert.equal(result.data.timezone, "Europe/Prague");
-  assert.equal(result.data.reason, null);
   assert.ok(result.data.proof !== null);
+  assert.equal((result.data.proof as Record<string, unknown>).cliniccard_visit_id, "99");
 
   const p = patientInput as { name: string; phone: string };
   assert.equal(p.name, "Ivan Petrov");
@@ -260,23 +306,27 @@ test("booking.apply: returns visit_created with proof on success", async () => {
   assert.equal(v.note, "Чистка зубов");
 });
 
-// validation_error — missing required fields.
-test("booking.apply: returns validation_error when required fields are missing", async () => {
-  const executor = createBookingApplyExecutor({
-    env: LIVE_ENV,
-    adapterFactory: () => makeAdapter(),
-  });
+// may_claim_booked is false on every non-visit_created status.
+test("booking.apply: may_claim_booked is false for all non-success paths", async () => {
+  const cases: Array<{ label: string; context: Partial<ToolExecutionContext>; env?: Record<string, string> }> = [
+    { label: "booking_write_disabled", env: { ...LIVE_ENV, CLINICCARD_BOOKING_MODE: "disabled" }, context: {} },
+    { label: "missing_phone", context: { phone_number: undefined } },
+    { label: "config_missing", env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "" }, context: {} },
+  ];
 
-  const result = await executor(makeContext({ first_name: undefined, last_name: undefined }));
-  assert.equal(result.data.booking_status, "validation_error");
-  assert.match(result.data.reason ?? "", /first_name/);
-  assert.match(result.data.reason ?? "", /last_name/);
-  assert.equal(result.data.created_visit, false);
-  assert.equal(result.data.may_claim_booked, false);
+  for (const c of cases) {
+    const executor = createBookingApplyExecutor({
+      env: c.env ?? LIVE_ENV,
+      adapterFactory: () => makeAdapter(),
+    });
+    const result = await executor(makeContext(c.context));
+    assert.equal(result.data.may_claim_booked, false, `${c.label} must have may_claim_booked=false`);
+    assert.equal(result.data.created_visit, false, `${c.label} must have created_visit=false`);
+  }
 });
 
-// patient_create_failed — adapter returns error.
-test("booking.apply: returns patient_create_failed when createPatient fails", async () => {
+// cliniccard_write_failed — createPatient fails.
+test("booking.apply: returns cliniccard_write_failed when createPatient fails", async () => {
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
     adapterFactory: () =>
@@ -289,13 +339,14 @@ test("booking.apply: returns patient_create_failed when createPatient fails", as
   });
 
   const result = await executor(makeContext());
-  assert.equal(result.data.booking_status, "patient_create_failed");
-  assert.match(result.data.reason ?? "", /Duplicate phone/);
+  assert.equal(result.data.booking_status, "cliniccard_write_failed");
+  assert.match(result.data.reason, /Duplicate phone/);
   assert.equal(result.data.created_visit, false);
+  assert.equal(result.data.may_claim_booked, false);
 });
 
-// visit_create_failed — adapter returns error on createVisit.
-test("booking.apply: returns visit_create_failed when createVisit fails", async () => {
+// cliniccard_write_failed — createVisit fails.
+test("booking.apply: returns cliniccard_write_failed when createVisit fails", async () => {
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
     adapterFactory: () =>
@@ -308,14 +359,14 @@ test("booking.apply: returns visit_create_failed when createVisit fails", async 
   });
 
   const result = await executor(makeContext());
-  assert.equal(result.data.booking_status, "visit_create_failed");
-  assert.match(result.data.reason ?? "", /Doctor not available/);
+  assert.equal(result.data.booking_status, "cliniccard_write_failed");
+  assert.match(result.data.reason, /Doctor not available/);
   assert.equal(result.data.created_visit, false);
   assert.equal(result.data.may_claim_booked, false);
 });
 
-// cliniccard_unavailable — listVisits fails.
-test("booking.apply: returns cliniccard_unavailable when listVisits fails", async () => {
+// cliniccard_write_failed — fresh availability re-read fails.
+test("booking.apply: returns cliniccard_write_failed when availability re-read fails", async () => {
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
     adapterFactory: () =>
@@ -328,8 +379,8 @@ test("booking.apply: returns cliniccard_unavailable when listVisits fails", asyn
   });
 
   const result = await executor(makeContext());
-  assert.equal(result.data.booking_status, "cliniccard_unavailable");
-  assert.match(result.data.reason ?? "", /503/);
+  assert.equal(result.data.booking_status, "cliniccard_write_failed");
+  assert.match(result.data.reason, /503/);
 });
 
 // time_end is computed correctly (10:00 + 30 min = 10:30).
@@ -357,4 +408,22 @@ test("booking.apply: computes time_end as time_start + 30 minutes", async () => 
   const result = await executor(makeContext({ requested_time: "14:45" }));
   assert.equal(result.data.time_start, "14:45");
   assert.equal(result.data.time_end, "15:15");
+});
+
+// Fresh availability is re-read immediately before write (not trusted from context).
+test("booking.apply: calls listVisits to re-read availability before every write", async () => {
+  let listVisitsCalled = false;
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        listVisits: async () => {
+          listVisitsCalled = true;
+          return { ok: true, data: [] };
+        },
+      }),
+  });
+
+  await executor(makeContext());
+  assert.equal(listVisitsCalled, true, "listVisits must be called before createVisit");
 });

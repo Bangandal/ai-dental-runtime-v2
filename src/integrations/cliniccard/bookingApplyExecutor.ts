@@ -39,7 +39,7 @@ export interface BookingApplyExecutorDeps {
 
 export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}): ToolExecutor {
   return async (context: ToolExecutionContext): Promise<BookingApplySuccessResult> => {
-    // A. Mode gate — must be first check.
+    // A. Mode gate — must be first check. No ClinicCard reads or writes occur before this.
     const configResult = loadClinicCardConfig(deps.env);
     if (!configResult.ok) {
       return bookingResult({
@@ -64,32 +64,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // B. Required text inputs.
-    const firstName = context.first_name;
-    const lastName = context.last_name;
-    const service = context.service_interest;
-    const requestedDate = context.requested_date;
-    const requestedTime = context.requested_time;
-
-    const missing: string[] = [];
-    if (!firstName) missing.push("first_name");
-    if (!lastName) missing.push("last_name");
-    if (!service) missing.push("service");
-    if (!requestedDate) missing.push("requested_date");
-    if (!requestedTime) missing.push("requested_time");
-
-    if (missing.length > 0) {
-      return bookingResult({
-        booking_status: "validation_error",
-        created_visit: false,
-        may_claim_booked: false,
-        cliniccard_visit_id: null,
-        reason: `Missing required fields: ${missing.join(", ")}`,
-        proof: null,
-      });
-    }
-
-    // B2. Phone check.
+    // B2. Phone check — must be present before any write.
     const phoneNumber = context.phone_number;
     if (!phoneNumber) {
       return bookingResult({
@@ -102,7 +77,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // C. Config resolution — doctor_id and cabinet_id from trusted config only.
+    // C. Config resolution — doctor_id and cabinet_id from trusted env only, never from patient.
     const doctorId = Number(config.default_doctor_id);
     if (!Number.isFinite(doctorId) || !Number.isInteger(doctorId) || doctorId <= 0) {
       return bookingResult({
@@ -127,27 +102,56 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    const timezone = config.timezone || "Europe/Prague";
-    const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
-    const adapter = adapterFactory(config);
-
-    const timeStart = requestedTime!;
-    const timeEnd = addMinutes(timeStart, DEFAULT_SLOT_DURATION_MINUTES);
-
-    // D. Fresh re-read of ClinicCard visits for the requested date.
-    const visitsResult = await adapter.listVisits(requestedDate!, requestedDate!);
-    if (!visitsResult.ok) {
+    // Missing patient name fields also surface as config_missing — createVisit cannot proceed.
+    const firstName = context.first_name;
+    const lastName = context.last_name;
+    if (!firstName || !lastName) {
+      const missing = [!firstName && "first_name", !lastName && "last_name"].filter(Boolean).join(", ");
       return bookingResult({
-        booking_status: "cliniccard_unavailable",
+        booking_status: "config_missing",
         created_visit: false,
         may_claim_booked: false,
         cliniccard_visit_id: null,
-        reason: `Failed to read visits: ${visitsResult.error.message}`,
+        reason: `Patient name fields required for createPatient: ${missing}`,
         proof: null,
       });
     }
 
-    // E. Conflict check: slotStart < V.time_end AND slotEnd > V.time_start AND (doctor OR cabinet).
+    const requestedDate = context.requested_date;
+    const requestedTime = context.requested_time;
+    if (!requestedDate || !requestedTime) {
+      const missing = [!requestedDate && "requested_date", !requestedTime && "requested_time"].filter(Boolean).join(", ");
+      return bookingResult({
+        booking_status: "config_missing",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: `Slot fields required: ${missing}`,
+        proof: null,
+      });
+    }
+
+    const timezone = config.timezone || "Europe/Prague";
+    const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
+    const adapter = adapterFactory(config);
+
+    const timeStart = requestedTime;
+    const timeEnd = addMinutes(timeStart, DEFAULT_SLOT_DURATION_MINUTES);
+
+    // D. Fresh re-read of ClinicCard visits for the requested date — never trust stale availability.
+    const visitsResult = await adapter.listVisits(requestedDate, requestedDate);
+    if (!visitsResult.ok) {
+      return bookingResult({
+        booking_status: "cliniccard_write_failed",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: `Availability re-read failed: ${visitsResult.error.message}`,
+        proof: null,
+      });
+    }
+
+    // E. Conflict check: slotStart < V.time_end AND slotEnd > V.time_start AND (same doctor OR same cabinet).
     const slotStartMin = timeToMinutes(timeStart);
     const slotEndMin = timeToMinutes(timeEnd);
     const conflicts = visitsResult.data.filter((v) => {
@@ -157,7 +161,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
 
     if (conflicts.length > 0) {
       return bookingResult({
-        booking_status: "availability_conflict",
+        booking_status: "slot_conflict",
         created_visit: false,
         may_claim_booked: false,
         cliniccard_visit_id: null,
@@ -174,7 +178,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
 
     if (!patientResult.ok) {
       return bookingResult({
-        booking_status: "patient_create_failed",
+        booking_status: "cliniccard_write_failed",
         created_visit: false,
         may_claim_booked: false,
         cliniccard_visit_id: null,
@@ -188,16 +192,16 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       patient_id: patientId,
       doctor_id: doctorId,
       cabinet_id: cabinetId,
-      date: requestedDate!,
+      date: requestedDate,
       time_start: timeStart,
       time_end: timeEnd,
       status: "PLANNED",
-      note: service ?? undefined,
+      note: context.service_interest ?? undefined,
     });
 
     if (!visitResult.ok) {
       return bookingResult({
-        booking_status: "visit_create_failed",
+        booking_status: "cliniccard_write_failed",
         created_visit: false,
         may_claim_booked: false,
         cliniccard_visit_id: null,
@@ -206,13 +210,13 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // G. Success.
+    // G. Success — only here may may_claim_booked be true.
     const visit = visitResult.data;
     return bookingResult({
       booking_status: "visit_created",
       created_visit: true,
       may_claim_booked: true,
-      cliniccard_visit_id: visit.id,
+      cliniccard_visit_id: String(visit.id),
       cliniccard_patient_id: patientId,
       date: visit.date,
       time_start: visit.time_start,
@@ -220,9 +224,9 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       doctor_id: visit.doctor_id,
       cabinet_id: visit.cabinet_id,
       timezone,
-      reason: null,
+      reason: "visit created in ClinicCard",
       proof: {
-        cliniccard_visit_id: visit.id,
+        cliniccard_visit_id: String(visit.id),
         cliniccard_patient_id: patientId,
         date: visit.date,
         time_start: visit.time_start,

@@ -6,6 +6,7 @@ import {
   normalizeTelegramUpdate,
   type TelegramUpdate,
 } from "../src/runtime/telegramWebhookAdapter.ts";
+import { buildContactRequestReplyMarkup } from "../src/runtime/telegramSender.ts";
 import { registerTelegramWebhookRoute } from "../src/runtime/telegramWebhookRoute.ts";
 import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
@@ -77,7 +78,7 @@ test("normalizeTelegramUpdate: maps user_id/chat_id/text/meta correctly", () => 
   };
   const result = normalizeTelegramUpdate(update, CLINIC);
   assert.equal(result.ok, true);
-  if (!result.ok) return;
+  if (!result.ok || result.type !== "text") return;
   assert.equal(result.body.external_user_id, "777");
   assert.equal(result.body.chat_id, "999");
   assert.equal(result.body.text, "Привет");
@@ -103,7 +104,7 @@ test("normalizeTelegramUpdate: optional username/last_name map to null", () => {
   };
   const result = normalizeTelegramUpdate(update, CLINIC);
   assert.equal(result.ok, true);
-  if (!result.ok) return;
+  if (!result.ok || result.type !== "text") return;
   assert.equal(result.body.meta.username, null);
   assert.equal(result.body.meta.last_name, null);
 });
@@ -492,6 +493,206 @@ test("route: duplicate update_id returns 200 without sending Telegram message", 
   const { statusCode, sendCalls } = await invoke(PERSISTENCE_UPDATE);
   assert.equal(statusCode, 200);
   assert.equal(sendCalls.length, 0);
+});
+
+// ── contact normalization ─────────────────────────────────────────────────────
+
+const CONTACT_UPDATE: TelegramUpdate = {
+  update_id: 200,
+  message: {
+    message_id: 55,
+    chat: { id: 333, type: "private" },
+    from: { id: 444, username: "pat", first_name: "Olga", last_name: "Petrenko" },
+    contact: {
+      phone_number: "+380991234567",
+      first_name: "Olga",
+      last_name: "Petrenko",
+      user_id: 444,
+    },
+  },
+};
+
+test("normalizeTelegramUpdate: contact update normalizes to type=contact", () => {
+  const result = normalizeTelegramUpdate(CONTACT_UPDATE, CLINIC, new Date("2026-06-29T10:00:00.000Z"));
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.type, "contact");
+});
+
+test("normalizeTelegramUpdate: contact capture has correct phone and phone_source", () => {
+  const result = normalizeTelegramUpdate(CONTACT_UPDATE, CLINIC, new Date("2026-06-29T10:00:00.000Z"));
+  if (!result.ok || result.type !== "contact") { assert.fail("expected contact"); return; }
+  assert.equal(result.capture.phone_number, "+380991234567");
+  assert.equal(result.capture.phone_source, "telegram_contact_button");
+});
+
+test("normalizeTelegramUpdate: contact capture has phone_consent=true", () => {
+  const result = normalizeTelegramUpdate(CONTACT_UPDATE, CLINIC, new Date("2026-06-29T10:00:00.000Z"));
+  if (!result.ok || result.type !== "contact") { assert.fail("expected contact"); return; }
+  assert.equal(result.capture.phone_consent, true);
+});
+
+test("normalizeTelegramUpdate: contact capture has phone_collected_at as ISO string", () => {
+  const now = new Date("2026-06-29T10:00:00.000Z");
+  const result = normalizeTelegramUpdate(CONTACT_UPDATE, CLINIC, now);
+  if (!result.ok || result.type !== "contact") { assert.fail("expected contact"); return; }
+  assert.equal(result.capture.phone_collected_at, "2026-06-29T10:00:00.000Z");
+});
+
+test("normalizeTelegramUpdate: contact capture preserves first_name, last_name, user_id", () => {
+  const result = normalizeTelegramUpdate(CONTACT_UPDATE, CLINIC, new Date("2026-06-29T10:00:00.000Z"));
+  if (!result.ok || result.type !== "contact") { assert.fail("expected contact"); return; }
+  assert.equal(result.capture.telegram_contact.first_name, "Olga");
+  assert.equal(result.capture.telegram_contact.last_name, "Petrenko");
+  assert.equal(result.capture.telegram_contact.user_id, 444);
+});
+
+test("normalizeTelegramUpdate: contact without phone_number returns no_contact_phone", () => {
+  const update: TelegramUpdate = {
+    update_id: 201,
+    message: {
+      message_id: 56,
+      chat: { id: 333, type: "private" },
+      from: { id: 444 },
+      contact: { first_name: "Olga" },
+    },
+  };
+  const result = normalizeTelegramUpdate(update, CLINIC);
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "no_contact_phone");
+});
+
+test("normalizeTelegramUpdate: contact update chat_id and external_user_id are set correctly", () => {
+  const result = normalizeTelegramUpdate(CONTACT_UPDATE, CLINIC, new Date("2026-06-29T10:00:00.000Z"));
+  if (!result.ok || result.type !== "contact") { assert.fail("expected contact"); return; }
+  assert.equal(result.chat_id, "333");
+  assert.equal(result.external_user_id, "444");
+  assert.equal(result.update_id, "200");
+  assert.equal(result.clinic_code, CLINIC);
+});
+
+// ── contact button reply_markup ───────────────────────────────────────────────
+
+test("buildContactRequestReplyMarkup: default button text", () => {
+  const markup = buildContactRequestReplyMarkup();
+  assert.equal(markup.keyboard[0]![0]!.text, "📞 Поделиться номером");
+  assert.equal(markup.keyboard[0]![0]!.request_contact, true);
+});
+
+test("buildContactRequestReplyMarkup: custom button text", () => {
+  const markup = buildContactRequestReplyMarkup("Share number");
+  assert.equal(markup.keyboard[0]![0]!.text, "Share number");
+});
+
+test("buildContactRequestReplyMarkup: one_time_keyboard and resize_keyboard are set", () => {
+  const markup = buildContactRequestReplyMarkup();
+  assert.equal(markup.one_time_keyboard, true);
+  assert.equal(markup.resize_keyboard, true);
+});
+
+test("route: ui.telegram.request_contact=true sends reply_markup in sendMessage", async () => {
+  const sentPayloads: unknown[] = [];
+  const fakeFetch = async (_url: string, init: RequestInit) => {
+    sentPayloads.push(JSON.parse(init.body as string));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  let handler: ((request: any, reply: any) => Promise<void>) | undefined;
+  registerTelegramWebhookRoute(
+    { post(_path, h) { handler = h; } },
+    {
+      runtimeTurnService: {
+        async runTurn() {
+          return {
+            final_patient_reply: "Поделитесь номером телефона кнопкой ниже.",
+            conversation_id: null,
+            tool_requests: [],
+            tool_results: [],
+            ui: { telegram: { request_contact: true, button_text: "📞 Поделиться номером" } },
+          };
+        },
+      },
+      clinicIdentityResolver: stubClinicResolver,
+      botToken: "bot123",
+      webhookSecret: undefined,
+      defaultClinicCode: CLINIC,
+      isProduction: false,
+      fetch: fakeFetch as unknown as typeof globalThis.fetch,
+    },
+  );
+  const reply = { code(c: number) { return reply; }, send(_p: unknown) {} };
+  await handler!({ body: VALID_UPDATE, headers: {}, ip: "127.0.0.1" }, reply);
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(sentPayloads.length, 1);
+  const sent = sentPayloads[0] as Record<string, unknown>;
+  const markup = sent.reply_markup as Record<string, unknown>;
+  assert.ok(markup, "reply_markup should be present");
+  assert.equal(markup.one_time_keyboard, true);
+  assert.equal(markup.resize_keyboard, true);
+  const kb = markup.keyboard as Array<Array<Record<string, unknown>>>;
+  assert.equal(kb[0]![0]!.request_contact, true);
+  assert.equal(kb[0]![0]!.text, "📞 Поделиться номером");
+});
+
+test("route: no ui → no reply_markup sent", async () => {
+  const sentPayloads: unknown[] = [];
+  const fakeFetch = async (_url: string, init: RequestInit) => {
+    sentPayloads.push(JSON.parse(init.body as string));
+    return new Response(JSON.stringify({ ok: true }), { status: 200 });
+  };
+  let handler: ((request: any, reply: any) => Promise<void>) | undefined;
+  registerTelegramWebhookRoute(
+    { post(_path, h) { handler = h; } },
+    {
+      runtimeTurnService: {
+        async runTurn() {
+          return {
+            final_patient_reply: "Чем могу помочь?",
+            conversation_id: null,
+            tool_requests: [],
+            tool_results: [],
+          };
+        },
+      },
+      clinicIdentityResolver: stubClinicResolver,
+      botToken: "bot123",
+      webhookSecret: undefined,
+      defaultClinicCode: CLINIC,
+      isProduction: false,
+      fetch: fakeFetch as unknown as typeof globalThis.fetch,
+    },
+  );
+  const reply = { code(c: number) { return reply; }, send(_p: unknown) {} };
+  await handler!({ body: VALID_UPDATE, headers: {}, ip: "127.0.0.1" }, reply);
+  await new Promise((r) => setTimeout(r, 50));
+  const sent = sentPayloads[0] as Record<string, unknown>;
+  assert.equal("reply_markup" in sent, false, "reply_markup must not be present when no ui");
+});
+
+test("route: contact update returns 200 without LLM call", async () => {
+  let llmCalled = false;
+  let handler: ((request: any, reply: any) => Promise<void>) | undefined;
+  registerTelegramWebhookRoute(
+    { post(_path, h) { handler = h; } },
+    {
+      runtimeTurnService: {
+        async runTurn() {
+          llmCalled = true;
+          return { final_patient_reply: "x", conversation_id: null, tool_requests: [], tool_results: [] };
+        },
+      },
+      clinicIdentityResolver: stubClinicResolver,
+      botToken: "bot123",
+      webhookSecret: undefined,
+      defaultClinicCode: CLINIC,
+      isProduction: false,
+      fetch: async () => new Response("{}", { status: 200 }) as Response,
+    },
+  );
+  let statusCode = 200;
+  const reply = { code(c: number) { statusCode = c; return reply; }, send(_p: unknown) {} };
+  await handler!({ body: CONTACT_UPDATE, headers: {}, ip: "127.0.0.1" }, reply);
+  assert.equal(statusCode, 200);
+  assert.equal(llmCalled, false);
 });
 
 // ── scope guard ───────────────────────────────────────────────────────────────

@@ -1,3 +1,19 @@
+export interface TelegramUiActions {
+  request_contact?: boolean;
+  button_text?: string;
+}
+
+export interface AgentUiActions {
+  telegram?: TelegramUiActions;
+}
+
+export interface ChannelContact {
+  phone_number: string;
+  phone_source: "telegram_contact_button" | "whatsapp_sender" | "manual_input" | "existing_cliniccard_patient";
+  phone_consent?: boolean;
+  phone_collected_at?: string;
+}
+
 export interface RuntimeAgentTurnInput {
   trace_id?: string;
   clinic_id: string;
@@ -11,6 +27,8 @@ export interface RuntimeAgentTurnInput {
   recent_summary?: string | null;
   /** True only when the stateful pipeline confirmed no prior conversation memory exists for this contact. Set by RuntimeTurnOrchestrator before runTurn is called. */
   is_first_patient_turn?: boolean;
+  /** Phone captured from the channel (e.g. Telegram contact button). Set by the channel adapter before runTurn. Not yet used by booking.apply. */
+  channel_contact?: ChannelContact;
 }
 
 export type RuntimeAgentToolName =
@@ -53,6 +71,7 @@ export interface RuntimeAgentFinalResponse {
   language?: string | null;
   reply_reason?: string | null;
   safety_notes?: string[];
+  ui?: AgentUiActions;
 }
 
 export interface RuntimeAgentTurnResult {
@@ -61,6 +80,7 @@ export interface RuntimeAgentTurnResult {
   tool_requests: RuntimeAgentToolRequest[];
   tool_results: RuntimeAgentToolResult[];
   debug?: Record<string, unknown>;
+  ui?: AgentUiActions;
 }
 
 export interface OpenAIRuntimeAgent {

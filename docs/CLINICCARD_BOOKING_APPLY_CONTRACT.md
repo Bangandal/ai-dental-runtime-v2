@@ -27,9 +27,8 @@ The following fields must all be present before `booking.apply` may run. Missing
 | `service` / `reason` | string | Service type or reason for visit |
 | `requested_date` | ISO YYYY-MM-DD | Must be in the future |
 | `requested_time` | HH:mm | Slot start time |
-| `duration_minutes` | integer | From config/service rules |
-| `doctor_id` | string | From trusted config only — never from patient text |
-| `cabinet_id` | string | From trusted config only — never from patient text |
+
+`doctor_id`, `cabinet_id`, and `duration_minutes` are **not patient inputs**. They are resolved by the runtime from server-side config and service rules (see §3). The patient never provides or influences these values.
 
 ### Phone number policy
 
@@ -45,15 +44,18 @@ The following fields must all be present before `booking.apply` may run. Missing
 
 | Config key | Required | Notes |
 |---|---|---|
+| `CLINICCARD_BOOKING_MODE` | Yes | Must be `live` — any other value disables booking.apply entirely |
 | `CLINICCARD_API_BASE_URL` | Yes | Base URL for ClinicCard REST API |
 | `CLINICCARD_API_TOKEN` | Yes | Auth token |
-| `CLINICCARD_DEFAULT_DOCTOR_ID` | Yes | Fallback doctor if not overridden |
-| `CLINICCARD_DEFAULT_CABINET_ID` | Yes | Fallback cabinet if not overridden |
+| `CLINICCARD_DEFAULT_DOCTOR_ID` | Yes | Fallback doctor if not overridden by service rule |
+| `CLINICCARD_DEFAULT_CABINET_ID` | Yes | Fallback cabinet if not overridden by service rule |
 | `clinic.timezone` | Yes | Used for date/time resolution |
 | `clinic.default_appointment_duration_minutes` | Yes | Used when service rule is absent |
 | `clinic.working_hours` | Yes | Used for availability sanity check |
 | `clinic.service_to_duration_rules` | No | Override duration per service |
 | `clinic.service_to_doctor_rules` | No | Override doctor per service |
+
+`CLINICCARD_BOOKING_MODE=live` is the master gate. If this key is absent or set to any value other than `live` (e.g. `disabled`, `dry_run`), `booking.apply` must return `config_missing` immediately without making any ClinicCard API calls.
 
 If any required config is missing:
 - Return `config_missing` (see §6).
@@ -72,7 +74,8 @@ A. Validate collected inputs
    └── Any missing? → return validation_error, ask patient
 
 B. Resolve config
-   └── doctor_id / cabinet_id / duration_minutes / timezone from config
+   └── CLINICCARD_BOOKING_MODE must equal "live" → else return config_missing
+   └── doctor_id / cabinet_id / duration_minutes / timezone from config (never from patient)
    └── Apply service_to_duration / service_to_doctor rules if available
    └── Config missing required key? → return config_missing
 
@@ -83,14 +86,15 @@ C. Search/create patient in ClinicCard
    └── createPatient fails → return patient_create_failed (no visit created)
 
 D. Re-read ClinicCard visits immediately before createVisit
-   └── GET visits for the resolved doctor_id on requested_date
+   └── GET visits for the resolved doctor_id AND cabinet_id on requested_date
    └── This is a fresh read — do NOT use stale availability.check result
 
 E. Conflict check (deterministic)
    slotStart = requested_time
    slotEnd   = requested_time + duration_minutes
    For each existing visit V:
-     conflict = slotStart < V.time_end AND slotEnd > V.time_start
+     timeOverlap = slotStart < V.time_end AND slotEnd > V.time_start
+     conflict = timeOverlap AND (V.doctor_id == resolved_doctor_id OR V.cabinet_id == resolved_cabinet_id)
    └── Conflict found? → return availability_conflict, propose alternatives
 
 F. No conflict → createVisit

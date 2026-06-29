@@ -83,6 +83,15 @@ begin
     v_next_state := jsonb_set(v_next_state, '{topic_memory}', v_control_flags->'topic_memory', true);
   end if;
 
+  if jsonb_typeof(v_control_flags->'channel_contact') = 'object' then
+    v_next_state := jsonb_set(
+      v_next_state,
+      '{channel_contact}',
+      v_control_flags->'channel_contact',
+      true
+    );
+  end if;
+
   if jsonb_typeof(v_next_state->'turn_count') = 'number' then
     v_turn_count := (v_next_state->>'turn_count')::integer;
   end if;

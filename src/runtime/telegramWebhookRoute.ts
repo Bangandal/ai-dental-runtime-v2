@@ -2,6 +2,7 @@ import {
   checkTelegramWebhookSecret,
   normalizeTelegramUpdate,
   type TelegramUpdate,
+  type TelegramNormalizeResult,
 } from "./telegramWebhookAdapter.ts";
 import { sendTelegramMessage, buildContactRequestReplyMarkup } from "./telegramSender.ts";
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
@@ -58,11 +59,30 @@ export function registerTelegramWebhookRoute(
       return;
     }
 
-    // Contact update: patient shared phone via Telegram contact button.
-    // Phone capture is normalized and available in normalized.capture.
-    // Persistence gap: contact capture is not yet wired to the booking pipeline
-    // (booking.apply is not implemented). See docs/TELEGRAM_CONTACT_CAPTURE.md.
+    // Contact update: patient shared someone else's contact — ownership mismatch.
+    if (normalized.type === "contact_foreign") {
+      void sendTelegramMessage({
+        botToken: deps.botToken,
+        chatId: normalized.chat_id,
+        text: "Пожалуйста, поделитесь своим номером через кнопку «Поделиться контактом».",
+        fetch: deps.fetch,
+      });
+      reply.code(200).send({ ok: true });
+      return;
+    }
+
+    // Contact update: patient shared their own phone via Telegram contact button.
     if (normalized.type === "contact") {
+      const persistResult = await persistChannelContactPhone(normalized, deps).catch(() => "state_persist_failed" as const);
+      const replyText = persistResult === "persisted"
+        ? "Спасибо, номер получен. Можем продолжить запись."
+        : "Не получилось сохранить номер автоматически. Напишите, пожалуйста, номер сообщением, чтобы клиника могла подтвердить запись.";
+      void sendTelegramMessage({
+        botToken: deps.botToken,
+        chatId: normalized.chat_id,
+        text: replyText,
+        fetch: deps.fetch,
+      });
       reply.code(200).send({ ok: true });
       return;
     }
@@ -100,6 +120,67 @@ export function registerTelegramWebhookRoute(
     // Always return 200 to Telegram to prevent retry loops.
     reply.code(200).send({ ok: true });
   });
+}
+
+export type ContactPhonePersistResult =
+  | "persisted"
+  | "not_configured"
+  | "clinic_not_found"
+  | "contact_persist_failed"
+  | "state_persist_failed";
+
+export async function persistChannelContactPhone(
+  normalized: Extract<TelegramNormalizeResult, { type: "contact" }>,
+  deps: Pick<TelegramWebhookRouteDeps, "clinicIdentityResolver" | "turnPersistenceRepository">,
+): Promise<ContactPhonePersistResult> {
+  if (!deps.clinicIdentityResolver || !deps.turnPersistenceRepository) {
+    return "not_configured";
+  }
+
+  const clinicResult = await deps.clinicIdentityResolver.resolveClinicIdentity({
+    clinic_identifier: normalized.clinic_code,
+  }).catch(() => null);
+  if (!clinicResult || !clinicResult.ok) {
+    return "clinic_not_found";
+  }
+
+  const contactResult = await deps.turnPersistenceRepository.getOrCreateContact({
+    clinic_code: normalized.clinic_code,
+    channel: "telegram",
+    external_user_id: normalized.external_user_id,
+    chat_id: normalized.chat_id,
+  }).catch(() => null);
+  if (!contactResult || !contactResult.ok) {
+    return "contact_persist_failed";
+  }
+
+  const stateResult = await deps.turnPersistenceRepository.mergeConversationState({
+    clinic_id: clinicResult.data.clinic_id,
+    contact_id: contactResult.data.contact_id,
+    user_text: "[contact_shared]",
+    reply_text: "Спасибо, номер получен. Можем продолжить запись.",
+    requested_action: "phone_captured",
+    conversation_intent: "booking",
+    handoff_recommended: false,
+    confidence: "high",
+    // Stored in control_flags JSONB merged into conversation state by rpc_merge_conversation_state.
+    // rpc_get_runtime_context returns the merged blob as out_state_json, so channel_contact
+    // survives the round trip as stateJson.channel_contact — same contract as topic_memory.
+    control_flags: {
+      channel_contact: {
+        phone_number: normalized.capture.phone_number,
+        phone_source: normalized.capture.phone_source,
+        phone_consent: normalized.capture.phone_consent,
+        phone_collected_at: normalized.capture.phone_collected_at,
+        telegram_contact_user_id: normalized.capture.telegram_contact.user_id ?? null,
+      },
+    },
+  }).catch(() => null);
+  if (!stateResult || !stateResult.ok) {
+    return "state_persist_failed";
+  }
+
+  return "persisted";
 }
 
 function asHeaderString(value: string | string[] | undefined): string | undefined {

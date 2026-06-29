@@ -264,6 +264,9 @@ export async function runRuntimeTurnOrchestrated(
             loadedCaseContext,
           ),
         };
+        if (runtimeContextResult.data.channel_contact) {
+          runtimeTurnInput.channel_contact = runtimeContextResult.data.channel_contact;
+        }
       } else {
         runtimeContextDebug.error = runtimeContextResult.error;
       }

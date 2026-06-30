@@ -1,9 +1,12 @@
 /**
  * PR #116 — booking.apply activation tests.
  *
- * Verifies activation invariants that span the agent loop, executor, and
- * patient-facing reply guard. Executor-level unit tests (mode gate, phone
- * check, conflict, success path) live in bookingApplyExecutor.test.ts.
+ * Architecture: model owns language, runtime owns action truth.
+ * Runtime passes structured booking_apply_action_truth to the model after
+ * booking.apply execution. The model produces the patient-facing reply.
+ * Runtime does NOT regex-check or replace the final reply.
+ *
+ * Executor-level unit tests live in bookingApplyExecutor.test.ts.
  */
 
 import assert from "node:assert/strict";
@@ -16,14 +19,13 @@ import { ACTIVE_RUNTIME_AGENT_TOOLS } from "../src/runtime/openaiRuntimeAgent.ts
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import {
   hasSuccessfulBookingApplyProof,
-  hasUnsafeBookingConfirmationText,
-  buildBookingApplySafeFallback,
-  guardBookingApplyFinalReply,
+  buildBookingApplyActionTruth,
+  buildBookingApplyEmergencyFallback,
+  type BookingApplyActionTruth,
 } from "../src/runtime/bookingApplyGuard.ts";
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
-import type { ClinicCardConfig } from "../src/integrations/cliniccard/clinicCardTypes.ts";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,14 +70,10 @@ function makeAdapter(overrides: Partial<ClinicCardAdapter> = {}): ClinicCardAdap
   };
 }
 
-/** Builds a minimal agent loop with booking.apply wired to the given executor env. */
 function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Partial<ClinicCardAdapter> = {}) {
   const callerQueue: RuntimeAgentCaller[] = [];
-
   return {
-    pushCaller(caller: RuntimeAgentCaller) {
-      callerQueue.push(caller);
-    },
+    pushCaller(caller: RuntimeAgentCaller) { callerQueue.push(caller); },
     loop: createRuntimeAgentLoop({
       model: "test-model",
       caller: async (input) => {
@@ -93,216 +91,63 @@ function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Part
   };
 }
 
-// ── Test 1: ACTIVE_RUNTIME_AGENT_TOOLS now includes booking.apply ─────────────
+// ── A: Active tools ───────────────────────────────────────────────────────────
 
-test("PR#116/T1: ACTIVE_RUNTIME_AGENT_TOOLS is exactly [kb.search, availability.check, booking.apply]", () => {
+test("A: ACTIVE_RUNTIME_AGENT_TOOLS is exactly [kb.search, availability.check, booking.apply]", () => {
   assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check", "booking.apply"]);
 });
 
-// ── Test 4: tool selectable + mode disabled → booking_write_disabled, no writes ─
+// ── B: Booking disabled — action truth has can_say_booking_created=false ──────
 
-test("PR#116/T4: booking.apply can be selected by loop; returns booking_write_disabled when mode is disabled; no ClinicCard write", async () => {
+test("B: CLINICCARD_BOOKING_MODE disabled → booking_write_disabled; action truth has can_say_booking_created=false, required_next_action=admin_handoff; no writes", async () => {
   const writeCalls: string[] = [];
+  let receivedActionTruth: BookingApplyActionTruth | undefined;
+
   const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV, {
-    createPatient: async () => {
-      writeCalls.push("createPatient");
-      return { ok: true, data: { id: 1, name: "X", phone: null } };
-    },
-    createVisit: async () => {
-      writeCalls.push("createVisit");
-      return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "2026-07-15", time_start: "10:00", time_end: "10:30", status: "PLANNED", note: null } };
-    },
+    createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "X", phone: null } }; },
+    createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
   });
 
   // Round 1: model requests booking.apply
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{
-      tool: "booking.apply",
-      call_id: "call_1",
-      arguments: {
-        first_name: "Ivan",
-        last_name: "Petrov",
-        service: "Чистка",
-        requested_date: "2026-07-15",
-        requested_time: "10:00",
-      },
-    }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_b", arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
   }));
 
-  // Round 2: model produces final reply given the tool result
+  // Round 2: model receives tool result + booking_apply_action_truth in context
   pushCaller(async (input) => {
-    const toolResult = input.input.tool_results?.[0];
-    const bookingStatus = (toolResult?.data as Record<string, unknown> | undefined)?.booking_status;
-    return {
-      type: "final_response",
-      final_response: {
-        final_patient_reply: `Запись временно недоступна. Статус: ${String(bookingStatus)}.`,
-      },
-    };
+    receivedActionTruth = (input.input.context as Record<string, unknown>)?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
+    return { type: "final_response", final_response: { final_patient_reply: "Онлайн-запись временно недоступна. Администратор вам перезвонит." } };
   });
 
   const result = await loop.runTurn({
-    clinic_id: "clinic_1",
-    contact_id: "c1",
-    case_id: null,
-    user_message: "Запишите меня",
-    locale: "ru",
+    clinic_id: "clinic_1", contact_id: "c_b", case_id: null,
+    user_message: "Запишите меня", locale: "ru",
     channel_contact: { phone_number: "+420777000001", phone_source: "telegram_contact_button" },
   });
 
-  // Tool was executed (not denied by loop) and returned booking_write_disabled
-  const toolResult = result.tool_results[0];
-  assert.equal(toolResult?.tool, "booking.apply");
-  assert.equal(toolResult?.status, "success");
-  assert.equal((toolResult?.data as Record<string, unknown>)?.booking_status, "booking_write_disabled");
-  assert.equal((toolResult?.data as Record<string, unknown>)?.created_visit, false);
-  assert.equal((toolResult?.data as Record<string, unknown>)?.may_claim_booked, false);
+  // Executor returned booking_write_disabled
+  const toolData = result.tool_results[0]?.data as Record<string, unknown>;
+  assert.equal(toolData?.booking_status, "booking_write_disabled");
+  assert.equal(toolData?.created_visit, false);
+  assert.equal(toolData?.may_claim_booked, false);
 
-  // No ClinicCard writes occurred
-  assert.deepEqual(writeCalls, [], "createPatient and createVisit must not be called when mode is disabled");
+  // No ClinicCard writes
+  assert.deepEqual(writeCalls, []);
 
-  // Final reply does not claim booking
-  const reply = result.final_patient_reply;
-  for (const forbidden of ["записан", "записано", "запись создана", "подтверждён", "booked", "confirmed", "reserved"]) {
-    assert.equal(reply.toLowerCase().includes(forbidden), false, `Reply must not contain "${forbidden}"`);
-  }
+  // Model received structured action truth
+  assert.ok(receivedActionTruth, "second model call must receive booking_apply_action_truth in context");
+  assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_created, false);
+  assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_confirmed, false);
+  assert.equal(receivedActionTruth!.required_next_action, "admin_handoff");
 });
 
-// ── Test 5: channel_contact.phone_number present + live mode → visit created ──
+// ── C: Missing phone — action truth has required_next_action=ask_for_phone ────
 
-test("PR#116/T5: channel_contact.phone passed to executor; createPatient+createVisit called only through booking.apply; result proves visit_created", async () => {
-  const executorPhones: string[] = [];
-  const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV, {
-    createPatient: async (input) => {
-      executorPhones.push(input.phone ?? "");
-      return { ok: true, data: { id: 42, name: input.name, phone: input.phone ?? null } };
-    },
-    createVisit: async (input) => ({
-      ok: true,
-      data: {
-        id: 99,
-        patient_id: 42,
-        doctor_id: input.doctor_id,
-        cabinet_id: input.cabinet_id,
-        date: input.date,
-        time_start: input.time_start,
-        time_end: input.time_end,
-        status: input.status,
-        note: input.note ?? null,
-      },
-    }),
-  });
-
-  pushCaller(async () => ({
-    type: "tool_requests",
-    tool_requests: [{
-      tool: "booking.apply",
-      call_id: "call_live",
-      arguments: {
-        first_name: "Ivan",
-        last_name: "Petrov",
-        service: "Чистка",
-        requested_date: "2026-07-15",
-        requested_time: "10:00",
-      },
-    }],
-  }));
-
-  pushCaller(async (input) => {
-    const toolResult = input.input.tool_results?.[0];
-    const data = toolResult?.data as Record<string, unknown> | undefined;
-    if (data?.may_claim_booked === true) {
-      return { type: "final_response", final_response: { final_patient_reply: `Запись создана! Визит #${String(data.cliniccard_visit_id)}.` } };
-    }
-    return { type: "final_response", final_response: { final_patient_reply: "Запись не удалась." } };
-  });
-
-  const result = await loop.runTurn({
-    clinic_id: "clinic_1",
-    contact_id: "c1",
-    case_id: null,
-    user_message: "Запишите меня на чистку 15 июля в 10:00",
-    locale: "ru",
-    channel_contact: { phone_number: "+420777654321", phone_source: "telegram_contact_button" },
-  });
-
-  const toolResult = result.tool_results[0];
-  assert.equal(toolResult?.tool, "booking.apply");
-  assert.equal(toolResult?.status, "success");
-
-  const data = toolResult?.data as Record<string, unknown>;
-  assert.equal(data?.booking_status, "visit_created", "booking_status must be visit_created");
-  assert.equal(data?.created_visit, true, "created_visit must be true");
-  assert.equal(data?.may_claim_booked, true, "may_claim_booked must be true");
-  assert.equal(typeof data?.cliniccard_visit_id, "string", "cliniccard_visit_id must be a string");
-  assert.notEqual(data?.cliniccard_visit_id, null);
-
-  // Phone came from channel_contact, not from tool arguments
-  assert.equal(executorPhones[0], "+420777654321", "executor must use phone from channel_contact");
-
-  // Final reply contains confirmation (model confirmed since may_claim_booked=true)
-  assert.match(result.final_patient_reply, /запись создана|визит/i);
-});
-
-// ── Test 6: patient-facing proof guard ───────────────────────────────────────
-
-test("PR#116/T6: when may_claim_booked is false, model receives that fact and must not claim booking confirmed", async () => {
-  // Simulate executor returning booking_write_disabled (may_claim_booked=false)
-  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV);
-
-  pushCaller(async () => ({
-    type: "tool_requests",
-    tool_requests: [{
-      tool: "booking.apply",
-      call_id: "call_guard",
-      arguments: {
-        first_name: "Anna",
-        last_name: "Koval",
-        service: "Осмотр",
-        requested_date: "2026-07-16",
-        requested_time: "11:00",
-      },
-    }],
-  }));
-
-  // Model sees the tool result with may_claim_booked=false and must reply without claiming booked
-  pushCaller(async (input) => {
-    const toolResult = input.input.tool_results?.[0];
-    const data = toolResult?.data as Record<string, unknown> | undefined;
-    // Verify the model receives may_claim_booked=false
-    assert.equal(data?.may_claim_booked, false, "model must see may_claim_booked=false in tool result");
-    return {
-      type: "final_response",
-      final_response: {
-        final_patient_reply: "Онлайн-запись временно недоступна, пожалуйста, позвоните нам.",
-      },
-    };
-  });
-
-  const result = await loop.runTurn({
-    clinic_id: "clinic_1",
-    contact_id: "c2",
-    case_id: null,
-    user_message: "Хочу на приём",
-    locale: "ru",
-    channel_contact: { phone_number: "+380991112233", phone_source: "telegram_contact_button" },
-  });
-
-  const forbidden = ["записан", "записано", "запись создана", "подтверждён", "booked", "confirmed", "reserved"];
-  for (const word of forbidden) {
-    assert.equal(
-      result.final_patient_reply.toLowerCase().includes(word),
-      false,
-      `Final reply must not contain "${word}" when may_claim_booked=false`,
-    );
-  }
-});
-
-// ── Test 5b: missing_phone path via loop ──────────────────────────────────────
-
-test("PR#116/T3-loop: when channel_contact is absent, booking.apply returns missing_phone; no writes; no forbidden reply", async () => {
+test("C: no channel_contact → missing_phone; action truth required_next_action=ask_for_phone; no writes", async () => {
   const writeCalls: string[] = [];
+  let receivedActionTruth: BookingApplyActionTruth | undefined;
+
   const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV, {
     createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "", phone: null } }; },
     createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
@@ -310,97 +155,149 @@ test("PR#116/T3-loop: when channel_contact is absent, booking.apply returns miss
 
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{
-      tool: "booking.apply",
-      call_id: "call_nophone",
-      arguments: {
-        first_name: "Test",
-        last_name: "User",
-        service: "Чистка",
-        requested_date: "2026-07-20",
-        requested_time: "09:00",
-      },
-    }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_c", arguments: { first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2026-07-20", requested_time: "09:00" } }],
   }));
 
   pushCaller(async (input) => {
+    receivedActionTruth = (input.input.context as Record<string, unknown>)?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
     const toolResult = input.input.tool_results?.[0];
     const data = toolResult?.data as Record<string, unknown> | undefined;
     assert.equal(data?.booking_status, "missing_phone");
     assert.equal(data?.may_claim_booked, false);
-    return {
-      type: "final_response",
-      final_response: { final_patient_reply: "Для записи нужен ваш номер телефона — нажмите кнопку «Поделиться контактом»." },
-    };
+    return { type: "final_response", final_response: { final_patient_reply: "Нужен ваш номер телефона — поделитесь контактом через кнопку." } };
   });
 
   const result = await loop.runTurn({
-    clinic_id: "clinic_1",
-    contact_id: "c3",
-    case_id: null,
-    user_message: "Запишите меня",
-    locale: "ru",
-    // No channel_contact → phone_number will be undefined in executor context
+    clinic_id: "clinic_1", contact_id: "c_c", case_id: null,
+    user_message: "Запишите меня", locale: "ru",
+    // No channel_contact
   });
 
   assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.booking_status, "missing_phone");
-  assert.deepEqual(writeCalls, [], "no createPatient or createVisit when phone is missing");
+  assert.deepEqual(writeCalls, []);
 
-  for (const word of ["записан", "записано", "запись создана", "подтверждён", "booked", "confirmed", "reserved"]) {
-    assert.equal(result.final_patient_reply.toLowerCase().includes(word), false, `Reply must not contain "${word}"`);
-  }
+  assert.ok(receivedActionTruth, "second model call must receive booking_apply_action_truth");
+  assert.equal(receivedActionTruth!.required_next_action, "ask_for_phone");
+  assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_created, false);
 });
 
-// ── Test 9: no direct ClinicCard writes outside bookingApplyExecutor ──────────
+// ── D: Slot conflict — action truth has required_next_action=offer_another_time ─
 
-test("PR#116/T9: no direct ClinicCard write calls exist outside bookingApplyExecutor and ClinicCard adapter files", async () => {
-  const thisDir = dirname(fileURLToPath(import.meta.url));
-  const srcDir = resolve(thisDir, "../src");
+test("D: slot_conflict → action truth required_next_action=offer_another_time", () => {
+  const results = [{
+    tool: "booking.apply" as const,
+    call_id: "call_d",
+    status: "success" as const,
+    data: { booking_status: "slot_conflict", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+  }];
 
-  // Files allowed to contain ClinicCard write calls (createPatient, createVisit)
-  const allowedFiles = new Set([
-    resolve(srcDir, "integrations/cliniccard/bookingApplyExecutor.ts"),
-    resolve(srcDir, "integrations/cliniccard/clinicCardAdapter.ts"),
-    resolve(srcDir, "integrations/cliniccard/clinicCardTypes.ts"),
-  ]);
-
-  const { readdir } = await import("node:fs/promises");
-
-  async function collectTsFiles(dir: string): Promise<string[]> {
-    const entries = await readdir(dir, { withFileTypes: true });
-    const files: string[] = [];
-    for (const entry of entries) {
-      const full = resolve(dir, entry.name);
-      if (entry.isDirectory()) {
-        files.push(...await collectTsFiles(full));
-      } else if (entry.isFile() && entry.name.endsWith(".ts")) {
-        files.push(full);
-      }
-    }
-    return files;
-  }
-
-  const allFiles = await collectTsFiles(srcDir);
-  const violations: string[] = [];
-
-  for (const file of allFiles) {
-    if (allowedFiles.has(file)) continue;
-    const content = await readFile(file, "utf8");
-    if (content.includes("createPatient") || content.includes("createVisit")) {
-      violations.push(file.replace(srcDir + "/", "src/"));
-    }
-  }
-
-  assert.deepEqual(
-    violations,
-    [],
-    `ClinicCard write calls (createPatient, createVisit) found outside allowed files: ${violations.join(", ")}`,
-  );
+  const actionTruth = buildBookingApplyActionTruth(results);
+  assert.ok(actionTruth, "must produce action truth");
+  assert.equal(actionTruth!.required_next_action, "offer_another_time");
+  assert.equal(actionTruth!.allowed_claims.can_say_booking_created, false);
+  assert.equal(actionTruth!.allowed_claims.can_say_booking_confirmed, false);
+  assert.equal(actionTruth!.created_visit, false);
+  assert.equal(actionTruth!.may_claim_booked, false);
 });
 
-// ── Guard unit tests (pure helpers) ──────────────────────────────────────────
+// ── E: Success — action truth has can_say_booking_created=true; model reply unchanged ─
 
-test("guard/unit: hasSuccessfulBookingApplyProof — true only when all four proof fields present", () => {
+test("E: visit_created → action truth can_say_booking_created=true; model reply returned unchanged", async () => {
+  const executorPhones: string[] = [];
+  let receivedActionTruth: BookingApplyActionTruth | undefined;
+
+  const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV, {
+    createPatient: async (input) => {
+      executorPhones.push(input.phone ?? "");
+      return { ok: true, data: { id: 42, name: input.name, phone: input.phone ?? null } };
+    },
+  });
+
+  pushCaller(async () => ({
+    type: "tool_requests",
+    tool_requests: [{ tool: "booking.apply", call_id: "call_e", arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
+  }));
+
+  const modelReply = "Отлично, вы записаны на 15 июля в 10:00! Ждём вас.";
+  pushCaller(async (input) => {
+    receivedActionTruth = (input.input.context as Record<string, unknown>)?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
+    return { type: "final_response", final_response: { final_patient_reply: modelReply } };
+  });
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "c_e", case_id: null,
+    user_message: "Запишите меня на чистку 15 июля в 10:00", locale: "ru",
+    channel_contact: { phone_number: "+420777654321", phone_source: "telegram_contact_button" },
+  });
+
+  const toolData = result.tool_results[0]?.data as Record<string, unknown>;
+  assert.equal(toolData?.booking_status, "visit_created");
+  assert.equal(toolData?.created_visit, true);
+  assert.equal(toolData?.may_claim_booked, true);
+  assert.equal(typeof toolData?.cliniccard_visit_id, "string");
+
+  // Phone came from channel_contact
+  assert.equal(executorPhones[0], "+420777654321");
+
+  // Model received action truth with can_say_booking_created=true
+  assert.ok(receivedActionTruth, "second model call must receive booking_apply_action_truth");
+  assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_created, true);
+  assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_confirmed, true);
+  assert.equal(receivedActionTruth!.required_next_action, "none");
+
+  // Model reply is returned UNCHANGED — runtime does not intercept or replace
+  assert.equal(result.final_patient_reply, modelReply, "runtime must return model reply unchanged on success path");
+});
+
+// ── F: Forced finalization — booking_apply_action_truth in resolved_context ───
+
+test("F: forced finalization path receives booking_apply_action_truth in resolved_context", async () => {
+  let forcedCallContext: Record<string, unknown> | undefined;
+
+  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV);
+
+  // Round 1: model requests booking.apply
+  pushCaller(async () => ({
+    type: "tool_requests",
+    tool_requests: [{ tool: "booking.apply", call_id: "call_f1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
+  }));
+
+  // Round 2: model requests more tools (triggers forced finalization path)
+  pushCaller(async () => ({
+    type: "tool_requests",
+    tool_requests: [{ tool: "availability.check", call_id: "call_f2", arguments: { requested_date: "2026-07-15" } }],
+  }));
+
+  // Forced finalization (round 3): capture context
+  pushCaller(async (input) => {
+    forcedCallContext = input.input.context as Record<string, unknown>;
+    return { type: "final_response", final_response: { final_patient_reply: "Онлайн-запись недоступна. Обратитесь к администратору." } };
+  });
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "c_f", case_id: null,
+    user_message: "Запишите меня", locale: "ru",
+    channel_contact: { phone_number: "+420777333444", phone_source: "telegram_contact_button" },
+  });
+
+  // Forced finalization context must contain resolved_context (tool results)
+  assert.ok(forcedCallContext, "forced finalization must be called");
+  assert.ok(Array.isArray(forcedCallContext?.resolved_context), "resolved_context must be an array of tool results");
+
+  // booking_apply_action_truth must be present in forced finalization context
+  const actionTruth = forcedCallContext?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
+  assert.ok(actionTruth, "forced finalization context must contain booking_apply_action_truth");
+  assert.equal(actionTruth!.tool, "booking.apply");
+  assert.equal(actionTruth!.required_next_action, "admin_handoff");
+  assert.equal(actionTruth!.allowed_claims.can_say_booking_created, false);
+
+  // Runtime returns forced finalization model reply unchanged
+  assert.equal(result.final_patient_reply, "Онлайн-запись недоступна. Обратитесь к администратору.");
+});
+
+// ── G: hasSuccessfulBookingApplyProof — all four proof fields required ─────────
+
+test("G: hasSuccessfulBookingApplyProof — true only when all four proof fields present and valid", () => {
   const proof = {
     tool: "booking.apply" as const,
     status: "success" as const,
@@ -414,240 +311,170 @@ test("guard/unit: hasSuccessfulBookingApplyProof — true only when all four pro
   assert.equal(hasSuccessfulBookingApplyProof([]), false);
 });
 
-test("guard/unit: hasUnsafeBookingConfirmationText — detects forbidden booking-confirmation patterns", () => {
-  // Positive matches — booking confirmed wording
-  assert.equal(hasUnsafeBookingConfirmationText("Вы записаны!"), true, "записаны");
-  assert.equal(hasUnsafeBookingConfirmationText("Запись создана."), true, "запись создана");
-  assert.equal(hasUnsafeBookingConfirmationText("запись подтверждена"), true, "запись подтверждена");
-  assert.equal(hasUnsafeBookingConfirmationText("Подтверждён на 10:00"), true, "подтверждён");
-  assert.equal(hasUnsafeBookingConfirmationText("Подтверждена запись."), true, "подтверждена");
-  assert.equal(hasUnsafeBookingConfirmationText("Подтвержден."), true, "подтвержден followed by punctuation");
-  assert.equal(hasUnsafeBookingConfirmationText("Your booking is Confirmed"), true, "confirmed");
-  assert.equal(hasUnsafeBookingConfirmationText("You are booked"), true, "booked");
-  assert.equal(hasUnsafeBookingConfirmationText("Slot reserved"), true, "reserved");
-  assert.equal(hasUnsafeBookingConfirmationText("Записан на 15 июля"), true, "записан followed by non-Cyrillic");
-  // Negative matches — safe wording, must not trigger the guard
-  assert.equal(hasUnsafeBookingConfirmationText("Онлайн-запись временно недоступна"), false, "онлайн-запись is safe");
-  assert.equal(hasUnsafeBookingConfirmationText("Для подтверждения нужен номер"), false, "подтверждения is a noun form, not confirmed-wording");
-  assert.equal(hasUnsafeBookingConfirmationText("Передам данные администратору клиники."), false, "safe fallback text");
-  assert.equal(hasUnsafeBookingConfirmationText("Для записи нужен ваш номер телефона."), false, "missing_phone fallback is safe");
+// ── buildBookingApplyActionTruth unit tests ───────────────────────────────────
+
+test("buildBookingApplyActionTruth: returns null when no booking.apply in results", () => {
+  assert.equal(buildBookingApplyActionTruth([
+    { tool: "kb.search" as const, status: "success", data: {} },
+  ]), null);
+  assert.equal(buildBookingApplyActionTruth([]), null);
 });
 
-test("guard/unit: buildBookingApplySafeFallback — returns correct message per booking_status", () => {
+test("buildBookingApplyActionTruth: visit_created → none + can_say_booking_created=true", () => {
+  const result = buildBookingApplyActionTruth([{
+    tool: "booking.apply" as const,
+    status: "success",
+    data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "42" },
+  }]);
+  assert.ok(result);
+  assert.equal(result!.required_next_action, "none");
+  assert.equal(result!.allowed_claims.can_say_booking_created, true);
+  assert.equal(result!.allowed_claims.can_say_booking_confirmed, true);
+  assert.equal(result!.cliniccard_visit_id, "42");
+});
+
+test("buildBookingApplyActionTruth: booking_write_disabled → admin_handoff + can_say_booking_created=false", () => {
+  const result = buildBookingApplyActionTruth([{
+    tool: "booking.apply" as const,
+    status: "success",
+    data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+  }]);
+  assert.ok(result);
+  assert.equal(result!.required_next_action, "admin_handoff");
+  assert.equal(result!.allowed_claims.can_say_booking_created, false);
+  assert.equal(result!.allowed_claims.can_say_booking_confirmed, false);
+});
+
+test("buildBookingApplyActionTruth: missing_phone → ask_for_phone", () => {
+  const result = buildBookingApplyActionTruth([{
+    tool: "booking.apply" as const,
+    status: "success",
+    data: { booking_status: "missing_phone", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+  }]);
+  assert.ok(result);
+  assert.equal(result!.required_next_action, "ask_for_phone");
+});
+
+test("buildBookingApplyActionTruth: slot_conflict → offer_another_time", () => {
+  const result = buildBookingApplyActionTruth([{
+    tool: "booking.apply" as const,
+    status: "success",
+    data: { booking_status: "slot_conflict", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+  }]);
+  assert.ok(result);
+  assert.equal(result!.required_next_action, "offer_another_time");
+});
+
+test("buildBookingApplyActionTruth: unknown status → technical_fallback", () => {
+  const result = buildBookingApplyActionTruth([{
+    tool: "booking.apply" as const,
+    status: "success",
+    data: { booking_status: "some_unknown_error", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+  }]);
+  assert.ok(result);
+  assert.equal(result!.required_next_action, "technical_fallback");
+});
+
+// ── buildBookingApplyEmergencyFallback unit tests ─────────────────────────────
+
+test("buildBookingApplyEmergencyFallback: returns locale-aware minimal fallback (emergency only)", () => {
   const make = (status: string) => [{
     tool: "booking.apply" as const,
     status: "success" as const,
     data: { booking_status: status, created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
   }];
-  assert.match(buildBookingApplySafeFallback(make("booking_write_disabled")), /администратору клиники/);
-  assert.match(buildBookingApplySafeFallback(make("missing_phone")), /номер телефона/);
-  assert.match(buildBookingApplySafeFallback(make("slot_conflict")), /недоступно/);
-  assert.match(buildBookingApplySafeFallback(make("config_missing")), /администратору клиники/);
-  assert.match(buildBookingApplySafeFallback(make("cliniccard_write_failed")), /администратору клиники/);
-  assert.match(buildBookingApplySafeFallback(make("unknown_status")), /администратору клиники/);
-  assert.match(buildBookingApplySafeFallback([]), /администратору клиники/);
+
+  // Russian (default)
+  assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "ru"), /номер телефона/);
+  assert.match(buildBookingApplyEmergencyFallback(make("slot_conflict"), "ru"), /недоступно/);
+  assert.match(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "ru"), /администратору/);
+  assert.match(buildBookingApplyEmergencyFallback(make("unknown"), "ru"), /администратору/);
+
+  // English
+  assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "en"), /phone/);
+  assert.match(buildBookingApplyEmergencyFallback(make("slot_conflict"), "en"), /available/);
+  assert.match(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "en"), /clinic/);
+
+  // Czech
+  assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "cs"), /telefon/);
 });
 
-test("guard/unit: guardBookingApplyFinalReply — no-op when no booking.apply in results", () => {
-  const reply = "Запись создана!";
-  const result = guardBookingApplyFinalReply(reply, [
-    { tool: "kb.search" as const, status: "success", data: {} },
+// ── T9: no ClinicCard writes outside bookingApplyExecutor ────────────────────
+
+test("T9: no createPatient or createVisit calls outside bookingApplyExecutor and ClinicCard adapter files", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const srcDir = resolve(thisDir, "../src");
+
+  const allowedFiles = new Set([
+    resolve(srcDir, "integrations/cliniccard/bookingApplyExecutor.ts"),
+    resolve(srcDir, "integrations/cliniccard/clinicCardAdapter.ts"),
+    resolve(srcDir, "integrations/cliniccard/clinicCardTypes.ts"),
   ]);
-  assert.equal(result, reply);
+
+  const { readdir } = await import("node:fs/promises");
+
+  async function collectTsFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const full = resolve(dir, entry.name);
+      if (entry.isDirectory()) { files.push(...await collectTsFiles(full)); }
+      else if (entry.isFile() && entry.name.endsWith(".ts")) { files.push(full); }
+    }
+    return files;
+  }
+
+  const allFiles = await collectTsFiles(srcDir);
+  const violations: string[] = [];
+  for (const file of allFiles) {
+    if (allowedFiles.has(file)) continue;
+    const content = await readFile(file, "utf8");
+    if (content.includes("createPatient") || content.includes("createVisit")) {
+      violations.push(file.replace(srcDir + "/", "src/"));
+    }
+  }
+  assert.deepEqual(violations, [], `ClinicCard write calls found outside allowed files: ${violations.join(", ")}`);
 });
 
-test("guard/unit: guardBookingApplyFinalReply — no-op when proof is complete", () => {
-  const reply = "Запись создана!";
-  const result = guardBookingApplyFinalReply(reply, [{
-    tool: "booking.apply" as const,
-    status: "success",
-    data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" },
-  }]);
-  assert.equal(result, reply);
+// ── Proof: no regex semantic guard in runtime ─────────────────────────────────
+
+test("proof: UNSAFE_BOOKING_TEXT_RE and guardBookingApplyFinalReply are removed from runtime sources", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const srcDir = resolve(thisDir, "../src");
+
+  const { readdir } = await import("node:fs/promises");
+  async function collectTsFiles(dir: string): Promise<string[]> {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files: string[] = [];
+    for (const entry of entries) {
+      const full = resolve(dir, entry.name);
+      if (entry.isDirectory()) { files.push(...await collectTsFiles(full)); }
+      else if (entry.isFile() && entry.name.endsWith(".ts")) { files.push(full); }
+    }
+    return files;
+  }
+
+  const allFiles = await collectTsFiles(srcDir);
+  const violations: string[] = [];
+
+  for (const file of allFiles) {
+    const content = await readFile(file, "utf8");
+    if (content.includes("UNSAFE_BOOKING_TEXT_RE")) {
+      violations.push(`${file.replace(srcDir + "/", "src/")} contains UNSAFE_BOOKING_TEXT_RE`);
+    }
+    if (content.includes("guardBookingApplyFinalReply")) {
+      violations.push(`${file.replace(srcDir + "/", "src/")} contains guardBookingApplyFinalReply`);
+    }
+  }
+
+  assert.deepEqual(violations, [], `Regex guard must be fully removed: ${violations.join(", ")}`);
 });
 
-test("guard/unit: guardBookingApplyFinalReply — no-op when reply is already safe (no forbidden words)", () => {
-  const reply = "Онлайн-запись временно недоступна. Позвоните нам.";
-  const result = guardBookingApplyFinalReply(reply, [{
-    tool: "booking.apply" as const,
-    status: "success",
-    data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
-  }]);
-  assert.equal(result, reply);
-});
+// ── Proof: booking_apply_action_truth is passed to model in runtimeAgentLoop ──
 
-test("guard/unit: guardBookingApplyFinalReply — replaces unsafe reply when proof missing", () => {
-  const result = guardBookingApplyFinalReply("Запись создана!", [{
-    tool: "booking.apply" as const,
-    status: "success",
-    data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
-  }]);
-  assert.notEqual(result, "Запись создана!");
-  assert.equal(hasUnsafeBookingConfirmationText(result), false);
-  assert.match(result, /администратору клиники/);
-});
-
-// ── Guard integration test 1: bad model + booking_write_disabled ──────────────
-
-test("PR#116/guard-1: bad model says 'Запись создана' after booking_write_disabled — runtime replaces reply", async () => {
-  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV);
-
-  pushCaller(async () => ({
-    type: "tool_requests",
-    tool_requests: [{
-      tool: "booking.apply",
-      call_id: "call_bad1",
-      arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" },
-    }],
-  }));
-
-  // Bad model ignores tool result and claims booking succeeded
-  pushCaller(async () => ({
-    type: "final_response",
-    final_response: { final_patient_reply: "Запись создана! Ждем вас 15 июля в 10:00." },
-  }));
-
-  const result = await loop.runTurn({
-    clinic_id: "clinic_1",
-    contact_id: "c10",
-    case_id: null,
-    user_message: "Запишите меня",
-    locale: "ru",
-    channel_contact: { phone_number: "+420777000099", phone_source: "telegram_contact_button" },
-  });
-
-  // Tool result must still show booking_write_disabled
-  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.booking_status, "booking_write_disabled");
-  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.may_claim_booked, false);
-
-  // Final reply must not contain forbidden booking confirmation wording
-  assert.equal(hasUnsafeBookingConfirmationText(result.final_patient_reply), false, "fallback reply must not contain booking-confirmation language");
-  // Fallback must mention admin
-  assert.match(result.final_patient_reply, /администратору клиники/);
-});
-
-// ── Guard integration test 2: bad model + missing_phone ──────────────────────
-
-test("PR#116/guard-2: bad model says 'confirmed/booked' after missing_phone — runtime replaces reply; no writes; fallback mentions phone", async () => {
-  const writeCalls: string[] = [];
-  const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV, {
-    createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "", phone: null } }; },
-    createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
-  });
-
-  pushCaller(async () => ({
-    type: "tool_requests",
-    tool_requests: [{
-      tool: "booking.apply",
-      call_id: "call_bad2",
-      arguments: { first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2026-07-20", requested_time: "09:00" },
-    }],
-  }));
-
-  // Bad model ignores missing_phone and claims booking is confirmed
-  pushCaller(async () => ({
-    type: "final_response",
-    final_response: { final_patient_reply: "Your booking is confirmed for July 20 at 09:00." },
-  }));
-
-  const result = await loop.runTurn({
-    clinic_id: "clinic_1",
-    contact_id: "c11",
-    case_id: null,
-    user_message: "Book me",
-    locale: "en",
-    // No channel_contact — phone missing
-  });
-
-  // Tool result must show missing_phone
-  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.booking_status, "missing_phone");
-
-  // No ClinicCard writes
-  assert.deepEqual(writeCalls, [], "no createPatient or createVisit when phone is missing");
-
-  // Final reply must not contain forbidden booking confirmation wording
-  assert.equal(hasUnsafeBookingConfirmationText(result.final_patient_reply), false, "fallback reply must not contain booking-confirmation language");
-  // Fallback must mention phone
-  assert.match(result.final_patient_reply, /номер телефона|номер/);
-});
-
-// ── Guard integration test 3: success path allowed ───────────────────────────
-
-test("PR#116/guard-3: successful visit_created with full proof — model reply with 'Запись создана' is allowed", async () => {
-  const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV);
-
-  pushCaller(async () => ({
-    type: "tool_requests",
-    tool_requests: [{
-      tool: "booking.apply",
-      call_id: "call_ok",
-      arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" },
-    }],
-  }));
-
-  pushCaller(async () => ({
-    type: "final_response",
-    final_response: { final_patient_reply: "Запись создана! Ждём вас 15 июля в 10:00." },
-  }));
-
-  const result = await loop.runTurn({
-    clinic_id: "clinic_1",
-    contact_id: "c12",
-    case_id: null,
-    user_message: "Запишите меня",
-    locale: "ru",
-    channel_contact: { phone_number: "+420777111222", phone_source: "telegram_contact_button" },
-  });
-
-  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.booking_status, "visit_created");
-  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.may_claim_booked, true);
-  // Guard must NOT replace the reply when proof is complete
-  assert.equal(result.final_patient_reply, "Запись создана! Ждём вас 15 июля в 10:00.");
-});
-
-// ── Guard integration test 4: forced finalization path ───────────────────────
-
-test("PR#116/guard-4: forced finalization returns unsafe booking text without proof — runtime replaces it", async () => {
-  // Simulate round 2 requesting more tools (triggers forced finalization path)
-  // booking.apply already ran in round 1 with booking_write_disabled
-  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV);
-
-  // Round 1: model requests booking.apply
-  pushCaller(async () => ({
-    type: "tool_requests",
-    tool_requests: [{
-      tool: "booking.apply",
-      call_id: "call_forced",
-      arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" },
-    }],
-  }));
-
-  // Round 2: model requests more tools (not allowed — triggers forced finalization)
-  pushCaller(async () => ({
-    type: "tool_requests",
-    tool_requests: [{ tool: "availability.check", call_id: "call_r2", arguments: { requested_date: "2026-07-15" } }],
-  }));
-
-  // Forced finalization (round 3): bad model returns unsafe text
-  pushCaller(async () => ({
-    type: "final_response",
-    final_response: { final_patient_reply: "Вы записаны на 15 июля!" },
-  }));
-
-  const result = await loop.runTurn({
-    clinic_id: "clinic_1",
-    contact_id: "c13",
-    case_id: null,
-    user_message: "Запишите меня",
-    locale: "ru",
-    channel_contact: { phone_number: "+420777333444", phone_source: "telegram_contact_button" },
-  });
-
-  // Round 1 tool result must show booking_write_disabled
-  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
-  assert.ok(bookingResult, "booking.apply result must be present");
-  assert.equal((bookingResult?.data as Record<string, unknown>)?.booking_status, "booking_write_disabled");
-
-  // Final reply must not contain forbidden booking confirmation wording
-  assert.equal(hasUnsafeBookingConfirmationText(result.final_patient_reply), false, "forced finalization reply must not contain booking-confirmation language");
+test("proof: runtimeAgentLoop.ts injects booking_apply_action_truth into second model call context", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const loopSrc = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoop.ts"), "utf8");
+  assert.match(loopSrc, /booking_apply_action_truth/, "runtimeAgentLoop must inject booking_apply_action_truth into model context");
+  assert.match(loopSrc, /buildBookingApplyActionTruth/, "runtimeAgentLoop must call buildBookingApplyActionTruth");
 });

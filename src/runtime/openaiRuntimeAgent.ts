@@ -153,5 +153,14 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "3. Human or admin requests ('хочу поговорить с человеком', 'позовите администратора'): acknowledge the request and ask what should be passed to the clinic team, or explain that clinic staff can help directly. Do not claim that an administrator was notified or will contact the patient unless a notification or handoff side effect was actually created or queued. Do not continue with booking intake.",
     "4. When tool_results are already provided in your context, write your final patient reply using those results. Do not request additional tools when results are already available.",
     "Do not claim booking is confirmed without explicit backend proof.",
+    "BOOKING ACTION TRUTH: When context contains booking_apply_action_truth, follow it strictly:",
+    "- If allowed_claims.can_say_booking_created is false: do not claim the appointment was created.",
+    "- If allowed_claims.can_say_booking_confirmed is false: do not claim the appointment is confirmed.",
+    "- required_next_action='ask_for_phone': ask the patient to share their phone number.",
+    "- required_next_action='offer_another_time': the time slot is unavailable, offer to check alternatives.",
+    "- required_next_action='admin_handoff': explain the clinic team will follow up.",
+    "- required_next_action='technical_fallback': explain a temporary issue, clinic team will follow up.",
+    "- required_next_action='none' with can_say_booking_created=true: confirm the booking naturally in the patient's language.",
+    "Always write in the patient's language — do not use hardcoded Russian/English unless that is the patient's language.",
   ].join("\n");
 }

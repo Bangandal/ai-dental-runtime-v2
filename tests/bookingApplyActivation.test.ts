@@ -14,6 +14,12 @@ import test from "node:test";
 
 import { ACTIVE_RUNTIME_AGENT_TOOLS } from "../src/runtime/openaiRuntimeAgent.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
+import {
+  hasSuccessfulBookingApplyProof,
+  hasUnsafeBookingConfirmationText,
+  buildBookingApplySafeFallback,
+  guardBookingApplyFinalReply,
+} from "../src/runtime/bookingApplyGuard.ts";
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
@@ -390,4 +396,258 @@ test("PR#116/T9: no direct ClinicCard write calls exist outside bookingApplyExec
     [],
     `ClinicCard write calls (createPatient, createVisit) found outside allowed files: ${violations.join(", ")}`,
   );
+});
+
+// ── Guard unit tests (pure helpers) ──────────────────────────────────────────
+
+test("guard/unit: hasSuccessfulBookingApplyProof — true only when all four proof fields present", () => {
+  const proof = {
+    tool: "booking.apply" as const,
+    status: "success" as const,
+    data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" },
+  };
+  assert.equal(hasSuccessfulBookingApplyProof([proof]), true);
+  assert.equal(hasSuccessfulBookingApplyProof([{ ...proof, data: { ...proof.data, may_claim_booked: false } }]), false);
+  assert.equal(hasSuccessfulBookingApplyProof([{ ...proof, data: { ...proof.data, created_visit: false } }]), false);
+  assert.equal(hasSuccessfulBookingApplyProof([{ ...proof, data: { ...proof.data, cliniccard_visit_id: "" } }]), false);
+  assert.equal(hasSuccessfulBookingApplyProof([{ ...proof, data: { ...proof.data, booking_status: "booking_write_disabled" } }]), false);
+  assert.equal(hasSuccessfulBookingApplyProof([]), false);
+});
+
+test("guard/unit: hasUnsafeBookingConfirmationText — detects forbidden booking-confirmation patterns", () => {
+  // Positive matches — booking confirmed wording
+  assert.equal(hasUnsafeBookingConfirmationText("Вы записаны!"), true, "записаны");
+  assert.equal(hasUnsafeBookingConfirmationText("Запись создана."), true, "запись создана");
+  assert.equal(hasUnsafeBookingConfirmationText("запись подтверждена"), true, "запись подтверждена");
+  assert.equal(hasUnsafeBookingConfirmationText("Подтверждён на 10:00"), true, "подтверждён");
+  assert.equal(hasUnsafeBookingConfirmationText("Подтверждена запись."), true, "подтверждена");
+  assert.equal(hasUnsafeBookingConfirmationText("Подтвержден."), true, "подтвержден followed by punctuation");
+  assert.equal(hasUnsafeBookingConfirmationText("Your booking is Confirmed"), true, "confirmed");
+  assert.equal(hasUnsafeBookingConfirmationText("You are booked"), true, "booked");
+  assert.equal(hasUnsafeBookingConfirmationText("Slot reserved"), true, "reserved");
+  assert.equal(hasUnsafeBookingConfirmationText("Записан на 15 июля"), true, "записан followed by non-Cyrillic");
+  // Negative matches — safe wording, must not trigger the guard
+  assert.equal(hasUnsafeBookingConfirmationText("Онлайн-запись временно недоступна"), false, "онлайн-запись is safe");
+  assert.equal(hasUnsafeBookingConfirmationText("Для подтверждения нужен номер"), false, "подтверждения is a noun form, not confirmed-wording");
+  assert.equal(hasUnsafeBookingConfirmationText("Передам данные администратору клиники."), false, "safe fallback text");
+  assert.equal(hasUnsafeBookingConfirmationText("Для записи нужен ваш номер телефона."), false, "missing_phone fallback is safe");
+});
+
+test("guard/unit: buildBookingApplySafeFallback — returns correct message per booking_status", () => {
+  const make = (status: string) => [{
+    tool: "booking.apply" as const,
+    status: "success" as const,
+    data: { booking_status: status, created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+  }];
+  assert.match(buildBookingApplySafeFallback(make("booking_write_disabled")), /администратору клиники/);
+  assert.match(buildBookingApplySafeFallback(make("missing_phone")), /номер телефона/);
+  assert.match(buildBookingApplySafeFallback(make("slot_conflict")), /недоступно/);
+  assert.match(buildBookingApplySafeFallback(make("config_missing")), /администратору клиники/);
+  assert.match(buildBookingApplySafeFallback(make("cliniccard_write_failed")), /администратору клиники/);
+  assert.match(buildBookingApplySafeFallback(make("unknown_status")), /администратору клиники/);
+  assert.match(buildBookingApplySafeFallback([]), /администратору клиники/);
+});
+
+test("guard/unit: guardBookingApplyFinalReply — no-op when no booking.apply in results", () => {
+  const reply = "Запись создана!";
+  const result = guardBookingApplyFinalReply(reply, [
+    { tool: "kb.search" as const, status: "success", data: {} },
+  ]);
+  assert.equal(result, reply);
+});
+
+test("guard/unit: guardBookingApplyFinalReply — no-op when proof is complete", () => {
+  const reply = "Запись создана!";
+  const result = guardBookingApplyFinalReply(reply, [{
+    tool: "booking.apply" as const,
+    status: "success",
+    data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" },
+  }]);
+  assert.equal(result, reply);
+});
+
+test("guard/unit: guardBookingApplyFinalReply — no-op when reply is already safe (no forbidden words)", () => {
+  const reply = "Онлайн-запись временно недоступна. Позвоните нам.";
+  const result = guardBookingApplyFinalReply(reply, [{
+    tool: "booking.apply" as const,
+    status: "success",
+    data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+  }]);
+  assert.equal(result, reply);
+});
+
+test("guard/unit: guardBookingApplyFinalReply — replaces unsafe reply when proof missing", () => {
+  const result = guardBookingApplyFinalReply("Запись создана!", [{
+    tool: "booking.apply" as const,
+    status: "success",
+    data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+  }]);
+  assert.notEqual(result, "Запись создана!");
+  assert.equal(hasUnsafeBookingConfirmationText(result), false);
+  assert.match(result, /администратору клиники/);
+});
+
+// ── Guard integration test 1: bad model + booking_write_disabled ──────────────
+
+test("PR#116/guard-1: bad model says 'Запись создана' after booking_write_disabled — runtime replaces reply", async () => {
+  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV);
+
+  pushCaller(async () => ({
+    type: "tool_requests",
+    tool_requests: [{
+      tool: "booking.apply",
+      call_id: "call_bad1",
+      arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" },
+    }],
+  }));
+
+  // Bad model ignores tool result and claims booking succeeded
+  pushCaller(async () => ({
+    type: "final_response",
+    final_response: { final_patient_reply: "Запись создана! Ждем вас 15 июля в 10:00." },
+  }));
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c10",
+    case_id: null,
+    user_message: "Запишите меня",
+    locale: "ru",
+    channel_contact: { phone_number: "+420777000099", phone_source: "telegram_contact_button" },
+  });
+
+  // Tool result must still show booking_write_disabled
+  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.booking_status, "booking_write_disabled");
+  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.may_claim_booked, false);
+
+  // Final reply must not contain forbidden booking confirmation wording
+  assert.equal(hasUnsafeBookingConfirmationText(result.final_patient_reply), false, "fallback reply must not contain booking-confirmation language");
+  // Fallback must mention admin
+  assert.match(result.final_patient_reply, /администратору клиники/);
+});
+
+// ── Guard integration test 2: bad model + missing_phone ──────────────────────
+
+test("PR#116/guard-2: bad model says 'confirmed/booked' after missing_phone — runtime replaces reply; no writes; fallback mentions phone", async () => {
+  const writeCalls: string[] = [];
+  const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV, {
+    createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "", phone: null } }; },
+    createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
+  });
+
+  pushCaller(async () => ({
+    type: "tool_requests",
+    tool_requests: [{
+      tool: "booking.apply",
+      call_id: "call_bad2",
+      arguments: { first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2026-07-20", requested_time: "09:00" },
+    }],
+  }));
+
+  // Bad model ignores missing_phone and claims booking is confirmed
+  pushCaller(async () => ({
+    type: "final_response",
+    final_response: { final_patient_reply: "Your booking is confirmed for July 20 at 09:00." },
+  }));
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c11",
+    case_id: null,
+    user_message: "Book me",
+    locale: "en",
+    // No channel_contact — phone missing
+  });
+
+  // Tool result must show missing_phone
+  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.booking_status, "missing_phone");
+
+  // No ClinicCard writes
+  assert.deepEqual(writeCalls, [], "no createPatient or createVisit when phone is missing");
+
+  // Final reply must not contain forbidden booking confirmation wording
+  assert.equal(hasUnsafeBookingConfirmationText(result.final_patient_reply), false, "fallback reply must not contain booking-confirmation language");
+  // Fallback must mention phone
+  assert.match(result.final_patient_reply, /номер телефона|номер/);
+});
+
+// ── Guard integration test 3: success path allowed ───────────────────────────
+
+test("PR#116/guard-3: successful visit_created with full proof — model reply with 'Запись создана' is allowed", async () => {
+  const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV);
+
+  pushCaller(async () => ({
+    type: "tool_requests",
+    tool_requests: [{
+      tool: "booking.apply",
+      call_id: "call_ok",
+      arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" },
+    }],
+  }));
+
+  pushCaller(async () => ({
+    type: "final_response",
+    final_response: { final_patient_reply: "Запись создана! Ждём вас 15 июля в 10:00." },
+  }));
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c12",
+    case_id: null,
+    user_message: "Запишите меня",
+    locale: "ru",
+    channel_contact: { phone_number: "+420777111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.booking_status, "visit_created");
+  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.may_claim_booked, true);
+  // Guard must NOT replace the reply when proof is complete
+  assert.equal(result.final_patient_reply, "Запись создана! Ждём вас 15 июля в 10:00.");
+});
+
+// ── Guard integration test 4: forced finalization path ───────────────────────
+
+test("PR#116/guard-4: forced finalization returns unsafe booking text without proof — runtime replaces it", async () => {
+  // Simulate round 2 requesting more tools (triggers forced finalization path)
+  // booking.apply already ran in round 1 with booking_write_disabled
+  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV);
+
+  // Round 1: model requests booking.apply
+  pushCaller(async () => ({
+    type: "tool_requests",
+    tool_requests: [{
+      tool: "booking.apply",
+      call_id: "call_forced",
+      arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" },
+    }],
+  }));
+
+  // Round 2: model requests more tools (not allowed — triggers forced finalization)
+  pushCaller(async () => ({
+    type: "tool_requests",
+    tool_requests: [{ tool: "availability.check", call_id: "call_r2", arguments: { requested_date: "2026-07-15" } }],
+  }));
+
+  // Forced finalization (round 3): bad model returns unsafe text
+  pushCaller(async () => ({
+    type: "final_response",
+    final_response: { final_patient_reply: "Вы записаны на 15 июля!" },
+  }));
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "c13",
+    case_id: null,
+    user_message: "Запишите меня",
+    locale: "ru",
+    channel_contact: { phone_number: "+420777333444", phone_source: "telegram_contact_button" },
+  });
+
+  // Round 1 tool result must show booking_write_disabled
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "booking.apply result must be present");
+  assert.equal((bookingResult?.data as Record<string, unknown>)?.booking_status, "booking_write_disabled");
+
+  // Final reply must not contain forbidden booking confirmation wording
+  assert.equal(hasUnsafeBookingConfirmationText(result.final_patient_reply), false, "forced finalization reply must not contain booking-confirmation language");
 });

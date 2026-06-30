@@ -16,6 +16,7 @@ import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
 import type { ToolExecutionResult } from "./toolResults.ts";
 import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
+import { guardBookingApplyFinalReply } from "./bookingApplyGuard.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -237,7 +238,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             debug.reason = "forced_finalization_after_tool_results";
             await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
             return {
-              final_patient_reply: forcedOutput.final_response.final_patient_reply,
+              final_patient_reply: guardBookingApplyFinalReply(forcedOutput.final_response.final_patient_reply, toolResults, input.locale),
               conversation_id: conversationId,
               tool_requests: toolRequests,
               tool_results: toolResults,
@@ -260,7 +261,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
       return {
-        final_patient_reply: secondOutput.final_response.final_patient_reply,
+        final_patient_reply: guardBookingApplyFinalReply(secondOutput.final_response.final_patient_reply, toolResults, input.locale),
         conversation_id: conversationId,
         tool_requests: toolRequests,
         tool_results: toolResults,

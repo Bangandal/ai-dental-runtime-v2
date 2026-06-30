@@ -26,17 +26,17 @@ test("RuntimeAgentTurnResult requires final_patient_reply in type examples", () 
   assert.ok(result.final_patient_reply.length > 0);
 });
 
-test("active tool definitions include kb.search and availability.check only", () => {
-  assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check"]);
+test("active tool definitions include kb.search, availability.check, and booking.apply", () => {
+  assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check", "booking.apply"]);
   assert.equal("kb.search" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
   assert.equal("availability.check" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
+  assert.equal("booking.apply" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
   assert.equal("admin.notify" in RUNTIME_AGENT_TOOL_DEFINITIONS, false);
 });
 
-test("booking.apply is defined but not yet active (phone plumbing pending)", () => {
+test("booking.apply is active now that phone pass-through is wired end-to-end (PR #116)", () => {
   assert.equal("booking.apply" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
-  assert.equal(ACTIVE_RUNTIME_AGENT_TOOLS.includes("kb.search" as never), true);
-  assert.equal((ACTIVE_RUNTIME_AGENT_TOOLS as readonly string[]).includes("booking.apply"), false);
+  assert.equal((ACTIVE_RUNTIME_AGENT_TOOLS as readonly string[]).includes("booking.apply"), true);
 });
 
 test("future tools are listed but not active", () => {

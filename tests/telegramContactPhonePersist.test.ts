@@ -234,22 +234,22 @@ test("contact persist failure sends fallback message (not success acknowledgemen
   assert.ok(sentText.length > 0, "must send some fallback reply");
 });
 
-// ── test 6: booking.apply remains inactive ────────────────────────────────────
+// ── test 6: booking.apply is now active (activated in PR #116) ───────────────
 
-test("booking.apply remains inactive — not in ACTIVE_RUNTIME_AGENT_TOOLS", () => {
+test("booking.apply is now active — included in ACTIVE_RUNTIME_AGENT_TOOLS (PR #116)", () => {
   assert.equal(
     (ACTIVE_RUNTIME_AGENT_TOOLS as readonly string[]).includes("booking.apply"),
-    false,
-    "booking.apply must not be activated in this PR",
+    true,
+    "booking.apply was activated in PR #116 after phone pass-through was proven in PR #115",
   );
 });
 
 // ── test 7: ACTIVE_RUNTIME_AGENT_TOOLS invariant ─────────────────────────────
 
-test('ACTIVE_RUNTIME_AGENT_TOOLS equals ["kb.search", "availability.check"]', () => {
+test('ACTIVE_RUNTIME_AGENT_TOOLS equals ["kb.search", "availability.check", "booking.apply"]', () => {
   assert.deepEqual(
     [...ACTIVE_RUNTIME_AGENT_TOOLS].sort(),
-    ["availability.check", "kb.search"],
+    ["availability.check", "booking.apply", "kb.search"],
   );
 });
 

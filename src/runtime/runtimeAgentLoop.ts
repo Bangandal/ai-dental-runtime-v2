@@ -122,6 +122,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       if (firstOutput.type === "final_response" && isMalformedFinalResponse(firstOutput)) {
         debug.reason = "malformed_first_model_response";
+        await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
           final_patient_reply: buildMalformedResponseFallback(input.locale),
           conversation_id: conversationId,
@@ -229,6 +230,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         debug.reason = bookingActionTruth
           ? "malformed_second_model_response_booking_fallback"
           : "malformed_second_model_response_generic_fallback";
+        await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
           final_patient_reply: malformedReply,
           conversation_id: conversationId,

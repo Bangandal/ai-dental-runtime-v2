@@ -20,6 +20,7 @@ import {
   type RuntimeAgentCallerOutput,
 } from "../src/runtime/runtimeAgentLoop.ts";
 import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
+import type { ConversationMemoryRepository } from "../src/runtime/runtimeRepositories.ts";
 
 const MALFORMED_MARKER = ["malformed_openai_response"];
 
@@ -83,6 +84,107 @@ test("B: first call malformed in CS locale returns CS fallback", async () => {
 
   assert.doesNotMatch(result.final_patient_reply, /having trouble/i);
   assert.match(result.final_patient_reply, /kontaktujte kliniku/i);
+});
+
+// ── Codex P2: conversation memory must be saved on malformed early returns ──
+
+function makeMemorySpy(): { repo: ConversationMemoryRepository; saveCalls: unknown[] } {
+  const saveCalls: unknown[] = [];
+  const repo: ConversationMemoryRepository = {
+    async getConversationMemory() {
+      return { ok: true, data: { conversation_id: null } };
+    },
+    async saveConversationMemory(input) {
+      saveCalls.push(input);
+      return { ok: true, data: { conversation_id: input.conversation_id } };
+    },
+  };
+  return { repo, saveCalls };
+}
+
+test("Codex-P2-A: first-call malformed with conversation_id from caller persists memory once", async () => {
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    conversation_id: "conv_from_caller",
+    final_response: { final_patient_reply: "irrelevant", safety_notes: MALFORMED_MARKER },
+  });
+  const { repo, saveCalls } = makeMemorySpy();
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {}, conversationMemoryRepository: repo });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  assert.equal(saveCalls.length, 1);
+  assert.equal((saveCalls[0] as any).conversation_id, "conv_from_caller");
+  assert.equal(result.conversation_id, "conv_from_caller");
+  assert.equal((result.debug as any).reason, "malformed_first_model_response");
+});
+
+test("Codex-P2-B: second-call malformed with conversation_id from caller persists memory once", async () => {
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+      };
+    }
+    return { ...malformedOutput(), conversation_id: "conv_from_second_call" };
+  };
+  const { repo, saveCalls } = makeMemorySpy();
+  const agent = createRuntimeAgentLoop({
+    model: "gpt-test",
+    caller,
+    executors: bookingApplyExecutors("booking_write_disabled"),
+    conversationMemoryRepository: repo,
+  });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  assert.equal(saveCalls.length, 1);
+  assert.equal((saveCalls[0] as any).conversation_id, "conv_from_second_call");
+  assert.equal(result.conversation_id, "conv_from_second_call");
+  assert.equal((result.debug as any).reason, "malformed_second_model_response_booking_fallback");
+});
+
+test("Codex-P2-C: no conversation_id at all -> save is not called, behavior stays safe", async () => {
+  const caller: RuntimeAgentCaller = async () => malformedOutput();
+  const { repo, saveCalls } = makeMemorySpy();
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {}, conversationMemoryRepository: repo });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  assert.equal(saveCalls.length, 0);
+  assert.equal(result.conversation_id, null);
+  assert.doesNotMatch(result.final_patient_reply, /having trouble/i);
+});
+
+test("Codex-P2-D: debug reasons unaffected by the memory-save fix", async () => {
+  const firstCaller: RuntimeAgentCaller = async () => malformedOutput();
+  const firstResult = await createRuntimeAgentLoop({ model: "m", caller: firstCaller, executors: {} }).runTurn(makeInput("ru"));
+  assert.equal((firstResult.debug as any).reason, "malformed_first_model_response");
+
+  let round = 0;
+  const bookingCaller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) {
+      return { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }] };
+    }
+    return malformedOutput();
+  };
+  const bookingResult = await createRuntimeAgentLoop({ model: "m", caller: bookingCaller, executors: bookingApplyExecutors("booking_write_disabled") }).runTurn(makeInput("ru"));
+  assert.equal((bookingResult.debug as any).reason, "malformed_second_model_response_booking_fallback");
+
+  let round2 = 0;
+  const availabilityCaller: RuntimeAgentCaller = async () => {
+    round2 += 1;
+    if (round2 === 1) {
+      return { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "a1", arguments: { requested_date: "2026-07-04", requested_time: "12:00" } }] };
+    }
+    return malformedOutput();
+  };
+  const availabilityExecutors: ToolExecutorRegistry = {
+    "availability.check": async () => ({ tool: "availability.check", status: "success", data: { slots: [{ slot_id: "s1", starts_at: "a", ends_at: "b" }] } }),
+  };
+  const genericResult = await createRuntimeAgentLoop({ model: "m", caller: availabilityCaller, executors: availabilityExecutors }).runTurn(makeInput("ru"));
+  assert.equal((genericResult.debug as any).reason, "malformed_second_model_response_generic_fallback");
 });
 
 // ── C/D: second-call malformed after booking.apply ──────────────────────────

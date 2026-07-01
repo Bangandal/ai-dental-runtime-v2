@@ -18,6 +18,9 @@ import { buildReplyContextShadow } from "./replyContextBuilderShadow.ts";
 import { buildTopicMemoryCandidateShadow, buildTopicMemoryPatch } from "./topicMemoryCandidateShadow.ts";
 import { buildRuntimeLlmCallDebug, mergeRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import type { RuntimeTurnHttpRequestBody, RuntimeTurnHttpSuccessResponse } from "./runtimeTurnHttpRoute.ts";
+import { buildBookingApplyActionTruth } from "./bookingApplyGuard.ts";
+import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
+import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
 
 export interface RuntimeTurnOrchestratorDeps {
   runtimeTurnService: RuntimeTurnService;
@@ -32,6 +35,7 @@ export interface RuntimeTurnOrchestratorDeps {
   runtimeGateClassifier?: RuntimeGateClassifier;
   turnUnderstandingClassifier?: TurnUnderstandingClassifier;
   debugEnabled?: boolean;
+  adminNotifier?: AdminNotifier;
 }
 
 export type RuntimeTurnOrchestratorResult =
@@ -414,11 +418,50 @@ export async function runRuntimeTurnOrchestrated(
       ? { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug }
       : undefined;
 
+    const sideEffects: unknown[] = [];
+    if (deps.adminNotifier) {
+      const actionTruth = buildBookingApplyActionTruth(result.tool_results);
+      const notifyReason = resolveAdminNotifyReason(actionTruth);
+      if (notifyReason) {
+        const bookingRequest = result.tool_requests.find((r) => r.tool === "booking.apply");
+        const notificationPayload: AdminNotificationPayload = {
+          clinic_id: runtimeTurnInput.clinic_id,
+          clinic_code: clinicCode ?? null,
+          channel: runtimeTurnInput.business_context.channel,
+          chat_id: runtimeTurnInput.business_context.chat_id ?? null,
+          external_user_id: runtimeTurnInput.business_context.external_user_id ?? null,
+          trace_id: traceId,
+          patient_display_name: readPatientDisplayName(validBody.meta),
+          phone_source: runtimeTurnInput.channel_contact?.phone_source ?? null,
+          phone_available: Boolean(runtimeTurnInput.channel_contact?.phone_number),
+          original_message: runtimeTurnInput.user_message,
+          requested_service: readStringArg(bookingRequest?.arguments, "service"),
+          requested_date: readStringArg(bookingRequest?.arguments, "requested_date"),
+          requested_time: readStringArg(bookingRequest?.arguments, "requested_time"),
+          booking_status: actionTruth!.booking_status,
+          created_visit: actionTruth!.created_visit,
+          may_claim_booked: actionTruth!.may_claim_booked,
+          required_next_action: actionTruth!.required_next_action,
+          reason: notifyReason,
+          timestamp: new Date().toISOString(),
+        };
+        const notificationResult = await deps.adminNotifier.notify(notificationPayload).catch((error) => ({
+          type: "admin_notification" as const,
+          status: "failed" as const,
+          channel: "telegram" as const,
+          reason: notifyReason,
+          trace_id: traceId,
+          error_code: error instanceof Error ? error.message : String(error),
+        }));
+        sideEffects.push(notificationResult);
+      }
+    }
+
     const responsePayload: RuntimeTurnHttpSuccessResponse = {
       trace_id: traceId,
       reply_text: result.final_patient_reply,
       final_patient_reply: result.final_patient_reply,
-      side_effects: [],
+      side_effects: sideEffects,
       ...(result.ui !== undefined ? { ui: result.ui } : {}),
       ...(deps.debugEnabled ? {
         conversation_id: conversationIdToPersist,
@@ -551,6 +594,18 @@ function readSafeField(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
+}
+
+function readPatientDisplayName(meta: Record<string, unknown> | undefined): string | null {
+  const firstName = typeof meta?.first_name === "string" ? meta.first_name.trim() : "";
+  const lastName = typeof meta?.last_name === "string" ? meta.last_name.trim() : "";
+  const combined = [firstName, lastName].filter(Boolean).join(" ").trim();
+  return combined.length > 0 ? combined : null;
+}
+
+function readStringArg(args: Record<string, unknown> | undefined, key: string): string | null {
+  const value = args?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
 function isUuid(value: unknown): value is string {

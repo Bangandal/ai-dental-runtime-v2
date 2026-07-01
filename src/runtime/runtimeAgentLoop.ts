@@ -120,6 +120,17 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         conversationId = firstOutput.conversation_id;
       }
 
+      if (firstOutput.type === "final_response" && isMalformedFinalResponse(firstOutput)) {
+        debug.reason = "malformed_first_model_response";
+        return {
+          final_patient_reply: buildMalformedResponseFallback(input.locale),
+          conversation_id: conversationId,
+          tool_requests: [],
+          tool_results: [],
+          debug,
+        };
+      }
+
       if (firstOutput.type === "final_response") {
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
@@ -211,6 +222,22 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         conversationId = secondOutput.conversation_id;
       }
 
+      if (secondOutput.type === "final_response" && isMalformedFinalResponse(secondOutput)) {
+        const malformedReply = bookingActionTruth
+          ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
+          : buildMalformedResponseFallback(input.locale);
+        debug.reason = bookingActionTruth
+          ? "malformed_second_model_response_booking_fallback"
+          : "malformed_second_model_response_generic_fallback";
+        return {
+          final_patient_reply: malformedReply,
+          conversation_id: conversationId,
+          tool_requests: toolRequests,
+          tool_results: toolResults,
+          debug,
+        };
+      }
+
       if (secondOutput.type === "tool_requests") {
         // When round 2 requests more tools but useful results from round 1 exist,
         // attempt one forced finalization call (round 3). Protocol rules:
@@ -242,6 +269,20 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             });
           } catch {
             // Forced finalization failed — fall through to locale-aware fallback.
+          }
+          if (forcedOutput !== undefined && forcedOutput.type === "final_response" && isMalformedFinalResponse(forcedOutput)) {
+            debug.reason = "malformed_forced_finalization_fallback";
+            const malformedForcedReply = bookingActionTruth
+              ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
+              : buildMultiRoundFallbackReply(input.locale);
+            await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+            return {
+              final_patient_reply: malformedForcedReply,
+              conversation_id: conversationId,
+              tool_requests: toolRequests,
+              tool_results: toolResults,
+              debug,
+            };
           }
           if (forcedOutput !== undefined && forcedOutput.type === "final_response") {
             // Do not update conversationId: forced finalization used a fresh conversation,
@@ -296,6 +337,27 @@ export function hasUsefulToolResults(results: RuntimeAgentToolResult[]): boolean
     if ("slots" in data && Array.isArray(data.slots)) return data.slots.length > 0;
     return true;
   });
+}
+
+/** True when the caller returned a well-formed-looking final_response that is actually
+ * a synthesized placeholder for output normalizeOpenAIResponse could not parse. */
+export function isMalformedFinalResponse(output: RuntimeAgentCallerOutput): boolean {
+  return (
+    output.type === "final_response" &&
+    Array.isArray(output.final_response.safety_notes) &&
+    output.final_response.safety_notes.includes("malformed_openai_response")
+  );
+}
+
+export function buildMalformedResponseFallback(locale?: string | null): string {
+  const normalized = String(locale ?? "").toLowerCase();
+  if (normalized.startsWith("cs")) {
+    return "Teď se nepodařilo zprávu správně zpracovat. Zkuste to prosím znovu nebo kontaktujte kliniku přímo.";
+  }
+  if (normalized.startsWith("en")) {
+    return "Sorry, I’m having trouble processing that right now. Please try again in a moment.";
+  }
+  return "Сейчас не получилось корректно обработать сообщение. Попробуйте, пожалуйста, ещё раз или свяжитесь с клиникой напрямую.";
 }
 
 export function buildMultiRoundFallbackReply(locale?: string | null): string {

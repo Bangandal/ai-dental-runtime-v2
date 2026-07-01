@@ -203,7 +203,10 @@ test("malformed OpenAI output returns safe fallback without rpc execution", asyn
 
   const result = await service.runTurn(makeBaseInput("Что по цене?"));
 
-  assert.match(result.final_patient_reply, /trouble processing/i);
+  // PR #118: malformed model output must not leak the internal English placeholder —
+  // runtimeAgentLoop overrides it with a locale-aware fallback (locale is "ru" here).
+  assert.doesNotMatch(result.final_patient_reply, /trouble processing/i);
+  assert.match(result.final_patient_reply, /клиник/i);
   assert.equal(rpcCalls.length, 0);
   assert.deepEqual(result.tool_results, []);
 });

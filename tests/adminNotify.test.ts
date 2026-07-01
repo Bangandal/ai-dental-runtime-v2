@@ -91,6 +91,17 @@ test("loadAdminNotifyConfig accepts telegram mode with chat id", () => {
   assert.equal(config.telegram_chat_id, "-100200");
 });
 
+test("loadAdminNotifyConfig preserves optional telegram thread id", () => {
+  const config = loadAdminNotifyConfig({
+    ADMIN_NOTIFY_MODE: "telegram",
+    ADMIN_TELEGRAM_CHAT_ID: "-100200",
+    ADMIN_TELEGRAM_THREAD_ID: "42",
+  });
+  assert.equal(config.mode, "telegram");
+  assert.equal(config.telegram_chat_id, "-100200");
+  assert.equal(config.telegram_thread_id, "42");
+});
+
 // ── trigger resolution ───────────────────────────────────────────────────────
 
 test("resolveAdminNotifyReason triggers for booking_write_disabled, config_missing, cliniccard_write_failed", () => {
@@ -172,7 +183,26 @@ test("B: telegram notifier configured -> sendMessage called once, status sent", 
   assert.match(calls[0].url, /tok_admin/);
   const sentBody = JSON.parse(calls[0].body);
   assert.equal(sentBody.chat_id, "-100200");
+  assert.equal(sentBody.message_thread_id, undefined);
   assert.match(sentBody.text, /booking_write_disabled/);
+});
+
+test("B: telegram notifier configured with thread id -> sendMessage includes message_thread_id", async () => {
+  const calls: Array<{ body: string }> = [];
+  const notifier = createAdminNotifier({
+    config: { mode: "telegram", telegram_chat_id: "-100200", telegram_thread_id: "42" },
+    botToken: "tok_admin",
+    fetch: (async (_url: string, init: RequestInit) => {
+      calls.push({ body: String(init.body) });
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch,
+  });
+  const result = await notifier.notify(notifyPayload);
+  assert.equal(result.status, "sent");
+  assert.equal(calls.length, 1);
+  const sentBody = JSON.parse(calls[0].body);
+  assert.equal(sentBody.chat_id, "-100200");
+  assert.equal(sentBody.message_thread_id, 42);
 });
 
 test("C: telegram sendMessage fails -> status failed with error_code, no throw", async () => {

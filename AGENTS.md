@@ -10,9 +10,12 @@ This repository hosts the clean architecture foundation for AI Frontdesk Runtime
 - Do not hide business logic inside transport adapters.
 - Do not implement regex-based semantic routing.
 - Do not implement hardcoded service alias registries.
-- All write actions must be executor-controlled and policy-gated.
+- All write actions must be runtime-controlled, typed, policy-gated, and auditable.
 - AI must never directly write appointments or send admin notifications.
-- Admin notifications are backend side effects emitted as events/logs and handled by n8n.
+- Admin notifications are backend side effects delivered by configured notifier adapters, such as Telegram.
+- Notification delivery must return structured proof: sent, queued, failed, disabled, or not_configured.
+- Patient-facing claims that an admin was notified require delivery proof.
+- Do not assume n8n or any downstream layer exists unless it is explicitly configured and tested.
 
 ## PR Description Checklist (required)
 Every PR description must include:

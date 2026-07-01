@@ -387,8 +387,11 @@ test("buildBookingApplyEmergencyFallback: returns locale-aware minimal fallback 
   // Russian (default)
   assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "ru"), /номер телефона/);
   assert.match(buildBookingApplyEmergencyFallback(make("slot_conflict"), "ru"), /недоступно/);
-  assert.match(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "ru"), /администратору/);
-  assert.match(buildBookingApplyEmergencyFallback(make("unknown"), "ru"), /администратору/);
+  assert.match(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "ru"), /клиникой/);
+  assert.match(buildBookingApplyEmergencyFallback(make("unknown"), "ru"), /клиникой/);
+  // No unearned handoff/callback promise in any locale for these statuses
+  assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "ru"), /передам|администратору клиники/);
+  assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "en"), /team will follow up/);
 
   // English
   assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "en"), /phone/);

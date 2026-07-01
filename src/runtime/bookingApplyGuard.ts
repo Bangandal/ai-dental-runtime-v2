@@ -41,6 +41,9 @@ export function buildBookingApplyActionTruth(results: RuntimeAgentToolResult[]):
   const clinicCardVisitId = typeof d?.cliniccard_visit_id === "string" ? d.cliniccard_visit_id : null;
 
   const requiredNextAction = resolveRequiredNextAction(bookingStatus);
+  // allowed_claims must reflect full proof (all four fields), not may_claim_booked alone —
+  // a partial/malformed tool result could set may_claim_booked=true without the rest.
+  const hasFullProof = hasSuccessfulBookingApplyProof(results);
 
   return {
     tool: "booking.apply",
@@ -49,8 +52,8 @@ export function buildBookingApplyActionTruth(results: RuntimeAgentToolResult[]):
     may_claim_booked: mayClaimBooked,
     cliniccard_visit_id: clinicCardVisitId,
     allowed_claims: {
-      can_say_booking_created: mayClaimBooked,
-      can_say_booking_confirmed: mayClaimBooked,
+      can_say_booking_created: hasFullProof,
+      can_say_booking_confirmed: hasFullProof,
     },
     required_next_action: requiredNextAction,
   };
@@ -82,23 +85,26 @@ export function buildBookingApplyEmergencyFallback(
 
   const normalized = String(locale ?? "").toLowerCase();
 
+  // No handoff/admin-notification side effect is created anywhere in this path — do not
+  // promise clinic staff will follow up or reach out. Direct the patient to contact the
+  // clinic directly instead of claiming an outreach that never happens.
   if (normalized.startsWith("en")) {
     if (status === "missing_phone") return "I need your phone number to complete the booking. Please share your contact or type your number.";
     if (status === "slot_conflict") return "That time slot is no longer available. I can check other times.";
-    if (status === "booking_write_disabled") return "Online booking is currently unavailable. The clinic team will follow up.";
-    return "I'm unable to confirm the booking automatically. The clinic team will follow up.";
+    if (status === "booking_write_disabled") return "Online booking is currently unavailable. Please contact the clinic directly to book your appointment.";
+    return "I'm unable to confirm the booking automatically right now. Please contact the clinic directly.";
   }
 
   if (normalized.startsWith("cs")) {
     if (status === "missing_phone") return "Pro rezervaci potřebuji váš telefon. Sdílejte kontakt nebo napište číslo.";
     if (status === "slot_conflict") return "Tento čas je obsazen. Mohu zkontrolovat jiný termín.";
-    if (status === "booking_write_disabled") return "Online rezervace není momentálně dostupná. Tým kliniky vás kontaktuje.";
-    return "Automatické potvrzení není dostupné. Tým kliniky vás kontaktuje.";
+    if (status === "booking_write_disabled") return "Online rezervace není momentálně dostupná. Kontaktujte prosím kliniku přímo pro rezervaci.";
+    return "Momentálně nemohu automaticky potvrdit rezervaci. Kontaktujte prosím kliniku přímo.";
   }
 
   // Default: Russian
   if (status === "missing_phone") return "Для записи нужен номер телефона. Поделитесь контактом или напишите номер.";
   if (status === "slot_conflict") return "Это время уже недоступно. Могу проверить другое время.";
-  if (status === "booking_write_disabled") return "Онлайн-запись временно недоступна. Передам данные администратору клиники.";
-  return "Пока не могу подтвердить запись автоматически. Передам данные администратору клиники.";
+  if (status === "booking_write_disabled") return "Онлайн-запись временно недоступна. Пожалуйста, свяжитесь с клиникой напрямую для записи.";
+  return "Пока не могу подтвердить запись автоматически. Пожалуйста, свяжитесь с клиникой напрямую.";
 }

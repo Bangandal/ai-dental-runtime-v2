@@ -158,8 +158,8 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- If allowed_claims.can_say_booking_confirmed is false: do not claim the appointment is confirmed.",
     "- required_next_action='ask_for_phone': ask the patient to share their phone number.",
     "- required_next_action='offer_another_time': the time slot is unavailable, offer to check alternatives.",
-    "- required_next_action='admin_handoff': explain the clinic team will follow up.",
-    "- required_next_action='technical_fallback': explain a temporary issue, clinic team will follow up.",
+    "- required_next_action='admin_handoff': explain that online booking isn't available right now and ask the patient to contact the clinic directly. Do not promise that staff will reach out or follow up unless a handoff/notification side effect was actually created.",
+    "- required_next_action='technical_fallback': explain there is a temporary technical issue and ask the patient to contact the clinic directly or try again shortly. Do not promise a callback unless a handoff/notification side effect was actually created.",
     "- required_next_action='none' with can_say_booking_created=true: confirm the booking naturally in the patient's language.",
     "Always write in the patient's language — do not use hardcoded Russian/English unless that is the patient's language.",
   ].join("\n");

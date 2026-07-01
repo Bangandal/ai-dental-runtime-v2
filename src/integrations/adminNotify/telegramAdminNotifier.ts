@@ -8,7 +8,7 @@ export interface TelegramAdminNotifierDeps {
   fetch?: typeof globalThis.fetch;
 }
 
-/** Returns a notifier that reflects config/token state honestly — never claims delivery it didn't attempt. */
+/** Returns a notifier that reflects config/token state honestly. */
 export function createAdminNotifier(deps: TelegramAdminNotifierDeps): AdminNotifier {
   return {
     async notify(payload: AdminNotificationPayload): Promise<AdminNotificationResult> {
@@ -36,6 +36,7 @@ export function createAdminNotifier(deps: TelegramAdminNotifierDeps): AdminNotif
       const sendResult = await sendTelegramMessage({
         botToken: deps.botToken,
         chatId: deps.config.telegram_chat_id,
+        messageThreadId: deps.config.telegram_thread_id,
         text,
         fetch: deps.fetch,
       });

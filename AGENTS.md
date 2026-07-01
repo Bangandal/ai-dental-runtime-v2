@@ -10,8 +10,8 @@ This repository hosts the clean architecture foundation for AI Frontdesk Runtime
 - Do not hide business logic inside transport adapters.
 - Do not implement regex-based semantic routing.
 - Do not implement hardcoded service alias registries.
-- All write actions must be runtime-controlled, typed, policy-gated, and auditable.
-- AI must never directly write appointments or send admin notifications.
+- Write operations must be controlled by runtime code, typed, checked by policy, and auditable.
+- AI must never directly create appointments or contact admins.
 - Admin notifications are backend side effects delivered by configured notifier adapters, such as Telegram.
 - Notification delivery must return structured proof: sent, queued, failed, disabled, or not_configured.
 - Patient-facing claims that an admin was notified require delivery proof.

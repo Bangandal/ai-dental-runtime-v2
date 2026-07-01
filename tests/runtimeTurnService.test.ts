@@ -187,6 +187,6 @@ test("createDentalRuntimeTurnService wires dental runtime agent and keeps active
   const result = await service.runTurn(makeInput());
 
   assert.equal(result.final_patient_reply, "All set.");
-  assert.deepEqual(capturedToolNames.sort(), ["availability_check", "kb_search"]);
+  assert.deepEqual(capturedToolNames.sort(), ["availability_check", "booking_apply", "kb_search"]);
   assert.equal(capturedToolNames.includes("booking.confirm"), false);
 });

@@ -40,7 +40,7 @@ export type RuntimeAgentToolName =
   | "appointment.lookup"
   | "booking.apply";
 
-export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check"] as const;
+export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.apply"] as const;
 
 export const FUTURE_RUNTIME_AGENT_TOOLS = [
   "hold.create",
@@ -48,14 +48,6 @@ export const FUTURE_RUNTIME_AGENT_TOOLS = [
   "cancel_hold",
   "appointment.lookup",
 ] as const;
-
-// booking.apply executor is implemented and tested but intentionally NOT in ACTIVE_RUNTIME_AGENT_TOOLS.
-// The tool requires phone_number from channel_contact to be persisted and passed through
-// RuntimeAgentTurnInput before a visit can be created. Until that plumbing exists (Telegram
-// contact capture → turn input → executor context), activating the tool would always return
-// missing_phone. Activate by moving "booking.apply" to ACTIVE_RUNTIME_AGENT_TOOLS once
-// phone pass-through is wired end-to-end.
-export const INACTIVE_BOOKING_APPLY_TOOL = "booking.apply" as const;
 
 export interface RuntimeAgentToolRequest {
   tool: RuntimeAgentToolName;
@@ -161,5 +153,14 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "3. Human or admin requests ('хочу поговорить с человеком', 'позовите администратора'): acknowledge the request and ask what should be passed to the clinic team, or explain that clinic staff can help directly. Do not claim that an administrator was notified or will contact the patient unless a notification or handoff side effect was actually created or queued. Do not continue with booking intake.",
     "4. When tool_results are already provided in your context, write your final patient reply using those results. Do not request additional tools when results are already available.",
     "Do not claim booking is confirmed without explicit backend proof.",
+    "BOOKING ACTION TRUTH: When context contains booking_apply_action_truth, follow it strictly:",
+    "- If allowed_claims.can_say_booking_created is false: do not claim the appointment was created.",
+    "- If allowed_claims.can_say_booking_confirmed is false: do not claim the appointment is confirmed.",
+    "- required_next_action='ask_for_phone': ask the patient to share their phone number.",
+    "- required_next_action='offer_another_time': the time slot is unavailable, offer to check alternatives.",
+    "- required_next_action='admin_handoff': explain that online booking isn't available right now and ask the patient to contact the clinic directly. Do not promise that staff will reach out or follow up unless a handoff/notification side effect was actually created.",
+    "- required_next_action='technical_fallback': explain there is a temporary technical issue and ask the patient to contact the clinic directly or try again shortly. Do not promise a callback unless a handoff/notification side effect was actually created.",
+    "- required_next_action='none' with can_say_booking_created=true: confirm the booking naturally in the patient's language.",
+    "Always write in the patient's language — do not use hardcoded Russian/English unless that is the patient's language.",
   ].join("\n");
 }

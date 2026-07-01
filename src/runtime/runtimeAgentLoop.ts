@@ -16,6 +16,7 @@ import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
 import type { ToolExecutionResult } from "./toolResults.ts";
 import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
+import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -171,6 +172,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         toolResults.push(convertToolExecutionResult(request, executionResults[0]));
       }
 
+      const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
+      const secondCallContext = bookingActionTruth
+        ? { ...callerContext, booking_apply_action_truth: bookingActionTruth }
+        : callerContext;
+
       let secondOutput: RuntimeAgentCallerOutput;
       try {
         secondOutput = await deps.caller({
@@ -179,7 +185,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           system_instruction: systemInstruction,
           input: {
             message: input.user_message,
-            context: callerContext,
+            context: secondCallContext,
             tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
             tool_results: toolResults,
           },
@@ -189,8 +195,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           code: "agent_final_response_failed",
           message: error instanceof Error ? error.message : String(error),
         };
+        const emergencyReply = bookingActionTruth
+          ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
+          : "I found the information, but I’m having trouble wording the reply right now. Please try again in a moment.";
         return {
-          final_patient_reply: "I found the information, but I’m having trouble wording the reply right now. Please try again in a moment.",
+          final_patient_reply: emergencyReply,
           conversation_id: conversationId,
           tool_requests: toolRequests,
           tool_results: toolResults,
@@ -222,7 +231,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               system_instruction: systemInstruction,
               input: {
                 message: input.user_message,
-                context: { ...callerContext, resolved_context: toolResults },
+                context: {
+                  ...callerContext,
+                  resolved_context: toolResults,
+                  ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
+                },
                 // No tool_definitions → caller sends tools:[] → model must produce final_response.
                 // No tool_results → no function_call_output protocol messages.
               },

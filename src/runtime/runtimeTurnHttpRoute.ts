@@ -11,6 +11,7 @@ import type { CaseRouterClassifier } from "./caseRouterShadow.ts";
 import type { RuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import type { TurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 import { runRuntimeTurnOrchestrated } from "./runtimeTurnOrchestrator.ts";
+import type { AdminNotifier } from "../integrations/adminNotify/adminNotifyTypes.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -55,6 +56,7 @@ export interface RuntimeTurnRouteDeps {
   isProduction?: boolean;
   rateLimiter?: RateLimiter;
   debugEnabled?: boolean;
+  adminNotifier?: AdminNotifier;
 }
 
 export interface RouteRequest {

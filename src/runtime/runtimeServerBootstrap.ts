@@ -14,6 +14,8 @@ import { createSupabaseCaseContextRepository } from "./supabaseCaseContextReposi
 import { createOpenAICaseRouterClassifier } from "./openaiCaseRouterClassifier.ts";
 import { createOpenAIRuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import { createOpenAITurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
+import { loadAdminNotifyConfig } from "../integrations/adminNotify/adminNotifyConfig.ts";
+import { createAdminNotifier } from "../integrations/adminNotify/telegramAdminNotifier.ts";
 
 export interface TelegramBootstrapConfig {
   botToken: string;
@@ -65,6 +67,12 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
 
   const rateLimiter = createRateLimiter({ maxRequests: 60, windowMs: 60_000 });
 
+  const adminNotifyConfig = loadAdminNotifyConfig();
+  const adminNotifier = createAdminNotifier({
+    config: adminNotifyConfig,
+    botToken: deps.telegram?.botToken ?? null,
+  });
+
   registerRuntimeTurnRoute(app, {
     runtimeTurnService: createDentalRuntimeTurnService({
       openaiClient: deps.openaiClient,
@@ -87,6 +95,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
     isProduction: deps.isProduction,
     rateLimiter,
     debugEnabled: deps.debugEnabled,
+    adminNotifier,
   });
 
   if (deps.telegram) {
@@ -114,6 +123,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
       webhookSecret,
       defaultClinicCode,
       isProduction: deps.isProduction ?? false,
+      adminNotifier,
     });
   }
 }

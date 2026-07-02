@@ -21,7 +21,7 @@ export interface ClinicCardPatient {
 
 export interface ClinicCardVisit {
   id: number;
-  patient_id: number;
+  patient_id?: number | null;
   doctor_id: number;
   cabinet_id: number;
   date: string;

@@ -432,8 +432,20 @@ export async function runRuntimeTurnOrchestrated(
       : undefined;
 
     const sideEffects: unknown[] = [];
+    const actionTruth = buildBookingApplyActionTruth(result.tool_results);
+
+    // Deterministic: inject contact-request UI for Telegram when phone is required.
+    const telegramContactUi =
+      actionTruth?.required_next_action === "ask_for_phone" &&
+      runtimeTurnInput.business_context.channel === "telegram"
+        ? { telegram: { request_contact: true as const, button_text: "📞 Поделиться контактом" } }
+        : undefined;
+    const mergedUi =
+      telegramContactUi !== undefined || result.ui !== undefined
+        ? { ...(result.ui ?? {}), ...(telegramContactUi ?? {}) }
+        : undefined;
+
     if (deps.adminNotifier) {
-      const actionTruth = buildBookingApplyActionTruth(result.tool_results);
       const notifyReason = resolveAdminNotifyReason(actionTruth);
       if (notifyReason) {
         const bookingRequest = result.tool_requests.find((r) => r.tool === "booking.apply");
@@ -475,7 +487,7 @@ export async function runRuntimeTurnOrchestrated(
       reply_text: result.final_patient_reply,
       final_patient_reply: result.final_patient_reply,
       side_effects: sideEffects,
-      ...(result.ui !== undefined ? { ui: result.ui } : {}),
+      ...(mergedUi !== undefined ? { ui: mergedUi } : {}),
       ...(deps.debugEnabled ? {
         conversation_id: conversationIdToPersist,
         tool_results: result.tool_results,

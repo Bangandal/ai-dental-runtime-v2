@@ -12,6 +12,7 @@ const LIVE_ENV: Record<string, string> = {
   CLINICCARD_DEFAULT_DOCTOR_ID: "1",
   CLINICCARD_DEFAULT_CABINET_ID: "2",
   CLINICCARD_TIMEZONE: "Europe/Prague",
+  CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
 };
 
 function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
@@ -101,6 +102,110 @@ test("booking.apply: no ClinicCard write calls occur when mode is not live", asy
 
   await executor(makeContext());
   assert.equal(writeCalled, false, "no write call should have been made");
+});
+
+// booking_write_disabled — clinic_id not in CLINICCARD_LIVE_CLINIC_ALLOWLIST.
+test("booking.apply: returns booking_write_disabled when clinic_id is not allowlisted", async () => {
+  const executor = createBookingApplyExecutor({
+    env: { ...LIVE_ENV, CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_9" },
+    adapterFactory: () => makeAdapter(),
+  });
+
+  const result = await executor(makeContext());
+  assert.equal(result.data.booking_status, "booking_write_disabled");
+  assert.equal(result.data.created_visit, false);
+  assert.equal(result.data.may_claim_booked, false);
+  assert.match(result.data.reason, /not in CLINICCARD_LIVE_CLINIC_ALLOWLIST/);
+});
+
+// booking_write_disabled — allowlist unset entirely (fail closed).
+test("booking.apply: returns booking_write_disabled when CLINICCARD_LIVE_CLINIC_ALLOWLIST is unset", async () => {
+  const env = { ...LIVE_ENV };
+  delete (env as Record<string, string | undefined>).CLINICCARD_LIVE_CLINIC_ALLOWLIST;
+  const executor = createBookingApplyExecutor({
+    env,
+    adapterFactory: () => makeAdapter(),
+  });
+
+  const result = await executor(makeContext());
+  assert.equal(result.data.booking_status, "booking_write_disabled");
+  assert.equal(result.data.may_claim_booked, false);
+});
+
+// booking_write_disabled — clinic_id missing from context entirely.
+test("booking.apply: returns booking_write_disabled when clinic_id is missing from context", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+
+  const result = await executor(makeContext({ clinic_id: undefined }));
+  assert.equal(result.data.booking_status, "booking_write_disabled");
+  assert.match(result.data.reason, /clinic_id is missing/);
+});
+
+// Allowlist parses comma-separated values with surrounding whitespace.
+test("booking.apply: allowlist accepts clinic_id among multiple comma-separated entries with whitespace", async () => {
+  const executor = createBookingApplyExecutor({
+    env: { ...LIVE_ENV, CLINICCARD_LIVE_CLINIC_ALLOWLIST: " clinic_0 , clinic_1 , clinic_2 " },
+    adapterFactory: () => makeAdapter(),
+  });
+
+  const result = await executor(makeContext());
+  assert.equal(result.data.booking_status, "visit_created");
+});
+
+// No ClinicCard reads/writes occur when clinic is not allowlisted.
+test("booking.apply: no ClinicCard calls occur when clinic_id is not allowlisted", async () => {
+  let called = false;
+  const executor = createBookingApplyExecutor({
+    env: { ...LIVE_ENV, CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_9" },
+    adapterFactory: () =>
+      makeAdapter({
+        listVisits: async () => { called = true; return { ok: true, data: [] }; },
+      }),
+  });
+
+  await executor(makeContext());
+  assert.equal(called, false, "no ClinicCard call should have been made");
+});
+
+// missing_phone — phone_source is manual_input (unverified, not trusted for live writes).
+test("booking.apply: returns missing_phone when phone_source is manual_input", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+
+  const result = await executor(makeContext({ phone_source: "manual_input" }));
+  assert.equal(result.data.booking_status, "missing_phone");
+  assert.equal(result.data.created_visit, false);
+  assert.equal(result.data.may_claim_booked, false);
+  assert.match(result.data.reason, /not a trusted contact proof/);
+});
+
+// missing_phone — phone_source absent even though phone_number is present.
+test("booking.apply: returns missing_phone when phone_source is absent", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+
+  const result = await executor(makeContext({ phone_source: undefined }));
+  assert.equal(result.data.booking_status, "missing_phone");
+  assert.match(result.data.reason, /not a trusted contact proof/);
+});
+
+// visit_created — whatsapp_sender and existing_cliniccard_patient are trusted phone sources.
+test("booking.apply: whatsapp_sender and existing_cliniccard_patient phone sources are trusted", async () => {
+  for (const source of ["whatsapp_sender", "existing_cliniccard_patient"] as const) {
+    const executor = createBookingApplyExecutor({
+      env: LIVE_ENV,
+      adapterFactory: () => makeAdapter(),
+    });
+    const result = await executor(makeContext({ phone_source: source }));
+    assert.equal(result.data.booking_status, "visit_created", `phone_source=${source} should be trusted`);
+  }
 });
 
 // missing_phone — channel_contact not set.

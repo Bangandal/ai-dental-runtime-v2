@@ -43,6 +43,34 @@ function bookingResult(partial: Omit<BookingApplyResult, "booking_action">): Boo
   };
 }
 
+// Phone sources that represent a platform-verified or ClinicCard-verified contact.
+// "manual_input" (patient free-typed a number) is intentionally excluded — live writes
+// require a stronger proof of contact than unverified free text.
+const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
+  "telegram_contact_button",
+  "whatsapp_sender",
+  "existing_cliniccard_patient",
+]);
+
+/**
+ * Live ClinicCard writes are only permitted for clinic_ids explicitly allowlisted via
+ * CLINICCARD_LIVE_CLINIC_ALLOWLIST (comma-separated). Fails closed: unset/empty allowlist
+ * means no clinic is permitted, since this runtime is multi-tenant but live writes hit a
+ * single shared ClinicCard account.
+ */
+function isClinicAllowedForLiveBooking(
+  clinicId: string | undefined,
+  env: Record<string, string | undefined>,
+): boolean {
+  if (!clinicId) return false;
+  const raw = env["CLINICCARD_LIVE_CLINIC_ALLOWLIST"] ?? "";
+  const allowlist = raw
+    .split(",")
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0);
+  return allowlist.includes(clinicId);
+}
+
 export interface BookingApplyExecutorDeps {
   env?: Record<string, string | undefined>;
   adapterFactory?: (config: ClinicCardConfig) => ClinicCardAdapter;
@@ -75,7 +103,23 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // B2. Phone check — must be present before any write.
+    // A2. Clinic allowlist gate — must run before any read or write, and before the phone
+    // check, so a non-allowlisted clinic never gets asked for contact info it can't use.
+    const env = deps.env ?? (process.env as Record<string, string | undefined>);
+    if (!isClinicAllowedForLiveBooking(context.clinic_id, env)) {
+      return bookingResult({
+        booking_status: "booking_write_disabled",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: context.clinic_id
+          ? `clinic_id "${context.clinic_id}" is not in CLINICCARD_LIVE_CLINIC_ALLOWLIST`
+          : "clinic_id is missing; cannot verify CLINICCARD_LIVE_CLINIC_ALLOWLIST membership",
+        proof: null,
+      });
+    }
+
+    // B2. Phone check — must be present, and from a trusted/verified source, before any write.
     const phoneNumber = context.phone_number;
     if (!phoneNumber) {
       return bookingResult({
@@ -84,6 +128,17 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         may_claim_booked: false,
         cliniccard_visit_id: null,
         reason: "phone_number is required for booking; capture it via the channel contact mechanism",
+        proof: null,
+      });
+    }
+
+    if (!context.phone_source || !TRUSTED_PHONE_SOURCES.has(context.phone_source)) {
+      return bookingResult({
+        booking_status: "missing_phone",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: `phone_source "${context.phone_source ?? "unknown"}" is not a trusted contact proof for live booking; capture phone via the channel contact mechanism`,
         proof: null,
       });
     }

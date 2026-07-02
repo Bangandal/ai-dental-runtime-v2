@@ -36,6 +36,7 @@ const LIVE_ENV: Record<string, string> = {
   CLINICCARD_DEFAULT_DOCTOR_ID: "1",
   CLINICCARD_DEFAULT_CABINET_ID: "2",
   CLINICCARD_TIMEZONE: "Europe/Prague",
+  CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
 };
 
 const DISABLED_ENV: Record<string, string> = {

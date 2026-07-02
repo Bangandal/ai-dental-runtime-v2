@@ -78,6 +78,11 @@ export interface RuntimeAgentFinalResponse {
 export interface RuntimeAgentTurnResult {
   final_patient_reply: string;
   conversation_id?: string | null;
+  /** False when conversation_id (if any) has a pending function_call with no
+   * function_call_output submitted and must not be persisted/resumed on a later
+   * turn — resuming it fails upstream with a 400 "No tool output found" error.
+   * Absent/true means the conversation_id (if present) is safe to persist/resume. */
+  conversation_id_resumable?: boolean;
   tool_requests: RuntimeAgentToolRequest[];
   tool_results: RuntimeAgentToolResult[];
   debug?: Record<string, unknown>;

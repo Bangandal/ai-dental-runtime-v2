@@ -416,8 +416,11 @@ test("forced finalization path: real caller is protocol-safe — no function_cal
   assert.equal(callCount, 3, "must be exactly 3 LLM calls");
   assert.equal(result.final_patient_reply, "Hours are 9–17.");
   assert.equal(result.debug?.reason, "forced_finalization_after_tool_results");
-  // Result conversation_id must be from rounds 1-2, not from the fresh finalization call
-  assert.equal(result.conversation_id, "conv_x", "result conversation_id must be from rounds 1-2, not forced finalization");
+  // PR #121: the rounds-1-2 conversation has a pending, never-resolved round-2 function_call
+  // (that's *why* forced finalization ran) — resuming it later 400s upstream. It must not be
+  // returned as resumable, regardless of whether it came from rounds 1-2 or the fresh call.
+  assert.equal(result.conversation_id, null, "dirty rounds-1-2 conversation must not be returned as resumable");
+  assert.equal(result.conversation_id_resumable, false);
 });
 
 // ── End forced-finalization contract ──────────────────────────────────────────

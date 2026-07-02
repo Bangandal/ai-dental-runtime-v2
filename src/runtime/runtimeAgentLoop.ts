@@ -303,24 +303,32 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             const malformedForcedReply = bookingActionTruth
               ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
               : buildMultiRoundFallbackReply(input.locale);
-            await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+            markConversationDirty(debug);
+            await saveConversationMemory(deps.conversationMemoryRepository, input, null, debug);
             return {
               final_patient_reply: malformedForcedReply,
-              conversation_id: conversationId,
+              conversation_id: null,
+              conversation_id_resumable: false,
               tool_requests: toolRequests,
               tool_results: toolResults,
               debug,
             };
           }
           if (forcedOutput !== undefined && forcedOutput.type === "final_response") {
-            // Do not update conversationId: forced finalization used a fresh conversation,
-            // unrelated to the patient's rounds 1-2 thread. The original conversationId
-            // is preserved so memory save and result are consistent.
+            // secondOutput.type === "tool_requests" means round 2's own model response
+            // requested a further tool call — that call was never resolved (forced
+            // finalization deliberately used an unrelated, throwaway conversation to
+            // produce the reply). conversationId therefore still has a pending
+            // function_call with no function_call_output on OpenAI's side. Resuming it
+            // on a later turn fails with 400 "No tool output found for function call ...".
+            // Do not persist/resume it — start clean next turn instead.
             debug.reason = "forced_finalization_after_tool_results";
-            await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+            markConversationDirty(debug);
+            await saveConversationMemory(deps.conversationMemoryRepository, input, null, debug);
             return {
               final_patient_reply: forcedOutput.final_response.final_patient_reply,
-              conversation_id: conversationId,
+              conversation_id: null,
+              conversation_id_resumable: false,
               tool_requests: toolRequests,
               tool_results: toolResults,
               debug,
@@ -330,10 +338,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
 
         debug.reason = "multi_round_tool_loop_not_implemented";
-        await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        markConversationDirty(debug);
+        await saveConversationMemory(deps.conversationMemoryRepository, input, null, debug);
         return {
           final_patient_reply: buildMultiRoundFallbackReply(input.locale),
-          conversation_id: conversationId,
+          conversation_id: null,
+          conversation_id_resumable: false,
           tool_requests: toolRequests,
           tool_results: toolResults,
           debug,
@@ -530,6 +540,14 @@ function convertToolExecutionResult(
     status: "failed",
     error: result.error,
   };
+}
+
+/** Marks debug so callers/logs can see the OpenAI conversation_id for this turn
+ * must not be persisted/resumed — it has a pending function_call with no
+ * function_call_output submitted (see forced-finalization branches above). */
+function markConversationDirty(debug: Record<string, unknown>): void {
+  debug.openai_conversation_resumable = false;
+  debug.conversation_id_reset_reason = "pending_tool_call_after_forced_finalization";
 }
 
 async function saveConversationMemory(

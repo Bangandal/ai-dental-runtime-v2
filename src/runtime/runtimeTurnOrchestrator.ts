@@ -343,19 +343,32 @@ export async function runRuntimeTurnOrchestrated(
 
   try {
     const result = await deps.runtimeTurnService.runTurn(runtimeTurnInput);
-    const conversationIdToPersist = result.conversation_id ?? runtimeTurnInput.conversation_id ?? null;
-    if (conversationIdToPersist && deps.openAIConversationMemoryRepository) {
+    // conversation_id_resumable===false means this turn's conversation_id has a pending
+    // function_call with no function_call_output submitted (see runtimeAgentLoop's
+    // forced-finalization branches) — resuming it later fails upstream with a 400
+    // "No tool output found for function call ...". Do not fall back to whatever was
+    // already loaded into runtimeTurnInput.conversation_id in that case; start clean.
+    const isConversationDirty = result.conversation_id_resumable === false;
+    const conversationIdToPersist = isConversationDirty
+      ? null
+      : result.conversation_id ?? runtimeTurnInput.conversation_id ?? null;
+    // If a conversation_id was already stored from an earlier turn and this turn just made
+    // it dirty, skipping the save would leave the stale value in place — the next turn would
+    // load and resume it, reproducing the same upstream 400. Explicitly clear it instead.
+    const shouldClearStoredConversation = isConversationDirty && Boolean(runtimeTurnInput.conversation_id);
+    if ((conversationIdToPersist || shouldClearStoredConversation) && deps.openAIConversationMemoryRepository) {
       try {
         const memorySaveResult = await deps.openAIConversationMemoryRepository.saveConversationMemory({
           clinic_id: runtimeTurnInput.clinic_id,
           channel: runtimeTurnInput.business_context.channel,
           external_user_id: runtimeTurnInput.business_context.external_user_id ?? null,
           chat_id: runtimeTurnInput.business_context.chat_id ?? null,
-          conversation_id: conversationIdToPersist,
+          conversation_id: conversationIdToPersist ?? "",
         });
         memoryDebug.memory_save = {
           ok: memorySaveResult.ok,
           conversation_id: conversationIdToPersist,
+          cleared_dirty_conversation: shouldClearStoredConversation,
           error: memorySaveResult.ok ? null : memorySaveResult.error,
         };
       } catch (error) {

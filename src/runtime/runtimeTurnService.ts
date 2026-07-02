@@ -16,6 +16,7 @@ export type RuntimeTurnInput = RuntimeAgentTurnInput;
 export interface RuntimeTurnResult {
   final_patient_reply: string;
   conversation_id?: string | null;
+  conversation_id_resumable?: boolean;
   tool_requests: RuntimeAgentToolRequest[];
   tool_results: RuntimeAgentToolResult[];
   debug?: Record<string, unknown>;
@@ -53,6 +54,7 @@ export function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): Runt
   return {
     final_patient_reply: finalPatientReply,
     conversation_id: result.conversation_id,
+    conversation_id_resumable: result.conversation_id_resumable,
     tool_requests: result.tool_requests,
     tool_results: result.tool_results,
     debug: result.debug,

@@ -93,7 +93,7 @@ test("booking.apply detects conflict from real ClinicCard visit shape without pa
   assert.equal(result.data.may_claim_booked, false);
 });
 
-test("ClinicCard adapter sends visit_start/visit_end and maps visit_id on createVisit", async () => {
+test("ClinicCard adapter sends visit_start and visit_end and maps visit_id on createVisit", async () => {
   const seenBodies: unknown[] = [];
   const fetch: ClinicCardFetch = async (_url, init) => {
     seenBodies.push(JSON.parse(init.body ?? "{}"));

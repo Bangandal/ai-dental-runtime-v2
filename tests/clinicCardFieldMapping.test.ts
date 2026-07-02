@@ -44,13 +44,14 @@ test("ClinicCard adapter sends firstname/lastname and maps patient_id on createP
   assert.equal(result.data.id, 456);
 });
 
-test("ClinicCard adapter maps real visit fields", async () => {
-  const fetch: ClinicCardFetch = async () => okResponse({ result: "ok", error: null, data: [{ visit_id: "789", patient_id: "456", visit_start: "11:15", visit_end: "17:15", doctor_id: "111431", cabinet_id: "43393", status: "PLANNED" }] });
+test("ClinicCard adapter maps real visit fields without inventing patient_id", async () => {
+  const fetch: ClinicCardFetch = async () => okResponse({ result: "ok", error: null, data: [{ visit_id: "789", visit_start: "11:15", visit_end: "17:15", doctor_id: "111431", cabinet_id: "43393", status: "PLANNED" }] });
   const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
   const result = await adapter.listVisits("2026-07-06", "2026-07-06");
   assert.equal(result.ok, true);
   if (!result.ok) throw new Error("unexpected failure");
   assert.equal(result.data[0]?.id, 789);
+  assert.equal(result.data[0]?.patient_id, null);
   assert.equal(result.data[0]?.date, "2026-07-06");
   assert.equal(result.data[0]?.time_start, "11:15");
   assert.equal(result.data[0]?.time_end, "17:15");
@@ -58,8 +59,8 @@ test("ClinicCard adapter maps real visit fields", async () => {
   assert.equal(result.data[0]?.cabinet_id, 43393);
 });
 
-test("booking.apply detects conflict from real ClinicCard visit shape", async () => {
-  const fetch: ClinicCardFetch = async () => okResponse({ result: "ok", error: null, data: [{ visit_id: 789, patient_id: 456, visit_start: "11:15", visit_end: "17:15", doctor_id: "111431", cabinet_id: "43393", status: "PLANNED" }] });
+test("booking.apply detects conflict from real ClinicCard visit shape without patient_id", async () => {
+  const fetch: ClinicCardFetch = async () => okResponse({ result: "ok", error: null, data: [{ visit_id: 789, visit_start: "11:15", visit_end: "17:15", doctor_id: "111431", cabinet_id: "43393", status: "PLANNED" }] });
   const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
   const executor = createBookingApplyExecutor({
     env: {
@@ -104,4 +105,5 @@ test("ClinicCard adapter sends visit_start/visit_end and maps visit_id on create
   assert.equal(result.ok, true);
   if (!result.ok) throw new Error("unexpected failure");
   assert.equal(result.data.id, 999);
+  assert.equal(result.data.patient_id, 456);
 });

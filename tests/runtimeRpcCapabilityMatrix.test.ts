@@ -82,6 +82,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/runtimeTurnService.ts",
     "src/runtime/toolResults.ts",
     "src/integrations/cliniccard/bookingApplyExecutor.ts",
+    "src/integrations/cliniccard/clinicCardAdapter.ts",
     "src/runtime/bookingApplyGuard.ts",
     "Dockerfile",
     ".env.example",

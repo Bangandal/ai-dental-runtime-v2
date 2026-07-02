@@ -9,6 +9,7 @@ import {
 import type { ClinicCardConfig } from "../src/integrations/cliniccard/clinicCardTypes.ts";
 import { DEFAULT_TELEGRAM_SEND_TIMEOUT_MS, sendTelegramMessage } from "../src/runtime/telegramSender.ts";
 import { buildOpenAIClientOptions, OPENAI_CLIENT_MAX_RETRIES, OPENAI_CLIENT_TIMEOUT_MS } from "../src/main.ts";
+import { bindOpenAIPerCallTimeout, OPENAI_CALL_TOTAL_TIMEOUT_MS } from "../src/runtime/openaiClientTimeout.ts";
 
 const TEST_CONFIG: ClinicCardConfig = {
   api_base_url: "https://test.cliniccard.app",
@@ -197,4 +198,94 @@ test("OpenAI: client options set explicit 60s timeout and 2 retries", () => {
     timeout: 60_000,
     maxRetries: 2,
   });
+});
+
+// ── OpenAI per-call abort signal (Codex P2: bound body parse, not just headers) ──
+
+interface RecordedCall {
+  body: unknown;
+  options: { signal?: AbortSignal } & Record<string, unknown>;
+}
+
+function fakeOpenAIClient(): {
+  client: { responses: { create: (...args: unknown[]) => unknown }; conversations: { create: (...args: unknown[]) => unknown }; embeddings: { create: (...args: unknown[]) => unknown } };
+  calls: Record<string, RecordedCall[]>;
+} {
+  const calls: Record<string, RecordedCall[]> = { responses: [], conversations: [], embeddings: [] };
+  const makeResource = (name: string) => ({
+    create: (body?: unknown, options?: RecordedCall["options"]) => {
+      calls[name]!.push({ body, options: options ?? {} });
+      return Promise.resolve({ ok: true });
+    },
+  });
+  return {
+    client: {
+      responses: makeResource("responses"),
+      conversations: makeResource("conversations"),
+      embeddings: makeResource("embeddings"),
+    },
+    calls,
+  };
+}
+
+test("OpenAI wrapper: injects an AbortSignal into responses/conversations/embeddings create calls", async () => {
+  const { client, calls } = fakeOpenAIClient();
+  bindOpenAIPerCallTimeout(client, 50);
+
+  await client.responses.create({ model: "m", input: [] });
+  await client.conversations.create();
+  await client.embeddings.create({ model: "e", input: "text" });
+
+  for (const name of ["responses", "conversations", "embeddings"] as const) {
+    assert.equal(calls[name]!.length, 1, `${name}.create must be called once`);
+    assert.ok(calls[name]![0]!.options.signal instanceof AbortSignal, `${name}.create must receive an AbortSignal`);
+  }
+  assert.deepEqual(calls.responses![0]!.body, { model: "m", input: [] });
+});
+
+test("OpenAI wrapper: never overrides a caller-provided signal", async () => {
+  const { client, calls } = fakeOpenAIClient();
+  bindOpenAIPerCallTimeout(client, 50);
+  const explicit = new AbortController().signal;
+
+  await client.responses.create({ model: "m" }, { signal: explicit });
+
+  assert.equal(calls.responses![0]!.options.signal, explicit);
+});
+
+test("OpenAI wrapper: a call that stalls after headers is aborted by the injected signal", async () => {
+  // Simulates the Codex P2 scenario: the SDK-level promise (headers + body parse)
+  // never settles on its own and only rejects when the request signal fires —
+  // exactly how fetch behaves for a stalled body read.
+  const client = {
+    responses: {
+      create: (_body?: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          const signal = options?.signal;
+          if (!signal) return; // would hang the test if no signal is injected
+          const keepAlive = setTimeout(() => {}, 60_000);
+          signal.addEventListener("abort", () => {
+            clearTimeout(keepAlive);
+            reject(signal.reason);
+          }, { once: true });
+        }),
+    },
+  };
+  bindOpenAIPerCallTimeout(client, 20);
+
+  await assert.rejects(
+    client.responses.create({ model: "m" }) as Promise<unknown>,
+    (err: unknown) => err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError"),
+  );
+});
+
+test("OpenAI wrapper: clients with a partial surface (missing resources) are left intact", async () => {
+  const client = { responses: { create: async () => ({ ok: true }) } } as Record<string, unknown>;
+  assert.doesNotThrow(() => bindOpenAIPerCallTimeout(client, 50));
+  const responses = client.responses as { create: () => Promise<unknown> };
+  assert.deepEqual(await responses.create(), { ok: true });
+});
+
+test("OpenAI wrapper: default total per-call timeout is 90 seconds", () => {
+  assert.equal(OPENAI_CALL_TOTAL_TIMEOUT_MS, 90_000);
 });

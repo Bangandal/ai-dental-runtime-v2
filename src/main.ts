@@ -7,6 +7,7 @@ import { registerRuntimeRoutes } from "./runtime/runtimeServerBootstrap.ts";
 import type { RpcCaller } from "./runtime/runtimeRepositories.ts";
 import type { EmbeddingClient } from "./runtime/supabaseKnowledgeRepository.ts";
 import { createFileRuntimeTurnLogger, createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtime/runtimeTurnLogger.ts";
+import { bindOpenAIPerCallTimeout } from "./runtime/openaiClientTimeout.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;
@@ -77,7 +78,10 @@ export function buildOpenAIClientOptions(apiKey: string): { apiKey: string; time
 
 export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const openaiApiKey = readRequiredEnv("OPENAI_API_KEY", env);
-  const openaiClient = new OpenAI(buildOpenAIClientOptions(openaiApiKey));
+  // Constructor timeout bounds each attempt to response headers; the per-call
+  // signal from bindOpenAIPerCallTimeout bounds the whole call including body
+  // parsing (see openaiClientTimeout.ts).
+  const openaiClient = bindOpenAIPerCallTimeout(new OpenAI(buildOpenAIClientOptions(openaiApiKey)));
   const runtimeEnv = readRuntimeServerEnv(env);
   const rpc = createRpcClient(env);
   const embeddingClient: EmbeddingClient = {

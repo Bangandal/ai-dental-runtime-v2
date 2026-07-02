@@ -168,10 +168,13 @@ test("first and second caller failures return safe replies", async () => {
     executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [] } }) },
   });
   const secondResult = await secondFail.runTurn(makeInput());
-  assert.match(secondResult.final_patient_reply, /having trouble wording/i);
+  // PR #119: non-booking second-call exception now uses the shared locale-aware
+  // fallback (buildMalformedResponseFallback) instead of a bespoke English string.
+  assert.match(secondResult.final_patient_reply, /trouble processing/i);
   assert.equal(secondResult.tool_results.length, 1);
   assert.equal((secondResult.debug as any).runtime_error.code, "agent_final_response_failed");
   assert.equal((secondResult.debug as any).runtime_error.message, "boom2");
+  assert.equal((secondResult.debug as any).reason, "agent_second_call_exception_generic_fallback");
 });
 
 test("multi-round tool loop is not implemented", async () => {

@@ -107,8 +107,10 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           code: "agent_caller_failed",
           message: error instanceof Error ? error.message : String(error),
         };
+        debug.reason = "agent_first_call_exception";
+        await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
-          final_patient_reply: "Sorry, I’m having trouble processing that right now. Please try again in a moment.",
+          final_patient_reply: buildMalformedResponseFallback(input.locale),
           conversation_id: conversationId,
           tool_requests: [],
           tool_results: [],
@@ -209,7 +211,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         };
         const emergencyReply = bookingActionTruth
           ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
-          : "I found the information, but I’m having trouble wording the reply right now. Please try again in a moment.";
+          : buildMalformedResponseFallback(input.locale);
+        debug.reason = bookingActionTruth
+          ? "agent_second_call_exception_booking_fallback"
+          : "agent_second_call_exception_generic_fallback";
+        await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
           final_patient_reply: emergencyReply,
           conversation_id: conversationId,

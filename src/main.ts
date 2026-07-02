@@ -65,9 +65,19 @@ function createRpcClient(env: NodeJS.ProcessEnv = process.env): RpcCaller {
   };
 }
 
+// Explicit OpenAI client limits. The SDK default timeout (10 minutes) is far too
+// long for a patient-facing turn — a hung request must fail into the existing
+// caller-exception fallback path instead of stalling the conversation.
+export const OPENAI_CLIENT_TIMEOUT_MS = 60_000;
+export const OPENAI_CLIENT_MAX_RETRIES = 2;
+
+export function buildOpenAIClientOptions(apiKey: string): { apiKey: string; timeout: number; maxRetries: number } {
+  return { apiKey, timeout: OPENAI_CLIENT_TIMEOUT_MS, maxRetries: OPENAI_CLIENT_MAX_RETRIES };
+}
+
 export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const openaiApiKey = readRequiredEnv("OPENAI_API_KEY", env);
-  const openaiClient = new OpenAI({ apiKey: openaiApiKey });
+  const openaiClient = new OpenAI(buildOpenAIClientOptions(openaiApiKey));
   const runtimeEnv = readRuntimeServerEnv(env);
   const rpc = createRpcClient(env);
   const embeddingClient: EmbeddingClient = {

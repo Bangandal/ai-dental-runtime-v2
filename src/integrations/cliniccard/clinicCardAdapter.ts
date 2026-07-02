@@ -14,7 +14,16 @@ export interface ClinicCardFetch {
     method: string;
     headers: Record<string, string>;
     body?: string;
+    signal?: AbortSignal;
   }): Promise<{ ok: boolean; status: number; json(): Promise<unknown>; text(): Promise<string> }>;
+}
+
+// Upper bound for a single ClinicCard HTTP request. Without it a hung ClinicCard
+// call keeps the whole runtime turn (and the patient) waiting indefinitely.
+export const DEFAULT_CLINICCARD_TIMEOUT_MS = 10_000;
+
+export interface ClinicCardAdapterOptions {
+  timeoutMs?: number;
 }
 
 export interface ClinicCardAdapter {
@@ -90,8 +99,13 @@ function validateCreateVisitInput(input: ClinicCardCreateVisitInput): ClinicCard
   return null;
 }
 
-export function createClinicCardAdapter(config: ClinicCardConfig, fetchFn?: ClinicCardFetch): ClinicCardAdapter {
+export function createClinicCardAdapter(
+  config: ClinicCardConfig,
+  fetchFn?: ClinicCardFetch,
+  options?: ClinicCardAdapterOptions,
+): ClinicCardAdapter {
   const fetch = fetchFn ?? (globalThis.fetch as unknown as ClinicCardFetch);
+  const timeoutMs = options?.timeoutMs ?? DEFAULT_CLINICCARD_TIMEOUT_MS;
 
   function buildHeaders(): Record<string, string> {
     return {
@@ -114,6 +128,7 @@ export function createClinicCardAdapter(config: ClinicCardConfig, fetchFn?: Clin
         method,
         headers: buildHeaders(),
         body: body !== undefined ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(timeoutMs),
       });
 
       if (!response.ok) {
@@ -134,6 +149,17 @@ export function createClinicCardAdapter(config: ClinicCardConfig, fetchFn?: Clin
       }
       return { ok: true, data: unwrapped.data };
     } catch (err) {
+      // AbortSignal.timeout rejections surface as TimeoutError (undici) or AbortError.
+      // The timeout message is fixed text — no URL, body, or token can leak through it.
+      if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
+        return {
+          ok: false,
+          error: {
+            code: "cliniccard_timeout",
+            message: `ClinicCard request timed out after ${timeoutMs}ms`,
+          },
+        };
+      }
       const raw = err instanceof Error ? err.message : String(err);
       return {
         ok: false,

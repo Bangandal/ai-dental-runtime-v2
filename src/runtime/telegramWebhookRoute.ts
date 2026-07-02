@@ -76,7 +76,7 @@ export function registerTelegramWebhookRoute(
       const persistResult = await persistChannelContactPhone(normalized, deps).catch(() => "state_persist_failed" as const);
       const replyText = persistResult === "persisted"
         ? "Спасибо, номер получен. Можем продолжить запись."
-        : "Не получилось сохранить номер автоматически. Напишите, пожалуйста, номер сообщением, чтобы клиника могла подтвердить запись.";
+        : "Не получилось сохранить номер. Попробуйте поделиться контактом ещё раз или свяжитесь с клиникой напрямую.";
       void sendTelegramMessage({
         botToken: deps.botToken,
         chatId: normalized.chat_id,

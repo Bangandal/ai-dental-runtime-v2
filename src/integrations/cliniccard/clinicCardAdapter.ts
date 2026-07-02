@@ -178,7 +178,7 @@ function normalizeVisit(raw: unknown, fallbackDate?: string): ClinicCardResult<C
     ok: true,
     data: {
       id,
-      patient_id: patientId,
+      patient_id: patientId ?? null,
       doctor_id: doctorId,
       cabinet_id: cabinetId,
       date,

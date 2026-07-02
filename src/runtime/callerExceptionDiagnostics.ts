@@ -24,7 +24,8 @@ const REDACTION_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9_-]{10,}/g,
   /Bearer\s+\S+/gi,
   /[A-Za-z0-9_-]{32,}/g,
-  /\+\d{6,15}/g,
+  // Phone numbers, with or without a leading '+', optionally with space/dash/paren separators.
+  /\+?\d[\d\s\-()]{6,17}\d/g,
 ];
 
 export function sanitizeErrorMessage(raw: string): string {
@@ -65,7 +66,7 @@ export function buildCallerExceptionDiagnostics(
     stage: ctx.stage,
     error_name: error instanceof Error ? error.name : null,
     error_code: readErrorField(errRecord, ["code", "status", "type", "status_code", "statusCode"]),
-    request_id: (readErrorField(errRecord, ["request_id", "requestId"]) as string | null) ?? null,
+    request_id: (readErrorField(errRecord, ["request_id", "requestId", "requestID"]) as string | null) ?? null,
     message: sanitizeErrorMessage(rawMessage),
     locale: ctx.locale ?? null,
     has_conversation_id: ctx.conversationId !== null,

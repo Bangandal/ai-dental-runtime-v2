@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildCallerExceptionDiagnostics } from "../src/runtime/callerExceptionDiagnostics.ts";
+import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "../src/runtime/callerExceptionDiagnostics.ts";
 import {
   createRuntimeAgentLoop,
   buildMalformedResponseFallback,
@@ -77,6 +77,18 @@ test("buildCallerExceptionDiagnostics extracts safe fields and truncates/redacts
   assert.doesNotMatch(diag.message, /sk-abcdefghijklmnop/);
   assert.doesNotMatch(diag.message, new RegExp(longSecretLike));
   assert.match(diag.message, /\[redacted\]/);
+});
+
+test("Codex-P2: request_id also reads requestID (OpenAI SDK APIError casing)", () => {
+  const error = Object.assign(new Error("upstream failed"), { requestID: "req_sdk_casing" });
+  const diag = buildCallerExceptionDiagnostics(error, { stage: "first_call", conversationId: null });
+  assert.equal(diag.request_id, "req_sdk_casing");
+});
+
+test("Codex-P2: phone numbers without a leading plus (plain or separated) are redacted too", () => {
+  assert.doesNotMatch(sanitizeErrorMessage("phone=420600111222 failed"), /420600111222/);
+  assert.doesNotMatch(sanitizeErrorMessage("phone=420 600 111 222 failed"), /420 600 111 222/);
+  assert.doesNotMatch(sanitizeErrorMessage("phone=420-600-111-222 failed"), /420-600-111-222/);
 });
 
 test("buildCallerExceptionDiagnostics truncates very long messages", () => {

@@ -304,7 +304,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
               : buildMultiRoundFallbackReply(input.locale);
             markConversationDirty(debug);
-            await saveConversationMemory(deps.conversationMemoryRepository, input, null, debug);
+            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
             return {
               final_patient_reply: malformedForcedReply,
               conversation_id: null,
@@ -324,7 +324,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             // Do not persist/resume it — start clean next turn instead.
             debug.reason = "forced_finalization_after_tool_results";
             markConversationDirty(debug);
-            await saveConversationMemory(deps.conversationMemoryRepository, input, null, debug);
+            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
             return {
               final_patient_reply: forcedOutput.final_response.final_patient_reply,
               conversation_id: null,
@@ -339,7 +339,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
         debug.reason = "multi_round_tool_loop_not_implemented";
         markConversationDirty(debug);
-        await saveConversationMemory(deps.conversationMemoryRepository, input, null, debug);
+        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
           final_patient_reply: buildMultiRoundFallbackReply(input.locale),
           conversation_id: null,
@@ -572,6 +572,37 @@ async function saveConversationMemory(
     }
   } catch (error) {
     debug.memory_saved = false;
+    debug.memory_save_error = error instanceof Error ? error.message : String(error);
+  }
+}
+
+/** Explicitly clears agent-level conversation memory when a conversation just went dirty
+ * (see markConversationDirty). saveConversationMemory() alone won't do this — its early
+ * return on a falsy conversationId means passing null there is a silent no-op, leaving any
+ * previously stored value in place to be resumed (and fail with the same upstream 400) on
+ * the next turn. No-ops when there was nothing to clear (dirtyConversationId was already null). */
+async function clearConversationMemory(
+  repository: ConversationMemoryRepository | undefined,
+  input: RuntimeAgentTurnInput,
+  dirtyConversationId: string | null,
+  debug: Record<string, unknown>,
+): Promise<void> {
+  if (!repository || !dirtyConversationId) {
+    return;
+  }
+  try {
+    const saveResult = await repository.saveConversationMemory({
+      clinic_id: input.clinic_id,
+      contact_id: input.contact_id,
+      case_id: input.case_id,
+      conversation_id: "",
+    });
+    debug.memory_cleared = saveResult.ok;
+    if (!saveResult.ok) {
+      debug.memory_save_error = saveResult.error;
+    }
+  } catch (error) {
+    debug.memory_cleared = false;
     debug.memory_save_error = error instanceof Error ? error.message : String(error);
   }
 }

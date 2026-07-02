@@ -25,6 +25,7 @@ import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdenti
 import type { RuntimeTurnService, RuntimeTurnResult } from "../src/runtime/runtimeTurnService.ts";
 import type { OpenAIConversationMemoryRepository } from "../src/runtime/supabaseOpenAIConversationMemoryRepository.ts";
 import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
+import type { ConversationMemoryRepository } from "../src/runtime/runtimeRepositories.ts";
 
 process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
 
@@ -131,6 +132,105 @@ test("multi-round fallback with a prior booking.apply result still uses the book
   // Admin-notify derivation (PR #117) must still work off the preserved tool_results.
   const actionTruth = buildBookingApplyActionTruth(result.tool_results);
   assert.equal(resolveAdminNotifyReason(actionTruth), "booking_write_disabled");
+});
+
+// ── Codex P2: agent-level ConversationMemoryRepository must also be cleared ──
+// (saveConversationMemory(...) alone no-ops on a falsy conversationId — passing
+// null there silently leaves any previously stored value in place.)
+
+function makeAgentMemoryRepo(initialConversationId: string | null): { repo: ConversationMemoryRepository; saveCalls: unknown[] } {
+  let stored = initialConversationId;
+  const saveCalls: unknown[] = [];
+  const repo: ConversationMemoryRepository = {
+    async getConversationMemory() {
+      return { ok: true, data: { conversation_id: stored } };
+    },
+    async saveConversationMemory(input) {
+      saveCalls.push({ ...input });
+      stored = input.conversation_id || null;
+      return { ok: true, data: { conversation_id: input.conversation_id } };
+    },
+  };
+  return { repo, saveCalls };
+}
+
+test("Codex-P2-1: dirty multi-round branch clears agent-level memory when a prior conversation_id existed", async () => {
+  const { repo, saveCalls } = makeAgentMemoryRepo(null);
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", call_id: "c1", arguments: { query: "q1" } }], conversation_id: "conv_r1_agent" };
+    return { type: "tool_requests", tool_requests: [{ tool: "kb.search", call_id: "c2", arguments: { query: "q2" } }], conversation_id: "conv_r2_agent" };
+  };
+  const executors: ToolExecutorRegistry = {
+    "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [] } }),
+  };
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors, conversationMemoryRepository: repo }).runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_1", case_id: "case_1", user_message: "test", locale: "ru",
+    conversation_id: "conv_prior_agent",
+    truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+  } as any);
+
+  assert.equal(result.conversation_id_resumable, false);
+  assert.equal(saveCalls.length, 1, "must actively clear, not just skip");
+  assert.equal((saveCalls[0] as any).conversation_id, "");
+  assert.equal((result.debug as any).memory_cleared, true);
+});
+
+test("Codex-P2-2: no save/clear call when no prior conversation_id existed at the agent level", async () => {
+  const { repo, saveCalls } = makeAgentMemoryRepo(null);
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", call_id: "c1", arguments: { query: "q1" } }] };
+    return { type: "tool_requests", tool_requests: [{ tool: "kb.search", call_id: "c2", arguments: { query: "q2" } }] };
+  };
+  const executors: ToolExecutorRegistry = {
+    "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [] } }),
+  };
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors, conversationMemoryRepository: repo }).runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_1", case_id: "case_1", user_message: "test", locale: "ru",
+    truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+  } as any);
+
+  assert.equal(result.conversation_id_resumable, false);
+  assert.equal(saveCalls.length, 0, "nothing to clear — no conversation_id was ever known at the agent level");
+});
+
+test("Codex-P2-3: normal resumable path still saves the real conversation_id at the agent level", async () => {
+  const { repo, saveCalls } = makeAgentMemoryRepo(null);
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    final_response: { final_patient_reply: "Здравствуйте!" },
+    conversation_id: "conv_good_agent",
+  });
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors: {}, conversationMemoryRepository: repo }).runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_1", case_id: "case_1", user_message: "test", locale: "ru",
+    truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+  } as any);
+
+  assert.notEqual(result.conversation_id_resumable, false);
+  assert.equal(saveCalls.length, 1);
+  assert.equal((saveCalls[0] as any).conversation_id, "conv_good_agent");
+  assert.equal((result.debug as any).memory_saved, true);
+});
+
+test("Codex-P2-4: orchestrator-level clear behavior (PR #121) remains unchanged after this fix", async () => {
+  const { repo, saveCalls } = makeMemoryRepo("conv_previous_good_orch");
+  const { service } = serviceReturning({
+    final_patient_reply: buildMultiRoundFallbackReply("ru"),
+    conversation_id: null,
+    conversation_id_resumable: false,
+  });
+
+  await runRuntimeTurnOrchestrated(baseBody(), {
+    runtimeTurnService: service,
+    clinicIdentityResolver,
+    openAIConversationMemoryRepository: repo,
+  });
+
+  assert.equal(saveCalls.length, 1);
+  assert.equal((saveCalls[0] as any).conversation_id, "");
 });
 
 // ── d/e: orchestrator must not persist/resume the dirty conversation_id ─────

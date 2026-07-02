@@ -488,7 +488,11 @@ test("M1: forced finalization does not update conversationId with fresh-call con
     executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "c1", text: "info" }] } }) },
   }).runTurn(makeInput());
 
-  assert.equal(result.conversation_id, "conv_r2", "result conversation_id must be from rounds 1-2, not forced finalization");
+  // PR #121: conv_r2 has a pending, never-resolved round-2 function_call — resuming it later
+  // 400s upstream ("No tool output found for function call ..."). It must not be returned as
+  // resumable, and the fresh finalization conversation must not leak into the result either.
+  assert.equal(result.conversation_id, null, "dirty rounds-1-2 conversation must not be returned as resumable");
+  assert.equal(result.conversation_id_resumable, false);
   assert.notEqual(result.conversation_id, "conv_finalization_fresh", "forced finalization conversation_id must not leak into result");
 });
 

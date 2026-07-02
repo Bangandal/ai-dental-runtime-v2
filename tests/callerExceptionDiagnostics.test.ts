@@ -13,6 +13,7 @@ import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "../src/ru
 import {
   createRuntimeAgentLoop,
   buildMalformedResponseFallback,
+  buildMultiRoundFallbackReply,
   type RuntimeAgentCaller,
 } from "../src/runtime/runtimeAgentLoop.ts";
 import { buildBookingApplyActionTruth } from "../src/runtime/bookingApplyGuard.ts";
@@ -209,7 +210,7 @@ test("sanitizeErrorMessage redacts phone numbers and multiple secret shapes (API
   assert.doesNotMatch(result.final_patient_reply, /Иван|Петров/);
 });
 
-test("booking-specific fallback wins over generic even when caller_exception diagnostics are present (forced finalization)", async () => {
+test("forced finalization exception attaches caller_exception diagnostics without changing fallback behavior", async () => {
   let round = 0;
   const caller: RuntimeAgentCaller = async () => {
     round += 1;
@@ -230,4 +231,7 @@ test("booking-specific fallback wins over generic even when caller_exception dia
   const diag = (result.debug as any).caller_exception;
   assert.equal(diag.stage, "forced_finalization");
   assert.equal(diag.had_booking_apply_action_truth, false);
+  // Fallback behavior is byte-for-byte the pre-existing multi-round fallback (PR #116/#118) —
+  // this PR only attaches diagnostics, it does not touch the reply.
+  assert.equal(result.final_patient_reply, buildMultiRoundFallbackReply("ru"));
 });

@@ -142,9 +142,7 @@ test("second-call exception with booking_apply_action_truth: booking fallback st
   assert.ok(actionTruth);
 });
 
-test("no raw OpenAI payload, tool args, phone, or patient data leak into patient reply or debug", async () => {
-  const patientPhone = "+420600111222";
-  const patientMessage = "Меня зовут Иван Петров, телефон +420600111222";
+test("caller_exception.tool_names never includes tool arguments — structured patient data (name/phone/service) is excluded by construction", async () => {
   let round = 0;
   const caller: RuntimeAgentCaller = async () => {
     round += 1;
@@ -158,22 +156,45 @@ test("no raw OpenAI payload, tool args, phone, or patient data leak into patient
         }],
       };
     }
-    throw new Error(`raw upstream payload leaked phone=${patientPhone} apikey=sk-verysecretkey1234567890`);
+    throw new Error("second call boom, no PII in this message");
+  };
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled") });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  const diag = (result.debug as any).caller_exception;
+  // tool_names is a list of tool identifiers only — buildCallerExceptionDiagnostics
+  // never reads request.arguments, so first_name/last_name/service/dates cannot
+  // reach it regardless of what the thrown error's message contains.
+  assert.deepEqual(diag.tool_names, ["booking.apply"]);
+  assert.doesNotMatch(JSON.stringify(diag), /Иван|Петров|чистка/);
+  assert.doesNotMatch(result.final_patient_reply, /Иван|Петров/);
+});
+
+test("sanitizeErrorMessage redacts phone numbers and multiple secret shapes (API key, bearer token) from the thrown message", async () => {
+  const patientPhone = "+420600111222";
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) {
+      return { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }] };
+    }
+    throw new Error(
+      `upstream 500: phone=${patientPhone} apikey=sk-verysecretkey1234567890 auth=Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFPM`,
+    );
   };
   const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled") });
   const result = await agent.runTurn(makeInput("ru"));
 
   const serialized = JSON.stringify(result);
+  // Known, explicit limitation (not asserted false-positively as fixed): sanitizeErrorMessage
+  // matches secret-shaped and phone-shaped substrings via regex — it does not and cannot
+  // reliably strip arbitrary free-text PII (e.g. a name) that an upstream error might echo.
+  // Structured patient data is protected separately, by tool_names never including arguments
+  // (see the test above) — that guarantee does not depend on pattern matching.
   assert.doesNotMatch(serialized, /sk-verysecretkey1234567890/);
+  assert.doesNotMatch(serialized, /Bearer eyJ/);
+  assert.doesNotMatch(serialized, new RegExp(patientPhone.replace("+", "\\+")));
   assert.doesNotMatch(result.final_patient_reply, /Иван|Петров/);
-  assert.doesNotMatch(result.final_patient_reply, new RegExp(patientPhone.replace("+", "\\+")));
-  assert.doesNotMatch(result.final_patient_reply, new RegExp(patientMessage));
-
-  const diag = (result.debug as any).caller_exception;
-  // tool_names only — never the raw tool_requests arguments (first_name/last_name/phone).
-  assert.deepEqual(diag.tool_names, ["booking.apply"]);
-  assert.doesNotMatch(JSON.stringify(diag), /Иван|Петров/);
-  assert.doesNotMatch(JSON.stringify(diag), new RegExp(patientPhone.replace("+", "\\+")));
 });
 
 test("booking-specific fallback wins over generic even when caller_exception diagnostics are present (forced finalization)", async () => {

@@ -161,7 +161,7 @@ function normalizeVisit(raw: unknown, fallbackDate?: string): ClinicCardResult<C
   const id = asPositiveNumber(row.id ?? row.visit_id);
   if (id === null) return validationError("ClinicCard visit response missing positive id/visit_id");
 
-  const patientId = asPositiveNumber(row.patient_id) ?? 1;
+  const patientId = asPositiveNumber(row.patient_id);
   const doctorId = asPositiveNumber(row.doctor_id);
   const cabinetId = asPositiveNumber(row.cabinet_id);
   const date = asOptionalString(row.date ?? row.visit_date) ?? fallbackDate;

@@ -17,6 +17,7 @@ import type { ToolExecutionResult } from "./toolResults.ts";
 import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
+import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -105,9 +106,14 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       } catch (error) {
         debug.runtime_error = {
           code: "agent_caller_failed",
-          message: error instanceof Error ? error.message : String(error),
+          message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
         };
         debug.reason = "agent_first_call_exception";
+        debug.caller_exception = buildCallerExceptionDiagnostics(error, {
+          stage: "first_call",
+          locale: input.locale,
+          conversationId,
+        });
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
           final_patient_reply: buildMalformedResponseFallback(input.locale),
@@ -207,7 +213,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       } catch (error) {
         debug.runtime_error = {
           code: "agent_final_response_failed",
-          message: error instanceof Error ? error.message : String(error),
+          message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
         };
         const emergencyReply = bookingActionTruth
           ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
@@ -215,6 +221,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         debug.reason = bookingActionTruth
           ? "agent_second_call_exception_booking_fallback"
           : "agent_second_call_exception_generic_fallback";
+        debug.caller_exception = buildCallerExceptionDiagnostics(error, {
+          stage: "second_call",
+          locale: input.locale,
+          conversationId,
+          toolResults,
+          bookingApplyActionTruth: bookingActionTruth,
+        });
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
           final_patient_reply: emergencyReply,
@@ -275,8 +288,15 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
                 // No tool_results → no function_call_output protocol messages.
               },
             });
-          } catch {
+          } catch (error) {
             // Forced finalization failed — fall through to locale-aware fallback.
+            debug.caller_exception = buildCallerExceptionDiagnostics(error, {
+              stage: "forced_finalization",
+              locale: input.locale,
+              conversationId,
+              toolResults,
+              bookingApplyActionTruth: bookingActionTruth,
+            });
           }
           if (forcedOutput !== undefined && forcedOutput.type === "final_response" && isMalformedFinalResponse(forcedOutput)) {
             debug.reason = "malformed_forced_finalization_fallback";

@@ -2,8 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  acquireSlotLock,
-  buildSlotLockKey,
+  acquireBookingSlotLock,
   _resetSlotLocks,
   _activeLockCount,
 } from "../src/integrations/cliniccard/bookingSlotMutex.ts";
@@ -39,8 +38,10 @@ function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecuti
   };
 }
 
-// Stateful adapter: visits are shared across calls to simulate real ClinicCard state.
-function makeStatefulAdapter(delayListVisitsMs = 0): ClinicCardAdapter & { createVisitCalls: number } {
+// Stateful adapter: visits list is shared across all calls to the same instance.
+// delayListVisitsMs > 0 forces a yield between listVisits and createVisit so that
+// truly concurrent calls both reach listVisits before either calls createVisit.
+function makeStatefulAdapter(delayListVisitsMs = 5): ClinicCardAdapter & { createVisitCalls: number } {
   const visits: Array<{
     id: number;
     patient_id: number;
@@ -54,22 +55,31 @@ function makeStatefulAdapter(delayListVisitsMs = 0): ClinicCardAdapter & { creat
   }> = [];
   let nextId = 100;
 
-  return {
-    createVisitCalls: 0,
+  const adapter = {
+    createVisitCalls: 0 as number,
     async listVisits() {
       if (delayListVisitsMs > 0) {
         await new Promise<void>((r) => setTimeout(r, delayListVisitsMs));
       }
-      return { ok: true, data: [...visits] };
+      return { ok: true as const, data: [...visits] };
     },
     async findPatientByPhone() {
-      return { ok: true, data: [{ id: 42, name: "Ivan Petrov", phone: "+420777111222" }] };
+      return { ok: true as const, data: [{ id: 42, name: "Ivan Petrov", phone: "+420777111222" }] };
     },
-    async createPatient(input) {
-      return { ok: true, data: { id: 42, name: input.name, phone: input.phone ?? null } };
+    async createPatient(input: { name: string; phone?: string }) {
+      return { ok: true as const, data: { id: 42, name: input.name, phone: input.phone ?? null } };
     },
-    async createVisit(input) {
-      (this as { createVisitCalls: number }).createVisitCalls++;
+    async createVisit(input: {
+      patient_id: number;
+      doctor_id: number;
+      cabinet_id: number;
+      date: string;
+      time_start: string;
+      time_end: string;
+      status: string;
+      note?: string;
+    }) {
+      adapter.createVisitCalls++;
       const id = nextId++;
       visits.push({
         id,
@@ -83,7 +93,7 @@ function makeStatefulAdapter(delayListVisitsMs = 0): ClinicCardAdapter & { creat
         note: input.note ?? null,
       });
       return {
-        ok: true,
+        ok: true as const,
         data: {
           id,
           patient_id: input.patient_id,
@@ -98,111 +108,93 @@ function makeStatefulAdapter(delayListVisitsMs = 0): ClinicCardAdapter & { creat
       };
     },
     async listPayments() {
-      return { ok: true, data: [] };
+      return { ok: true as const, data: [] };
     },
   };
+  return adapter;
 }
 
-// ── buildSlotLockKey ─────────────────────────────────────────────────────────
-
-test("buildSlotLockKey includes all five dimensions", () => {
-  const key = buildSlotLockKey({
-    clinic_id: "c1",
-    requested_date: "2026-07-20",
-    requested_time: "10:00",
-    doctor_id: 1,
-    cabinet_id: 2,
-  });
-  assert.ok(key.includes("c1"), "clinic_id");
-  assert.ok(key.includes("2026-07-20"), "date");
-  assert.ok(key.includes("10:00"), "time");
-  assert.ok(key.includes("1"), "doctor_id");
-  assert.ok(key.includes("2"), "cabinet_id");
-});
-
-test("buildSlotLockKey differs by time", () => {
-  const k1 = buildSlotLockKey({ clinic_id: "c1", requested_date: "2026-07-20", requested_time: "10:00", doctor_id: 1, cabinet_id: 2 });
-  const k2 = buildSlotLockKey({ clinic_id: "c1", requested_date: "2026-07-20", requested_time: "11:00", doctor_id: 1, cabinet_id: 2 });
-  assert.notEqual(k1, k2);
-});
-
-test("buildSlotLockKey differs by doctor_id", () => {
-  const k1 = buildSlotLockKey({ clinic_id: "c1", requested_date: "2026-07-20", requested_time: "10:00", doctor_id: 1, cabinet_id: 2 });
-  const k2 = buildSlotLockKey({ clinic_id: "c1", requested_date: "2026-07-20", requested_time: "10:00", doctor_id: 9, cabinet_id: 2 });
-  assert.notEqual(k1, k2);
-});
-
-test("buildSlotLockKey differs by cabinet_id", () => {
-  const k1 = buildSlotLockKey({ clinic_id: "c1", requested_date: "2026-07-20", requested_time: "10:00", doctor_id: 1, cabinet_id: 2 });
-  const k2 = buildSlotLockKey({ clinic_id: "c1", requested_date: "2026-07-20", requested_time: "10:00", doctor_id: 1, cabinet_id: 9 });
-  assert.notEqual(k1, k2);
-});
-
-// ── acquireSlotLock / mutex primitives ───────────────────────────────────────
+// ── mutex primitive: acquireBookingSlotLock ───────────────────────────────────
 
 test("mutex: first acquire resolves immediately", async () => {
   _resetSlotLocks();
-  const release = await acquireSlotLock("key-a");
-  assert.equal(_activeLockCount(), 1);
-  release();
-  assert.equal(_activeLockCount(), 0);
-});
-
-test("mutex: lock is released on explicit call", async () => {
-  _resetSlotLocks();
-  const rel = await acquireSlotLock("key-b");
+  const rel = await acquireBookingSlotLock("c1", "2026-07-20", 1, 2);
+  // Two sub-locks acquired (cabinet + doctor)
+  assert.equal(_activeLockCount(), 2);
   rel();
   assert.equal(_activeLockCount(), 0);
 });
 
-test("mutex: second acquire on same key waits until first releases", async () => {
+test("mutex: same doctor+cabinet blocks second caller until first releases", async () => {
   _resetSlotLocks();
   const order: number[] = [];
-  const rel1 = await acquireSlotLock("key-c");
+
+  const rel1 = await acquireBookingSlotLock("c1", "2026-07-20", 1, 2);
   order.push(1);
 
-  const p2 = acquireSlotLock("key-c").then((rel2) => {
+  const p2 = acquireBookingSlotLock("c1", "2026-07-20", 1, 2).then((rel2) => {
     order.push(2);
     rel2();
   });
 
-  // p2 should not have run yet — we hold the lock
-  assert.deepEqual(order, [1]);
-
+  assert.deepEqual(order, [1]); // p2 still waiting
   rel1();
   await p2;
   assert.deepEqual(order, [1, 2]);
   assert.equal(_activeLockCount(), 0);
 });
 
-test("mutex: different keys do not block each other", async () => {
+test("mutex: different doctor+cabinet do not block each other", async () => {
   _resetSlotLocks();
-  const rel1 = await acquireSlotLock("key-x");
-  const rel2 = await acquireSlotLock("key-y"); // must not wait for key-x
-  assert.equal(_activeLockCount(), 2);
+  const rel1 = await acquireBookingSlotLock("c1", "2026-07-20", 1, 2);
+  const rel2 = await acquireBookingSlotLock("c1", "2026-07-20", 3, 4); // diff doctor AND cabinet
+  assert.equal(_activeLockCount(), 4); // 2 sub-locks each
   rel1();
   rel2();
   assert.equal(_activeLockCount(), 0);
 });
 
-test("mutex: three concurrent waiters on same key are serialized FIFO", async () => {
+test("mutex: same doctor but different cabinet blocks (doctor dimension)", async () => {
   _resetSlotLocks();
   const order: number[] = [];
-  const rel1 = await acquireSlotLock("key-q");
+
+  const rel1 = await acquireBookingSlotLock("c1", "2026-07-20", 1, 2);  // doctor=1, cabinet=2
   order.push(1);
 
-  const p2 = acquireSlotLock("key-q").then((r) => { order.push(2); r(); });
-  const p3 = acquireSlotLock("key-q").then((r) => { order.push(3); r(); });
+  const p2 = acquireBookingSlotLock("c1", "2026-07-20", 1, 99).then((rel2) => { // doctor=1, cabinet=99
+    order.push(2);
+    rel2();
+  });
 
+  assert.deepEqual(order, [1]); // blocked on shared doctor:1 key
   rel1();
-  await Promise.all([p2, p3]);
-  assert.deepEqual(order, [1, 2, 3]);
+  await p2;
+  assert.deepEqual(order, [1, 2]);
   assert.equal(_activeLockCount(), 0);
 });
 
-// ── executor: disabled mode blocks before lock ───────────────────────────────
+test("mutex: same cabinet but different doctor blocks (cabinet dimension)", async () => {
+  _resetSlotLocks();
+  const order: number[] = [];
 
-test("booking.apply disabled: returns before acquiring lock", async () => {
+  const rel1 = await acquireBookingSlotLock("c1", "2026-07-20", 1, 2);  // doctor=1, cabinet=2
+  order.push(1);
+
+  const p2 = acquireBookingSlotLock("c1", "2026-07-20", 99, 2).then((rel2) => { // doctor=99, cabinet=2
+    order.push(2);
+    rel2();
+  });
+
+  assert.deepEqual(order, [1]); // blocked on shared cabinet:2 key
+  rel1();
+  await p2;
+  assert.deepEqual(order, [1, 2]);
+  assert.equal(_activeLockCount(), 0);
+});
+
+// ── executor: disabled mode blocks before lock ────────────────────────────────
+
+test("disabled mode: returns before lock, no lock held after return", async () => {
   _resetSlotLocks();
   const executor = createBookingApplyExecutor({
     env: { ...LIVE_ENV, CLINICCARD_BOOKING_MODE: "disabled" },
@@ -211,36 +203,128 @@ test("booking.apply disabled: returns before acquiring lock", async () => {
   const result = await executor(makeContext());
   assert.equal(result.data.booking_status, "booking_write_disabled");
   assert.equal(result.data.created_visit, false);
-  // Lock must NOT be held after disabled early-return
   assert.equal(_activeLockCount(), 0);
 });
 
-// ── executor: concurrent same-slot serialization ─────────────────────────────
+// ── executor: concurrent overlapping times same doctor+cabinet ────────────────
 
-test("two concurrent booking.apply calls for same slot: only one createVisit", async () => {
+test("concurrent 10:00 and 10:15 same doctor+cabinet: only one createVisit", async () => {
   _resetSlotLocks();
-  // delayListVisitsMs=5 ensures both calls enter the executor before the lock
-  // is released, producing true concurrency at the await point.
-  const adapter = makeStatefulAdapter(5);
+  const adapter = makeStatefulAdapter();
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
     adapterFactory: () => adapter,
   });
-  const ctx = makeContext();
 
-  const [r1, r2] = await Promise.all([executor(ctx), executor(ctx)]);
+  const [r1, r2] = await Promise.all([
+    executor(makeContext({ requested_time: "10:00" })),
+    executor(makeContext({ requested_time: "10:15" })),
+  ]);
 
-  // Exactly one visit should have been created
-  assert.equal(adapter.createVisitCalls, 1, "createVisit must be called exactly once");
-
-  // One succeeds, one sees conflict
+  assert.equal(adapter.createVisitCalls, 1, "only one createVisit must be called");
   const statuses = [r1.data.booking_status, r2.data.booking_status].sort();
   assert.deepEqual(statuses, ["slot_conflict", "visit_created"]);
 });
 
-test("same slot: second call gets slot_conflict, not visit_created", async () => {
+test("concurrent 10:00 and 10:15 same slot: loser gets slot_conflict with correct fields", async () => {
   _resetSlotLocks();
-  const adapter = makeStatefulAdapter(5);
+  const adapter = makeStatefulAdapter();
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => adapter,
+  });
+
+  const [r1, r2] = await Promise.all([
+    executor(makeContext({ requested_time: "10:00" })),
+    executor(makeContext({ requested_time: "10:15" })),
+  ]);
+
+  const loser = [r1, r2].find((r) => r.data.booking_status === "slot_conflict");
+  assert.ok(loser, "one result must be slot_conflict");
+  assert.equal(loser!.data.created_visit, false);
+  assert.equal(loser!.data.may_claim_booked, false);
+  assert.equal(loser!.data.cliniccard_visit_id, null);
+});
+
+// ── executor: same doctor but different cabinet (test 2) ──────────────────────
+
+test("concurrent same doctor diff cabinet overlapping: only one createVisit", async () => {
+  _resetSlotLocks();
+  // Both executors share the same stateful adapter so listVisits reflects reality.
+  const sharedAdapter = makeStatefulAdapter();
+
+  const exec1 = createBookingApplyExecutor({
+    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_CABINET_ID: "2" },
+    adapterFactory: () => sharedAdapter,
+  });
+  const exec2 = createBookingApplyExecutor({
+    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_CABINET_ID: "99" },
+    adapterFactory: () => sharedAdapter,
+  });
+
+  // doctor=1 is the same for both; 10:00-10:30 overlaps with 10:15-10:45.
+  const [r1, r2] = await Promise.all([
+    exec1(makeContext({ requested_time: "10:00" })),
+    exec2(makeContext({ requested_time: "10:15" })),
+  ]);
+
+  assert.equal(sharedAdapter.createVisitCalls, 1, "same doctor serializes; only one visit");
+  const statuses = [r1.data.booking_status, r2.data.booking_status].sort();
+  assert.deepEqual(statuses, ["slot_conflict", "visit_created"]);
+});
+
+// ── executor: same cabinet but different doctor (test 3) ──────────────────────
+
+test("concurrent same cabinet diff doctor overlapping: only one createVisit", async () => {
+  _resetSlotLocks();
+  const sharedAdapter = makeStatefulAdapter();
+
+  const exec1 = createBookingApplyExecutor({
+    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "1" },
+    adapterFactory: () => sharedAdapter,
+  });
+  const exec2 = createBookingApplyExecutor({
+    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "99" },
+    adapterFactory: () => sharedAdapter,
+  });
+
+  // cabinet=2 is the same for both; 10:00-10:30 overlaps with 10:15-10:45.
+  const [r1, r2] = await Promise.all([
+    exec1(makeContext({ requested_time: "10:00" })),
+    exec2(makeContext({ requested_time: "10:15" })),
+  ]);
+
+  assert.equal(sharedAdapter.createVisitCalls, 1, "same cabinet serializes; only one visit");
+  const statuses = [r1.data.booking_status, r2.data.booking_status].sort();
+  assert.deepEqual(statuses, ["slot_conflict", "visit_created"]);
+});
+
+// ── executor: non-overlapping same resource (test 4) ─────────────────────────
+
+test("non-overlapping same doctor+cabinet: 10:00 and 11:00 both eventually visit_created", async () => {
+  _resetSlotLocks();
+  const adapter = makeStatefulAdapter();
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => adapter,
+  });
+
+  const [r1, r2] = await Promise.all([
+    executor(makeContext({ requested_time: "10:00" })),
+    executor(makeContext({ requested_time: "11:00" })),
+  ]);
+
+  // Serialized internally but no interval overlap → both succeed.
+  assert.equal(r1.data.booking_status, "visit_created");
+  assert.equal(r2.data.booking_status, "visit_created");
+  assert.equal(adapter.createVisitCalls, 2);
+});
+
+// ── executor: exact same slot (test 5) ───────────────────────────────────────
+
+test("exact same slot concurrent: only one createVisit, loser gets slot_conflict", async () => {
+  _resetSlotLocks();
+  const adapter = makeStatefulAdapter();
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
     adapterFactory: () => adapter,
@@ -248,88 +332,37 @@ test("same slot: second call gets slot_conflict, not visit_created", async () =>
   const ctx = makeContext();
 
   const [r1, r2] = await Promise.all([executor(ctx), executor(ctx)]);
-  const results = [r1, r2];
-  const winner = results.find((r) => r.data.booking_status === "visit_created");
-  const loser = results.find((r) => r.data.booking_status === "slot_conflict");
 
-  assert.ok(winner, "one call must succeed");
-  assert.ok(loser, "one call must get slot_conflict");
-  assert.equal(loser?.data.created_visit, false);
-  assert.equal(loser?.data.may_claim_booked, false);
+  assert.equal(adapter.createVisitCalls, 1);
+  const statuses = [r1.data.booking_status, r2.data.booking_status].sort();
+  assert.deepEqual(statuses, ["slot_conflict", "visit_created"]);
 });
 
-// ── executor: different slots proceed independently ──────────────────────────
+// ── executor: lock released on createVisit throw (test 7) ────────────────────
 
-test("different requested_time: both calls proceed independently", async () => {
+test("lock released when createVisit throws", async () => {
   _resetSlotLocks();
-  const adapter = makeStatefulAdapter(0);
-  const executor = createBookingApplyExecutor({
-    env: LIVE_ENV,
-    adapterFactory: () => adapter,
-  });
-
-  const [r1, r2] = await Promise.all([
-    executor(makeContext({ requested_time: "09:00" })),
-    executor(makeContext({ requested_time: "11:00" })),
-  ]);
-
-  assert.equal(r1.data.booking_status, "visit_created");
-  assert.equal(r2.data.booking_status, "visit_created");
-  assert.equal(adapter.createVisitCalls, 2, "both slots create a visit independently");
-});
-
-test("different doctor_id does not block same time slot", async () => {
-  _resetSlotLocks();
-  // Two separate adapters/executors simulating different doctor configs
-  const adapter1 = makeStatefulAdapter(0);
-  const adapter2 = makeStatefulAdapter(0);
-
-  const exec1 = createBookingApplyExecutor({
-    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "1", CLINICCARD_DEFAULT_CABINET_ID: "10" },
-    adapterFactory: () => adapter1,
-  });
-  const exec2 = createBookingApplyExecutor({
-    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "2", CLINICCARD_DEFAULT_CABINET_ID: "20" },
-    adapterFactory: () => adapter2,
-  });
-
-  const [r1, r2] = await Promise.all([
-    exec1(makeContext({ requested_time: "10:00" })),
-    exec2(makeContext({ requested_time: "10:00" })),
-  ]);
-
-  assert.equal(r1.data.booking_status, "visit_created");
-  assert.equal(r2.data.booking_status, "visit_created");
-});
-
-// ── executor: lock released on error ─────────────────────────────────────────
-
-test("lock is released when createVisit throws", async () => {
-  _resetSlotLocks();
-  const adapter: ClinicCardAdapter = {
+  const throwingAdapter: ClinicCardAdapter = {
     async listVisits() { return { ok: true, data: [] }; },
     async findPatientByPhone() { return { ok: true, data: [{ id: 1, name: "x", phone: "y" }] }; },
     async createPatient(i) { return { ok: true, data: { id: 1, name: i.name } }; },
     async createVisit() { throw new Error("ClinicCard network failure"); },
     async listPayments() { return { ok: true, data: [] }; },
   };
-
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
-    adapterFactory: () => adapter,
+    adapterFactory: () => throwingAdapter,
   });
 
   await assert.rejects(executor(makeContext()), /ClinicCard network failure/);
-
-  // Lock must be released even after a thrown error
   assert.equal(_activeLockCount(), 0);
 });
 
-// ── executor: existing conflict behavior unchanged ────────────────────────────
+// ── executor: existing slot_conflict behavior unchanged (test 6) ──────────────
 
-test("existing slot_conflict behavior unchanged when ClinicCard already has a visit", async () => {
+test("existing slot_conflict unchanged when ClinicCard already has conflicting visit", async () => {
   _resetSlotLocks();
-  const conflictingVisit = {
+  const preexistingVisit = {
     id: 5,
     patient_id: 1,
     doctor_id: 1,
@@ -340,13 +373,17 @@ test("existing slot_conflict behavior unchanged when ClinicCard already has a vi
     status: "PLANNED",
     note: null,
   };
+  let createVisitCalled = false;
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
     adapterFactory: () => ({
-      async listVisits() { return { ok: true, data: [conflictingVisit] }; },
+      async listVisits() { return { ok: true, data: [preexistingVisit] }; },
       async findPatientByPhone() { return { ok: true, data: [] }; },
       async createPatient(i) { return { ok: true, data: { id: 1, name: i.name } }; },
-      async createVisit() { return { ok: false, error: { code: "e", message: "should not be called" } }; },
+      async createVisit() {
+        createVisitCalled = true;
+        return { ok: false, error: { code: "e", message: "should not reach here" } };
+      },
       async listPayments() { return { ok: true, data: [] }; },
     }),
   });
@@ -355,5 +392,6 @@ test("existing slot_conflict behavior unchanged when ClinicCard already has a vi
   assert.equal(result.data.booking_status, "slot_conflict");
   assert.equal(result.data.created_visit, false);
   assert.equal(result.data.may_claim_booked, false);
+  assert.equal(createVisitCalled, false);
   assert.equal(_activeLockCount(), 0);
 });

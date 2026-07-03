@@ -1,53 +1,65 @@
-// In-process mutex that serializes concurrent booking.apply calls targeting the
-// same clinic/date/time/doctor/cabinet. Prevents duplicate ClinicCard visits
-// created by two simultaneous requests that both pass the conflict check.
+// In-process mutex that serializes concurrent booking.apply calls that could
+// create conflicting ClinicCard visits.
 //
-// Lock key: clinic_id:date:time:doctor_id:cabinet_id
-// Different slot combinations do not block each other.
-
-export interface SlotLockKey {
-  clinic_id: string;
-  requested_date: string;
-  requested_time: string;
-  doctor_id: number;
-  cabinet_id: number;
-}
-
-export function buildSlotLockKey(key: SlotLockKey): string {
-  return `${key.clinic_id}:${key.requested_date}:${key.requested_time}:${key.doctor_id}:${key.cabinet_id}`;
-}
+// The ClinicCard conflict rule is:
+//   (same doctor_id OR same cabinet_id) AND overlapping time interval
+//
+// To prevent races for both dimensions we acquire TWO locks per call:
+//   1. clinic:date:cabinet:<cabinet_id>
+//   2. clinic:date:doctor:<doctor_id>
+// Always in that order (cabinet first, then doctor) to prevent deadlock.
+//
+// Consequences:
+//   - Same doctor + same cabinet  → serialized (both keys match)
+//   - Same doctor + diff cabinet  → serialized by doctor key
+//   - Diff doctor + same cabinet  → serialized by cabinet key
+//   - Diff doctor + diff cabinet  → no conflict possible; proceed independently
 
 // Module-level registry: key → queue of pending waiters.
-// A key present in the map means the lock is currently held.
-// An empty queue means held with no waiters; a non-empty queue means held with waiters.
+// Key present in map means lock is held; empty queue = held with no waiters.
 const _locks = new Map<string, Array<() => void>>();
 
-// Acquire an exclusive lock for the given key string.
-// Returns a release function that MUST be called in a finally block.
-export function acquireSlotLock(key: string): Promise<() => void> {
+function _acquireSingleLock(key: string): Promise<() => void> {
   return new Promise<() => void>((resolve) => {
     const waiters = _locks.get(key);
     if (waiters === undefined) {
-      // Lock is free — take it immediately.
       _locks.set(key, []);
-      resolve(() => _release(key));
+      resolve(() => _releaseSingleLock(key));
     } else {
-      // Lock is held — enqueue.
-      waiters.push(() => resolve(() => _release(key)));
+      waiters.push(() => resolve(() => _releaseSingleLock(key)));
     }
   });
 }
 
-function _release(key: string): void {
+function _releaseSingleLock(key: string): void {
   const waiters = _locks.get(key);
   if (!waiters || waiters.length === 0) {
-    // No waiters — free the lock entirely.
     _locks.delete(key);
   } else {
-    // Hand the lock to the next waiter.
     const next = waiters.shift()!;
     next();
   }
+}
+
+// Acquire the booking slot lock for the given dimensions.
+// Returns a single release function — MUST be called in a finally block.
+export async function acquireBookingSlotLock(
+  clinicId: string,
+  date: string,
+  doctorId: number,
+  cabinetId: number,
+): Promise<() => void> {
+  // Consistent acquisition order: cabinet key first, then doctor key.
+  const cabinetKey = `${clinicId}:${date}:cabinet:${cabinetId}`;
+  const doctorKey = `${clinicId}:${date}:doctor:${doctorId}`;
+
+  const relCabinet = await _acquireSingleLock(cabinetKey);
+  const relDoctor = await _acquireSingleLock(doctorKey);
+
+  return () => {
+    relDoctor();
+    relCabinet();
+  };
 }
 
 // Visible for testing only.

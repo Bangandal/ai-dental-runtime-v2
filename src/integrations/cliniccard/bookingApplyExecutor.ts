@@ -4,7 +4,7 @@ import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import type { BookingApplyResult, BookingApplySuccessResult } from "../../runtime/toolResults.ts";
-import { acquireSlotLock, buildSlotLockKey } from "./bookingSlotMutex.ts";
+import { acquireBookingSlotLock } from "./bookingSlotMutex.ts";
 
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
@@ -217,15 +217,14 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
     const timeEnd = addMinutes(timeStart, DEFAULT_SLOT_DURATION_MINUTES);
 
     // Acquire slot-level lock before any ClinicCard read or write.
-    // Same clinic/date/time/doctor/cabinet serializes; different slots proceed in parallel.
-    const lockKey = buildSlotLockKey({
-      clinic_id: context.clinic_id ?? "",
-      requested_date: requestedDate,
-      requested_time: timeStart,
-      doctor_id: doctorId,
-      cabinet_id: cabinetId,
-    });
-    const release = await acquireSlotLock(lockKey);
+    // Serializes on both doctor and cabinet dimensions — mirrors the conflict rule
+    // (same doctor OR same cabinet). Different doctor+cabinet proceed independently.
+    const release = await acquireBookingSlotLock(
+      context.clinic_id ?? "",
+      requestedDate,
+      doctorId,
+      cabinetId,
+    );
     try {
       // D. Fresh re-read of ClinicCard visits for the requested date — never trust stale availability.
       const visitsResult = await adapter.listVisits(requestedDate, requestedDate);

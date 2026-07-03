@@ -16,6 +16,16 @@ export function buildContactRequestReplyMarkup(buttonText = "📞 Поделит
 // Telegram API call keeps the webhook handler (and the runtime turn) waiting.
 export const DEFAULT_TELEGRAM_SEND_TIMEOUT_MS = 10_000;
 
+export interface TelegramDeliveryOutcome {
+  ok: boolean;
+  retry_count: number;
+  error_code?: string;
+  error?: string;
+}
+
+// Backoff between first attempt and single retry.
+export const TELEGRAM_RETRY_BACKOFF_MS = 250;
+
 export async function sendTelegramMessage(opts: {
   botToken: string;
   chatId: string;
@@ -56,4 +66,26 @@ export async function sendTelegramMessage(opts: {
     }
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+// Wraps sendTelegramMessage with a single retry on non-timeout failure.
+// Never throws — all outcomes are encoded in TelegramDeliveryOutcome.
+export async function sendTelegramMessageWithRetry(
+  opts: Parameters<typeof sendTelegramMessage>[0] & { retryBackoffMs?: number },
+): Promise<TelegramDeliveryOutcome> {
+  const backoffMs = opts.retryBackoffMs ?? TELEGRAM_RETRY_BACKOFF_MS;
+  const first = await sendTelegramMessage(opts);
+  if (first.ok) {
+    return { ok: true, retry_count: 0 };
+  }
+  if (first.error?.startsWith("telegram_timeout:")) {
+    return { ok: false, retry_count: 0, error_code: "telegram_timeout", error: first.error };
+  }
+  await new Promise<void>((r) => setTimeout(r, backoffMs));
+  const second = await sendTelegramMessage(opts);
+  if (second.ok) {
+    return { ok: true, retry_count: 1 };
+  }
+  const errorCode = second.error?.startsWith("telegram_timeout:") ? "telegram_timeout" : "telegram_send_failed";
+  return { ok: false, retry_count: 1, error_code: errorCode, error: second.error?.slice(0, 300) };
 }

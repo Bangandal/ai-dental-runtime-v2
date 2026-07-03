@@ -87,6 +87,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/integrations/cliniccard/clinicCardAdapter.ts",
     "src/runtime/openaiClientTimeout.ts",
     "src/runtime/bookingApplyGuard.ts",
+    "src/runtime/bookingContactGuard.ts",
     "Dockerfile",
     ".env.example",
     "sql/rpc/public.rpc_kb_search_v1.sql",

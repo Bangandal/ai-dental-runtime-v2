@@ -114,10 +114,10 @@ test("createVisit sends POST to /api/visits with all required fields", async () 
   assert.equal(body.doctor_id, 10);
   assert.equal(body.cabinet_id, 2);
   assert.equal(body.date, "2026-07-15");
-  assert.equal(body.visit_start, "2026-07-15 09:00:00");
-  assert.equal(body.visit_end, "2026-07-15 09:30:00");
-  assert.equal(body.time_start, undefined);
-  assert.equal(body.time_end, undefined);
+  assert.equal(body.time_start, "09:00");
+  assert.equal(body.time_end, "09:30");
+  assert.equal(body.visit_start, undefined);
+  assert.equal(body.visit_end, undefined);
 });
 
 // ── listPayments ─────────────────────────────────────────────────────────────

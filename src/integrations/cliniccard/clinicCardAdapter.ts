@@ -211,18 +211,14 @@ function toClinicCardCreatePatientPayload(input: ClinicCardCreatePatientInput): 
   };
 }
 
-function toClinicCardDateTime(date: string, hhmm: string): string {
-  return `${date} ${hhmm}:00`;
-}
-
 function toClinicCardCreateVisitPayload(input: ClinicCardCreateVisitInput): Record<string, unknown> {
   return {
     patient_id: input.patient_id,
     doctor_id: input.doctor_id,
     cabinet_id: input.cabinet_id,
     date: input.date,
-    visit_start: toClinicCardDateTime(input.date, input.time_start),
-    visit_end: toClinicCardDateTime(input.date, input.time_end),
+    time_start: input.time_start,
+    time_end: input.time_end,
     status: input.status,
     ...(input.note ? { note: input.note } : {}),
   };

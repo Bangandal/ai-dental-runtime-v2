@@ -31,6 +31,9 @@ function makeInput(locale: string | null, conversation_id?: string | null) {
     locale,
     conversation_id,
     truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+    // Trusted phone required so the round-1 global phone preflight (PR #133) does not
+    // intercept before the executor runs.  These tests exercise post-execution paths.
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } as const,
   };
 }
 

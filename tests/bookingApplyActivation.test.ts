@@ -143,11 +143,12 @@ test("B: CLINICCARD_BOOKING_MODE disabled → booking_write_disabled; action tru
   assert.equal(receivedActionTruth!.required_next_action, "admin_handoff");
 });
 
-// ── C: Missing phone — action truth has required_next_action=ask_for_phone ────
+// ── C: Missing phone — global preflight returns contact button without executing booking.apply ──
+// PR #133: round-1 booking.apply with no trusted phone is now intercepted by the global
+// preflight guard before the executor runs.
 
-test("C: no channel_contact → missing_phone; action truth required_next_action=ask_for_phone; no writes", async () => {
+test("C: no channel_contact → global preflight fires; contact button returned; booking.apply executor not called", async () => {
   const writeCalls: string[] = [];
-  let receivedActionTruth: BookingApplyActionTruth | undefined;
 
   const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV, {
     createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "", phone: null } }; },
@@ -158,15 +159,7 @@ test("C: no channel_contact → missing_phone; action truth required_next_action
     type: "tool_requests",
     tool_requests: [{ tool: "booking.apply", call_id: "call_c", arguments: { first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2026-07-20", requested_time: "09:00" } }],
   }));
-
-  pushCaller(async (input) => {
-    receivedActionTruth = (input.input.context as Record<string, unknown>)?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
-    const toolResult = input.input.tool_results?.[0];
-    const data = toolResult?.data as Record<string, unknown> | undefined;
-    assert.equal(data?.booking_status, "missing_phone");
-    assert.equal(data?.may_claim_booked, false);
-    return { type: "final_response", final_response: { final_patient_reply: "Нужен ваш номер телефона — поделитесь контактом через кнопку." } };
-  });
+  // No second pushCaller — preflight intercepts before the executor or second call run.
 
   const result = await loop.runTurn({
     clinic_id: "clinic_1", contact_id: "c_c", case_id: null,
@@ -174,12 +167,18 @@ test("C: no channel_contact → missing_phone; action truth required_next_action
     // No channel_contact
   });
 
-  assert.equal((result.tool_results[0]?.data as Record<string, unknown>)?.booking_status, "missing_phone");
+  // booking.apply executor was NOT called — tool_results is empty
+  assert.deepEqual(result.tool_results, []);
+  // No ClinicCard writes attempted
   assert.deepEqual(writeCalls, []);
-
-  assert.ok(receivedActionTruth, "second model call must receive booking_apply_action_truth");
-  assert.equal(receivedActionTruth!.required_next_action, "ask_for_phone");
-  assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_created, false);
+  // debug indicates the global preflight fired
+  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_missing_trusted_phone_round1");
+  // UI includes the Telegram contact button
+  const ui = result.ui as { telegram?: { request_contact?: boolean } } | undefined;
+  assert.equal(ui?.telegram?.request_contact, true);
+  // conversation reset so no dirty conversation lingers
+  assert.equal(result.conversation_id, null);
+  assert.equal(result.conversation_id_resumable, false);
 });
 
 // ── D: Slot conflict — action truth has required_next_action=offer_another_time ─

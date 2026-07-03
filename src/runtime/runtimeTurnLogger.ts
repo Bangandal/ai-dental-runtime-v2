@@ -80,7 +80,7 @@ export function createFileRuntimeTurnLogger(options: FileRuntimeTurnLoggerOption
   };
 }
 
-async function writeJsonLine(path: string, event: RuntimeTurnLogEvent | RuntimeTurnErrorLogEvent, logDir: string): Promise<void> {
+async function writeJsonLine(path: string, event: RuntimeTurnLogEvent | RuntimeTurnErrorLogEvent | TelegramDeliveryLogEvent, logDir: string): Promise<void> {
   await mkdir(logDir, { recursive: true });
   await appendFile(path, `${JSON.stringify(event)}\n`, "utf8");
 }

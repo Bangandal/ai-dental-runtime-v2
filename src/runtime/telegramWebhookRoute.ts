@@ -4,7 +4,7 @@ import {
   type TelegramUpdate,
   type TelegramNormalizeResult,
 } from "./telegramWebhookAdapter.ts";
-import { sendTelegramMessage, buildContactRequestReplyMarkup } from "./telegramSender.ts";
+import { sendTelegramMessage, sendTelegramMessageWithRetry, buildContactRequestReplyMarkup, type TelegramDeliveryOutcome } from "./telegramSender.ts";
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 
 export interface TelegramWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
@@ -13,6 +13,8 @@ export interface TelegramWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
   defaultClinicCode: string;
   isProduction: boolean;
   fetch?: typeof globalThis.fetch;
+  onTelegramDelivery?: (outcome: TelegramDeliveryOutcome & { trace_id: string }) => void;
+  telegramRetryBackoffMs?: number;
 }
 
 export interface TelegramWebhookRequest {
@@ -101,6 +103,10 @@ export function registerTelegramWebhookRoute(
         result.outcome === "success"
           ? result.payload.final_patient_reply
           : result.fallbackPayload.final_patient_reply;
+      const traceId =
+        result.outcome === "success"
+          ? result.payload.trace_id
+          : result.fallbackPayload.trace_id;
 
       // If the runtime response requests a Telegram contact button, send reply_markup.
       const uiTelegram = result.outcome === "success" ? result.payload.ui?.telegram : undefined;
@@ -108,13 +114,16 @@ export function registerTelegramWebhookRoute(
         ? buildContactRequestReplyMarkup(uiTelegram.button_text)
         : undefined;
 
-      void sendTelegramMessage({
+      const delivery = await sendTelegramMessageWithRetry({
         botToken: deps.botToken,
         chatId: normalized.body.chat_id,
         text: replyText,
         replyMarkup,
         fetch: deps.fetch,
+        retryBackoffMs: deps.telegramRetryBackoffMs,
       });
+
+      deps.onTelegramDelivery?.({ ...delivery, trace_id: traceId });
     }
 
     // Always return 200 to Telegram to prevent retry loops.

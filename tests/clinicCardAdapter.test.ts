@@ -64,15 +64,18 @@ test("findPatientByPhone sends GET to /api/patients with phone query param", asy
 
 // ── createPatient ────────────────────────────────────────────────────────────
 
-test("createPatient sends POST to /api/patients with name in body", async () => {
-  const { fetch, calls } = mockFetch({ id: 5, name: "Jana Procházková" });
+test("createPatient sends {firstname, lastname, phone} — not {name} — to ClinicCard API", async () => {
+  const { fetch, calls } = mockFetch({ patient_id: 5, firstname: "Jana", lastname: "Procházková", phone: "+420777888999" });
   const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
   const result = await adapter.createPatient({ name: "Jana Procházková", phone: "+420777888999" });
   assert.equal(result.ok, true);
   assert.equal(calls[0]!.method, "POST");
   assert.match(calls[0]!.url, /\/api\/patients/);
-  assert.equal((calls[0]!.body as Record<string, unknown>)?.name, "Jana Procházková");
-  assert.equal((calls[0]!.body as Record<string, unknown>)?.phone, "+420777888999");
+  const body = calls[0]!.body as Record<string, unknown>;
+  assert.equal(body.firstname, "Jana");
+  assert.equal(body.lastname, "Procházková");
+  assert.equal(body.phone, "+420777888999");
+  assert.equal(body.name, undefined);
 });
 
 // ── listVisits ───────────────────────────────────────────────────────────────
@@ -111,8 +114,10 @@ test("createVisit sends POST to /api/visits with all required fields", async () 
   assert.equal(body.doctor_id, 10);
   assert.equal(body.cabinet_id, 2);
   assert.equal(body.date, "2026-07-15");
-  assert.equal(body.time_start, "09:00");
-  assert.equal(body.time_end, "09:30");
+  assert.equal(body.visit_start, "09:00");
+  assert.equal(body.visit_end, "09:30");
+  assert.equal(body.time_start, undefined);
+  assert.equal(body.time_end, undefined);
 });
 
 // ── listPayments ─────────────────────────────────────────────────────────────
@@ -207,13 +212,16 @@ test("createPatient with missing name returns validation error and fetch is not 
 // ClinicCard allows registering a patient by name only (e.g. booking for a family member
 // whose phone is unknown). Phone can be added after registration via patient update.
 test("createPatient without phone succeeds and sends POST — phone is optional in ClinicCard", async () => {
-  const { fetch, calls } = mockFetch({ id: 7, name: "Anna Nováková" });
+  const { fetch, calls } = mockFetch({ patient_id: "7", firstname: "Anna", lastname: "Nováková" });
   const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
   const result = await adapter.createPatient({ name: "Anna Nováková" });
   assert.equal(result.ok, true);
   assert.equal(calls.length, 1);
-  assert.equal((calls[0]!.body as Record<string, unknown>)?.name, "Anna Nováková");
-  assert.equal((calls[0]!.body as Record<string, unknown>)?.phone, undefined);
+  const body = calls[0]!.body as Record<string, unknown>;
+  assert.equal(body.firstname, "Anna");
+  assert.equal(body.lastname, "Nováková");
+  assert.equal(body.name, undefined);
+  assert.equal(body.phone, undefined);
 });
 
 // ── createVisit validation ────────────────────────────────────────────────────

@@ -77,6 +77,153 @@ export function unwrapClinicCardResponse<T>(payload: unknown): ClinicCardResult<
   return { ok: true, data: payload as T };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function asOptionalString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function asPositiveNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value.trim());
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
+function asTimeHHMM(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/(\d{2}:\d{2})/);
+  return match ? match[1] : null;
+}
+
+function asVisitStatus(value: unknown): ClinicCardVisitStatus {
+  return typeof value === "string" && VALID_VISIT_STATUSES.has(value)
+    ? value as ClinicCardVisitStatus
+    : "PLANNED";
+}
+
+function splitPatientName(name: string): { firstname: string; lastname: string } {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  const firstname = parts.shift() ?? "";
+  return { firstname, lastname: parts.join(" ") };
+}
+
+function normalizePatient(raw: unknown): ClinicCardResult<ClinicCardPatient> {
+  const row = asRecord(raw);
+  if (!row) return validationError("ClinicCard patient response must be an object");
+
+  const id = asPositiveNumber(row.id ?? row.patient_id);
+  if (id === null) return validationError("ClinicCard patient response missing positive id/patient_id");
+
+  const explicitName = asOptionalString(row.name);
+  const firstname = asOptionalString(row.firstname) ?? "";
+  const lastname = asOptionalString(row.lastname) ?? "";
+  const joinedName = [firstname, lastname].filter(Boolean).join(" ").trim();
+  const name = explicitName ?? joinedName;
+  if (!name) return validationError("ClinicCard patient response missing name/firstname/lastname");
+
+  return {
+    ok: true,
+    data: {
+      id,
+      name,
+      phone: asOptionalString(row.phone),
+      email: asOptionalString(row.email),
+      birth_date: asOptionalString(row.birth_date),
+      created_at: asOptionalString(row.created_at),
+    },
+  };
+}
+
+function normalizePatients(raw: unknown): ClinicCardResult<ClinicCardPatient[]> {
+  if (!Array.isArray(raw)) return validationError("ClinicCard patients response must be an array");
+  const patients: ClinicCardPatient[] = [];
+  for (const item of raw) {
+    const normalized = normalizePatient(item);
+    if (!normalized.ok) return normalized;
+    patients.push(normalized.data);
+  }
+  return { ok: true, data: patients };
+}
+
+function normalizeVisit(raw: unknown, fallbackDate?: string): ClinicCardResult<ClinicCardVisit> {
+  const row = asRecord(raw);
+  if (!row) return validationError("ClinicCard visit response must be an object");
+
+  const id = asPositiveNumber(row.id ?? row.visit_id);
+  if (id === null) return validationError("ClinicCard visit response missing positive id/visit_id");
+
+  const patientId = asPositiveNumber(row.patient_id);
+  const doctorId = asPositiveNumber(row.doctor_id);
+  const cabinetId = asPositiveNumber(row.cabinet_id);
+  const date = asOptionalString(row.date ?? row.visit_date) ?? fallbackDate;
+  const timeStart = asTimeHHMM(row.time_start ?? row.visit_start ?? row.start_time);
+  const timeEnd = asTimeHHMM(row.time_end ?? row.visit_end ?? row.end_time);
+
+  if (doctorId === null) return validationError("ClinicCard visit response missing positive doctor_id");
+  if (cabinetId === null) return validationError("ClinicCard visit response missing positive cabinet_id");
+  if (!date) return validationError("ClinicCard visit response missing date/visit_date");
+  if (!timeStart) return validationError("ClinicCard visit response missing time_start/visit_start");
+  if (!timeEnd) return validationError("ClinicCard visit response missing time_end/visit_end");
+
+  return {
+    ok: true,
+    data: {
+      id,
+      patient_id: patientId ?? null,
+      doctor_id: doctorId,
+      cabinet_id: cabinetId,
+      date,
+      time_start: timeStart,
+      time_end: timeEnd,
+      status: asVisitStatus(row.status),
+      note: asOptionalString(row.note),
+    },
+  };
+}
+
+function normalizeVisits(raw: unknown, fallbackDate?: string): ClinicCardResult<ClinicCardVisit[]> {
+  if (!Array.isArray(raw)) return validationError("ClinicCard visits response must be an array");
+  const visits: ClinicCardVisit[] = [];
+  for (const item of raw) {
+    const normalized = normalizeVisit(item, fallbackDate);
+    if (!normalized.ok) return normalized;
+    visits.push(normalized.data);
+  }
+  return { ok: true, data: visits };
+}
+
+function toClinicCardCreatePatientPayload(input: ClinicCardCreatePatientInput): Record<string, unknown> {
+  const { firstname, lastname } = splitPatientName(input.name);
+  return {
+    firstname,
+    lastname,
+    ...(input.phone ? { phone: input.phone } : {}),
+    ...(input.email ? { email: input.email } : {}),
+  };
+}
+
+function toClinicCardCreateVisitPayload(input: ClinicCardCreateVisitInput): Record<string, unknown> {
+  return {
+    patient_id: input.patient_id,
+    doctor_id: input.doctor_id,
+    cabinet_id: input.cabinet_id,
+    date: input.date,
+    visit_start: input.time_start,
+    visit_end: input.time_end,
+    status: input.status,
+    ...(input.note ? { note: input.note } : {}),
+  };
+}
+
 // phone is intentionally optional for createPatient:
 // ClinicCard allows registering a patient by name only (e.g. when booking on behalf
 // of a family member whose phone is unknown). The phone can be added after registration.
@@ -172,27 +319,35 @@ export function createClinicCardAdapter(
   }
 
   return {
-    findPatientByPhone(phone) {
-      return request<ClinicCardPatient[]>("GET", `/api/patients?phone=${encodeURIComponent(phone)}`);
+    async findPatientByPhone(phone) {
+      const result = await request<unknown>("GET", `/api/patients?phone=${encodeURIComponent(phone)}`);
+      if (!result.ok) return result;
+      return normalizePatients(result.data);
     },
 
-    createPatient(input) {
+    async createPatient(input) {
       const err = validateCreatePatientInput(input);
-      if (err) return Promise.resolve(err as ClinicCardResult<ClinicCardPatient>);
-      return request<ClinicCardPatient>("POST", "/api/patients", input);
+      if (err) return err as ClinicCardResult<ClinicCardPatient>;
+      const result = await request<unknown>("POST", "/api/patients", toClinicCardCreatePatientPayload(input));
+      if (!result.ok) return result;
+      return normalizePatient(result.data);
     },
 
-    listVisits(from, to) {
-      return request<ClinicCardVisit[]>(
+    async listVisits(from, to) {
+      const result = await request<unknown>(
         "GET",
         `/api/visits?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
       );
+      if (!result.ok) return result;
+      return normalizeVisits(result.data, from === to ? from : undefined);
     },
 
-    createVisit(input) {
+    async createVisit(input) {
       const err = validateCreateVisitInput(input);
-      if (err) return Promise.resolve(err as ClinicCardResult<ClinicCardVisit>);
-      return request<ClinicCardVisit>("POST", "/api/visits", input);
+      if (err) return err as ClinicCardResult<ClinicCardVisit>;
+      const result = await request<unknown>("POST", "/api/visits", toClinicCardCreateVisitPayload(input));
+      if (!result.ok) return result;
+      return normalizeVisit(result.data, input.date);
     },
 
     listPayments(from, to) {

@@ -47,7 +47,8 @@ function bookingResult(partial: Omit<BookingApplyResult, "booking_action">): Boo
 // Phone sources that represent a platform-verified or ClinicCard-verified contact.
 // "manual_input" (patient free-typed a number) is intentionally excluded — live writes
 // require a stronger proof of contact than unverified free text.
-const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
+// Exported so the booking contact guard can reuse the same authoritative set.
+export const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
   "telegram_contact_button",
   "whatsapp_sender",
   "existing_cliniccard_patient",

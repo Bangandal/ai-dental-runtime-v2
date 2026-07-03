@@ -18,6 +18,7 @@ import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
+import { shouldInterceptForContactButton, buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -260,6 +261,124 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       if (secondOutput.type === "tool_requests") {
+        // Guard: if round-2 requested booking.apply but trusted phone is absent and
+        // round-1 availability.check already returned slots, intercept before
+        // forced_finalization.  The pending booking.apply tool call was never executed,
+        // but the round-2 model response still leaves the OpenAI conversation in a dirty
+        // state (a function_call with no function_call_output) — so we must still clear
+        // the conversation just as forced_finalization branches do.
+        if (shouldInterceptForContactButton({
+          pendingToolRequests: secondOutput.tool_requests,
+          completedToolResults: toolResults,
+          channelContact: input.channel_contact,
+        })) {
+          const contactReply = buildContactButtonReply(input.locale);
+          debug.reason = "booking_apply_intercepted_missing_trusted_phone";
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: contactReply.final_patient_reply,
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: toolRequests,
+            tool_results: toolResults,
+            debug,
+            ui: contactReply.ui,
+          };
+        }
+
+        // Guard B: round-2 requested booking.apply and trusted phone is present.
+        // Execute the pending booking.apply through the normal policy/executor path
+        // so the model receives the actual booking result (visit_created / write_failed)
+        // before producing a patient-facing reply.  Bypassing this and going straight to
+        // forced_finalization would let the model hallucinate a confirmation without any
+        // booking.apply execution, violating the invariant that may_claim_booked requires
+        // a booking_status=visit_created proof.
+        const pendingBookingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply");
+        if (pendingBookingApply && hasTrustedPhone(input.channel_contact)) {
+          debug.reason = "booking_apply_executed_after_round2_request";
+          const bPlanner = buildPlannerFromAgentToolRequest(pendingBookingApply);
+          const bTruth = resolveTruthSnapshot(input, pendingBookingApply, bPlanner, deps.now);
+          const bPolicy = applyToolPolicy(bPlanner, bTruth);
+
+          let bookingToolResult: RuntimeAgentToolResult;
+          if (bPolicy.tools_denied.length > 0 || bPolicy.tools_allowed.length === 0) {
+            const denial = bPolicy.tools_denied[0];
+            bookingToolResult = {
+              tool: "booking.apply",
+              call_id: pendingBookingApply.call_id,
+              status: "denied",
+              error: {
+                code: denial?.reason ?? "policy_denied",
+                message: `Tool denied by policy: ${denial?.reason ?? "unknown"}`,
+              },
+            };
+          } else {
+            const bExecCtx = buildExecutionContext(input, pendingBookingApply, bPlanner, bTruth, deps.now);
+            const bExecResults = await executeAllowedTools({
+              tools_allowed: bPolicy.tools_allowed,
+              registry: deps.executors,
+              context: bExecCtx,
+            });
+            bookingToolResult = convertToolExecutionResult(pendingBookingApply, bExecResults[0]);
+          }
+
+          const allResults = [...toolResults, bookingToolResult];
+          const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
+
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+
+          let bookingFinalOutput: RuntimeAgentCallerOutput | undefined;
+          try {
+            bookingFinalOutput = await deps.caller({
+              model: deps.model,
+              conversation_id: null,
+              system_instruction: systemInstruction,
+              input: {
+                message: input.user_message,
+                context: {
+                  ...callerContext,
+                  resolved_context: allResults,
+                  ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
+                },
+              },
+            });
+          } catch (error) {
+            debug.caller_exception = buildCallerExceptionDiagnostics(error, {
+              stage: "forced_finalization",
+              locale: input.locale,
+              conversationId: null,
+              toolResults: allResults,
+              bookingApplyActionTruth: bookingApplyTruth,
+            });
+          }
+
+          if (bookingFinalOutput !== undefined && bookingFinalOutput.type === "final_response" && !isMalformedFinalResponse(bookingFinalOutput)) {
+            return {
+              final_patient_reply: bookingFinalOutput.final_response.final_patient_reply,
+              conversation_id: null,
+              conversation_id_resumable: false,
+              tool_requests: toolRequests,
+              tool_results: allResults,
+              debug,
+              ui: bookingFinalOutput.final_response.ui,
+            };
+          }
+
+          const bFallback = bookingApplyTruth
+            ? buildBookingApplyEmergencyFallback(allResults, input.locale)
+            : buildMultiRoundFallbackReply(input.locale);
+          return {
+            final_patient_reply: bFallback,
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: toolRequests,
+            tool_results: allResults,
+            debug,
+          };
+        }
+
         // When round 2 requests more tools but useful results from round 1 exist,
         // attempt one forced finalization call (round 3). Protocol rules:
         // - conversation_id is null: fresh context so we don't continue a thread

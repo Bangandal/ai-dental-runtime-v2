@@ -93,17 +93,31 @@ test("booking.apply detects conflict from real ClinicCard visit shape without pa
   assert.equal(result.data.may_claim_booked, false);
 });
 
-test("ClinicCard adapter sends visit_start and visit_end and maps visit_id on createVisit", async () => {
+test("ClinicCard adapter sends visit_start/visit_end as full datetime and maps visit_id on createVisit", async () => {
   const seenBodies: unknown[] = [];
   const fetch: ClinicCardFetch = async (_url, init) => {
     seenBodies.push(JSON.parse(init.body ?? "{}"));
-    return okResponse({ result: "ok", error: null, data: { visit_id: "999", patient_id: "456", date: "2026-07-06", visit_start: "16:00", visit_end: "16:30", doctor_id: "111431", cabinet_id: "43393", status: "PLANNED" } });
+    return okResponse({ result: "ok", error: null, data: { visit_id: "999", patient_id: "456", date: "2026-07-06", visit_start: "2026-07-06 16:00:00", visit_end: "2026-07-06 16:30:00", doctor_id: "111431", cabinet_id: "43393", status: "PLANNED" } });
   };
   const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
   const result = await adapter.createVisit({ patient_id: 456, doctor_id: 111431, cabinet_id: 43393, date: "2026-07-06", time_start: "16:00", time_end: "16:30", status: "PLANNED", note: "cleaning" });
-  assert.deepEqual(seenBodies[0], { patient_id: 456, doctor_id: 111431, cabinet_id: 43393, date: "2026-07-06", visit_start: "16:00", visit_end: "16:30", status: "PLANNED", note: "cleaning" });
+  assert.deepEqual(seenBodies[0], { patient_id: 456, doctor_id: 111431, cabinet_id: 43393, date: "2026-07-06", visit_start: "2026-07-06 16:00:00", visit_end: "2026-07-06 16:30:00", status: "PLANNED", note: "cleaning" });
   assert.equal(result.ok, true);
   if (!result.ok) throw new Error("unexpected failure");
   assert.equal(result.data.id, 999);
   assert.equal(result.data.patient_id, 456);
+  assert.equal(result.data.time_start, "16:00");
+  assert.equal(result.data.time_end, "16:30");
+});
+
+test("listVisits normalizes full datetime visit_start/visit_end to HH:MM", async () => {
+  const fetch: ClinicCardFetch = async () => okResponse({ result: "ok", error: null, data: [{ visit_id: "58555719", patient_id: "16166348", visit_start: "2026-07-06 11:15:00", visit_end: "2026-07-06 17:15:00", doctor_id: "111431", cabinet_id: "43393", status: "PLANNED" }] });
+  const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
+  const result = await adapter.listVisits("2026-07-06", "2026-07-06");
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unexpected failure");
+  assert.equal(result.data[0]?.id, 58555719);
+  assert.equal(result.data[0]?.time_start, "11:15");
+  assert.equal(result.data[0]?.time_end, "17:15");
+  assert.equal(result.data[0]?.patient_id, 16166348);
 });

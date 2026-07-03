@@ -316,35 +316,43 @@ test("runtimeAgentLoop: guard returns CS phone-ask when locale=cs", async () => 
   assert.ok(result.final_patient_reply.includes("telefonní číslo"));
 });
 
-// Test 3: booking.apply with trusted phone is NOT intercepted (passes through to forced_finalization)
-test("runtimeAgentLoop: guard does NOT intercept when phone is trusted", async () => {
-  const FINAL_BOOKING_REPLY = "Запись подтверждена!";
-  let forcedFinalizationCalled = false;
+// Test 3a: booking.apply with trusted phone → Guard B executes booking.apply, then finalizes.
+// The finalization receives booking_apply_action_truth; model can confirm only if visit_created.
+test("runtimeAgentLoop: trusted phone present — Guard B executes booking.apply before finalization", async () => {
+  let bookingApplyExecuted = false;
+  let finalizationInputContext: Record<string, unknown> | undefined;
 
-  const caller = makeCallerSequence([
-    {
-      type: "tool_requests",
-      conversation_id: "conv_trusted_1",
-      tool_requests: [AVAILABILITY_REQUEST],
-    },
-    {
-      type: "tool_requests",
-      conversation_id: "conv_trusted_1",
-      tool_requests: [BOOKING_APPLY_REQUEST],
-    },
-    // Round 3 = forced finalization call
-    (() => {
-      forcedFinalizationCalled = true;
+  const CONFIRMATION_REPLY = "Ваша запись подтверждена на 9 июля в 12:00.";
+
+  const caller: RuntimeAgentCaller = async (input) => {
+    const calls = (caller as unknown as { _calls: number })._calls ?? 0;
+    (caller as unknown as { _calls: number })._calls = calls + 1;
+
+    if (calls === 0) {
+      // Round 1: request availability.check
       return {
-        type: "final_response" as const,
-        conversation_id: null,
-        final_response: {
-          final_patient_reply: FINAL_BOOKING_REPLY,
-          safety_notes: [],
-        },
+        type: "tool_requests",
+        conversation_id: "conv_trusted_2",
+        tool_requests: [AVAILABILITY_REQUEST],
       };
-    })(),
-  ]);
+    }
+    if (calls === 1) {
+      // Round 2: request booking.apply
+      return {
+        type: "tool_requests",
+        conversation_id: "conv_trusted_2",
+        tool_requests: [BOOKING_APPLY_REQUEST],
+      };
+    }
+    // Round 3 (Guard B finalization): capture context, return confirmation
+    finalizationInputContext = input.input.context as Record<string, unknown>;
+    return {
+      type: "final_response",
+      conversation_id: null,
+      final_response: { final_patient_reply: CONFIRMATION_REPLY, safety_notes: [] },
+    };
+  };
+  (caller as unknown as { _calls: number })._calls = 0;
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
@@ -354,14 +362,108 @@ test("runtimeAgentLoop: guard does NOT intercept when phone is trusted", async (
         status: "success" as const,
         data: AVAILABILITY_SUCCESS.data,
       }),
+      "booking.apply": async () => {
+        bookingApplyExecuted = true;
+        return {
+          status: "success" as const,
+          data: {
+            booking_action: "booking_apply",
+            booking_status: "visit_created",
+            created_visit: true,
+            may_claim_booked: true,
+            cliniccard_visit_id: "visit_123",
+            cliniccard_patient_id: "patient_456",
+            phone_source: "telegram_contact_button",
+          },
+        };
+      },
     },
   });
 
-  const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_trusted_1", channel_contact: TRUSTED_CONTACT });
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    conversation_id: "conv_trusted_2",
+    channel_contact: TRUSTED_CONTACT,
+  });
 
+  // booking.apply must have executed
+  assert.equal(bookingApplyExecuted, true, "booking.apply executor must be called when phone is trusted");
+
+  // tool_results must include booking.apply with visit_created
+  const bookingToolResult = result.tool_results?.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingToolResult, "booking.apply result must be in tool_results");
+  assert.equal((bookingToolResult?.data as Record<string, unknown>)?.booking_status, "visit_created");
+  assert.equal((bookingToolResult?.data as Record<string, unknown>)?.may_claim_booked, true);
+
+  // Finalization received booking_apply_action_truth (model has honest context)
+  assert.ok(
+    finalizationInputContext?.booking_apply_action_truth !== undefined,
+    "finalization must receive booking_apply_action_truth",
+  );
+
+  // Final reply comes from model, not from generic forced_finalization
+  assert.equal(result.final_patient_reply, CONFIRMATION_REPLY);
   assert.notEqual(result.ui?.telegram?.request_contact, true, "must not show contact button when phone is trusted");
-  assert.equal(result.final_patient_reply, FINAL_BOOKING_REPLY);
-  assert.equal(forcedFinalizationCalled, true, "forced finalization should be called when guard does not fire");
+
+  // Conversation still dirty (round-2 had pending tool call)
+  assert.equal(result.conversation_id, null);
+  assert.equal(result.conversation_id_resumable, false);
+});
+
+// Test 3b (Requirement 2): trusted phone + booking.apply executed but visit NOT created
+// → model must NOT claim confirmed (receives honest failure truth)
+test("runtimeAgentLoop: trusted phone + cliniccard_write_failed → finalization receives failure truth, not confirmed", async () => {
+  let finalizationInputContext: Record<string, unknown> | undefined;
+
+  const caller: RuntimeAgentCaller = async (input) => {
+    const calls = (caller as unknown as { _calls: number })._calls ?? 0;
+    (caller as unknown as { _calls: number })._calls = calls + 1;
+    if (calls === 0) return { type: "tool_requests", conversation_id: "conv_fail_1", tool_requests: [AVAILABILITY_REQUEST] };
+    if (calls === 1) return { type: "tool_requests", conversation_id: "conv_fail_1", tool_requests: [BOOKING_APPLY_REQUEST] };
+    finalizationInputContext = input.input.context as Record<string, unknown>;
+    return {
+      type: "final_response",
+      conversation_id: null,
+      final_response: {
+        final_patient_reply: "К сожалению, произошла ошибка при записи. Пожалуйста, свяжитесь с клиникой.",
+        safety_notes: [],
+      },
+    };
+  };
+  (caller as unknown as { _calls: number })._calls = 0;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller,
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: AVAILABILITY_SUCCESS.data }),
+      "booking.apply": async () => ({
+        status: "success" as const,
+        data: {
+          booking_action: "booking_apply",
+          booking_status: "cliniccard_write_failed",
+          created_visit: false,
+          may_claim_booked: false,
+          phone_source: "telegram_contact_button",
+        },
+      }),
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    conversation_id: "conv_fail_1",
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  // Finalization must receive the failure truth (may_claim_booked=false)
+  const truth = finalizationInputContext?.booking_apply_action_truth as Record<string, unknown> | undefined;
+  assert.ok(truth !== undefined, "finalization must receive booking_apply_action_truth even on failure");
+  assert.equal(truth?.may_claim_booked, false, "may_claim_booked must be false on write failure");
+  assert.equal(truth?.booking_status, "cliniccard_write_failed");
+
+  // Result must not say "confirmed"
+  assert.ok(!result.final_patient_reply.toLowerCase().includes("подтвержден"), "reply must not claim booking confirmed on write failure");
 });
 
 // Test 4: "Роман, ансамблев" as name candidate — guard fires when model produces booking.apply

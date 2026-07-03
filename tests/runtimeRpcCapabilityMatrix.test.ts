@@ -67,6 +67,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/main.ts",
     "src/index.ts",
     "src/runtime/runtimeServerBootstrap.ts",
+    "src/runtime/runtimeTurnLogger.ts",
     "src/runtime/supabaseRuntimeContextRepository.ts",
     "src/runtime/dentalRuntimeAgentFactory.ts",
     "src/runtime/supabaseKnowledgeRepository.ts",

@@ -6,6 +6,7 @@ import type { OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
 import type { RpcCaller } from "./runtimeRepositories.ts";
 import type { EmbeddingClient } from "./supabaseKnowledgeRepository.ts";
 import { createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
+import type { TelegramDeliveryOutcome } from "./telegramSender.ts";
 import { createSupabaseOpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 import { createSupabaseTurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import { createSupabaseClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
@@ -36,6 +37,23 @@ export interface RuntimeServerBootstrapDeps {
   telegram?: TelegramBootstrapConfig;
 }
 
+
+export function createDeliveryObserver(
+  logger: RuntimeTurnLogger,
+): (outcome: TelegramDeliveryOutcome & { trace_id: string }) => void {
+  return (outcome) => {
+    logger.logDelivery({
+      ts: new Date().toISOString(),
+      trace_id: outcome.trace_id,
+      ok: outcome.ok,
+      retry_count: outcome.retry_count,
+      ...(outcome.error_code !== undefined ? { error_code: outcome.error_code } : {}),
+      ...(outcome.error !== undefined ? { error: outcome.error.slice(0, 300) } : {}),
+    }).catch(() => {
+      // never propagate logger errors to webhook
+    });
+  };
+}
 
 function readConversationId(value: unknown): string | null {
   if (value === null || typeof value !== "object") return null;
@@ -73,6 +91,8 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
     botToken: deps.telegram?.botToken ?? null,
   });
 
+  const logger = deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger();
+
   registerRuntimeTurnRoute(app, {
     runtimeTurnService: createDentalRuntimeTurnService({
       openaiClient: deps.openaiClient,
@@ -81,7 +101,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
       rpc: deps.rpc,
       embeddingClient: deps.embeddingClient,
     }),
-    runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
+    runtimeTurnLogger: logger,
     openAIConversationMemoryRepository,
     createOpenAIConversation,
     turnPersistenceRepository,
@@ -108,7 +128,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
         rpc: deps.rpc,
         embeddingClient: deps.embeddingClient,
       }),
-      runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
+      runtimeTurnLogger: logger,
       openAIConversationMemoryRepository,
       createOpenAIConversation,
       turnPersistenceRepository,
@@ -124,6 +144,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
       defaultClinicCode,
       isProduction: deps.isProduction ?? false,
       adminNotifier,
+      onTelegramDelivery: createDeliveryObserver(logger),
     });
   }
 }

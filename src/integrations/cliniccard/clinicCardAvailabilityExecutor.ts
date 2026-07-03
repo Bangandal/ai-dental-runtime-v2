@@ -4,6 +4,7 @@ import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { checkClinicCardAvailability, type AvailabilityAdapter } from "./clinicCardAvailability.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import { makeFailedToolResult } from "../../runtime/toolResults.ts";
+import { getTodayInTimezone, isPastSlotTime } from "../../runtime/bookingPreflight.ts";
 
 const DEFAULT_WORKING_HOURS_START = "09:00";
 const DEFAULT_WORKING_HOURS_END = "18:00";
@@ -110,6 +111,12 @@ export function createClinicCardAvailabilityExecutor(
     let freeSlots = result.data.slots;
     if (requestedTime !== null) {
       freeSlots = freeSlots.filter((s) => s.time_start >= requestedTime);
+    }
+
+    // Filter out past slots when the requested date is today in the clinic timezone.
+    // This prevents the bot from offering times that have already passed.
+    if (context.now && requestedDate === getTodayInTimezone(context.now, timezone)) {
+      freeSlots = freeSlots.filter((s) => !isPastSlotTime(s.time_start, context.now!, timezone));
     }
 
     // Map to output format.

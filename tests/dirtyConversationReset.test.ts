@@ -125,6 +125,9 @@ test("multi-round fallback with a prior booking.apply result still uses the book
   const result = await createRuntimeAgentLoop({ model: "m", caller, executors }).runTurn({
     clinic_id: "clinic_1", contact_id: "contact_1", case_id: "case_1", user_message: "test", locale: "ru",
     truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
+    // Trusted phone required so the round-1 global phone preflight (PR #133) does not
+    // intercept before booking.apply executes.  This test verifies post-execution behavior.
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
   } as any);
 
   assert.equal(result.conversation_id_resumable, false);

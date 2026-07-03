@@ -19,6 +19,7 @@ import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { shouldInterceptForContactButton, buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
+import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -62,10 +63,16 @@ const ACTIVE_TOOL_SET = new Set<string>(ACTIVE_RUNTIME_AGENT_TOOLS);
 export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAIRuntimeAgent {
   return {
     async runTurn(input: RuntimeAgentTurnInput): Promise<RuntimeAgentTurnResult> {
+      // Per-turn clock: always a real Date so past-time guards and system instruction
+      // are correct even when the caller does not inject deps.now (production).
+      // Must be created here, not at loop-construction time, to avoid freezing time.
+      const turnNow = deps.now ?? new Date();
+      const timezone = deps.timezone ?? "Europe/Prague";
+
       const debug: Record<string, unknown> = { llm_calls: buildRuntimeLlmCallDebug() };
       const systemInstruction = buildRuntimeAgentSystemInstruction({
-        now: deps.now,
-        timezone: deps.timezone,
+        now: turnNow,
+        timezone,
         is_new_conversation: input.is_first_patient_turn ?? false,
       });
       let conversationId = input.conversation_id ?? null;
@@ -156,6 +163,52 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const toolRequests = firstOutput.tool_requests;
       const toolResults: RuntimeAgentToolResult[] = [];
 
+      // Global preflight A — past-time guard: if booking.apply is requested for a
+      // same-day slot that has already passed, reject before executing any tool.
+      // Applies to round 1 (booking.apply as the first tool of a turn).
+      const bookingApplyRound1 = toolRequests.find((r) => r.tool === "booking.apply");
+      if (bookingApplyRound1) {
+        if (isPastBookingTime({
+          requestedDate: typeof bookingApplyRound1.arguments.requested_date === "string"
+            ? bookingApplyRound1.arguments.requested_date : undefined,
+          requestedTime: typeof bookingApplyRound1.arguments.requested_time === "string"
+            ? bookingApplyRound1.arguments.requested_time : undefined,
+          timezone,
+          now: turnNow,
+        })) {
+          debug.reason = "booking_apply_preflight_past_time_round1";
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: buildPastTimeReply(input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: toolRequests,
+            tool_results: [],
+            debug,
+          };
+        }
+      }
+
+      // Global preflight B — phone guard: if booking.apply is requested in round 1
+      // and no trusted phone is present, return the contact button immediately
+      // without executing booking.apply (or any other pending tool in this turn).
+      if (bookingApplyRound1 && !hasTrustedPhone(input.channel_contact)) {
+        const contactReply = buildContactButtonReply(input.locale);
+        debug.reason = "booking_apply_preflight_missing_trusted_phone_round1";
+        markConversationDirty(debug);
+        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        return {
+          final_patient_reply: contactReply.final_patient_reply,
+          conversation_id: null,
+          conversation_id_resumable: false,
+          tool_requests: toolRequests,
+          tool_results: [],
+          debug,
+          ui: contactReply.ui,
+        };
+      }
+
       for (const request of toolRequests) {
         if (!ACTIVE_TOOL_SET.has(request.tool)) {
           toolResults.push({
@@ -168,7 +221,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
 
         const planner = buildPlannerFromAgentToolRequest(request);
-        const truth = resolveTruthSnapshot(input, request, planner, deps.now);
+        const truth = resolveTruthSnapshot(input, request, planner, turnNow);
         const policy = applyToolPolicy(planner, truth);
         if (policy.tools_denied.length > 0 || policy.tools_allowed.length === 0) {
           const denial = policy.tools_denied[0];
@@ -184,7 +237,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           continue;
         }
 
-        const executionContext = buildExecutionContext(input, request, planner, truth, deps.now);
+        const executionContext = buildExecutionContext(input, request, planner, truth, turnNow);
         const executionResults = await executeAllowedTools({
           tools_allowed: policy.tools_allowed,
           registry: deps.executors,
@@ -296,9 +349,30 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // a booking_status=visit_created proof.
         const pendingBookingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply");
         if (pendingBookingApply && hasTrustedPhone(input.channel_contact)) {
+          // Past-time preflight for Guard B: reject if the slot has since passed.
+          if (isPastBookingTime({
+              requestedDate: typeof pendingBookingApply.arguments.requested_date === "string"
+                ? pendingBookingApply.arguments.requested_date : undefined,
+              requestedTime: typeof pendingBookingApply.arguments.requested_time === "string"
+                ? pendingBookingApply.arguments.requested_time : undefined,
+              timezone,
+              now: turnNow,
+            })) {
+              debug.reason = "booking_apply_preflight_past_time_round2";
+              markConversationDirty(debug);
+              await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+              return {
+                final_patient_reply: buildPastTimeReply(input.locale),
+                conversation_id: null,
+                conversation_id_resumable: false,
+                tool_requests: toolRequests,
+                tool_results: toolResults,
+                debug,
+              };
+          }
           debug.reason = "booking_apply_executed_after_round2_request";
           const bPlanner = buildPlannerFromAgentToolRequest(pendingBookingApply);
-          const bTruth = resolveTruthSnapshot(input, pendingBookingApply, bPlanner, deps.now);
+          const bTruth = resolveTruthSnapshot(input, pendingBookingApply, bPlanner, turnNow);
           const bPolicy = applyToolPolicy(bPlanner, bTruth);
 
           let bookingToolResult: RuntimeAgentToolResult;
@@ -314,7 +388,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               },
             };
           } else {
-            const bExecCtx = buildExecutionContext(input, pendingBookingApply, bPlanner, bTruth, deps.now);
+            const bExecCtx = buildExecutionContext(input, pendingBookingApply, bPlanner, bTruth, turnNow);
             const bExecResults = await executeAllowedTools({
               tools_allowed: bPolicy.tools_allowed,
               registry: deps.executors,

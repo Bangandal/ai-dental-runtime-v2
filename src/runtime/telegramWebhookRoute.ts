@@ -123,7 +123,11 @@ export function registerTelegramWebhookRoute(
         retryBackoffMs: deps.telegramRetryBackoffMs,
       });
 
-      deps.onTelegramDelivery?.({ ...delivery, trace_id: traceId });
+      try {
+        deps.onTelegramDelivery?.({ ...delivery, trace_id: traceId });
+      } catch {
+        // swallow observability failure — must not affect webhook response
+      }
     }
 
     // Always return 200 to Telegram to prevent retry loops.

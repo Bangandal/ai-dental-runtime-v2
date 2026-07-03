@@ -242,3 +242,32 @@ test("webhook does not change patient-facing reply text", async () => {
   const sendMsg = sentBodies.find((b) => "text" in b);
   assert.equal(sendMsg?.text, expectedReply);
 });
+
+test("onTelegramDelivery throws -> webhook still returns 200", async () => {
+  const { code } = await invokeWebhook({
+    runtimeTurnService: stubService(),
+    clinicIdentityResolver: clinicResolver,
+    botToken: "tok",
+    webhookSecret: undefined,
+    defaultClinicCode: CLINIC_CODE,
+    isProduction: false,
+    fetch: okFetch(),
+    telegramRetryBackoffMs: 0,
+    onTelegramDelivery: () => { throw new Error("observer kaboom"); },
+  });
+  assert.equal(code, 200);
+});
+
+test("send ok + callback throws -> no throw from webhook", async () => {
+  await assert.doesNotReject(invokeWebhook({
+    runtimeTurnService: stubService(),
+    clinicIdentityResolver: clinicResolver,
+    botToken: "tok",
+    webhookSecret: undefined,
+    defaultClinicCode: CLINIC_CODE,
+    isProduction: false,
+    fetch: okFetch(),
+    telegramRetryBackoffMs: 0,
+    onTelegramDelivery: () => { throw new Error("observer kaboom"); },
+  }));
+});

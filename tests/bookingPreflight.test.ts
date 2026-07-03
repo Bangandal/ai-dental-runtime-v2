@@ -399,3 +399,135 @@ describe("clinicCardAvailabilityExecutor — past slot filtering for today", () 
     assert.strictEqual(isPastSlotTime("23:00", now, "Europe/Prague"), false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Production-path: runtimeAgentLoop without injected deps.now still guards
+// ---------------------------------------------------------------------------
+describe("runtimeAgentLoop — turnNow fallback when deps.now is not injected", () => {
+  // These tests verify that production callers that omit deps.now still get
+  // a live per-turn clock (new Date() inside runTurn), not undefined.
+
+  it("availability executor receives a non-undefined now via context.now when deps.now is omitted", async () => {
+    let capturedNow: Date | undefined = undefined;
+
+    const fakeAvailExec = async (ctx: import("../src/runtime/toolExecutor.ts").ToolExecutionContext) => {
+      capturedNow = ctx.now;
+      return {
+        tool: "availability.check" as const,
+        status: "success" as const,
+        data: { slots: [], timezone: "Europe/Prague", total_slots: 0, free_slots_count: 0 },
+      };
+    };
+
+    const caller: RuntimeAgentCaller = async (inp) => {
+      if (!inp.input.tool_results) {
+        return {
+          type: "tool_requests",
+          tool_requests: [{ tool: "availability.check", call_id: "c1", arguments: { requested_date: "2099-01-01" } }],
+        } as RuntimeAgentCallerOutput;
+      }
+      return { type: "final_response", final_response: { final_patient_reply: "ok" } };
+    };
+
+    // No deps.now, no deps.timezone — production pattern
+    const loop = createRuntimeAgentLoop({
+      model: "test-model",
+      caller,
+      executors: { "availability.check": fakeAvailExec } as unknown as ToolExecutorRegistry,
+    });
+
+    await loop.runTurn({ user_message: "test", clinic_id: "clinic_1", contact_id: "c1", locale: "ru" });
+
+    assert.ok(capturedNow instanceof Date, "context.now must be a Date when deps.now is omitted");
+    // Must be close to real now (within 5 seconds)
+    assert.ok(
+      Math.abs(capturedNow.getTime() - Date.now()) < 5000,
+      "turnNow must be close to real wall-clock time",
+    );
+  });
+
+  it("blocks booking.apply for today at 00:00 when deps.now is omitted (uses real wall-clock)", async () => {
+    // Get today's date in Europe/Prague so we can request a slot at 00:00 today,
+    // which is guaranteed to be in the past at any hour of the real day.
+    const today = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Prague",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+
+    const caller: RuntimeAgentCaller = async () => ({
+      type: "tool_requests",
+      tool_requests: [{
+        tool: "booking.apply",
+        call_id: "c1",
+        arguments: { requested_date: today, requested_time: "00:00", service: "consultation" },
+      }],
+    } as RuntimeAgentCallerOutput);
+
+    // No deps.now — production pattern
+    const loop = createRuntimeAgentLoop({
+      model: "test-model",
+      caller,
+      executors: {} as ToolExecutorRegistry,
+      timezone: "Europe/Prague",
+    });
+
+    const result = await loop.runTurn({
+      user_message: "запишите на 00:00",
+      clinic_id: "clinic_1",
+      contact_id: "c2",
+      locale: "ru",
+      channel_contact: { phone_number: "+380991234567", phone_source: "telegram_contact_button" },
+    });
+
+    // 00:00 today is always in the past — past-time preflight must fire
+    assert.strictEqual(
+      (result.debug as Record<string, unknown>)?.reason,
+      "booking_apply_preflight_past_time_round1",
+      `Expected past-time block, got debug.reason=${(result.debug as Record<string, unknown>)?.reason}`,
+    );
+    assert.deepStrictEqual(result.tool_results, []);
+  });
+
+  it("existing injected deps.now tests remain deterministic (no wall-clock usage)", async () => {
+    // Confirm that when deps.now IS injected, turnNow = deps.now exactly (not new Date()).
+    // frozenNow = 2099-12-31 21:00 UTC = 22:00 Prague (UTC+1 in winter).
+    // Today in Prague = "2099-12-31".  Requesting "2099-12-31" at "10:00" is in the past.
+    // Real wall-clock is ~2026, so "2099-12-31" would NOT be today for new Date() —
+    // the past-time guard can only fire if the injected clock is being used.
+    const frozenNow = new Date("2099-12-31T21:00:00.000Z"); // 22:00 Prague (UTC+1 winter)
+    const todayInPrague2099 = "2099-12-31";
+
+    const caller: RuntimeAgentCaller = async () => ({
+      type: "tool_requests",
+      tool_requests: [{
+        tool: "booking.apply",
+        call_id: "c1",
+        arguments: { requested_date: todayInPrague2099, requested_time: "10:00", service: "consultation" },
+      }],
+    } as RuntimeAgentCallerOutput);
+
+    const loop = createRuntimeAgentLoop({
+      model: "test-model",
+      caller,
+      executors: {} as ToolExecutorRegistry,
+      now: frozenNow,
+      timezone: "Europe/Prague",
+    });
+
+    const result = await loop.runTurn({
+      user_message: "test",
+      clinic_id: "clinic_1",
+      contact_id: "c3",
+      locale: "ru",
+      channel_contact: { phone_number: "+380991234567", phone_source: "telegram_contact_button" },
+    });
+
+    assert.strictEqual(
+      (result.debug as Record<string, unknown>)?.reason,
+      "booking_apply_preflight_past_time_round1",
+      "Injected frozen clock must drive the past-time decision (real wall-clock would not see 2099 as today)",
+    );
+  });
+});

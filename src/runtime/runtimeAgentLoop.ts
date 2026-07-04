@@ -20,6 +20,7 @@ import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { shouldInterceptForContactButton, buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
+import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -278,9 +279,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
-      const secondCallContext = bookingActionTruth
-        ? { ...callerContext, booking_apply_action_truth: bookingActionTruth }
-        : callerContext;
+      const availabilityPresentationTruth = buildAvailabilityPresentationTruth(toolResults);
+      const secondCallContext = {
+        ...callerContext,
+        ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
+        ...(availabilityPresentationTruth ? { availability_presentation_truth: availabilityPresentationTruth } : {}),
+      };
 
       let secondOutput: RuntimeAgentCallerOutput;
       try {

@@ -180,7 +180,7 @@ test("Codex-P2-D: debug reasons unaffected by the memory-save fix", async () => 
   const availabilityCaller: RuntimeAgentCaller = async () => {
     round2 += 1;
     if (round2 === 1) {
-      return { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "a1", arguments: { requested_date: "2026-07-04", requested_time: "12:00" } }] };
+      return { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "a1", arguments: { requested_date: "2099-01-15", requested_time: "12:00" } }] };
     }
     return malformedOutput();
   };
@@ -345,7 +345,7 @@ test("regression: availability check then malformed confirmation turn returns lo
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "availability.check", call_id: "a1", arguments: { requested_date: "2026-07-04", requested_time: "12:00" } }],
+        tool_requests: [{ tool: "availability.check", call_id: "a1", arguments: { requested_date: "2099-01-15", requested_time: "12:00" } }],
       };
     }
     return malformedOutput();
@@ -354,7 +354,7 @@ test("regression: availability check then malformed confirmation turn returns lo
     "availability.check": async () => ({
       tool: "availability.check",
       status: "success",
-      data: { slots: [{ slot_id: "s1", starts_at: "2026-07-04T12:00:00Z", ends_at: "2026-07-04T12:30:00Z" }] },
+      data: { slots: [{ slot_id: "s1", starts_at: "2099-01-15T12:00:00Z", ends_at: "2099-01-15T12:30:00Z" }] },
     }),
   };
   const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors });

@@ -163,6 +163,37 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const toolRequests = firstOutput.tool_requests;
       const toolResults: RuntimeAgentToolResult[] = [];
 
+      // Global preflight C — availability past-time guard: if availability.check is
+      // requested for today at a time that has already passed, return the past-time reply
+      // directly.  Without this, the executor filters the slot (0 slots returned) and the
+      // model replies "нет свободных слотов" instead of "this time has passed".
+      // Only fires when requested_time is explicitly present — missing time means "show all
+      // slots for the day", which the executor handles correctly via past-slot filtering.
+      const availCheckRound1 = toolRequests.find((r) => r.tool === "availability.check");
+      if (availCheckRound1) {
+        const availTime = typeof availCheckRound1.arguments.requested_time === "string"
+          ? availCheckRound1.arguments.requested_time : undefined;
+        if (availTime && isPastBookingTime({
+          requestedDate: typeof availCheckRound1.arguments.requested_date === "string"
+            ? availCheckRound1.arguments.requested_date : undefined,
+          requestedTime: availTime,
+          timezone,
+          now: turnNow,
+        })) {
+          debug.reason = "availability_preflight_past_time";
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: buildPastTimeReply(input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: toolRequests,
+            tool_results: [],
+            debug,
+          };
+        }
+      }
+
       // Global preflight A — past-time guard: if booking.apply is requested for a
       // same-day slot that has already passed, reject before executing any tool.
       // Applies to round 1 (booking.apply as the first tool of a turn).

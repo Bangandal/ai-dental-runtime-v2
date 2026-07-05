@@ -929,13 +929,28 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
 
   if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
     await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
+
+    // For phone guards, force the Telegram contact button regardless of what the model returned —
+    // the model may omit it, but the UI must always show it deterministically.
+    let ui = guardedOutput.final_response.ui;
+    if (guardedData.required_next_action === "ask_for_phone") {
+      ui = {
+        ...ui,
+        telegram: {
+          ...(ui?.telegram ?? {}),
+          request_contact: true,
+          button_text: "📞 Поделиться контактом",
+        },
+      };
+    }
+
     return {
       final_patient_reply: guardedOutput.final_response.final_patient_reply,
       conversation_id: updatedConversationId,
       tool_requests: toolRequests,
       tool_results: allResults,
       debug,
-      ui: guardedOutput.final_response.ui,
+      ui,
     };
   }
 

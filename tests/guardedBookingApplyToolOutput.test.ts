@@ -43,10 +43,12 @@ import test from "node:test";
 
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
+import { buildBookingApplyActionTruth } from "../src/runtime/bookingApplyGuard.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import type {
   RuntimeAgentToolRequest,
   ChannelContact,
+  RuntimeAgentToolResult,
 } from "../src/runtime/openaiRuntimeAgent.ts";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -459,4 +461,100 @@ test("guarded caller exception → conversation marked dirty, emergency fallback
   // Guarded tool result still appears in tool_results even on failure
   const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
   assert.ok(bookingResult, "guarded result must be in tool_results even on caller failure");
+});
+
+// ── Blocker B tests: ui.telegram.request_contact forced for ask_for_phone ────
+
+test("B-phone-1: round 1 missing_trusted_phone → ui.telegram.request_contact=true (model omits ui)", async () => {
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", conversation_id: "conv_bp1", tool_requests: [BOOKING_APPLY_NO_PHONE] },
+      // Model returns no ui field at all
+      { type: "final_response", conversation_id: "conv_bp1", final_response: { final_patient_reply: "Поделитесь контактом." } },
+    ]),
+    executors: {},
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_bp1", channel_contact: undefined });
+
+  assert.equal(result.ui?.telegram?.request_contact, true, "B-phone-1: request_contact must be true");
+  assert.equal(result.ui?.telegram?.button_text, "📞 Поделиться контактом", "B-phone-1: button_text must be set");
+});
+
+test("B-phone-2: round 2 missing_trusted_phone (slots available) → ui.telegram.request_contact=true", async () => {
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", conversation_id: "conv_bp2", tool_requests: [AVAILABILITY_REQUEST] },
+      { type: "tool_requests", conversation_id: "conv_bp2", tool_requests: [BOOKING_APPLY_FULL] },
+      { type: "final_response", conversation_id: "conv_bp2", final_response: { final_patient_reply: "Нужен контакт." } },
+    ]),
+    executors: {
+      "availability.check": async () => ({
+        status: "success" as const,
+        data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 },
+      }),
+    },
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_bp2", channel_contact: undefined });
+
+  assert.equal(result.ui?.telegram?.request_contact, true, "B-phone-2: request_contact must be true");
+  assert.equal(result.ui?.telegram?.button_text, "📞 Поделиться контактом", "B-phone-2: button_text must be set");
+});
+
+test("B-phone-3: CS locale missing phone → ui.telegram.request_contact=true", async () => {
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", conversation_id: "conv_bp3", tool_requests: [BOOKING_APPLY_NO_PHONE] },
+      { type: "final_response", conversation_id: "conv_bp3", final_response: { final_patient_reply: "Sdílejte kontakt prosím." } },
+    ]),
+    executors: {},
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_bp3", locale: "cs", channel_contact: undefined });
+
+  assert.equal(result.ui?.telegram?.request_contact, true, "B-phone-3: request_contact must be true for CS locale");
+  assert.equal(result.ui?.telegram?.button_text, "📞 Поделиться контактом", "B-phone-3: button_text must be set");
+});
+
+// ── Blocker A unit tests: buildBookingApplyActionTruth mapping ────────────────
+
+function makeBookingResult(booking_status: string): RuntimeAgentToolResult {
+  return {
+    tool: "booking.apply",
+    call_id: "call_unit",
+    status: "success",
+    data: { booking_status, created_visit: false, may_claim_booked: false },
+  };
+}
+
+test("B-guard-4: missing_trusted_phone → required_next_action=ask_for_phone (not technical_fallback)", () => {
+  const truth = buildBookingApplyActionTruth([makeBookingResult("missing_trusted_phone")]);
+  assert.ok(truth, "B-guard-4: truth must not be null");
+  assert.equal(truth!.required_next_action, "ask_for_phone", "B-guard-4: missing_trusted_phone → ask_for_phone");
+});
+
+test("B-guard-5: no_available_slots / invalid_slot / past_time → offer_another_time (not technical_fallback)", () => {
+  for (const status of ["no_available_slots", "invalid_slot", "past_time"]) {
+    const truth = buildBookingApplyActionTruth([makeBookingResult(status)]);
+    assert.ok(truth, `B-guard-5 (${status}): truth must not be null`);
+    assert.equal(truth!.required_next_action, "offer_another_time", `B-guard-5 (${status}): must map to offer_another_time`);
+  }
+});
+
+test("B-guard-6: missing_slot / missing_patient_name / missing_service → specific action, not technical_fallback", () => {
+  const expectations: Record<string, string> = {
+    missing_slot:         "ask_for_slot",
+    missing_patient_name: "ask_for_name",
+    missing_service:      "ask_for_service",
+  };
+  for (const [status, expected] of Object.entries(expectations)) {
+    const truth = buildBookingApplyActionTruth([makeBookingResult(status)]);
+    assert.ok(truth, `B-guard-6 (${status}): truth must not be null`);
+    assert.notEqual(truth!.required_next_action, "technical_fallback", `B-guard-6 (${status}): must not be technical_fallback`);
+    assert.equal(truth!.required_next_action, expected, `B-guard-6 (${status}): must be ${expected}`);
+  }
 });

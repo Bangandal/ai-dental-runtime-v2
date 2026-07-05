@@ -220,9 +220,21 @@ export function applyBookingStatusToCase(
   if (!bookingResult) return existing;
 
   const data = bookingResult.data as Record<string, unknown> | undefined;
-  const visitId =
-    typeof data?.cliniccard_visit_id === "string" ? data.cliniccard_visit_id :
-    typeof data?.visit_id === "string" ? data.visit_id : null;
+
+  // booking.apply returns status:"success" even for guarded outcomes (missing_phone,
+  // slot_conflict, booking_write_disabled, config_missing) where created_visit=false.
+  // Only update case when the visit was actually created — gate on the same four proof
+  // fields used by hasSuccessfulBookingApplyProof in bookingApplyGuard.ts.
+  const hasFullProof =
+    data?.booking_status === "visit_created" &&
+    data?.created_visit === true &&
+    data?.may_claim_booked === true &&
+    typeof data?.cliniccard_visit_id === "string" &&
+    (data.cliniccard_visit_id as string).length > 0;
+
+  if (!hasFullProof) return existing;
+
+  const visitId = typeof data?.cliniccard_visit_id === "string" ? data.cliniccard_visit_id : null;
 
   return {
     ...existing,

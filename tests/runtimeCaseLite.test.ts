@@ -334,13 +334,18 @@ test("deriveWaitingFor: faq intent → none", () => {
 
 // ── applyBookingStatusToCase ──────────────────────────────────────────────────
 
-test("applyBookingStatusToCase: booking.apply success sets created_visit=true, may_claim_booked=true", () => {
+test("applyBookingStatusToCase: booking.apply with full proof → created_visit=true, may_claim_booked=true", () => {
   const base = buildDefaultRuntimeCaseLite(CLINIC_OPTS);
   const result = applyBookingStatusToCase(base, [
     {
       tool: "booking.apply",
       status: "success",
-      data: { cliniccard_visit_id: "visit_999", booking_status: "visit_created" },
+      data: {
+        booking_status: "visit_created",
+        created_visit: true,
+        may_claim_booked: true,
+        cliniccard_visit_id: "visit_999",
+      },
     },
   ]);
 
@@ -348,6 +353,50 @@ test("applyBookingStatusToCase: booking.apply success sets created_visit=true, m
   assert.equal(result.booking_status.may_claim_booked, true);
   assert.equal(result.booking_status.cliniccard_visit_id, "visit_999");
   assert.equal(result.policy.must_not_claim_booking_created, false);
+});
+
+// P1 regression: guarded outcomes must NOT mark the case as booked
+test("applyBookingStatusToCase: missing_phone outcome → case unchanged (no false booking_created)", () => {
+  const base = buildDefaultRuntimeCaseLite(CLINIC_OPTS);
+  const result = applyBookingStatusToCase(base, [
+    {
+      tool: "booking.apply",
+      status: "success",
+      data: { booking_status: "missing_phone", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
+    },
+  ]);
+
+  assert.equal(result.booking_status.created_visit, false);
+  assert.equal(result.booking_status.may_claim_booked, false);
+  assert.equal(result.policy.must_not_claim_booking_created, true);
+});
+
+test("applyBookingStatusToCase: slot_conflict outcome → case unchanged", () => {
+  const base = buildDefaultRuntimeCaseLite(CLINIC_OPTS);
+  const result = applyBookingStatusToCase(base, [
+    {
+      tool: "booking.apply",
+      status: "success",
+      data: { booking_status: "slot_conflict", created_visit: false, may_claim_booked: false },
+    },
+  ]);
+
+  assert.equal(result.booking_status.created_visit, false);
+  assert.equal(result.booking_status.may_claim_booked, false);
+});
+
+test("applyBookingStatusToCase: booking_write_disabled outcome → case unchanged", () => {
+  const base = buildDefaultRuntimeCaseLite(CLINIC_OPTS);
+  const result = applyBookingStatusToCase(base, [
+    {
+      tool: "booking.apply",
+      status: "success",
+      data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false },
+    },
+  ]);
+
+  assert.equal(result.booking_status.created_visit, false);
+  assert.equal(result.booking_status.may_claim_booked, false);
 });
 
 test("applyBookingStatusToCase: no booking.apply in results → case unchanged", () => {
@@ -385,7 +434,16 @@ test("buildCasePolicyTruth: unknown intent → missing_fields is empty", () => {
 test("buildCasePolicyTruth: booking_created reflects booking_status.created_visit", () => {
   const base = buildDefaultRuntimeCaseLite(CLINIC_OPTS);
   const afterBooking = applyBookingStatusToCase(base, [
-    { tool: "booking.apply", status: "success", data: { cliniccard_visit_id: "v1" } },
+    {
+      tool: "booking.apply",
+      status: "success",
+      data: {
+        booking_status: "visit_created",
+        created_visit: true,
+        may_claim_booked: true,
+        cliniccard_visit_id: "v1",
+      },
+    },
   ]);
   const truth = buildCasePolicyTruth(afterBooking);
 

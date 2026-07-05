@@ -17,6 +17,7 @@ import { createOpenAIRuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import { createOpenAITurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 import { loadAdminNotifyConfig } from "../integrations/adminNotify/adminNotifyConfig.ts";
 import { createAdminNotifier } from "../integrations/adminNotify/telegramAdminNotifier.ts";
+import { createOpenAIRuntimeCaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
 
 export interface TelegramBootstrapConfig {
   botToken: string;
@@ -91,6 +92,11 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
     botToken: deps.telegram?.botToken ?? null,
   });
 
+  const caseLiteExtractor = createOpenAIRuntimeCaseLiteExtractor({
+    client: deps.openaiClient,
+    model: deps.model,
+  });
+
   const logger = deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger();
 
   registerRuntimeTurnRoute(app, {
@@ -116,6 +122,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
     rateLimiter,
     debugEnabled: deps.debugEnabled,
     adminNotifier,
+    caseLiteExtractor,
   });
 
   if (deps.telegram) {
@@ -144,6 +151,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
       defaultClinicCode,
       isProduction: deps.isProduction ?? false,
       adminNotifier,
+      caseLiteExtractor,
       onTelegramDelivery: createDeliveryObserver(logger),
     });
   }

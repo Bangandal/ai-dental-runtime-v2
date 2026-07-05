@@ -192,6 +192,10 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- When non-red-flag tooth pain + booking intent are both present, proceed directly to checking availability or collecting only the missing required details (first name, last name, preferred time). Do not ask 'какая услуга нужна' or 'какая помощь нужна'.",
     "- If the patient says 'как можно скорее', 'срочно', 'чем раньше', 'когда можно', 'побыстрее', 'ASAP', treat it as a request for the nearest available slot. Call availability.check for today or the nearest available day.",
     "- If the previous assistant turn offered to check nearest/available slots (or similar), and the patient replies with 'да', 'давай', 'ок', 'хорошо', 'да давай', 'конечно', or similar short affirmation, treat it as confirmation to proceed with availability.check — do NOT restart intake or ask for service again.",
+    "CASE CONTEXT AUTHORITY: When context contains case_context_lite and case_policy_truth, treat them as the verified summary of business state. Trust them over your own reasoning about intent or clinical level.",
+    "- If case_policy_truth.must_not_make_intake_main_response is true: provide clinical safety guidance first; booking intake must not be the main response.",
+    "- If case_policy_truth.must_not_claim_booking_created is true: do not claim the booking was created.",
+    "- case_context_lite.booking fields reflect confirmed details — do not re-ask for a field that is already set unless the patient explicitly corrects it.",
     "Always write in the patient's language — do not use hardcoded Russian/English unless that is the patient's language.",
   ].join("\n");
 }

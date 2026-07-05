@@ -22,6 +22,10 @@ import { buildBookingApplyActionTruth } from "./bookingApplyGuard.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
 import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
 import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
+import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
+import { mergeRuntimeCaseLite, applyBookingStatusToCase, buildDefaultRuntimeCaseLite } from "./runtimeCaseLite.ts";
+import type { RuntimeCaseLite } from "./runtimeCaseLite.ts";
+import { buildCasePolicyTruth } from "./runtimeCasePolicyTruth.ts";
 
 export interface RuntimeTurnOrchestratorDeps {
   runtimeTurnService: RuntimeTurnService;
@@ -37,6 +41,7 @@ export interface RuntimeTurnOrchestratorDeps {
   turnUnderstandingClassifier?: TurnUnderstandingClassifier;
   debugEnabled?: boolean;
   adminNotifier?: AdminNotifier;
+  caseLiteExtractor?: CaseLiteExtractor;
 }
 
 export type RuntimeTurnOrchestratorResult =
@@ -251,6 +256,7 @@ export async function runRuntimeTurnOrchestrated(
 
   const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0, topic_memory: null };
   let runtimeGateSourceContext: unknown = null;
+  let caseLiteCurrent: RuntimeCaseLite | null = null;
   if (!canonicalContactId) {
     runtimeContextDebug.skip_reason = "contact_unavailable";
   } else if (deps.runtimeContextRepository) {
@@ -261,16 +267,45 @@ export async function runRuntimeTurnOrchestrated(
         runtimeContextDebug.state_version = (runtimeContextResult.data.conversation_state as Record<string, unknown>).state_version ?? null;
         runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
         runtimeContextDebug.topic_memory = runtimeContextResult.data.topic_memory ?? null;
+
+        const channelContactForCase = runtimeContextResult.data.channel_contact;
+        const existingCaseLite: RuntimeCaseLite = runtimeContextResult.data.case_context_lite ?? buildDefaultRuntimeCaseLite({
+          clinic_id: runtimeTurnInput.clinic_id,
+          channel: validBody.channel.trim(),
+          external_user_id: externalUserId ?? chatId ?? "unknown",
+          locale: runtimeTurnInput.locale ?? null,
+        });
+
+        if (deps.caseLiteExtractor) {
+          try {
+            const caseUpdate = await deps.caseLiteExtractor.extractCaseLiteUpdate({
+              user_message: runtimeTurnInput.user_message,
+              existing_case: existingCaseLite,
+              locale: runtimeTurnInput.locale ?? null,
+            });
+            caseLiteCurrent = mergeRuntimeCaseLite(existingCaseLite, caseUpdate, channelContactForCase);
+          } catch {
+            caseLiteCurrent = mergeRuntimeCaseLite(existingCaseLite, {}, channelContactForCase);
+          }
+        } else {
+          caseLiteCurrent = mergeRuntimeCaseLite(existingCaseLite, {}, channelContactForCase);
+        }
+
+        const baseRuntimeContext = mergeCaseContextIntoModelContext(
+          applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data)),
+          loadedCaseContext,
+        );
+        const runtimeContextWithCase = caseLiteCurrent
+          ? { ...baseRuntimeContext, case_context_lite: caseLiteCurrent, case_policy_truth: buildCasePolicyTruth(caseLiteCurrent) }
+          : baseRuntimeContext;
+
         runtimeGateSourceContext = mergeCaseContextIntoModelContext(asRecord(runtimeContextResult.data), loadedCaseContext);
         runtimeTurnInput.business_context = {
           ...(runtimeTurnInput.business_context ?? {}),
-          runtime_context: mergeCaseContextIntoModelContext(
-            applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data)),
-            loadedCaseContext,
-          ),
+          runtime_context: runtimeContextWithCase,
         };
-        if (runtimeContextResult.data.channel_contact) {
-          runtimeTurnInput.channel_contact = runtimeContextResult.data.channel_contact;
+        if (channelContactForCase) {
+          runtimeTurnInput.channel_contact = channelContactForCase;
         }
       } else {
         runtimeContextDebug.error = runtimeContextResult.error;
@@ -380,6 +415,10 @@ export async function runRuntimeTurnOrchestrated(
       }
     }
 
+    if (caseLiteCurrent) {
+      caseLiteCurrent = applyBookingStatusToCase(caseLiteCurrent, result.tool_results);
+    }
+
     if (deps.turnPersistenceRepository && canonicalContactId) {
       const assistantSave = await deps.turnPersistenceRepository.saveMessage({
         contact_id: canonicalContactId,
@@ -410,6 +449,7 @@ export async function runRuntimeTurnOrchestrated(
         confidence: "medium",
         control_flags: { openai_conversation_id: conversationIdToPersist },
         topic_memory_patch: topicMemoryPatch,
+        case_context_lite: caseLiteCurrent,
       }).catch(() => ({ ok: false } as const));
       persistenceDebug.merge_state = mergeState.ok ? { ok: true } : { ok: false, code: "convo_state_persist_failed" };
       if (topicMemoryPatch) {

@@ -12,6 +12,7 @@ import type { RuntimeGateClassifier } from "./runtimeGateShadow.ts";
 import type { TurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 import { runRuntimeTurnOrchestrated } from "./runtimeTurnOrchestrator.ts";
 import type { AdminNotifier } from "../integrations/adminNotify/adminNotifyTypes.ts";
+import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -57,6 +58,7 @@ export interface RuntimeTurnRouteDeps {
   rateLimiter?: RateLimiter;
   debugEnabled?: boolean;
   adminNotifier?: AdminNotifier;
+  caseLiteExtractor?: CaseLiteExtractor;
 }
 
 export interface RouteRequest {

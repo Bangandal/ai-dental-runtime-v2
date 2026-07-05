@@ -242,10 +242,12 @@ const BASE_TURN_INPUT = {
   trace_id: "trace_test_001",
 };
 
-// Test 2: forced_finalization after availability.check + missing phone → contact button
+// Test 2: round-2 booking.apply with missing phone → guarded tool result submitted,
+// model produces final reply, conversation preserved.
 test("runtimeAgentLoop: guard intercepts when round-2 requests booking.apply without trusted phone", async () => {
   // Round 1: model calls availability.check
   // Round 2: model calls booking.apply (no phone in context)
+  // Round 3 (guarded): model produces final reply after seeing guarded missing_trusted_phone result
   const caller = makeCallerSequence([
     {
       type: "tool_requests",
@@ -256,6 +258,12 @@ test("runtimeAgentLoop: guard intercepts when round-2 requests booking.apply wit
       type: "tool_requests",
       conversation_id: "conv_existing_123",
       tool_requests: [BOOKING_APPLY_REQUEST],
+    },
+    // Guarded finalization: model asks for phone
+    {
+      type: "final_response",
+      conversation_id: "conv_existing_123",
+      final_response: { final_patient_reply: "Для записи нужен ваш телефон. Поделитесь контактом." },
     },
   ]);
 
@@ -272,21 +280,29 @@ test("runtimeAgentLoop: guard intercepts when round-2 requests booking.apply wit
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, channel_contact: undefined });
 
-  // Test 2: contact button returned, not generic greeting
-  assert.equal(result.ui?.telegram?.request_contact, true, "should set request_contact:true");
-  assert.ok(result.final_patient_reply.includes("телефон"), "reply should mention phone");
+  // Guarded missing_trusted_phone result must appear in tool_results
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal(
+    (bookingResult!.data as Record<string, unknown>).booking_status,
+    "missing_trusted_phone",
+    "guarded status must be missing_trusted_phone",
+  );
+
+  // Reply comes from model (3rd caller output)
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
   assert.notEqual(result.final_patient_reply, "Здравствуйте! Чем могу помочь?", "must not be generic greeting");
 
-  // Test 1 (reframed): conversation is dirty (expected) — not resumable
-  assert.equal(result.conversation_id, null, "conversation_id must be null (dirty)");
-  assert.equal(result.conversation_id_resumable, false, "must not be resumable");
+  // Conversation preserved — conversation_id clean
+  assert.equal(result.conversation_id, "conv_existing_123", "conversation_id must be preserved");
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
 
   // debug.reason must identify the intercept
   assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_intercepted_missing_trusted_phone");
 });
 
-// Test 1 variant: same guard fires in CS locale
-test("runtimeAgentLoop: guard returns CS phone-ask when locale=cs", async () => {
+// Test 1 variant: same guard fires in CS locale — guarded result submitted, model responds
+test("runtimeAgentLoop: guard submits guarded missing_trusted_phone result in CS locale", async () => {
   const caller = makeCallerSequence([
     {
       type: "tool_requests",
@@ -297,6 +313,12 @@ test("runtimeAgentLoop: guard returns CS phone-ask when locale=cs", async () => 
       type: "tool_requests",
       conversation_id: "conv_cs_1",
       tool_requests: [BOOKING_APPLY_REQUEST],
+    },
+    // Guarded finalization: model asks for phone in CS locale
+    {
+      type: "final_response",
+      conversation_id: "conv_cs_1",
+      final_response: { final_patient_reply: "Pro rezervaci potřebuji vaše telefonní číslo." },
     },
   ]);
 
@@ -312,8 +334,21 @@ test("runtimeAgentLoop: guard returns CS phone-ask when locale=cs", async () => 
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_cs_1", locale: "cs", channel_contact: undefined });
-  assert.equal(result.ui?.telegram?.request_contact, true);
-  assert.ok(result.final_patient_reply.includes("telefonní číslo"));
+
+  // Guarded result must be present
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal(
+    (bookingResult!.data as Record<string, unknown>).booking_status,
+    "missing_trusted_phone",
+  );
+
+  // Reply from model (3rd caller output)
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
+
+  // Conversation preserved
+  assert.equal(result.conversation_id, "conv_cs_1", "conversation_id must be preserved");
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
 });
 
 // Test 3a: booking.apply with trusted phone → Guard B executes booking.apply, then finalizes.
@@ -488,6 +523,11 @@ test("runtimeAgentLoop: 'Роман, ансамблев' treated as name candida
         arguments: { service: "chistka", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Роман", last_name: "Ансамблев" },
       }],
     },
+    {
+      type: "final_response",
+      conversation_id: "conv_live_smoke",
+      final_response: { final_patient_reply: "Для записи нужен ваш телефон. Поделитесь контактом." },
+    },
   ]);
 
   const loop = createRuntimeAgentLoop({
@@ -514,12 +554,13 @@ test("runtimeAgentLoop: 'Роман, ансамблев' treated as name candida
   // Must not produce generic greeting
   assert.notEqual(result.final_patient_reply, "Здравствуйте, как я могу вам помочь?");
   assert.notEqual(result.final_patient_reply, "Здравствуйте! Чем могу помочь?");
-  // Must ask for phone
-  assert.equal(result.ui?.telegram?.request_contact, true);
+  // Model asked for phone in its final reply (from guarded finalization)
   assert.ok(result.final_patient_reply.includes("телефон"));
-  // booking.apply must not have executed (no booking result in tool_results)
-  const hasBookingResult = result.tool_results?.some(r => r.tool === "booking.apply");
-  assert.equal(hasBookingResult, false, "booking.apply must not execute before phone is trusted");
+  // booking.apply executor must not have run — only guarded result present
+  const bookingResult = result.tool_results?.find(r => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "missing_trusted_phone", "booking.apply must not execute before phone is trusted");
+  assert.equal((bookingResult!.data as Record<string, unknown>).created_visit, false);
 });
 
 // Test 5: PR #121 behavior — forced_finalization without booking context still works

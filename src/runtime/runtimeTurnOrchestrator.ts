@@ -19,6 +19,7 @@ import { buildTopicMemoryCandidateShadow, buildTopicMemoryPatch } from "./topicM
 import { buildRuntimeLlmCallDebug, mergeRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import type { RuntimeTurnHttpRequestBody, RuntimeTurnHttpSuccessResponse } from "./runtimeTurnHttpRoute.ts";
 import { buildBookingApplyActionTruth } from "./bookingApplyGuard.ts";
+import { hasTrustedPhone } from "./bookingContactGuard.ts";
 import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
 import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
 
@@ -446,12 +447,11 @@ export async function runRuntimeTurnOrchestrated(
         : undefined;
 
     // Suppress contact button if a trusted phone is already captured for this contact.
-    const hasTrustedPhone =
-      runtimeTurnInput.channel_contact !== undefined &&
-      runtimeTurnInput.channel_contact !== null &&
-      runtimeTurnInput.channel_contact.phone_source !== "manual_input";
+    // Use hasTrustedPhone (which checks TRUSTED_PHONE_SOURCES) — not a manual_input negation,
+    // which would suppress the button for any unknown/untrusted source value.
+    const hasTrustedPhoneForUi = hasTrustedPhone(runtimeTurnInput.channel_contact ?? undefined);
     const mergedUi =
-      hasTrustedPhone && rawMergedUi?.telegram?.request_contact === true
+      hasTrustedPhoneForUi && rawMergedUi?.telegram?.request_contact === true
         ? { ...rawMergedUi, telegram: { ...rawMergedUi.telegram, request_contact: false as const } }
         : rawMergedUi;
 

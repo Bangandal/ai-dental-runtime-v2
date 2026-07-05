@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { buildRemoveKeyboardMarkup } from "../src/runtime/telegramSender.ts";
+import { hasTrustedPhone } from "../src/runtime/bookingContactGuard.ts";
 
 describe("telegramContactKeyboard", () => {
   describe("buildRemoveKeyboardMarkup", () => {
@@ -17,48 +18,30 @@ describe("telegramContactKeyboard", () => {
     });
   });
 
-  describe("trusted phone suppresses request_contact (orchestrator logic snapshot)", () => {
-    // Test the suppression logic directly by replicating it
-    function applyContactSuppression(
-      rawMergedUi: { telegram?: { request_contact?: boolean; button_text?: string } } | undefined,
-      channelContact: { phone_source: string } | undefined,
-    ) {
-      const hasTrustedPhone =
-        channelContact !== undefined &&
-        channelContact !== null &&
-        channelContact.phone_source !== "manual_input";
-      return hasTrustedPhone && rawMergedUi?.telegram?.request_contact === true
-        ? { ...rawMergedUi, telegram: { ...rawMergedUi.telegram, request_contact: false } }
-        : rawMergedUi;
-    }
-
-    it("A: no trusted phone — request_contact passes through unchanged", () => {
-      const ui = { telegram: { request_contact: true, button_text: "Share" } };
-      const result = applyContactSuppression(ui, undefined);
-      assert.strictEqual(result?.telegram?.request_contact, true);
+  describe("hasTrustedPhone — authoritative TRUSTED_PHONE_SOURCES check", () => {
+    it("A: no channel_contact (undefined) — not trusted, request_contact must pass through", () => {
+      assert.strictEqual(hasTrustedPhone(undefined), false);
     });
 
-    it("B: trusted phone (telegram_contact_button) suppresses request_contact", () => {
-      const ui = { telegram: { request_contact: true, button_text: "Share" } };
-      const result = applyContactSuppression(ui, { phone_source: "telegram_contact_button" });
-      assert.strictEqual(result?.telegram?.request_contact, false);
+    it("B: telegram_contact_button is trusted — suppresses request_contact", () => {
+      assert.strictEqual(hasTrustedPhone({ phone_number: "+380991234567", phone_source: "telegram_contact_button" }), true);
     });
 
-    it("B2: trusted phone (whatsapp_sender) suppresses request_contact", () => {
-      const ui = { telegram: { request_contact: true, button_text: "Share" } };
-      const result = applyContactSuppression(ui, { phone_source: "whatsapp_sender" });
-      assert.strictEqual(result?.telegram?.request_contact, false);
+    it("B2: whatsapp_sender is trusted — suppresses request_contact", () => {
+      assert.strictEqual(hasTrustedPhone({ phone_number: "+380991234567", phone_source: "whatsapp_sender" }), true);
     });
 
-    it("B3: manual_input is NOT trusted — request_contact passes through", () => {
-      const ui = { telegram: { request_contact: true, button_text: "Share" } };
-      const result = applyContactSuppression(ui, { phone_source: "manual_input" });
-      assert.strictEqual(result?.telegram?.request_contact, true);
+    it("B3: existing_cliniccard_patient is trusted — suppresses request_contact", () => {
+      assert.strictEqual(hasTrustedPhone({ phone_number: "+380991234567", phone_source: "existing_cliniccard_patient" }), true);
     });
 
-    it("no UI at all — suppression returns undefined (no change)", () => {
-      const result = applyContactSuppression(undefined, { phone_source: "telegram_contact_button" });
-      assert.strictEqual(result, undefined);
+    it("B4 (Codex P2 regression): manual_input is NOT trusted — request_contact must NOT be suppressed", () => {
+      assert.strictEqual(hasTrustedPhone({ phone_number: "+380991234567", phone_source: "manual_input" }), false);
+    });
+
+    it("B5 (Codex P2 regression): unknown/future source is NOT trusted — request_contact must NOT be suppressed", () => {
+      // Ensures negative comparison (!== 'manual_input') cannot accidentally suppress for unknown sources
+      assert.strictEqual(hasTrustedPhone({ phone_number: "+380991234567", phone_source: "unknown_future_source" as never }), false);
     });
   });
 });

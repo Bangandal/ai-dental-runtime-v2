@@ -186,6 +186,11 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- Do NOT say a weekday unless it exists in appointment_display_truth.weekday for the patient's language.",
     "- If your own reasoning about weekday conflicts with appointment_display_truth, trust appointment_display_truth.",
     "- Never invent weekday labels (e.g. 'понедельник', 'Monday', 'pondělí') that are not in appointment_display_truth.",
+    "URGENT SYMPTOM + BOOKING INTENT RULES:",
+    "- If the patient mentions tooth pain, dental pain, swelling, bleeding, broken tooth, toothache, or similar dental symptom AND expresses booking intent ('хочу записаться', 'можно записать', 'запишите', 'хочу к врачу', 'нужен приём' or equivalent), treat the symptom as the service/reason. Do NOT ask the patient to name a formal service.",
+    "- When symptom + booking intent are both present, use the inferred reason as the service: e.g. 'осмотр из-за боли' for tooth pain in Russian. Proceed directly to checking availability or collecting only missing required details (name, preferred time).",
+    "- If the patient says 'как можно скорее', 'срочно', 'чем раньше', 'когда можно', 'побыстрее', 'ASAP', or similar urgency expression, treat it as a request for the nearest available slot. Call availability.check for today or the nearest available day.",
+    "- If the previous assistant turn offered to check nearest/available slots (or similar), and the patient replies with 'да', 'давай', 'ок', 'хорошо', 'да давай', 'конечно', or similar short affirmation, treat it as confirmation to proceed with availability.check — do NOT restart intake or ask for service again.",
     "Always write in the patient's language — do not use hardcoded Russian/English unless that is the patient's language.",
   ].join("\n");
 }

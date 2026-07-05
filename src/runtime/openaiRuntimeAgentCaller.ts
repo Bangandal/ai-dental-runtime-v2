@@ -180,8 +180,8 @@ function parseArguments(value: unknown): Record<string, unknown> {
 function readFinalResponse(response: Record<string, unknown> | null): RuntimeAgentFinalResponse {
   const final = asObject(response?.final_response);
   const outputText =
+    readResponseOutputTextDeduped(response?.output) ??
     readString(response?.output_text) ??
-    readResponseOutputText(response?.output) ??
     readString(final?.final_patient_reply) ??
     "";
 
@@ -206,14 +206,18 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
 }
 
 
-function readResponseOutputText(value: unknown): string | null {
+// Collects all output_text parts from response.output[] in order, then:
+// - if all parts are identical → return only the first (dedup model duplicate-block bug)
+// - if parts differ → concatenate in order (preserve valid split output)
+// - if no parts found → return null (caller falls back to response.output_text)
+function readResponseOutputTextDeduped(value: unknown): string | null {
   if (!Array.isArray(value)) return null;
 
+  const parts: string[] = [];
   for (const item of value) {
     const obj = asObject(item);
     if (!obj) continue;
     if (readString(obj.type) !== "message") continue;
-
     const content = obj.content;
     if (!Array.isArray(content)) continue;
     for (const contentItem of content) {
@@ -221,11 +225,13 @@ function readResponseOutputText(value: unknown): string | null {
       if (!contentObj) continue;
       if (readString(contentObj.type) !== "output_text") continue;
       const text = readString(contentObj.text);
-      if (text && text.length > 0) return text;
+      if (text && text.length > 0) parts.push(text);
     }
   }
 
-  return null;
+  if (parts.length === 0) return null;
+  if (parts.every((p) => p === parts[0])) return parts[0]!;
+  return parts.join("");
 }
 function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;

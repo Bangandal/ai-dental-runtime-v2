@@ -4,21 +4,14 @@ import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntime
 
 const instruction = buildRuntimeAgentSystemInstruction();
 
-test("A: system instruction contains URGENT SYMPTOM section header", () => {
-  assert.ok(
-    instruction.includes("URGENT SYMPTOM"),
-    "Expected 'URGENT SYMPTOM' in system instruction",
-  );
-});
-
-test("B: system instruction contains 'осмотр из-за боли' inferred service", () => {
+test("A: system instruction contains 'осмотр из-за боли' inferred service for tooth pain", () => {
   assert.ok(
     instruction.includes("осмотр из-за боли"),
     "Expected 'осмотр из-за боли' in system instruction",
   );
 });
 
-test("C: system instruction says do not ask formal service when symptom + booking intent present", () => {
+test("B: system instruction says do not ask formal service when non-red-flag tooth pain + booking intent", () => {
   const lower = instruction.toLowerCase();
   assert.ok(
     lower.includes("do not ask the patient to name a formal service"),
@@ -26,7 +19,7 @@ test("C: system instruction says do not ask formal service when symptom + bookin
   );
 });
 
-test("D: system instruction maps urgency expressions to nearest available slot check", () => {
+test("C: system instruction maps urgency expressions to nearest available slot check", () => {
   assert.ok(
     instruction.includes("как можно скорее"),
     "Expected 'как можно скорее' in system instruction",
@@ -37,7 +30,7 @@ test("D: system instruction maps urgency expressions to nearest available slot c
   );
 });
 
-test("E: system instruction maps 'да давай' affirmation to availability.check continuation", () => {
+test("D: system instruction maps 'да давай' affirmation to availability.check continuation", () => {
   assert.ok(
     instruction.includes("да давай"),
     "Expected 'да давай' in system instruction",
@@ -48,18 +41,62 @@ test("E: system instruction maps 'да давай' affirmation to availability.c
   );
 });
 
-test("F: system instruction mentions tooth pain symptom list", () => {
+test("E: red-flag symptoms (bleeding) appear in RED-FLAG section, not normal inference", () => {
   assert.ok(
-    instruction.includes("tooth pain"),
-    "Expected 'tooth pain' in symptom list",
+    instruction.includes("RED-FLAG"),
+    "Expected 'RED-FLAG' section in system instruction",
   );
+  const redFlagIdx = instruction.indexOf("RED-FLAG");
+  const bleedingIdx = instruction.indexOf("bleeding");
   assert.ok(
-    instruction.includes("toothache"),
-    "Expected 'toothache' in symptom list",
+    bleedingIdx > -1,
+    "Expected 'bleeding' to appear in system instruction",
+  );
+  // bleeding must appear after RED-FLAG (in the red-flag block), not before NON-RED-FLAG
+  const nonRedFlagIdx = instruction.indexOf("NON-RED-FLAG");
+  assert.ok(
+    bleedingIdx < nonRedFlagIdx,
+    "Expected 'bleeding' to appear in RED-FLAG block, before NON-RED-FLAG section",
   );
 });
 
-test("G: system instruction maps срочно / ASAP to urgency handling", () => {
+test("F: red-flag symptoms (swelling) appear in RED-FLAG section, not normal inference", () => {
+  const redFlagIdx = instruction.indexOf("RED-FLAG");
+  const swellingIdx = instruction.indexOf("swelling");
+  assert.ok(
+    swellingIdx > -1,
+    "Expected 'swelling' to appear in system instruction",
+  );
+  const nonRedFlagIdx = instruction.indexOf("NON-RED-FLAG");
+  assert.ok(
+    swellingIdx < nonRedFlagIdx,
+    "Expected 'swelling' to appear in RED-FLAG block, before NON-RED-FLAG section",
+  );
+});
+
+test("G: system instruction contains explicit RED-FLAG / NON-RED-FLAG separation", () => {
+  assert.ok(
+    instruction.includes("RED-FLAG"),
+    "Expected 'RED-FLAG' in system instruction",
+  );
+  assert.ok(
+    instruction.includes("NON-RED-FLAG"),
+    "Expected 'NON-RED-FLAG' in system instruction",
+  );
+});
+
+test("H: NON-RED-FLAG path is explicitly scoped to tooth pain / toothache", () => {
+  assert.ok(
+    instruction.includes("NON-RED-FLAG tooth pain"),
+    "Expected 'NON-RED-FLAG tooth pain' scoping in system instruction",
+  );
+  assert.ok(
+    instruction.includes("toothache"),
+    "Expected 'toothache' in NON-RED-FLAG path",
+  );
+});
+
+test("I: system instruction maps срочно / ASAP to urgency handling", () => {
   assert.ok(
     instruction.includes("срочно"),
     "Expected 'срочно' in urgency list",

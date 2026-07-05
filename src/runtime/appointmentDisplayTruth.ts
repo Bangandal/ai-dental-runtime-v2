@@ -65,10 +65,17 @@ function extractTimeFromResult(data: Record<string, unknown>, timeKey: "time_sta
 
 function buildWeekdayAndDateDisplay(
   dateStr: string,
-  timezone: string,
+  _timezone: string,
 ): { weekday: AppointmentDisplayTruth["weekday"]; date_display: AppointmentDisplayTruth["date_display"] } | null {
-  // Parse date as noon in the given timezone to avoid DST edge cases
-  const dt = new Date(`${dateStr}T12:00:00`);
+  // Parse YYYY-MM-DD manually to avoid host-TZ shifting the calendar date.
+  // dateStr is the appointment's local calendar date (e.g. "2026-07-07") as
+  // returned by the backend — not a UTC instant. We anchor it to noon UTC so
+  // that no host timezone (including UTC-12 through UTC+14) can roll it over
+  // to a different calendar day when Intl formats it with timeZone:"UTC".
+  const parts = dateStr.split("-").map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return null;
+  const [year, month, day] = parts;
+  const dt = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
   if (isNaN(dt.getTime())) return null;
 
   const weekday: AppointmentDisplayTruth["weekday"] = { ru: "", uk: "", cs: "", en: "" };
@@ -76,14 +83,17 @@ function buildWeekdayAndDateDisplay(
 
   for (const lang of Object.keys(LOCALE_MAP) as Array<keyof typeof LOCALE_MAP>) {
     const locale = LOCALE_MAP[lang];
+    // timeZone:"UTC" is intentional: the date is already the appointment's
+    // local calendar date; formatting in UTC preserves it regardless of
+    // the host process TZ environment variable.
     weekday[lang] = new Intl.DateTimeFormat(locale, {
       weekday: "long",
-      timeZone: timezone,
+      timeZone: "UTC",
     }).format(dt);
     date_display[lang] = new Intl.DateTimeFormat(locale, {
       day: "numeric",
       month: "long",
-      timeZone: timezone,
+      timeZone: "UTC",
     }).format(dt);
   }
 

@@ -14,6 +14,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { buildAppointmentDisplayTruth } from "../src/runtime/appointmentDisplayTruth.ts";
 import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntimeAgent.ts";
 import { createRuntimeAgentLoop } from "../src/runtime/runtimeAgentLoop.ts";
@@ -414,5 +416,119 @@ describe("PR #136 — H: bookingApplyGuard regression — existing truth logic u
     // Both agree on date
     assert.strictEqual(displayTruth!.date, "2026-07-07");
     assert.strictEqual(displayTruth!.weekday.ru, "вторник");
+  });
+});
+
+// ── TZ-1: host TZ=Pacific/Honolulu does not shift weekday ─────────────────────
+
+describe("PR #136 — TZ-1: weekday correct under TZ=Pacific/Honolulu", () => {
+  it("weekday.ru === вторник and weekday.en === Tuesday under Pacific/Honolulu host TZ", () => {
+    // Spawn a child Node process with TZ=Pacific/Honolulu to verify that
+    // Date.UTC + timeZone:"UTC" formatting is host-TZ-independent.
+    const srcPath = fileURLToPath(new URL("../src/runtime/appointmentDisplayTruth.ts", import.meta.url));
+    const childScript = `
+import { buildAppointmentDisplayTruth } from ${JSON.stringify(srcPath)};
+const result = buildAppointmentDisplayTruth([{
+  tool: "booking.apply",
+  call_id: "tz_test",
+  status: "success",
+  data: {
+    booking_status: "visit_created",
+    created_visit: true,
+    may_claim_booked: true,
+    cliniccard_visit_id: "58702311",
+    cliniccard_patient_id: "16311921",
+    date: "2026-07-07",
+    time_start: "14:00",
+    time_end: "14:30",
+  }
+}]);
+process.stdout.write(JSON.stringify(result));
+`;
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx/esm", "--input-type=module"],
+      {
+        input: childScript,
+        encoding: "utf8",
+        env: { ...process.env, TZ: "Pacific/Honolulu" },
+        timeout: 15000,
+      },
+    );
+
+    assert.strictEqual(child.status, 0, `Child process failed: ${child.stderr}`);
+    const result = JSON.parse(child.stdout) as { weekday: { ru: string; en: string }; date_display: { ru: string } } | null;
+    assert.ok(result !== null, "buildAppointmentDisplayTruth must return non-null under Pacific/Honolulu TZ");
+    assert.strictEqual(
+      result!.weekday.ru,
+      "вторник",
+      `Under TZ=Pacific/Honolulu, weekday.ru must be вторник for 2026-07-07, got: ${result!.weekday.ru}`,
+    );
+    assert.strictEqual(
+      result!.weekday.en,
+      "Tuesday",
+      `Under TZ=Pacific/Honolulu, weekday.en must be Tuesday, got: ${result!.weekday.en}`,
+    );
+    assert.ok(
+      !result!.weekday.ru.includes("среда") && result!.weekday.ru !== "среда",
+      "Must not return среда (Wednesday)",
+    );
+  });
+});
+
+// ── TZ-2: host TZ=America/Los_Angeles does not shift date_display ─────────────
+
+describe("PR #136 — TZ-2: date_display correct under TZ=America/Los_Angeles", () => {
+  it("date_display.ru contains '7 июля' and date_display.en contains 'July 7' under America/Los_Angeles host TZ", () => {
+    const srcPath = fileURLToPath(new URL("../src/runtime/appointmentDisplayTruth.ts", import.meta.url));
+    const childScript = `
+import { buildAppointmentDisplayTruth } from ${JSON.stringify(srcPath)};
+const result = buildAppointmentDisplayTruth([{
+  tool: "booking.apply",
+  call_id: "tz_test2",
+  status: "success",
+  data: {
+    booking_status: "visit_created",
+    created_visit: true,
+    may_claim_booked: true,
+    cliniccard_visit_id: "58702311",
+    cliniccard_patient_id: "16311921",
+    date: "2026-07-07",
+    time_start: "14:00",
+    time_end: "14:30",
+  }
+}]);
+process.stdout.write(JSON.stringify(result));
+`;
+    const child = spawnSync(
+      process.execPath,
+      ["--import", "tsx/esm", "--input-type=module"],
+      {
+        input: childScript,
+        encoding: "utf8",
+        env: { ...process.env, TZ: "America/Los_Angeles" },
+        timeout: 15000,
+      },
+    );
+
+    assert.strictEqual(child.status, 0, `Child process failed: ${child.stderr}`);
+    const result = JSON.parse(child.stdout) as { date_display: { ru: string; en: string } } | null;
+    assert.ok(result !== null, "buildAppointmentDisplayTruth must return non-null under America/Los_Angeles TZ");
+    assert.ok(
+      result!.date_display.ru.includes("7") && result!.date_display.ru.includes("июля"),
+      `Under TZ=America/Los_Angeles, date_display.ru must contain '7 июля', got: ${result!.date_display.ru}`,
+    );
+    assert.ok(
+      result!.date_display.en.includes("July") && result!.date_display.en.includes("7"),
+      `Under TZ=America/Los_Angeles, date_display.en must contain 'July 7', got: ${result!.date_display.en}`,
+    );
+    assert.ok(
+      !result!.date_display.ru.includes("8"),
+      `date_display.ru must not contain '8' (date must not shift to July 8), got: ${result!.date_display.ru}`,
+    );
+    assert.ok(
+      !result!.date_display.en.includes("8"),
+      `date_display.en must not contain '8', got: ${result!.date_display.en}`,
+    );
   });
 });

@@ -7,6 +7,7 @@ import { createClinicCardAvailabilityExecutor } from "../integrations/cliniccard
 import { createBookingApplyExecutor } from "../integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ToolExecutor } from "./toolExecutor.ts";
 import type { OpenAIRuntimeAgent } from "./openaiRuntimeAgent.ts";
+import type { BookingProcessStateRepository } from "./bookingProcessState.ts";
 
 export interface CreateDentalRuntimeAgentDeps {
   openaiClient: OpenAIResponsesClient;
@@ -15,6 +16,7 @@ export interface CreateDentalRuntimeAgentDeps {
   embeddingClient: EmbeddingClient;
   embeddingModel: string;
   conversationMemoryRepository?: ConversationMemoryRepository;
+  bookingProcessStateRepository?: BookingProcessStateRepository;
   now?: Date;
   timezone?: string;
   clinicCardAvailabilityExecutor?: ToolExecutor;
@@ -45,6 +47,7 @@ export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): Op
     caller,
     executors,
     conversationMemoryRepository: deps.conversationMemoryRepository,
+    bookingProcessStateRepository: deps.bookingProcessStateRepository,
     now: deps.now,
     timezone: deps.timezone,
   });

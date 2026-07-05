@@ -236,7 +236,7 @@ describe("hasTrustedPhone — contact button audit (PR #134)", () => {
     // booking.apply for tomorrow → phone guard passes → executor runs (or fails due to no executor).
     const caller: RuntimeAgentCaller = async () => ({
       type: "tool_requests",
-      tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { requested_date: "2026-07-04", requested_time: "13:00", service: "consultation" } }],
+      tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { requested_date: "2026-07-04", requested_time: "13:00", service: "consultation", first_name: "Test", last_name: "Patient" } }],
     } as RuntimeAgentCallerOutput);
 
     const loop = createRuntimeAgentLoop({

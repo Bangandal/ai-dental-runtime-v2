@@ -8,6 +8,26 @@
  * Test 2 (missing trusted phone with valid slot): availability.check returns ≥1 slot +
  * no trusted phone + model requests booking.apply in round 2 → Guard A fires,
  * contact button returned, booking.apply executor NOT called.
+ *
+ * Test 3 (trusted phone + no slot in round-1 args): model requests booking.apply in round 1
+ * with trusted phone but without requested_date/requested_time → Guard D fires,
+ * executor NOT called, reply asks to choose a slot, conversation_id_resumable=false.
+ *
+ * Test 4 (name/service missing): model requests booking.apply with date+time but without
+ * first_name or last_name → Guard E fires, executor NOT called, reply asks only the
+ * missing field, conversation_id_resumable=false.
+ *
+ * Test 5 (full proof + BOOKING_MODE=disabled): all required fields present but mode disabled
+ * → existing disabled behavior: booking_write_disabled returned, no ClinicCard write,
+ * created_visit=false, may_claim_booked=false.
+ *
+ * Test 6 (golden flow regression): "болит зуб, записаться" → name Роман Анбасадоров +
+ * "как можно скорее" → availability.check returns 0 slots → model tries booking.apply
+ * → booking.apply executor NOT called, no booking_write_disabled, reply asks another time,
+ * conversation_id_resumable=false.
+ *
+ * Test 7: all prior tests in this file and the core booking guard suites still pass
+ * (enforced by running the full test suite — no dedicated test needed beyond the ones above).
  */
 
 import assert from "node:assert/strict";
@@ -18,7 +38,13 @@ import {
   shouldInterceptMissingPhoneBeforeBookingApply,
   shouldInterceptNoSlotsBeforeBookingApply,
   buildNoSlotsPreflightReply,
+  bookingApplyArgsMissingSlot,
+  getMissingBookingApplyNameFields,
+  buildMissingSlotReply,
+  buildMissingNameFieldsReply,
 } from "../src/runtime/bookingApplyPreflight.ts";
+import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
+import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import type {
   RuntimeAgentToolRequest,
@@ -365,5 +391,426 @@ test("runtimeAgentLoop: Guard A fires when booking.apply pending and phone absen
   assert.equal(
     (result.debug as Record<string, unknown>)?.reason,
     "booking_apply_intercepted_missing_trusted_phone",
+  );
+});
+
+// ── Unit: bookingApplyArgsMissingSlot ────────────────────────────────────────
+
+test("bookingApplyArgsMissingSlot: true when both date and time absent", () => {
+  assert.equal(bookingApplyArgsMissingSlot({}), true);
+});
+
+test("bookingApplyArgsMissingSlot: true when date present but time absent", () => {
+  assert.equal(bookingApplyArgsMissingSlot({ requested_date: "2026-07-15" }), true);
+});
+
+test("bookingApplyArgsMissingSlot: true when time present but date absent", () => {
+  assert.equal(bookingApplyArgsMissingSlot({ requested_time: "10:00" }), true);
+});
+
+test("bookingApplyArgsMissingSlot: false when both date and time present as non-empty strings", () => {
+  assert.equal(bookingApplyArgsMissingSlot({ requested_date: "2026-07-15", requested_time: "10:00" }), false);
+});
+
+test("bookingApplyArgsMissingSlot: true when date is empty string", () => {
+  assert.equal(bookingApplyArgsMissingSlot({ requested_date: "", requested_time: "10:00" }), true);
+});
+
+// ── Unit: getMissingBookingApplyNameFields ────────────────────────────────────
+
+test("getMissingBookingApplyNameFields: empty list when both name fields present", () => {
+  assert.deepEqual(getMissingBookingApplyNameFields({ first_name: "Роман", last_name: "Анбасадоров" }), []);
+});
+
+test("getMissingBookingApplyNameFields: [first_name] when only first_name absent", () => {
+  assert.deepEqual(getMissingBookingApplyNameFields({ last_name: "Анбасадоров" }), ["first_name"]);
+});
+
+test("getMissingBookingApplyNameFields: [last_name] when only last_name absent", () => {
+  assert.deepEqual(getMissingBookingApplyNameFields({ first_name: "Роман" }), ["last_name"]);
+});
+
+test("getMissingBookingApplyNameFields: [first_name, last_name] when both absent", () => {
+  assert.deepEqual(getMissingBookingApplyNameFields({}), ["first_name", "last_name"]);
+});
+
+// ── Unit: buildMissingSlotReply ───────────────────────────────────────────────
+
+test("buildMissingSlotReply: RU reply mentions date/time selection", () => {
+  const reply = buildMissingSlotReply("ru");
+  assert.ok(reply.length > 0);
+  assert.ok(reply.includes("дату") || reply.includes("время") || reply.includes("слот"), `RU: ${reply}`);
+});
+
+test("buildMissingSlotReply: EN reply mentions date/time", () => {
+  const reply = buildMissingSlotReply("en");
+  assert.ok(reply.includes("date") || reply.includes("time") || reply.includes("slot"), `EN: ${reply}`);
+});
+
+test("buildMissingSlotReply: CS reply is non-empty", () => {
+  assert.ok(buildMissingSlotReply("cs").length > 0);
+});
+
+test("buildMissingSlotReply: defaults to RU for null locale", () => {
+  const ru = buildMissingSlotReply("ru");
+  const def = buildMissingSlotReply(null);
+  assert.equal(def, ru);
+});
+
+// ── Unit: buildMissingNameFieldsReply ────────────────────────────────────────
+
+test("buildMissingNameFieldsReply: asks for both when both missing (RU)", () => {
+  const reply = buildMissingNameFieldsReply(["first_name", "last_name"], "ru");
+  assert.ok(reply.includes("имя") || reply.includes("фамилию"), `RU both: ${reply}`);
+});
+
+test("buildMissingNameFieldsReply: asks only for first_name when only first_name missing (RU)", () => {
+  const reply = buildMissingNameFieldsReply(["first_name"], "ru");
+  assert.ok(reply.includes("имя") || reply.includes("зовут"), `RU first_name: ${reply}`);
+  assert.ok(!reply.includes("фамили"), `must not ask for last name when only first_name missing: ${reply}`);
+});
+
+test("buildMissingNameFieldsReply: asks only for last_name when only last_name missing (RU)", () => {
+  const reply = buildMissingNameFieldsReply(["last_name"], "ru");
+  assert.ok(reply.includes("фамили"), `RU last_name: ${reply}`);
+});
+
+test("buildMissingNameFieldsReply: EN locale — both missing", () => {
+  const reply = buildMissingNameFieldsReply(["first_name", "last_name"], "en");
+  assert.ok(reply.includes("name"), `EN both: ${reply}`);
+});
+
+// ── Test 3: Trusted phone + no slot in round-1 booking.apply args ─────────────
+// Guard D fires: executor NOT called, reply asks to choose slot, conversation dirty.
+
+test("Test 3: Guard D (round 1) — trusted phone + no date/time → executor not called, asks for slot", async () => {
+  let executorCalled = false;
+
+  const LIVE_ENV: Record<string, string> = {
+    CLINICCARD_API_BASE_URL: "https://cliniccard.example",
+    CLINICCARD_API_TOKEN: "tok_test",
+    CLINICCARD_BOOKING_MODE: "live",
+    CLINICCARD_DEFAULT_DOCTOR_ID: "1",
+    CLINICCARD_DEFAULT_CABINET_ID: "2",
+    CLINICCARD_TIMEZONE: "Europe/Prague",
+    CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "tool_requests",
+      tool_requests: [{
+        tool: "booking.apply",
+        call_id: "call_t3",
+        // No requested_date or requested_time — slot not selected
+        arguments: { first_name: "Роман", last_name: "Анбасадоров", service: "осмотр" },
+      }],
+    }),
+    executors: {
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { status: "success" as const, data: { booking_action: "booking_apply", booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99", cliniccard_patient_id: 42 } };
+      },
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  // booking.apply executor must NOT have been called
+  assert.equal(executorCalled, false, "booking.apply executor must not be called when date/time absent");
+
+  // tool_results must be empty
+  assert.deepEqual(result.tool_results, [], "tool_results must be empty");
+
+  // Reply asks patient to choose a slot/time
+  const reply = result.final_patient_reply.toLowerCase();
+  assert.ok(
+    reply.includes("дату") || reply.includes("время") || reply.includes("слот") || reply.includes("date") || reply.includes("slot"),
+    `Reply must ask to choose a slot: ${result.final_patient_reply}`,
+  );
+
+  // Conversation must be dirty / not resumable
+  assert.equal(result.conversation_id, null, "conversation_id must be null");
+  assert.equal(result.conversation_id_resumable, false, "must not be resumable");
+
+  // debug.reason identifies the guard
+  assert.equal(
+    (result.debug as Record<string, unknown>)?.reason,
+    "booking_apply_preflight_missing_slot_round1",
+  );
+});
+
+// ── Test 4a: First name missing in round-1 booking.apply args ─────────────────
+
+test("Test 4a: Guard E (round 1) — first_name missing → executor not called, asks for first name only", async () => {
+  let executorCalled = false;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "tool_requests",
+      tool_requests: [{
+        tool: "booking.apply",
+        call_id: "call_t4a",
+        arguments: {
+          // first_name absent, last_name present, date+time present
+          last_name: "Анбасадоров",
+          requested_date: "2026-07-15",
+          requested_time: "10:00",
+          service: "осмотр",
+        },
+      }],
+    }),
+    executors: {
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { status: "success" as const, data: { booking_action: "booking_apply", booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" } };
+      },
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  assert.equal(executorCalled, false, "booking.apply executor must not be called when first_name absent");
+  assert.deepEqual(result.tool_results, []);
+
+  // Reply must ask for first name specifically, not last name
+  const reply = result.final_patient_reply.toLowerCase();
+  assert.ok(
+    reply.includes("имя") || reply.includes("зовут") || reply.includes("first") || reply.includes("name"),
+    `Reply must ask for first name: ${result.final_patient_reply}`,
+  );
+
+  assert.equal(result.conversation_id, null);
+  assert.equal(result.conversation_id_resumable, false);
+  assert.equal(
+    (result.debug as Record<string, unknown>)?.reason,
+    "booking_apply_preflight_missing_name_round1",
+  );
+  const missingFields = (result.debug as Record<string, unknown>)?.missing_fields as string[];
+  assert.ok(Array.isArray(missingFields) && missingFields.includes("first_name"), "missing_fields must include first_name");
+  assert.ok(!missingFields.includes("last_name"), "missing_fields must NOT include last_name");
+});
+
+// ── Test 4b: Last name missing ────────────────────────────────────────────────
+
+test("Test 4b: Guard E (round 1) — last_name missing → executor not called, asks for last name only", async () => {
+  let executorCalled = false;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "tool_requests",
+      tool_requests: [{
+        tool: "booking.apply",
+        call_id: "call_t4b",
+        arguments: {
+          first_name: "Роман",
+          // last_name absent
+          requested_date: "2026-07-15",
+          requested_time: "10:00",
+          service: "осмотр",
+        },
+      }],
+    }),
+    executors: {
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { status: "success" as const, data: { booking_action: "booking_apply", booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" } };
+      },
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  assert.equal(executorCalled, false, "booking.apply executor must not be called when last_name absent");
+  assert.deepEqual(result.tool_results, []);
+
+  const reply = result.final_patient_reply.toLowerCase();
+  assert.ok(
+    reply.includes("фамили") || reply.includes("last") || reply.includes("surname"),
+    `Reply must ask for last name: ${result.final_patient_reply}`,
+  );
+
+  assert.equal(result.conversation_id, null);
+  assert.equal(result.conversation_id_resumable, false);
+  const missingFields = (result.debug as Record<string, unknown>)?.missing_fields as string[];
+  assert.ok(Array.isArray(missingFields) && missingFields.includes("last_name"), "missing_fields must include last_name");
+  assert.ok(!missingFields.includes("first_name"), "missing_fields must NOT include first_name");
+});
+
+// ── Test 5: Full proof + BOOKING_MODE=disabled ────────────────────────────────
+// When all required fields are present but mode=disabled, the executor IS called
+// and returns booking_write_disabled (not a missing-slot or name guard).
+// ClinicCard write never happens; created_visit=false, may_claim_booked=false.
+
+test("Test 5: full proof + BOOKING_MODE=disabled → booking_write_disabled, no ClinicCard write, no false claim", async () => {
+  let writeAttempted = false;
+
+  const DISABLED_ENV: Record<string, string> = {
+    CLINICCARD_API_BASE_URL: "https://cliniccard.example",
+    CLINICCARD_API_TOKEN: "tok_test",
+    CLINICCARD_BOOKING_MODE: "disabled",
+    CLINICCARD_DEFAULT_DOCTOR_ID: "1",
+    CLINICCARD_DEFAULT_CABINET_ID: "2",
+    CLINICCARD_TIMEZONE: "Europe/Prague",
+    CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
+  };
+
+  const mockAdapter: ClinicCardAdapter = {
+    findPatientByPhone: async () => ({ ok: true, data: [] }),
+    createPatient: async () => { writeAttempted = true; return { ok: true, data: { id: 1, name: "x", phone: null } }; },
+    createVisit: async () => { writeAttempted = true; return { ok: false, error: { code: "e", message: "e" } }; },
+    listVisits: async () => { writeAttempted = true; return { ok: true, data: [] }; },
+    listPayments: async () => ({ ok: true, data: [] }),
+  };
+
+  // Round 1: model requests booking.apply with all required fields present
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "call_t5",
+          arguments: {
+            first_name: "Іван",
+            last_name: "Петров",
+            requested_date: "2026-07-20",
+            requested_time: "11:00",
+            service: "Чистка зубов",
+          },
+        }],
+      },
+      {
+        type: "final_response",
+        final_response: { final_patient_reply: "Онлайн-запись временно недоступна. Свяжитесь с клиникой напрямую." },
+      },
+    ]),
+    executors: {
+      "booking.apply": createBookingApplyExecutor({
+        env: DISABLED_ENV,
+        adapterFactory: () => mockAdapter,
+      }),
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  // booking_write_disabled must be in tool_results (executor WAS called because all fields present)
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "booking.apply must appear in tool_results");
+  const data = bookingResult!.data as Record<string, unknown>;
+  assert.equal(data.booking_status, "booking_write_disabled", "status must be booking_write_disabled");
+  assert.equal(data.created_visit, false, "created_visit must be false");
+  assert.equal(data.may_claim_booked, false, "may_claim_booked must be false");
+
+  // No ClinicCard write attempted
+  assert.equal(writeAttempted, false, "no ClinicCard write must occur when mode=disabled");
+});
+
+// ── Test 6: Golden flow regression ───────────────────────────────────────────
+// Sequence: booking intent → name "Роман Анбасадоров" + "как можно скорее" →
+// availability.check returns 0 slots → model tries booking.apply.
+// Expected: executor NOT called, no booking_write_disabled, reply asks another time,
+// conversation_id_resumable=false.
+
+test("Test 6: golden flow regression — 0 slots → booking.apply executor not called, no booking_write_disabled", async () => {
+  let bookingApplyExecutorCalled = false;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      // Round 1: model requests availability.check (no ASAP slot available)
+      {
+        type: "tool_requests",
+        conversation_id: "conv_roman_asap",
+        tool_requests: [{
+          tool: "availability.check",
+          call_id: "call_avail_roman",
+          arguments: { service_interest: "осмотр из-за боли", requested_date: "2026-07-10" },
+        }],
+      },
+      // Round 2: model incorrectly tries booking.apply after seeing 0 slots
+      {
+        type: "tool_requests",
+        conversation_id: "conv_roman_asap",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "call_book_roman",
+          arguments: {
+            first_name: "Роман",
+            last_name: "Анбасадоров",
+            service: "осмотр из-за боли",
+            // No date/time because availability returned 0 slots and patient said "как можно скорее"
+          },
+        }],
+      },
+    ]),
+    executors: {
+      "availability.check": async () => ({
+        status: "success" as const,
+        data: { slots: [], total_slots: 0, free_slots_count: 0 },
+      }),
+      "booking.apply": async () => {
+        bookingApplyExecutorCalled = true;
+        return {
+          status: "success" as const,
+          data: {
+            booking_action: "booking_apply",
+            booking_status: "booking_write_disabled",
+            created_visit: false,
+            may_claim_booked: false,
+            cliniccard_visit_id: null,
+          },
+        };
+      },
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    user_message: "Хотел бы записаться на приём, у меня болит зуб. Меня зовут Роман Анбасадоров, как можно скорее.",
+    conversation_id: "conv_roman_asap",
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  // booking.apply executor must NOT have been called
+  assert.equal(bookingApplyExecutorCalled, false, "booking.apply executor must not be called when 0 slots available");
+
+  // No booking_write_disabled in results (executor not called at all)
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.equal(bookingResult, undefined, "booking.apply must not appear in tool_results");
+
+  // Reply asks patient to choose another time / check another date
+  const reply = result.final_patient_reply.toLowerCase();
+  assert.ok(
+    reply.includes("слот") || reply.includes("время") || reply.includes("дату") ||
+    reply.includes("slot") || reply.includes("time") || reply.includes("date"),
+    `Reply must ask for another time or mention no slots: ${result.final_patient_reply}`,
+  );
+
+  // conversation_id_resumable=false (conversation dirty after blocked booking.apply)
+  assert.equal(result.conversation_id_resumable, false, "conversation_id_resumable must be false");
+
+  // debug identifies the no-slots intercept
+  const reason = (result.debug as Record<string, unknown>)?.reason;
+  assert.ok(
+    reason === "booking_apply_preflight_no_slots" || reason === "booking_apply_preflight_missing_slot_round2",
+    `debug.reason must identify no-slot intercept, got: ${reason}`,
   );
 });

@@ -19,7 +19,7 @@ import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
-import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, buildNoSlotsPreflightReply } from "./bookingApplyPreflight.ts";
+import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, buildNoSlotsPreflightReply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, buildMissingSlotReply, buildMissingNameFieldsReply } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
@@ -243,6 +243,44 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         };
       }
 
+      // Global preflight D — no-slot guard (round 1): trusted phone is present but
+      // booking.apply args don't include a concrete date+time.  Prevent the executor
+      // from being called without a valid slot; ask the patient to choose one instead.
+      if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact) && bookingApplyArgsMissingSlot(bookingApplyRound1.arguments)) {
+        debug.reason = "booking_apply_preflight_missing_slot_round1";
+        markConversationDirty(debug);
+        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        return {
+          final_patient_reply: buildMissingSlotReply(input.locale),
+          conversation_id: null,
+          conversation_id_resumable: false,
+          tool_requests: toolRequests,
+          tool_results: [],
+          debug,
+        };
+      }
+
+      // Global preflight E — name-missing guard (round 1): trusted phone and slot are
+      // present but first_name or last_name is absent from booking.apply args.  Ask only
+      // for the specific missing field rather than executing and hitting config_missing.
+      if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact)) {
+        const missingNames = getMissingBookingApplyNameFields(bookingApplyRound1.arguments);
+        if (missingNames.length > 0) {
+          debug.reason = "booking_apply_preflight_missing_name_round1";
+          debug.missing_fields = missingNames;
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: buildMissingNameFieldsReply(missingNames, input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: toolRequests,
+            tool_results: [],
+            debug,
+          };
+        }
+      }
+
       for (const request of toolRequests) {
         if (!ACTIVE_TOOL_SET.has(request.tool)) {
           toolResults.push({
@@ -425,6 +463,39 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
                 debug,
               };
           }
+
+          // Guard D (round 2): no concrete date+time in args — ask for slot selection.
+          if (bookingApplyArgsMissingSlot(pendingBookingApply.arguments)) {
+            debug.reason = "booking_apply_preflight_missing_slot_round2";
+            markConversationDirty(debug);
+            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+            return {
+              final_patient_reply: buildMissingSlotReply(input.locale),
+              conversation_id: null,
+              conversation_id_resumable: false,
+              tool_requests: toolRequests,
+              tool_results: toolResults,
+              debug,
+            };
+          }
+
+          // Guard E (round 2): slot present but first_name or last_name absent — ask for the missing field.
+          const round2MissingNames = getMissingBookingApplyNameFields(pendingBookingApply.arguments);
+          if (round2MissingNames.length > 0) {
+            debug.reason = "booking_apply_preflight_missing_name_round2";
+            debug.missing_fields = round2MissingNames;
+            markConversationDirty(debug);
+            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+            return {
+              final_patient_reply: buildMissingNameFieldsReply(round2MissingNames, input.locale),
+              conversation_id: null,
+              conversation_id_resumable: false,
+              tool_requests: toolRequests,
+              tool_results: toolResults,
+              debug,
+            };
+          }
+
           debug.reason = "booking_apply_executed_after_round2_request";
           const bPlanner = buildPlannerFromAgentToolRequest(pendingBookingApply);
           const bTruth = resolveTruthSnapshot(input, pendingBookingApply, bPlanner, turnNow);

@@ -56,3 +56,62 @@ function resolveLocaleKey(locale?: string | null): "ru" | "cs" | "en" {
 export function buildNoSlotsPreflightReply(locale?: string | null): string {
   return NO_SLOTS_REPLIES[resolveLocaleKey(locale)];
 }
+
+// ── Round-1 missing-slot guard ────────────────────────────────────────────────
+
+/**
+ * Returns true when booking.apply args don't include both requested_date AND
+ * requested_time.  Used in round-1 preflight to block the executor from being
+ * called without a concrete confirmed slot.
+ */
+export function bookingApplyArgsMissingSlot(args: Record<string, unknown>): boolean {
+  return (
+    typeof args.requested_date !== "string" ||
+    !args.requested_date.trim() ||
+    typeof args.requested_time !== "string" ||
+    !args.requested_time.trim()
+  );
+}
+
+const MISSING_SLOT_REPLIES: Record<string, string> = {
+  ru: "Пожалуйста, выберите конкретную дату и время для записи. Могу проверить доступные слоты — на какую дату удобно?",
+  cs: "Prosím, vyberte konkrétní datum a čas pro rezervaci. Mohu zkontrolovat dostupné termíny — jaký datum vám vyhovuje?",
+  en: "Please choose a specific date and time for the appointment. I can check available slots — what date works for you?",
+};
+
+export function buildMissingSlotReply(locale?: string | null): string {
+  return MISSING_SLOT_REPLIES[resolveLocaleKey(locale)];
+}
+
+// ── Missing name fields guard ─────────────────────────────────────────────────
+
+/**
+ * Returns the list of required name fields (first_name, last_name) missing from
+ * booking.apply args.  Empty list means all name fields are present.
+ */
+export function getMissingBookingApplyNameFields(args: Record<string, unknown>): string[] {
+  const missing: string[] = [];
+  if (typeof args.first_name !== "string" || !args.first_name.trim()) missing.push("first_name");
+  if (typeof args.last_name !== "string" || !args.last_name.trim()) missing.push("last_name");
+  return missing;
+}
+
+export function buildMissingNameFieldsReply(missingFields: string[], locale?: string | null): string {
+  const key = resolveLocaleKey(locale);
+  const hasFirst = missingFields.includes("first_name");
+  const hasLast = missingFields.includes("last_name");
+
+  if (key === "en") {
+    if (hasFirst && hasLast) return "To book your appointment, please share your first and last name.";
+    if (hasFirst) return "What is your first name?";
+    return "What is your last name?";
+  }
+  if (key === "cs") {
+    if (hasFirst && hasLast) return "Pro rezervaci prosím uveďte jméno a příjmení.";
+    if (hasFirst) return "Jak se jmenujete? (jméno)";
+    return "Jak se jmenujete? (příjmení)";
+  }
+  if (hasFirst && hasLast) return "Для записи укажите ваше имя и фамилию.";
+  if (hasFirst) return "Как вас зовут? Укажите имя.";
+  return "Укажите, пожалуйста, вашу фамилию.";
+}

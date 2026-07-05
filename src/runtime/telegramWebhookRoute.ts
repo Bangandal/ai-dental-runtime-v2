@@ -4,7 +4,7 @@ import {
   type TelegramUpdate,
   type TelegramNormalizeResult,
 } from "./telegramWebhookAdapter.ts";
-import { sendTelegramMessage, sendTelegramMessageWithRetry, buildContactRequestReplyMarkup, type TelegramDeliveryOutcome } from "./telegramSender.ts";
+import { sendTelegramMessage, sendTelegramMessageWithRetry, buildContactRequestReplyMarkup, buildRemoveKeyboardMarkup, type TelegramDeliveryOutcome } from "./telegramSender.ts";
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 
 export interface TelegramWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
@@ -83,6 +83,8 @@ export function registerTelegramWebhookRoute(
         botToken: deps.botToken,
         chatId: normalized.chat_id,
         text: replyText,
+        // Dismiss the contact keyboard after phone is successfully captured.
+        replyMarkup: persistResult === "persisted" ? buildRemoveKeyboardMarkup() : undefined,
         fetch: deps.fetch,
       });
       reply.code(200).send({ ok: true });

@@ -1,7 +1,12 @@
 export interface TelegramReplyMarkup {
-  keyboard: Array<Array<{ text: string; request_contact?: boolean }>>;
+  keyboard?: Array<Array<{ text: string; request_contact?: boolean }>>;
   resize_keyboard?: boolean;
   one_time_keyboard?: boolean;
+  remove_keyboard?: true;
+}
+
+export function buildRemoveKeyboardMarkup(): TelegramReplyMarkup {
+  return { remove_keyboard: true };
 }
 
 export function buildContactRequestReplyMarkup(buttonText = "📞 Поделиться номером"): TelegramReplyMarkup {

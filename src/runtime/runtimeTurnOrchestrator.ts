@@ -440,10 +440,20 @@ export async function runRuntimeTurnOrchestrated(
       runtimeTurnInput.business_context.channel === "telegram"
         ? { telegram: { request_contact: true as const, button_text: "📞 Поделиться контактом" } }
         : undefined;
-    const mergedUi =
+    const rawMergedUi =
       telegramContactUi !== undefined || result.ui !== undefined
         ? { ...(result.ui ?? {}), ...(telegramContactUi ?? {}) }
         : undefined;
+
+    // Suppress contact button if a trusted phone is already captured for this contact.
+    const hasTrustedPhone =
+      runtimeTurnInput.channel_contact !== undefined &&
+      runtimeTurnInput.channel_contact !== null &&
+      runtimeTurnInput.channel_contact.phone_source !== "manual_input";
+    const mergedUi =
+      hasTrustedPhone && rawMergedUi?.telegram?.request_contact === true
+        ? { ...rawMergedUi, telegram: { ...rawMergedUi.telegram, request_contact: false as const } }
+        : rawMergedUi;
 
     if (deps.adminNotifier) {
       const notifyReason = resolveAdminNotifyReason(actionTruth);

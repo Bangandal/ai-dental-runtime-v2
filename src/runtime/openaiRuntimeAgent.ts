@@ -180,6 +180,12 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- required_next_action='admin_handoff': explain that online booking isn't available right now and ask the patient to contact the clinic directly. Do not promise that staff will reach out or follow up unless a handoff/notification side effect was actually created.",
     "- required_next_action='technical_fallback': explain there is a temporary technical issue and ask the patient to contact the clinic directly or try again shortly. Do not promise a callback unless a handoff/notification side effect was actually created.",
     "- required_next_action='none' with can_say_booking_created=true: confirm the booking naturally in the patient's language.",
+    "APPOINTMENT DISPLAY TRUTH: When context contains appointment_display_truth, use ONLY its fields for final appointment wording:",
+    "- Use appointment_display_truth.date, time_start, weekday, service, and cliniccard_visit_id as the only authoritative source for date/time/weekday/service in the confirmation reply.",
+    "- Do NOT calculate or derive the weekday yourself.",
+    "- Do NOT say a weekday unless it exists in appointment_display_truth.weekday for the patient's language.",
+    "- If your own reasoning about weekday conflicts with appointment_display_truth, trust appointment_display_truth.",
+    "- Never invent weekday labels (e.g. 'понедельник', 'Monday', 'pondělí') that are not in appointment_display_truth.",
     "Always write in the patient's language — do not use hardcoded Russian/English unless that is the patient's language.",
   ].join("\n");
 }

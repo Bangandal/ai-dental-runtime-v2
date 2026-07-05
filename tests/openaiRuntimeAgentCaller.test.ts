@@ -221,11 +221,10 @@ test("maps responses-style output message content output_text to final_response"
   assert.equal(result.final_response.final_patient_reply, "From output array");
 });
 
-// Regression: gpt-5.4-mini sometimes emits the same text as two separate output_text
-// content blocks. The SDK's addOutputText concatenates them, producing output_text =
-// "Hello...Hello...". readFinalResponse must use readResponseOutputText (first block only)
-// before falling back to output_text to prevent the doubled reply reaching the patient.
-test("DUP-REGRESSION: two identical output_text blocks → only first block used, no doubling", async () => {
+// A — DUP-REGRESSION: gpt-5.4-mini emits same text twice as two identical output_text blocks.
+// SDK addOutputText concatenates them → output_text is doubled. The deduped reader must
+// detect all-identical parts and return only the first, not the doubled string.
+test("A DUP-REGRESSION: two identical output_text blocks → only first block used, no doubling", async () => {
   const text = "Здравствуйте! Я помощник администратора клиники.";
   const caller = createOpenAIRuntimeAgentCaller({
     client: {
@@ -250,6 +249,53 @@ test("DUP-REGRESSION: two identical output_text blocks → only first block used
   const result = await caller(makeInput());
   assert.equal(result.type, "final_response");
   assert.equal(result.final_response.final_patient_reply, text);
+});
+
+// B — DISTINCT-SPLIT: two different output_text blocks must be concatenated, not truncated.
+test("B DISTINCT-SPLIT: two different output_text blocks → concatenated in order", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          conversation_id: "conv_split",
+          output: [
+            {
+              type: "message",
+              content: [
+                { type: "output_text", text: "Часы работы: " },
+                { type: "output_text", text: "9:00–17:00" },
+              ],
+            },
+          ],
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, "Часы работы: 9:00–17:00");
+});
+
+// C — FALLBACK: no output_text blocks in output → falls back to response.output_text.
+test("C FALLBACK: no output_text in response.output → uses response.output_text", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          conversation_id: "conv_fallback",
+          output_text: "Fallback text from SDK field",
+          output: [
+            { type: "message", content: [{ type: "refusal", text: "n/a" }] },
+          ],
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, "Fallback text from SDK field");
 });
 
 test("malformed output returns safe final response", async () => {

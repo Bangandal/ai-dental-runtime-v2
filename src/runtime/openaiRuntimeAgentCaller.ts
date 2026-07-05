@@ -179,9 +179,12 @@ function parseArguments(value: unknown): Record<string, unknown> {
 
 function readFinalResponse(response: Record<string, unknown> | null): RuntimeAgentFinalResponse {
   const final = asObject(response?.final_response);
+  // readResponseOutputText returns only the FIRST output_text block, avoiding the SDK's
+  // addOutputText concatenation which joins ALL blocks — a model that emits the same text
+  // twice as two separate content blocks would produce a doubled output_text string.
   const outputText =
-    readString(response?.output_text) ??
     readResponseOutputText(response?.output) ??
+    readString(response?.output_text) ??
     readString(final?.final_patient_reply) ??
     "";
 

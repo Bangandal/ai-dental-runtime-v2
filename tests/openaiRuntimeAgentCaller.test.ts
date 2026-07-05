@@ -221,6 +221,37 @@ test("maps responses-style output message content output_text to final_response"
   assert.equal(result.final_response.final_patient_reply, "From output array");
 });
 
+// Regression: gpt-5.4-mini sometimes emits the same text as two separate output_text
+// content blocks. The SDK's addOutputText concatenates them, producing output_text =
+// "Hello...Hello...". readFinalResponse must use readResponseOutputText (first block only)
+// before falling back to output_text to prevent the doubled reply reaching the patient.
+test("DUP-REGRESSION: two identical output_text blocks → only first block used, no doubling", async () => {
+  const text = "Здравствуйте! Я помощник администратора клиники.";
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          conversation_id: "conv_dup",
+          output_text: text + text, // SDK addOutputText concatenated two identical blocks
+          output: [
+            {
+              type: "message",
+              content: [
+                { type: "output_text", text },
+                { type: "output_text", text }, // model emitted same text twice
+              ],
+            },
+          ],
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, text);
+});
+
 test("malformed output returns safe final response", async () => {
   const caller = createOpenAIRuntimeAgentCaller({
     client: { responses: { create: async () => ({ bad: true }) } },

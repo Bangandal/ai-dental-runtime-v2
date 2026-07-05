@@ -18,7 +18,8 @@ import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
-import { shouldInterceptForContactButton, buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
+import { buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
+import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, buildNoSlotsPreflightReply } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
@@ -352,15 +353,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       if (secondOutput.type === "tool_requests") {
-        // Guard: if round-2 requested booking.apply but trusted phone is absent and
-        // round-1 availability.check already returned slots, intercept before
-        // forced_finalization.  The pending booking.apply tool call was never executed,
-        // but the round-2 model response still leaves the OpenAI conversation in a dirty
-        // state (a function_call with no function_call_output) — so we must still clear
-        // the conversation just as forced_finalization branches do.
-        if (shouldInterceptForContactButton({
+        // Guard A: booking.apply requested in round-2 but trusted phone absent — intercept
+        // before execution regardless of slot availability.  The conversation is dirty
+        // (function_call with no function_call_output) so we clear it.
+        if (shouldInterceptMissingPhoneBeforeBookingApply({
           pendingToolRequests: secondOutput.tool_requests,
-          completedToolResults: toolResults,
           channelContact: input.channel_contact,
         })) {
           const contactReply = buildContactButtonReply(input.locale);
@@ -375,6 +372,26 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             tool_results: toolResults,
             debug,
             ui: contactReply.ui,
+          };
+        }
+
+        // No-slots gate: booking.apply requested in round-2, trusted phone present, but
+        // availability.check returned 0 slots — intercept before executing booking.apply.
+        if (shouldInterceptNoSlotsBeforeBookingApply({
+          pendingToolRequests: secondOutput.tool_requests,
+          completedToolResults: toolResults,
+          channelContact: input.channel_contact,
+        })) {
+          debug.reason = "booking_apply_preflight_no_slots";
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: buildNoSlotsPreflightReply(input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: toolRequests,
+            tool_results: toolResults,
+            debug,
           };
         }
 

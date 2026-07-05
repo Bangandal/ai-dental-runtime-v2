@@ -1,6 +1,7 @@
 import type { RpcCaller } from "./runtimeRepositories.ts";
 import type { RuntimeResult } from "./runtimeRepositories.ts";
 import type { TopicMemoryStatePatch } from "./topicMemoryCandidateShadow.ts";
+import type { RuntimeCaseLite } from "./runtimeCaseLite.ts";
 
 export interface TurnPersistenceRepository {
   getOrCreateContact(input: {
@@ -47,6 +48,7 @@ export interface TurnPersistenceRepository {
     confidence: string;
     control_flags: Record<string, unknown>;
     topic_memory_patch?: TopicMemoryStatePatch | null;
+    case_context_lite?: RuntimeCaseLite | null;
   }): Promise<RuntimeResult<{ ok: true }>>;
 }
 
@@ -111,7 +113,11 @@ export function createSupabaseTurnPersistenceRepository(deps: { rpc: RpcCaller }
         p_conversation_intent: input.conversation_intent,
         p_handoff_recommended: input.handoff_recommended,
         p_confidence: input.confidence,
-        p_control_flags: { ...input.control_flags, ...(input.topic_memory_patch ?? {}) },
+        p_control_flags: {
+          ...input.control_flags,
+          ...(input.topic_memory_patch ?? {}),
+          ...(input.case_context_lite != null ? { case_context_lite: input.case_context_lite } : {}),
+        },
       });
       if (error) return fail("convo_state_persist_failed", "Failed to merge conversation state");
       return { ok: true, data: { ok: true } };

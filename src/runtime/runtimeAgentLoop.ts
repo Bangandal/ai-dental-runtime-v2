@@ -180,6 +180,14 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       if (firstOutput.type === "final_response") {
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        // Blocker D: If initial state computed a selected_slot from prior slots + patient message,
+        // persist it even when the model responds directly without calling tools.
+        if (deps.bookingProcessStateRepository && bookingProcessState.selected_slot) {
+          deps.bookingProcessStateRepository.saveState(
+            { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+            bookingProcessState,
+          ).catch(() => undefined);
+        }
         return {
           final_patient_reply: firstOutput.final_response.final_patient_reply,
           conversation_id: conversationId,

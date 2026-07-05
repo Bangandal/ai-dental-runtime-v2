@@ -77,28 +77,69 @@ function extractSlotHHMM(startsAt: string): string | null {
 }
 
 /**
- * Detects ordinal references ("первый", "первое", "second", "последний", etc.)
+ * Detects ordinal references ("первый", "второй", "последний", etc.)
  * and maps them to a 0-based index into the slots array.
+ *
+ * Uses Unicode-aware word boundaries ((?<!\p{L}) / (?!\p{L})) so that weekday
+ * words are not confused with ordinals:
+ *   "во вторник" → NOT slot[1]   (вторник ≠ второй)
+ *   "в четверг"  → NOT slot[3]   (четверг ≠ четвёртый)
+ *   "в пятницу"  → NOT slot[4]   (пятница ≠ пятый)
  */
 function detectOrdinalIndex(text: string, slotCount: number): number | null {
   const lower = text.toLowerCase();
 
-  const ordinals: { patterns: string[]; index: number }[] = [
-    { patterns: ["перв", "first", "1-й", "1-е", "один", "1ый"], index: 0 },
-    { patterns: ["втор", "second", "2-й", "два", "2ой"], index: 1 },
-    { patterns: ["трет", "third", "3-й", "три", "3ий"], index: 2 },
-    { patterns: ["четвер", "fourth", "4-й", "четыре"], index: 3 },
-    { patterns: ["пят", "fifth", "5-й", "пять"], index: 4 },
+  /** Returns true if any of the exact word forms appears in `lower`, bounded by non-letter chars. */
+  function matchAny(forms: string[]): boolean {
+    const escaped = forms.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+    const pattern = `(?<!\\p{L})(${escaped.join("|")})(?!\\p{L})`;
+    return new RegExp(pattern, "ui").test(lower);
+  }
+
+  const ordinals: { forms: string[]; index: number }[] = [
+    {
+      forms: ["первый", "первого", "первому", "первым", "первом", "первое", "первая", "первых", "1-й", "first"],
+      index: 0,
+    },
+    {
+      // "второй"/"второго"/etc. — NOT "вторник" (Tuesday, different word)
+      forms: ["второй", "второго", "второму", "вторым", "втором", "второе", "вторая", "вторых", "2-й", "second"],
+      index: 1,
+    },
+    {
+      forms: ["третий", "третьего", "третьему", "третьим", "третьем", "третье", "третья", "третьих", "3-й", "third"],
+      index: 2,
+    },
+    {
+      // "четвёртый"/"четвертый"/etc. — NOT "четверг" (Thursday, different word)
+      forms: [
+        "четвёртый", "четвертый",
+        "четвёртого", "четвертого",
+        "четвёртому", "четвертому",
+        "четвёртым", "четвертым",
+        "четвёртом", "четвертом",
+        "четвёртое", "четвертое",
+        "четвёртая", "четвертая",
+        "четвёртых", "четвертых",
+        "4-й", "fourth",
+      ],
+      index: 3,
+    },
+    {
+      // "пятый"/"пятого"/etc. — NOT "пятница" (Friday, different word)
+      forms: ["пятый", "пятого", "пятому", "пятым", "пятом", "пятое", "пятая", "пятых", "5-й", "fifth"],
+      index: 4,
+    },
   ];
 
-  for (const { patterns, index } of ordinals) {
-    if (patterns.some((p) => lower.includes(p)) && index < slotCount) {
+  for (const { forms, index } of ordinals) {
+    if (matchAny(forms) && index < slotCount) {
       return index;
     }
   }
 
   // "последний" / "last" → last slot
-  if ((lower.includes("последн") || lower.includes("last")) && slotCount > 0) {
+  if (matchAny(["последний", "последнего", "последнему", "последним", "последнем", "last"]) && slotCount > 0) {
     return slotCount - 1;
   }
 
@@ -178,8 +219,16 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   const p = input.prior ?? {};
 
   // ── Resolve available slots from tool results ──
+  // Blocker A: Track whether a fresh availability.check result exists in THIS turn.
+  // When present, always use the fresh result (even if empty []) — do NOT fall back
+  // to prior.last_available_slots. This prevents stale slots from misleading next_action.
+  const availabilityResultPresent = !!(input.toolResults?.some(
+    (r) => r.tool === "availability.check" && r.status === "success",
+  ));
   const newSlots = input.toolResults ? extractSlotsFromToolResults(input.toolResults) : [];
-  const lastAvailableSlots = newSlots.length > 0 ? newSlots : (p.last_available_slots ?? []);
+  const lastAvailableSlots: AvailableSlot[] = availabilityResultPresent
+    ? newSlots
+    : (p.last_available_slots ?? []);
 
   // ── Resolve service_reason ──
   const serviceReason =
@@ -195,8 +244,13 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   const phoneTrusted = hasTrustedPhone(input.channelContact);
   const phoneSource = input.channelContact?.phone_source;
 
-  // ── Detect selected_slot from patient message (only if we have slots to match against) ──
-  let selectedSlot = p.selected_slot ?? null;
+  // ── Detect selected_slot from patient message ──
+  // Blocker B: When a fresh availability.check result arrives, clear the prior selected_slot
+  // unless the patient re-selects a slot from the fresh results in THIS turn.
+  let selectedSlot: AvailableSlot | null = availabilityResultPresent
+    ? null  // clear stale selection — re-detect below from fresh slots
+    : (p.selected_slot ?? null);
+
   if (
     input.patientMessage &&
     lastAvailableSlots.length > 0 &&
@@ -256,7 +310,12 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
     first_name: firstName,
     last_name: lastName,
     preferred_time_text: p.preferred_time_text,
-    last_available_slots: lastAvailableSlots.length > 0 ? lastAvailableSlots : undefined,
+    // When a fresh availability.check result was present this turn, always store the result
+    // (even [] to distinguish "empty result" from "no check done yet").
+    // Otherwise preserve prior state (could be undefined, [], or non-empty).
+    last_available_slots: availabilityResultPresent
+      ? lastAvailableSlots
+      : p.last_available_slots,
     selected_slot: selectedSlot,
     phone_trusted: phoneTrusted,
     phone_source: phoneSource,

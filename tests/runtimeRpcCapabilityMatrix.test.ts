@@ -98,6 +98,8 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/openaiRuntimeCaseLiteExtractor.ts",
     "src/runtime/bookingApplyPreflight.ts",
     "src/runtime/bookingProcessState.ts",
+    "src/runtime/supabaseBookingProcessStateRepository.ts",
+    "sql/rpc/core.booking_process_state.sql",
     "Dockerfile",
     ".env.example",
     "sql/rpc/public.rpc_kb_search_v1.sql",

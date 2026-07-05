@@ -8,6 +8,7 @@ import type { EmbeddingClient } from "./supabaseKnowledgeRepository.ts";
 import { createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 import type { TelegramDeliveryOutcome } from "./telegramSender.ts";
 import { createSupabaseOpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
+import { createSupabaseBookingProcessStateRepository } from "./supabaseBookingProcessStateRepository.ts";
 import { createSupabaseTurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import { createSupabaseClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import { createSupabaseRuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
@@ -67,6 +68,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
   const runtimeGateModel = process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
   const turnUnderstandingModel = process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim() || process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
+  const bookingProcessStateRepository = createSupabaseBookingProcessStateRepository({ rpc: deps.rpc });
   const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const clinicIdentityResolver = createSupabaseClinicIdentityResolver({ rpc: deps.rpc });
   const runtimeContextRepository = createSupabaseRuntimeContextRepository({ rpc: deps.rpc });
@@ -106,6 +108,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
       embeddingModel: deps.embeddingModel,
       rpc: deps.rpc,
       embeddingClient: deps.embeddingClient,
+      bookingProcessStateRepository,
     }),
     runtimeTurnLogger: logger,
     openAIConversationMemoryRepository,
@@ -134,6 +137,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
         embeddingModel: deps.embeddingModel,
         rpc: deps.rpc,
         embeddingClient: deps.embeddingClient,
+        bookingProcessStateRepository,
       }),
       runtimeTurnLogger: logger,
       openAIConversationMemoryRepository,

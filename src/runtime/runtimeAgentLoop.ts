@@ -18,8 +18,8 @@ import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
-import { buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
-import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, buildNoSlotsPreflightReply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, buildMissingSlotReply, buildMissingNameFieldsReply, bookingApplyArgsMissingService, buildMissingServiceReply, shouldInterceptInvalidSlotTime, buildInvalidSlotReply } from "./bookingApplyPreflight.ts";
+import { hasTrustedPhone } from "./bookingContactGuard.ts";
+import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotTime } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
@@ -211,90 +211,130 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           now: turnNow,
         })) {
           debug.reason = "booking_apply_preflight_past_time_round1";
-          markConversationDirty(debug);
-          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-          return {
-            final_patient_reply: buildPastTimeReply(input.locale),
-            conversation_id: null,
-            conversation_id_resumable: false,
-            tool_requests: toolRequests,
-            tool_results: [],
+          return await finalizeBlockedBookingApplyWithToolOutput({
+            pendingBookingApply: bookingApplyRound1,
+            guardedData: {
+              booking_status: "past_time",
+              created_visit: false,
+              may_claim_booked: false,
+              required_next_action: "ask_for_alternative_time",
+              reason: "requested_time_is_in_past",
+            },
+            previousToolResults: [],
+            toolRequests,
+            conversationId,
+            systemInstruction,
+            callerContext,
+            input,
             debug,
-          };
+            deps,
+          });
         }
       }
 
       // Global preflight B — phone guard: if booking.apply is requested in round 1
-      // and no trusted phone is present, return the contact button immediately
-      // without executing booking.apply (or any other pending tool in this turn).
+      // and no trusted phone is present, submit a guarded tool_result so the model
+      // can ask for the patient's phone while keeping conversation_id clean.
       if (bookingApplyRound1 && !hasTrustedPhone(input.channel_contact)) {
-        const contactReply = buildContactButtonReply(input.locale);
         debug.reason = "booking_apply_preflight_missing_trusted_phone_round1";
-        markConversationDirty(debug);
-        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-        return {
-          final_patient_reply: contactReply.final_patient_reply,
-          conversation_id: null,
-          conversation_id_resumable: false,
-          tool_requests: toolRequests,
-          tool_results: [],
+        return await finalizeBlockedBookingApplyWithToolOutput({
+          pendingBookingApply: bookingApplyRound1,
+          guardedData: {
+            booking_status: "missing_trusted_phone",
+            created_visit: false,
+            may_claim_booked: false,
+            required_next_action: "ask_for_phone",
+            reason: "trusted_phone_required",
+          },
+          previousToolResults: [],
+          toolRequests,
+          conversationId,
+          systemInstruction,
+          callerContext,
+          input,
           debug,
-          ui: contactReply.ui,
-        };
+          deps,
+        });
       }
 
       // Global preflight D — no-slot guard (round 1): trusted phone is present but
-      // booking.apply args don't include a concrete date+time.  Prevent the executor
-      // from being called without a valid slot; ask the patient to choose one instead.
+      // booking.apply args don't include a concrete date+time.  Submit a guarded
+      // tool_result so the model can ask the patient to choose a slot.
       if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact) && bookingApplyArgsMissingSlot(bookingApplyRound1.arguments)) {
         debug.reason = "booking_apply_preflight_missing_slot_round1";
-        markConversationDirty(debug);
-        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-        return {
-          final_patient_reply: buildMissingSlotReply(input.locale),
-          conversation_id: null,
-          conversation_id_resumable: false,
-          tool_requests: toolRequests,
-          tool_results: [],
+        return await finalizeBlockedBookingApplyWithToolOutput({
+          pendingBookingApply: bookingApplyRound1,
+          guardedData: {
+            booking_status: "missing_slot",
+            created_visit: false,
+            may_claim_booked: false,
+            required_next_action: "ask_for_slot",
+            reason: "requested_date_time_required",
+          },
+          previousToolResults: [],
+          toolRequests,
+          conversationId,
+          systemInstruction,
+          callerContext,
+          input,
           debug,
-        };
+          deps,
+        });
       }
 
       // Global preflight E — name-missing guard (round 1): trusted phone and slot are
-      // present but first_name or last_name is absent from booking.apply args.  Ask only
-      // for the specific missing field rather than executing and hitting config_missing.
+      // present but first_name or last_name is absent from booking.apply args.  Submit
+      // a guarded tool_result so the model asks only for the specific missing field.
       if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact)) {
         const missingNames = getMissingBookingApplyNameFields(bookingApplyRound1.arguments);
         if (missingNames.length > 0) {
           debug.reason = "booking_apply_preflight_missing_name_round1";
           debug.missing_fields = missingNames;
-          markConversationDirty(debug);
-          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-          return {
-            final_patient_reply: buildMissingNameFieldsReply(missingNames, input.locale),
-            conversation_id: null,
-            conversation_id_resumable: false,
-            tool_requests: toolRequests,
-            tool_results: [],
+          return await finalizeBlockedBookingApplyWithToolOutput({
+            pendingBookingApply: bookingApplyRound1,
+            guardedData: {
+              booking_status: "missing_patient_name",
+              created_visit: false,
+              may_claim_booked: false,
+              required_next_action: "ask_for_name",
+              reason: "patient_name_required",
+              missing_fields: missingNames,
+            },
+            previousToolResults: [],
+            toolRequests,
+            conversationId,
+            systemInstruction,
+            callerContext,
+            input,
             debug,
-          };
+            deps,
+          });
         }
       }
 
       // Global preflight F — service-missing guard (round 1): name and slot present but
-      // neither service nor service_reason is specified.  Ask only for the service reason.
+      // neither service nor service_reason is specified.  Submit a guarded tool_result
+      // so the model asks for the service reason.
       if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact) && bookingApplyArgsMissingService(bookingApplyRound1.arguments)) {
         debug.reason = "booking_apply_preflight_missing_service_round1";
-        markConversationDirty(debug);
-        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-        return {
-          final_patient_reply: buildMissingServiceReply(input.locale),
-          conversation_id: null,
-          conversation_id_resumable: false,
-          tool_requests: toolRequests,
-          tool_results: [],
+        return await finalizeBlockedBookingApplyWithToolOutput({
+          pendingBookingApply: bookingApplyRound1,
+          guardedData: {
+            booking_status: "missing_service",
+            created_visit: false,
+            may_claim_booked: false,
+            required_next_action: "ask_for_service",
+            reason: "service_required",
+          },
+          previousToolResults: [],
+          toolRequests,
+          conversationId,
+          systemInstruction,
+          callerContext,
+          input,
           debug,
-        };
+          deps,
+        });
       }
 
       for (const request of toolRequests) {
@@ -413,39 +453,56 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           pendingToolRequests: secondOutput.tool_requests,
           completedToolResults: toolResults,
         })) {
+          const noSlotsPendingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply")!;
           debug.reason = "booking_apply_preflight_no_slots";
-          markConversationDirty(debug);
-          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-          return {
-            final_patient_reply: buildNoSlotsPreflightReply(input.locale),
-            conversation_id: null,
-            conversation_id_resumable: false,
-            tool_requests: toolRequests,
-            tool_results: toolResults,
+          return await finalizeBlockedBookingApplyWithToolOutput({
+            pendingBookingApply: noSlotsPendingApply,
+            guardedData: {
+              booking_status: "no_available_slots",
+              created_visit: false,
+              may_claim_booked: false,
+              required_next_action: "ask_for_alternative_time",
+              reason: "availability_check_returned_no_slots",
+            },
+            previousToolResults: toolResults,
+            toolRequests,
+            conversationId,
+            systemInstruction,
+            callerContext,
+            input,
             debug,
-          };
+            deps,
+          });
         }
 
-        // Guard A: booking.apply requested in round-2 but trusted phone absent — intercept
-        // before execution.  Runs after the no-slots gate so we don't ask for a phone when
+        // Guard A: booking.apply requested in round-2 but trusted phone absent — submit
+        // a guarded tool_result so the model asks for the contact while conversation_id
+        // stays clean.  Runs after the no-slots gate so we don't ask for a phone when
         // there are no slots to book anyway.
         if (shouldInterceptMissingPhoneBeforeBookingApply({
           pendingToolRequests: secondOutput.tool_requests,
           channelContact: input.channel_contact,
         })) {
-          const contactReply = buildContactButtonReply(input.locale);
+          const missingPhonePendingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply")!;
           debug.reason = "booking_apply_intercepted_missing_trusted_phone";
-          markConversationDirty(debug);
-          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-          return {
-            final_patient_reply: contactReply.final_patient_reply,
-            conversation_id: null,
-            conversation_id_resumable: false,
-            tool_requests: toolRequests,
-            tool_results: toolResults,
+          return await finalizeBlockedBookingApplyWithToolOutput({
+            pendingBookingApply: missingPhonePendingApply,
+            guardedData: {
+              booking_status: "missing_trusted_phone",
+              created_visit: false,
+              may_claim_booked: false,
+              required_next_action: "ask_for_phone",
+              reason: "trusted_phone_required",
+            },
+            previousToolResults: toolResults,
+            toolRequests,
+            conversationId,
+            systemInstruction,
+            callerContext,
+            input,
             debug,
-            ui: contactReply.ui,
-          };
+            deps,
+          });
         }
 
         // Guard B: round-2 requested booking.apply and trusted phone is present.
@@ -457,7 +514,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // a booking_status=visit_created proof.
         const pendingBookingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply");
         if (pendingBookingApply && hasTrustedPhone(input.channel_contact)) {
-          // Past-time preflight for Guard B: reject if the slot has since passed.
+          // Past-time preflight for Guard B: submit guarded tool_result if slot has passed.
           if (isPastBookingTime({
               requestedDate: typeof pendingBookingApply.arguments.requested_date === "string"
                 ? pendingBookingApply.arguments.requested_date : undefined,
@@ -467,63 +524,96 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               now: turnNow,
             })) {
               debug.reason = "booking_apply_preflight_past_time_round2";
-              markConversationDirty(debug);
-              await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-              return {
-                final_patient_reply: buildPastTimeReply(input.locale),
-                conversation_id: null,
-                conversation_id_resumable: false,
-                tool_requests: toolRequests,
-                tool_results: toolResults,
+              return await finalizeBlockedBookingApplyWithToolOutput({
+                pendingBookingApply,
+                guardedData: {
+                  booking_status: "past_time",
+                  created_visit: false,
+                  may_claim_booked: false,
+                  required_next_action: "ask_for_alternative_time",
+                  reason: "requested_time_is_in_past",
+                },
+                previousToolResults: toolResults,
+                toolRequests,
+                conversationId,
+                systemInstruction,
+                callerContext,
+                input,
                 debug,
-              };
+                deps,
+              });
           }
 
-          // Guard D (round 2): no concrete date+time in args — ask for slot selection.
+          // Guard D (round 2): no concrete date+time in args — submit guarded tool_result.
           if (bookingApplyArgsMissingSlot(pendingBookingApply.arguments)) {
             debug.reason = "booking_apply_preflight_missing_slot_round2";
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: buildMissingSlotReply(input.locale),
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: toolRequests,
-              tool_results: toolResults,
+            return await finalizeBlockedBookingApplyWithToolOutput({
+              pendingBookingApply,
+              guardedData: {
+                booking_status: "missing_slot",
+                created_visit: false,
+                may_claim_booked: false,
+                required_next_action: "ask_for_slot",
+                reason: "requested_date_time_required",
+              },
+              previousToolResults: toolResults,
+              toolRequests,
+              conversationId,
+              systemInstruction,
+              callerContext,
+              input,
               debug,
-            };
+              deps,
+            });
           }
 
-          // Guard E (round 2): slot present but first_name or last_name absent — ask for the missing field.
+          // Guard E (round 2): slot present but first_name or last_name absent — submit guarded tool_result.
           const round2MissingNames = getMissingBookingApplyNameFields(pendingBookingApply.arguments);
           if (round2MissingNames.length > 0) {
             debug.reason = "booking_apply_preflight_missing_name_round2";
             debug.missing_fields = round2MissingNames;
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: buildMissingNameFieldsReply(round2MissingNames, input.locale),
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: toolRequests,
-              tool_results: toolResults,
+            return await finalizeBlockedBookingApplyWithToolOutput({
+              pendingBookingApply,
+              guardedData: {
+                booking_status: "missing_patient_name",
+                created_visit: false,
+                may_claim_booked: false,
+                required_next_action: "ask_for_name",
+                reason: "patient_name_required",
+                missing_fields: round2MissingNames,
+              },
+              previousToolResults: toolResults,
+              toolRequests,
+              conversationId,
+              systemInstruction,
+              callerContext,
+              input,
               debug,
-            };
+              deps,
+            });
           }
 
-          // Guard F (round 2): name and slot present but service/service_reason absent.
+          // Guard F (round 2): name and slot present but service/service_reason absent — submit guarded tool_result.
           if (bookingApplyArgsMissingService(pendingBookingApply.arguments)) {
             debug.reason = "booking_apply_preflight_missing_service_round2";
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: buildMissingServiceReply(input.locale),
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: toolRequests,
-              tool_results: toolResults,
+            return await finalizeBlockedBookingApplyWithToolOutput({
+              pendingBookingApply,
+              guardedData: {
+                booking_status: "missing_service",
+                created_visit: false,
+                may_claim_booked: false,
+                required_next_action: "ask_for_service",
+                reason: "service_required",
+              },
+              previousToolResults: toolResults,
+              toolRequests,
+              conversationId,
+              systemInstruction,
+              callerContext,
+              input,
               debug,
-            };
+              deps,
+            });
           }
 
           // Slot validity check (round 2): requested_time must match a slot returned by
@@ -534,16 +624,24 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             completedToolResults: toolResults,
           })) {
             debug.reason = "booking_apply_preflight_invalid_slot_round2";
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: buildInvalidSlotReply(input.locale),
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: toolRequests,
-              tool_results: toolResults,
+            return await finalizeBlockedBookingApplyWithToolOutput({
+              pendingBookingApply,
+              guardedData: {
+                booking_status: "invalid_slot",
+                created_visit: false,
+                may_claim_booked: false,
+                required_next_action: "choose_from_available_slots",
+                reason: "requested_time_not_in_available_slots",
+              },
+              previousToolResults: toolResults,
+              toolRequests,
+              conversationId,
+              systemInstruction,
+              callerContext,
+              input,
               debug,
-            };
+              deps,
+            });
           }
 
           debug.reason = "booking_apply_executed_after_round2_request";
@@ -732,6 +830,144 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         ui: secondOutput.final_response.ui,
       };
     },
+  };
+}
+
+// ── Guarded booking.apply helper ─────────────────────────────────────────────
+
+export interface GuardedBookingApplyData {
+  booking_status: string;
+  created_visit: false;
+  may_claim_booked: false;
+  required_next_action: string;
+  reason: string;
+  missing_fields?: string[];
+}
+
+/**
+ * When a booking.apply call is blocked by a deterministic preflight guard, this
+ * helper submits a synthetic "guarded" tool_result for the pending call_id back
+ * to the same OpenAI conversation instead of early-returning dirty.  The model
+ * then produces a natural final_response (e.g. "please share your phone") while
+ * conversation_id stays clean and resumable on the next patient turn.
+ *
+ * On failure of the second caller call the conversation IS marked dirty — the
+ * pending function_call may be unresolved and the 400 risk is real.
+ */
+export async function finalizeBlockedBookingApplyWithToolOutput(params: {
+  pendingBookingApply: RuntimeAgentToolRequest;
+  guardedData: GuardedBookingApplyData;
+  previousToolResults: RuntimeAgentToolResult[];
+  toolRequests: RuntimeAgentToolRequest[];
+  conversationId: string | null;
+  systemInstruction: string;
+  callerContext: Record<string, unknown>;
+  input: RuntimeAgentTurnInput;
+  debug: Record<string, unknown>;
+  deps: CreateRuntimeAgentLoopDeps;
+}): Promise<RuntimeAgentTurnResult> {
+  const {
+    pendingBookingApply, guardedData, previousToolResults, toolRequests,
+    conversationId, systemInstruction, callerContext, input, debug, deps,
+  } = params;
+
+  const guardedToolResult: RuntimeAgentToolResult = {
+    tool: "booking.apply",
+    call_id: pendingBookingApply.call_id,
+    status: "success",
+    data: guardedData,
+  };
+
+  const allResults = [...previousToolResults, guardedToolResult];
+  const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
+
+  let guardedOutput: RuntimeAgentCallerOutput;
+  try {
+    guardedOutput = await deps.caller({
+      model: deps.model,
+      conversation_id: conversationId,
+      system_instruction: systemInstruction,
+      input: {
+        message: input.user_message,
+        context: {
+          ...callerContext,
+          ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
+        },
+        tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
+        tool_results: [guardedToolResult],
+      },
+    });
+  } catch (error) {
+    debug.runtime_error = {
+      code: "guarded_booking_apply_caller_failed",
+      message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+    };
+    debug.finalization_reason = "guarded_booking_apply_caller_exception";
+    debug.caller_exception = buildCallerExceptionDiagnostics(error, {
+      stage: "second_call",
+      locale: input.locale,
+      conversationId,
+      toolResults: allResults,
+      bookingApplyActionTruth: bookingApplyTruth,
+    });
+    markConversationDirty(debug);
+    await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+    return {
+      final_patient_reply: buildBookingApplyEmergencyFallback(allResults, input.locale),
+      conversation_id: null,
+      conversation_id_resumable: false,
+      tool_requests: toolRequests,
+      tool_results: allResults,
+      debug,
+    };
+  }
+
+  let updatedConversationId = conversationId;
+  if (guardedOutput.conversation_id !== undefined) {
+    updatedConversationId = guardedOutput.conversation_id;
+  }
+
+  if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
+    await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
+
+    // For phone guards, force the Telegram contact button regardless of what the model returned —
+    // the model may omit it, but the UI must always show it deterministically.
+    let ui = guardedOutput.final_response.ui;
+    if (guardedData.required_next_action === "ask_for_phone") {
+      ui = {
+        ...ui,
+        telegram: {
+          ...(ui?.telegram ?? {}),
+          request_contact: true,
+          button_text: "📞 Поделиться контактом",
+        },
+      };
+    }
+
+    return {
+      final_patient_reply: guardedOutput.final_response.final_patient_reply,
+      conversation_id: updatedConversationId,
+      tool_requests: toolRequests,
+      tool_results: allResults,
+      debug,
+      ui,
+    };
+  }
+
+  // Second caller returned further tool_requests or a malformed response — cannot
+  // resolve cleanly.  Mark dirty so the conversation is not resumed with a pending call.
+  debug.finalization_reason = guardedOutput.type === "tool_requests"
+    ? "guarded_booking_apply_second_call_still_tool_requests"
+    : "guarded_booking_apply_second_call_malformed";
+  markConversationDirty(debug);
+  await clearConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
+  return {
+    final_patient_reply: buildBookingApplyEmergencyFallback(allResults, input.locale),
+    conversation_id: null,
+    conversation_id_resumable: false,
+    tool_requests: toolRequests,
+    tool_results: allResults,
+    debug,
   };
 }
 

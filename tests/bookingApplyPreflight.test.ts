@@ -246,7 +246,8 @@ test("buildNoSlotsPreflightReply: defaults to RU for null locale", () => {
 
 // ── Integration Test 1: No-slots preflight ───────────────────────────────────
 // availability.check returns 0 slots + trusted phone + model requests booking.apply
-// → no-slots gate fires, booking.apply executor NOT called
+// → no-slots gate fires, submits guarded tool_result, model produces final_response,
+// booking.apply executor NOT called, conversation_id preserved.
 
 test("runtimeAgentLoop: no-slots preflight — booking.apply not executed when 0 slots returned", async () => {
   let bookingApplyExecutorCalled = false;
@@ -261,6 +262,12 @@ test("runtimeAgentLoop: no-slots preflight — booking.apply not executed when 0
       type: "tool_requests",
       conversation_id: "conv_141_1",
       tool_requests: [BOOKING_APPLY_REQUEST],
+    },
+    // Guarded finalization: model response after seeing no_available_slots guarded result
+    {
+      type: "final_response",
+      conversation_id: "conv_141_1",
+      final_response: { final_patient_reply: "К сожалению, свободных слотов нет. Пожалуйста, выберите другую дату или время." },
     },
   ]);
 
@@ -296,23 +303,22 @@ test("runtimeAgentLoop: no-slots preflight — booking.apply not executed when 0
   // booking.apply executor must NOT have been called
   assert.equal(bookingApplyExecutorCalled, false, "booking.apply executor must not be called when 0 slots");
 
-  // No booking_write_disabled in tool_results
+  // Guarded no_available_slots result must be present (not the real executor result)
   const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
-  assert.equal(bookingResult, undefined, "booking.apply must not appear in tool_results");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  const bookingData = bookingResult!.data as Record<string, unknown>;
+  assert.equal(bookingData.booking_status, "no_available_slots", "guarded status must be no_available_slots");
+  assert.equal(bookingData.created_visit, false, "created_visit must be false");
+  assert.equal(bookingData.may_claim_booked, false, "may_claim_booked must be false");
 
-  // Reply must mention no slots
-  assert.ok(
-    result.final_patient_reply.toLowerCase().includes("слот") ||
-      result.final_patient_reply.toLowerCase().includes("slot"),
-    `Reply must mention no slots: ${result.final_patient_reply}`,
-  );
+  // Reply comes from model (3rd caller output) after seeing guarded result
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
 
-  // created_visit and may_claim_booked implied false — no booking result present
-  // Conversation must be dirty / not resumable
-  assert.equal(result.conversation_id, null, "conversation_id must be null (dirty)");
-  assert.equal(result.conversation_id_resumable, false, "must not be resumable");
+  // Conversation preserved — guarded tool output keeps conversation_id clean
+  assert.equal(result.conversation_id, "conv_141_1", "conversation_id must be preserved");
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
 
-  // debug.reason identifies the no-slots intercept
+  // debug.reason identifies the no-slots intercept (set before helper call)
   assert.equal(
     (result.debug as Record<string, unknown>)?.reason,
     "booking_apply_preflight_no_slots",
@@ -322,7 +328,8 @@ test("runtimeAgentLoop: no-slots preflight — booking.apply not executed when 0
 
 // ── Integration Test 2: Missing trusted phone with valid slot ─────────────────
 // availability.check returns ≥1 slot + no trusted phone + model requests booking.apply
-// → Guard A fires (contact button), booking.apply NOT executed
+// → Guard A fires, submits guarded missing_trusted_phone result, model responds,
+// booking.apply executor NOT called, conversation_id preserved.
 
 test("runtimeAgentLoop: Guard A fires when booking.apply pending and phone absent (valid slot present)", async () => {
   let bookingApplyExecutorCalled = false;
@@ -337,6 +344,12 @@ test("runtimeAgentLoop: Guard A fires when booking.apply pending and phone absen
       type: "tool_requests",
       conversation_id: "conv_141_2",
       tool_requests: [BOOKING_APPLY_REQUEST],
+    },
+    // Guarded finalization: model asks for phone after seeing missing_trusted_phone guarded result
+    {
+      type: "final_response",
+      conversation_id: "conv_141_2",
+      final_response: { final_patient_reply: "Для записи нужен ваш телефон. Поделитесь контактом." },
     },
   ]);
 
@@ -375,17 +388,20 @@ test("runtimeAgentLoop: Guard A fires when booking.apply pending and phone absen
   // booking.apply executor must NOT have been called
   assert.equal(bookingApplyExecutorCalled, false, "booking.apply executor must not be called when phone absent");
 
-  // Contact button must be returned
-  assert.equal(result.ui?.telegram?.request_contact, true, "ui.telegram.request_contact must be true");
-  assert.ok(result.final_patient_reply.includes("телефон"), "reply must ask for phone number");
-
-  // No ClinicCard write
+  // Guarded missing_trusted_phone result must be present (not real executor)
   const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
-  assert.equal(bookingResult, undefined, "booking.apply must not appear in tool_results");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  const bookingData = bookingResult!.data as Record<string, unknown>;
+  assert.equal(bookingData.booking_status, "missing_trusted_phone", "guarded status must be missing_trusted_phone");
+  assert.equal(bookingData.created_visit, false, "created_visit must be false");
+  assert.equal(bookingData.may_claim_booked, false, "may_claim_booked must be false");
 
-  // Conversation dirty
-  assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  // Reply comes from model — phone request
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
+
+  // Conversation preserved — conversation_id clean
+  assert.equal(result.conversation_id, "conv_141_2", "conversation_id must be preserved");
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
 
   // debug.reason must identify Guard A intercept
   assert.equal(
@@ -483,30 +499,24 @@ test("buildMissingNameFieldsReply: EN locale — both missing", () => {
 // ── Test 3: Trusted phone + no slot in round-1 booking.apply args ─────────────
 // Guard D fires: executor NOT called, reply asks to choose slot, conversation dirty.
 
-test("Test 3: Guard D (round 1) — trusted phone + no date/time → executor not called, asks for slot", async () => {
+test("Test 3: Guard D (round 1) — trusted phone + no date/time → submits guarded result, executor not called, conversation resumable", async () => {
   let executorCalled = false;
-
-  const LIVE_ENV: Record<string, string> = {
-    CLINICCARD_API_BASE_URL: "https://cliniccard.example",
-    CLINICCARD_API_TOKEN: "tok_test",
-    CLINICCARD_BOOKING_MODE: "live",
-    CLINICCARD_DEFAULT_DOCTOR_ID: "1",
-    CLINICCARD_DEFAULT_CABINET_ID: "2",
-    CLINICCARD_TIMEZONE: "Europe/Prague",
-    CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
-  };
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
-    caller: async () => ({
-      type: "tool_requests",
-      tool_requests: [{
-        tool: "booking.apply",
-        call_id: "call_t3",
-        // No requested_date or requested_time — slot not selected
-        arguments: { first_name: "Роман", last_name: "Анбасадоров", service: "осмотр" },
-      }],
-    }),
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "call_t3",
+          // No requested_date or requested_time — slot not selected
+          arguments: { first_name: "Роман", last_name: "Анбасадоров", service: "осмотр" },
+        }],
+      },
+      // Guarded finalization: model asks for slot after seeing missing_slot guarded result
+      { type: "final_response", final_response: { final_patient_reply: "Пожалуйста, выберите дату и время для записи." } },
+    ]),
     executors: {
       "booking.apply": async () => {
         executorCalled = true;
@@ -523,19 +533,18 @@ test("Test 3: Guard D (round 1) — trusted phone + no date/time → executor no
   // booking.apply executor must NOT have been called
   assert.equal(executorCalled, false, "booking.apply executor must not be called when date/time absent");
 
-  // tool_results must be empty
-  assert.deepEqual(result.tool_results, [], "tool_results must be empty");
+  // Guarded missing_slot result must appear in tool_results
+  const guardedResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(guardedResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((guardedResult!.data as Record<string, unknown>).booking_status, "missing_slot");
+  assert.equal((guardedResult!.data as Record<string, unknown>).created_visit, false);
+  assert.equal((guardedResult!.data as Record<string, unknown>).may_claim_booked, false);
 
-  // Reply asks patient to choose a slot/time
-  const reply = result.final_patient_reply.toLowerCase();
-  assert.ok(
-    reply.includes("дату") || reply.includes("время") || reply.includes("слот") || reply.includes("date") || reply.includes("slot"),
-    `Reply must ask to choose a slot: ${result.final_patient_reply}`,
-  );
+  // Reply from model (2nd caller output)
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
 
-  // Conversation must be dirty / not resumable
-  assert.equal(result.conversation_id, null, "conversation_id must be null");
-  assert.equal(result.conversation_id_resumable, false, "must not be resumable");
+  // Conversation must be resumable (not dirty)
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
 
   // debug.reason identifies the guard
   assert.equal(
@@ -546,25 +555,29 @@ test("Test 3: Guard D (round 1) — trusted phone + no date/time → executor no
 
 // ── Test 4a: First name missing in round-1 booking.apply args ─────────────────
 
-test("Test 4a: Guard E (round 1) — first_name missing → executor not called, asks for first name only", async () => {
+test("Test 4a: Guard E (round 1) — first_name missing → submits guarded result, executor not called, conversation resumable", async () => {
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
-    caller: async () => ({
-      type: "tool_requests",
-      tool_requests: [{
-        tool: "booking.apply",
-        call_id: "call_t4a",
-        arguments: {
-          // first_name absent, last_name present, date+time present
-          last_name: "Анбасадоров",
-          requested_date: "2026-07-15",
-          requested_time: "10:00",
-          service: "осмотр",
-        },
-      }],
-    }),
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "call_t4a",
+          arguments: {
+            // first_name absent, last_name present, date+time present
+            last_name: "Анбасадоров",
+            requested_date: "2026-07-15",
+            requested_time: "10:00",
+            service: "осмотр",
+          },
+        }],
+      },
+      // Guarded finalization: model asks for first name
+      { type: "final_response", final_response: { final_patient_reply: "Как вас зовут? Укажите имя." } },
+    ]),
     executors: {
       "booking.apply": async () => {
         executorCalled = true;
@@ -579,17 +592,20 @@ test("Test 4a: Guard E (round 1) — first_name missing → executor not called,
   });
 
   assert.equal(executorCalled, false, "booking.apply executor must not be called when first_name absent");
-  assert.deepEqual(result.tool_results, []);
 
-  // Reply must ask for first name specifically, not last name
-  const reply = result.final_patient_reply.toLowerCase();
-  assert.ok(
-    reply.includes("имя") || reply.includes("зовут") || reply.includes("first") || reply.includes("name"),
-    `Reply must ask for first name: ${result.final_patient_reply}`,
-  );
+  // Guarded missing_patient_name result must appear in tool_results
+  const guardedResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(guardedResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((guardedResult!.data as Record<string, unknown>).booking_status, "missing_patient_name");
+  assert.equal((guardedResult!.data as Record<string, unknown>).created_visit, false);
+  assert.equal((guardedResult!.data as Record<string, unknown>).may_claim_booked, false);
 
-  assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  // Reply from model (2nd caller output)
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
+
+  // Conversation must be resumable (not dirty)
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
+
   assert.equal(
     (result.debug as Record<string, unknown>)?.reason,
     "booking_apply_preflight_missing_name_round1",
@@ -601,25 +617,29 @@ test("Test 4a: Guard E (round 1) — first_name missing → executor not called,
 
 // ── Test 4b: Last name missing ────────────────────────────────────────────────
 
-test("Test 4b: Guard E (round 1) — last_name missing → executor not called, asks for last name only", async () => {
+test("Test 4b: Guard E (round 1) — last_name missing → submits guarded result, executor not called, conversation resumable", async () => {
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
-    caller: async () => ({
-      type: "tool_requests",
-      tool_requests: [{
-        tool: "booking.apply",
-        call_id: "call_t4b",
-        arguments: {
-          first_name: "Роман",
-          // last_name absent
-          requested_date: "2026-07-15",
-          requested_time: "10:00",
-          service: "осмотр",
-        },
-      }],
-    }),
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "call_t4b",
+          arguments: {
+            first_name: "Роман",
+            // last_name absent
+            requested_date: "2026-07-15",
+            requested_time: "10:00",
+            service: "осмотр",
+          },
+        }],
+      },
+      // Guarded finalization: model asks for last name
+      { type: "final_response", final_response: { final_patient_reply: "Укажите, пожалуйста, вашу фамилию." } },
+    ]),
     executors: {
       "booking.apply": async () => {
         executorCalled = true;
@@ -634,16 +654,20 @@ test("Test 4b: Guard E (round 1) — last_name missing → executor not called, 
   });
 
   assert.equal(executorCalled, false, "booking.apply executor must not be called when last_name absent");
-  assert.deepEqual(result.tool_results, []);
 
-  const reply = result.final_patient_reply.toLowerCase();
-  assert.ok(
-    reply.includes("фамили") || reply.includes("last") || reply.includes("surname"),
-    `Reply must ask for last name: ${result.final_patient_reply}`,
-  );
+  // Guarded missing_patient_name result must appear in tool_results
+  const guardedResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(guardedResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((guardedResult!.data as Record<string, unknown>).booking_status, "missing_patient_name");
+  assert.equal((guardedResult!.data as Record<string, unknown>).created_visit, false);
+  assert.equal((guardedResult!.data as Record<string, unknown>).may_claim_booked, false);
 
-  assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  // Reply from model (2nd caller output)
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
+
+  // Conversation must be resumable (not dirty)
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
+
   const missingFields = (result.debug as Record<string, unknown>)?.missing_fields as string[];
   assert.ok(Array.isArray(missingFields) && missingFields.includes("last_name"), "missing_fields must include last_name");
   assert.ok(!missingFields.includes("first_name"), "missing_fields must NOT include first_name");
@@ -729,7 +753,7 @@ test("Test 5: full proof + BOOKING_MODE=disabled → booking_write_disabled, no 
 // Expected: executor NOT called, no booking_write_disabled, reply asks another time,
 // conversation_id_resumable=false.
 
-test("Test 6: golden flow regression — 0 slots → booking.apply executor not called, no booking_write_disabled", async () => {
+test("Test 6: golden flow regression — 0 slots → guarded tool result, executor not called, conversation preserved", async () => {
   let bookingApplyExecutorCalled = false;
 
   const loop = createRuntimeAgentLoop({
@@ -759,6 +783,12 @@ test("Test 6: golden flow regression — 0 slots → booking.apply executor not 
             // No date/time because availability returned 0 slots and patient said "как можно скорее"
           },
         }],
+      },
+      // Guarded finalization: model asks for another time after seeing no_available_slots result
+      {
+        type: "final_response",
+        conversation_id: "conv_roman_asap",
+        final_response: { final_patient_reply: "К сожалению, свободных слотов нет. Пожалуйста, выберите другую дату." },
       },
     ]),
     executors: {
@@ -792,26 +822,24 @@ test("Test 6: golden flow regression — 0 slots → booking.apply executor not 
   // booking.apply executor must NOT have been called
   assert.equal(bookingApplyExecutorCalled, false, "booking.apply executor must not be called when 0 slots available");
 
-  // No booking_write_disabled in results (executor not called at all)
+  // Guarded no_available_slots result must be present (not booking_write_disabled from executor)
   const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
-  assert.equal(bookingResult, undefined, "booking.apply must not appear in tool_results");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "no_available_slots", "guarded status must be no_available_slots");
+  assert.notEqual((bookingResult!.data as Record<string, unknown>).booking_status, "booking_write_disabled", "must NOT be booking_write_disabled");
 
-  // Reply asks patient to choose another time / check another date
-  const reply = result.final_patient_reply.toLowerCase();
-  assert.ok(
-    reply.includes("слот") || reply.includes("время") || reply.includes("дату") ||
-    reply.includes("slot") || reply.includes("time") || reply.includes("date"),
-    `Reply must ask for another time or mention no slots: ${result.final_patient_reply}`,
-  );
+  // Reply comes from model (3rd caller output)
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
 
-  // conversation_id_resumable=false (conversation dirty after blocked booking.apply)
-  assert.equal(result.conversation_id_resumable, false, "conversation_id_resumable must be false");
+  // Conversation preserved — guarded output keeps conversation clean
+  assert.equal(result.conversation_id, "conv_roman_asap", "conversation_id must be preserved");
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
 
   // debug identifies the no-slots intercept
-  const reason = (result.debug as Record<string, unknown>)?.reason;
-  assert.ok(
-    reason === "booking_apply_preflight_no_slots" || reason === "booking_apply_preflight_missing_slot_round2",
-    `debug.reason must identify no-slot intercept, got: ${reason}`,
+  assert.equal(
+    (result.debug as Record<string, unknown>)?.reason,
+    "booking_apply_preflight_no_slots",
+    "debug.reason must identify no-slots preflight",
   );
 });
 
@@ -819,7 +847,9 @@ test("Test 6: golden flow regression — 0 slots → booking.apply executor not 
 // The no-slots gate must fire before the phone guard so we never ask for phone
 // when there are no slots to book.
 
-test("Test 1a: no slots + no trusted phone → no-slots reply, no contact button", async () => {
+// The no-slots gate fires before the phone guard — even without trusted phone,
+// the guarded result has booking_status=no_available_slots (not missing_trusted_phone).
+test("Test 1a: no slots + no trusted phone → no-slots guarded result, conversation preserved", async () => {
   let bookingApplyExecutorCalled = false;
 
   const loop = createRuntimeAgentLoop({
@@ -834,6 +864,12 @@ test("Test 1a: no slots + no trusted phone → no-slots reply, no contact button
         type: "tool_requests",
         conversation_id: "conv_1a",
         tool_requests: [BOOKING_APPLY_REQUEST],
+      },
+      // Guarded finalization: model response after no_available_slots guarded result
+      {
+        type: "final_response",
+        conversation_id: "conv_1a",
+        final_response: { final_patient_reply: "К сожалению, на это время нет слотов. Выберите другую дату." },
       },
     ]),
     executors: {
@@ -859,16 +895,17 @@ test("Test 1a: no slots + no trusted phone → no-slots reply, no contact button
 
   assert.equal(bookingApplyExecutorCalled, false, "executor must not be called");
 
-  // Must be no-slots reply, NOT contact button
-  assert.equal(result.ui?.telegram?.request_contact, undefined, "must NOT return contact button when no slots");
-  assert.ok(
-    result.final_patient_reply.toLowerCase().includes("слот") ||
-      result.final_patient_reply.toLowerCase().includes("slot"),
-    `Reply must mention no slots: ${result.final_patient_reply}`,
-  );
+  // Guarded result must have no_available_slots (no-slots gate fires before phone gate)
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "no_available_slots");
 
-  assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  // Reply from model (3rd caller output)
+  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
+
+  // Conversation preserved
+  assert.equal(result.conversation_id, "conv_1a", "conversation_id must be preserved");
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
   assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_no_slots");
 });
 
@@ -1022,6 +1059,11 @@ test("Integration: invalid slot time in round-2 → executor not called, asks to
         conversation_id: "conv_invalid_slot",
         tool_requests: [BOOKING_WRONG_TIME],
       },
+      {
+        type: "final_response",
+        conversation_id: "conv_invalid_slot",
+        final_response: { final_patient_reply: "Выбранное время недоступно. Выберите из доступных слотов." },
+      },
     ]),
     executors: {
       "availability.check": async () => ({
@@ -1042,7 +1084,10 @@ test("Integration: invalid slot time in round-2 → executor not called, asks to
   });
 
   assert.equal(bookingApplyExecutorCalled, false, "executor must not be called for invalid slot time");
-  assert.equal(result.tool_results?.find((r) => r.tool === "booking.apply"), undefined, "booking.apply must not appear in results");
+  const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "invalid_slot");
+  assert.equal((bookingResult!.data as Record<string, unknown>).created_visit, false);
   assert.ok(
     result.final_patient_reply.toLowerCase().includes("врем") ||
       result.final_patient_reply.toLowerCase().includes("слот") ||
@@ -1050,8 +1095,8 @@ test("Integration: invalid slot time in round-2 → executor not called, asks to
       result.final_patient_reply.toLowerCase().includes("slot"),
     `Reply must ask to choose available slot: ${result.final_patient_reply}`,
   );
-  assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  assert.notEqual(result.conversation_id, null, "conversation_id must be preserved");
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
   assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_invalid_slot_round2");
 });
 
@@ -1126,20 +1171,26 @@ test("Integration: missing service in round-1 args → executor not called, asks
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
-    caller: async () => ({
-      type: "tool_requests",
-      tool_requests: [{
-        tool: "booking.apply",
-        call_id: "call_no_svc",
-        arguments: {
-          requested_date: "2026-07-09",
-          requested_time: "12:00",
-          first_name: "Роман",
-          last_name: "Анбасадоров",
-          // no service, no service_reason
-        },
-      }],
-    }),
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "call_no_svc",
+          arguments: {
+            requested_date: "2026-07-09",
+            requested_time: "12:00",
+            first_name: "Роман",
+            last_name: "Анбасадоров",
+            // no service, no service_reason
+          },
+        }],
+      },
+      {
+        type: "final_response",
+        final_response: { final_patient_reply: "Укажите причину визита или услугу, которая вас интересует." },
+      },
+    ]),
     executors: {
       "booking.apply": async () => {
         bookingApplyExecutorCalled = true;
@@ -1154,7 +1205,9 @@ test("Integration: missing service in round-1 args → executor not called, asks
   });
 
   assert.equal(bookingApplyExecutorCalled, false, "executor must not be called when service is missing");
-  assert.deepEqual(result.tool_results, []);
+  const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "missing_service");
   assert.ok(
     result.final_patient_reply.toLowerCase().includes("визит") ||
       result.final_patient_reply.toLowerCase().includes("услуг") ||
@@ -1162,7 +1215,7 @@ test("Integration: missing service in round-1 args → executor not called, asks
       result.final_patient_reply.toLowerCase().includes("service"),
     `Reply must ask for service reason: ${result.final_patient_reply}`,
   );
-  assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  assert.notEqual(result.conversation_id, null, "conversation_id must be preserved");
+  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
   assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_missing_service_round1");
 });

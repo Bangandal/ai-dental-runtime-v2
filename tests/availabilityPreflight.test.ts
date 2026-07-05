@@ -157,12 +157,20 @@ describe("availability.check without requested_time — executor runs, past-slot
 // ── 3. booking.apply past-time regression ────────────────────────────────────
 
 describe("booking.apply past-time guard (PR #133 regression)", () => {
-  it("booking.apply for today at past time still blocked after PR #134", async () => {
+  it("booking.apply for today at past time still blocked after PR #134 — guarded result, conversation resumable", async () => {
     const now = new Date("2026-07-03T20:25:00.000Z");
-    const caller: RuntimeAgentCaller = async () => ({
-      type: "tool_requests",
-      tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" } }],
-    } as RuntimeAgentCallerOutput);
+    let callCount = 0;
+    const caller: RuntimeAgentCaller = async () => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          type: "tool_requests",
+          tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" } }],
+        } as RuntimeAgentCallerOutput;
+      }
+      // Guarded finalization: model asks for another time after seeing past_time guarded result
+      return { type: "final_response", final_response: { final_patient_reply: "Это время уже прошло. Выберите другое время." } } as RuntimeAgentCallerOutput;
+    };
 
     const loop = createRuntimeAgentLoop({ model: "test", caller, executors: {} as ToolExecutorRegistry, now, timezone: "Europe/Prague" });
     const result = await loop.runTurn({
@@ -173,7 +181,16 @@ describe("booking.apply past-time guard (PR #133 regression)", () => {
       channel_contact: { phone_number: "+380991234567", phone_source: "telegram_contact_button" },
     });
 
+    // debug.reason identifies the past-time guard (set before helper call)
     assert.strictEqual((result.debug as Record<string, unknown>).reason, "booking_apply_preflight_past_time_round1");
+
+    // Guarded past_time result must appear in tool_results
+    const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+    assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+    assert.strictEqual((bookingResult!.data as Record<string, unknown>).booking_status, "past_time");
+
+    // Conversation preserved
+    assert.notStrictEqual(result.conversation_id_resumable, false, "conversation must be resumable");
   });
 });
 

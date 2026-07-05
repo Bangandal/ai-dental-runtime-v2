@@ -163,66 +163,89 @@ describe("buildPastTimeReply", () => {
 describe("runtimeAgentLoop — booking.apply past-time preflight (round 1)", () => {
   // Simulate: model requests booking.apply for today at 13:00 but it's 22:25.
   // "now" is 2026-07-03 22:25 Prague (20:25 UTC).
-
-  const fakeCaller: RuntimeAgentCaller = async () => ({
-    type: "tool_requests",
-    conversation_id: "conv-past-test",
-    tool_requests: [
-      {
-        tool: "booking.apply",
-        call_id: "call-1",
-        arguments: {
-          requested_date: "2026-07-03",
-          requested_time: "13:00",
-          service: "consultation",
-          first_name: "Boris",
-          last_name: "Test",
-        },
-      },
-    ],
-  });
-
-  const loop = createRuntimeAgentLoop({
-    model: "test-model",
-    caller: fakeCaller,
-    executors: {} as ToolExecutorRegistry,
-    now: new Date("2026-07-03T20:25:00.000Z"), // 22:25 Prague
-    timezone: "Europe/Prague",
-  });
+  // The guard fires and the helper submits a guarded tool_result back to the model.
 
   it("blocks past same-day booking.apply and returns past-time reply", async () => {
+    let callCount = 0;
+    const caller: RuntimeAgentCaller = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          type: "tool_requests",
+          conversation_id: "conv-past-test",
+          tool_requests: [{
+            tool: "booking.apply",
+            call_id: "call-1",
+            arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation", first_name: "Boris", last_name: "Test" },
+          }],
+        } as RuntimeAgentCallerOutput;
+      }
+      // Guarded finalization: model explains the time has passed
+      return { type: "final_response", final_response: { final_patient_reply: "Это время уже прошло. Выберите другое." } } as RuntimeAgentCallerOutput;
+    };
+
+    const loop = createRuntimeAgentLoop({
+      model: "test-model",
+      caller,
+      executors: {} as ToolExecutorRegistry,
+      now: new Date("2026-07-03T20:25:00.000Z"),
+      timezone: "Europe/Prague",
+    });
+
     const result: RuntimeAgentTurnResult = await loop.runTurn({
       user_message: "Підходящий час 13:00",
       clinic_id: "clinic_1",
       contact_id: "contact_1",
       locale: "ru",
-      channel_contact: {
-        phone_number: "+380991234567",
-        phone_source: "telegram_contact_button",
-      },
+      channel_contact: { phone_number: "+380991234567", phone_source: "telegram_contact_button" },
     });
 
-    assert.strictEqual(result.conversation_id, null);
-    assert.strictEqual(result.conversation_id_resumable, false);
+    // Conversation preserved (guarded finalization succeeded)
+    assert.notStrictEqual(result.conversation_id, null);
+    assert.notStrictEqual(result.conversation_id_resumable, false);
     assert.ok(
       result.final_patient_reply.includes("прошло") || result.final_patient_reply.includes("время"),
       `Expected past-time reply, got: ${result.final_patient_reply}`,
     );
-    assert.deepStrictEqual(result.tool_results, []);
-    assert.strictEqual((result.debug as Record<string, unknown>)?.reason,
-      "booking_apply_preflight_past_time_round1");
+    // Guarded tool result present in tool_results
+    const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+    assert.ok(bookingResult, "guarded booking.apply result must appear");
+    assert.strictEqual((bookingResult!.data as Record<string, unknown>).booking_status, "past_time");
+    assert.strictEqual((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_past_time_round1");
   });
 
   it("past-time reply is locale-aware (cs)", async () => {
+    let callCount = 0;
+    const caller: RuntimeAgentCaller = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          type: "tool_requests",
+          conversation_id: "conv-past-cs",
+          tool_requests: [{
+            tool: "booking.apply",
+            call_id: "call-cs",
+            arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation", first_name: "Pavel", last_name: "Test" },
+          }],
+        } as RuntimeAgentCallerOutput;
+      }
+      return { type: "final_response", final_response: { final_patient_reply: "Tento čas již uplynul. Vyberte jiný čas." } } as RuntimeAgentCallerOutput;
+    };
+
+    const loop = createRuntimeAgentLoop({
+      model: "test-model",
+      caller,
+      executors: {} as ToolExecutorRegistry,
+      now: new Date("2026-07-03T20:25:00.000Z"),
+      timezone: "Europe/Prague",
+    });
+
     const result: RuntimeAgentTurnResult = await loop.runTurn({
       user_message: "13:00",
       clinic_id: "clinic_1",
       contact_id: "contact_2",
       locale: "cs",
-      channel_contact: {
-        phone_number: "+420600000001",
-        phone_source: "telegram_contact_button",
-      },
+      channel_contact: { phone_number: "+420600000001", phone_source: "telegram_contact_button" },
     });
 
     assert.ok(
@@ -237,33 +260,35 @@ describe("runtimeAgentLoop — booking.apply past-time preflight (round 1)", () 
 // ---------------------------------------------------------------------------
 describe("runtimeAgentLoop — booking.apply phone preflight (round 1)", () => {
   // booking.apply for TOMORROW at 13:00 (not past), but no trusted phone.
-  const fakeCaller: RuntimeAgentCaller = async () => ({
-    type: "tool_requests",
-    conversation_id: "conv-phone-test",
-    tool_requests: [
-      {
-        tool: "booking.apply",
-        call_id: "call-2",
-        arguments: {
-          requested_date: "2026-07-04",  // tomorrow — not past
-          requested_time: "13:00",
-          service: "consultation",
-          first_name: "Boris",
-          last_name: "Test",
-        },
-      },
-    ],
-  });
+  // The guard fires and the helper submits a guarded tool_result back to the model.
 
-  const loop = createRuntimeAgentLoop({
-    model: "test-model",
-    caller: fakeCaller,
-    executors: {} as ToolExecutorRegistry,
-    now: new Date("2026-07-03T20:25:00.000Z"),
-    timezone: "Europe/Prague",
-  });
+  it("blocks booking.apply when trusted phone is missing and asks for phone", async () => {
+    let callCount = 0;
+    const caller: RuntimeAgentCaller = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          type: "tool_requests",
+          conversation_id: "conv-phone-test",
+          tool_requests: [{
+            tool: "booking.apply",
+            call_id: "call-2",
+            arguments: { requested_date: "2026-07-04", requested_time: "13:00", service: "consultation", first_name: "Boris", last_name: "Test" },
+          }],
+        } as RuntimeAgentCallerOutput;
+      }
+      // Guarded finalization: model asks for contact
+      return { type: "final_response", final_response: { final_patient_reply: "Для записи нужен ваш телефон." } } as RuntimeAgentCallerOutput;
+    };
 
-  it("blocks booking.apply when trusted phone is missing and returns contact button", async () => {
+    const loop = createRuntimeAgentLoop({
+      model: "test-model",
+      caller,
+      executors: {} as ToolExecutorRegistry,
+      now: new Date("2026-07-03T20:25:00.000Z"),
+      timezone: "Europe/Prague",
+    });
+
     const result: RuntimeAgentTurnResult = await loop.runTurn({
       user_message: "Да завтра на 13:00",
       clinic_id: "clinic_1",
@@ -272,22 +297,46 @@ describe("runtimeAgentLoop — booking.apply phone preflight (round 1)", () => {
       channel_contact: undefined,
     });
 
-    assert.strictEqual(result.conversation_id, null);
-    assert.strictEqual(result.conversation_id_resumable, false);
-    assert.deepStrictEqual(result.tool_results, []);
+    // Conversation preserved (guarded finalization succeeded)
+    assert.notStrictEqual(result.conversation_id, null);
+    assert.notStrictEqual(result.conversation_id_resumable, false);
+    // Guarded result in tool_results
+    const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+    assert.ok(bookingResult, "guarded booking.apply result must appear");
+    assert.strictEqual((bookingResult!.data as Record<string, unknown>).booking_status, "missing_trusted_phone");
     assert.strictEqual((result.debug as Record<string, unknown>)?.reason,
       "booking_apply_preflight_missing_trusted_phone_round1");
-    const ui = result.ui as { telegram?: { request_contact?: boolean } } | undefined;
-    assert.strictEqual(ui?.telegram?.request_contact, true);
   });
 
   it("proceeds normally when trusted phone is present (does not fire phone preflight)", async () => {
     // With a trusted phone, the loop should proceed past the phone preflight.
-    // caller always returns tool_requests for booking.apply → round-1 executes it
-    // (no executor → not_implemented), then round-2 caller returns booking.apply again
-    // → Guard B fires (trusted phone) → executes again (not_implemented).
+    // Round 1: caller returns booking.apply → phone guard does not fire (trusted phone present).
+    // Executor not registered → not_implemented result. Round 2: caller returns booking.apply again.
+    // → forced_finalization fires after round 2, Guard B present, executor returns not_implemented again.
     // Total tool_results >= 1 and none is a phone preflight intercept.
-    const result: RuntimeAgentTurnResult = await loop.runTurn({
+    let callCount2 = 0;
+    const caller2: RuntimeAgentCaller = async () => {
+      callCount2++;
+      return {
+        type: "tool_requests" as const,
+        conversation_id: "conv-phone-trusted",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: `call-trusted-${callCount2}`,
+          arguments: { requested_date: "2026-07-04", requested_time: "13:00", service: "consultation", first_name: "Boris", last_name: "Test" },
+        }],
+      } as RuntimeAgentCallerOutput;
+    };
+
+    const loop2 = createRuntimeAgentLoop({
+      model: "test-model",
+      caller: caller2,
+      executors: {} as ToolExecutorRegistry,
+      now: new Date("2026-07-03T20:25:00.000Z"),
+      timezone: "Europe/Prague",
+    });
+
+    const result: RuntimeAgentTurnResult = await loop2.runTurn({
       user_message: "Да завтра на 13:00",
       clinic_id: "clinic_1",
       contact_id: "contact_4",
@@ -315,33 +364,7 @@ describe("runtimeAgentLoop — booking.apply phone preflight (round 1)", () => {
 describe("runtimeAgentLoop — booking.apply past-time preflight (round 2 Guard B)", () => {
   // Round 1: availability.check → slots. Round 2: booking.apply for past time.
   // Simulates a race: slots were available, but by the time booking.apply fires, time passed.
-
-  let callCount = 0;
-  const fakeCaller: RuntimeAgentCaller = async (input) => {
-    callCount++;
-    if (callCount === 1) {
-      // Round 1: request availability.check
-      return {
-        type: "tool_requests",
-        conversation_id: "conv-r2-past",
-        tool_requests: [
-          { tool: "availability.check", call_id: "call-avail", arguments: { requested_date: "2026-07-03" } },
-        ],
-      } as RuntimeAgentCallerOutput;
-    }
-    // Round 2: request booking.apply for a past time
-    return {
-      type: "tool_requests",
-      conversation_id: "conv-r2-past",
-      tool_requests: [
-        {
-          tool: "booking.apply",
-          call_id: "call-book",
-          arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" },
-        },
-      ],
-    } as RuntimeAgentCallerOutput;
-  };
+  // The guard fires and the helper submits a guarded tool_result back to the model.
 
   const fakeAvailabilityExecutor = async () => ({
     tool: "availability.check" as const,
@@ -349,9 +372,33 @@ describe("runtimeAgentLoop — booking.apply past-time preflight (round 2 Guard 
     data: { slots: [{ slot_id: "s1", starts_at: "2026-07-03T13:00:00", ends_at: "2026-07-03T13:30:00" }], timezone: "Europe/Prague", total_slots: 1, free_slots_count: 1 },
   });
 
-  beforeEach(() => { callCount = 0; });
-
   it("blocks Guard B execution when past-time detected for same-day slot", async () => {
+    let callCount = 0;
+    const fakeCaller: RuntimeAgentCaller = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          type: "tool_requests",
+          conversation_id: "conv-r2-past",
+          tool_requests: [
+            { tool: "availability.check", call_id: "call-avail", arguments: { requested_date: "2026-07-03" } },
+          ],
+        } as RuntimeAgentCallerOutput;
+      }
+      if (callCount === 2) {
+        // Round 2: request booking.apply for a past time (guard fires, helper called)
+        return {
+          type: "tool_requests",
+          conversation_id: "conv-r2-past",
+          tool_requests: [
+            { tool: "booking.apply", call_id: "call-book", arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" } },
+          ],
+        } as RuntimeAgentCallerOutput;
+      }
+      // Call 3: guarded finalization — model explains time has passed
+      return { type: "final_response", final_response: { final_patient_reply: "Это время уже прошло. Выберите другое время." } } as RuntimeAgentCallerOutput;
+    };
+
     const loop = createRuntimeAgentLoop({
       model: "test-model",
       caller: fakeCaller,
@@ -368,17 +415,20 @@ describe("runtimeAgentLoop — booking.apply past-time preflight (round 2 Guard 
       channel_contact: { phone_number: "+380991234567", phone_source: "telegram_contact_button" },
     });
 
-    assert.strictEqual(result.conversation_id, null);
-    assert.strictEqual(result.conversation_id_resumable, false);
+    // Conversation preserved (guarded finalization succeeded)
+    assert.notStrictEqual(result.conversation_id, null);
+    assert.notStrictEqual(result.conversation_id_resumable, false);
     assert.ok(
       result.final_patient_reply.includes("прошло") || result.final_patient_reply.includes("время"),
       `Expected past-time reply, got: ${result.final_patient_reply}`,
     );
+    // Guarded tool result in tool_results
+    const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+    assert.ok(bookingResult, "guarded booking.apply result must appear");
+    assert.strictEqual((bookingResult!.data as Record<string, unknown>).booking_status, "past_time");
     assert.strictEqual((result.debug as Record<string, unknown>)?.reason,
       "booking_apply_preflight_past_time_round2");
   });
-
-  function beforeEach(fn: () => void) { fn(); }
 });
 
 // ---------------------------------------------------------------------------
@@ -456,14 +506,22 @@ describe("runtimeAgentLoop — turnNow fallback when deps.now is not injected", 
       day: "2-digit",
     }).format(new Date());
 
-    const caller: RuntimeAgentCaller = async () => ({
-      type: "tool_requests",
-      tool_requests: [{
-        tool: "booking.apply",
-        call_id: "c1",
-        arguments: { requested_date: today, requested_time: "00:00", service: "consultation" },
-      }],
-    } as RuntimeAgentCallerOutput);
+    let callCount2 = 0;
+    const caller: RuntimeAgentCaller = async () => {
+      callCount2++;
+      if (callCount2 === 1) {
+        return {
+          type: "tool_requests",
+          tool_requests: [{
+            tool: "booking.apply",
+            call_id: "c1",
+            arguments: { requested_date: today, requested_time: "00:00", service: "consultation" },
+          }],
+        } as RuntimeAgentCallerOutput;
+      }
+      // Guarded finalization: model acknowledges the past time
+      return { type: "final_response", final_response: { final_patient_reply: "Это время уже прошло." } } as RuntimeAgentCallerOutput;
+    };
 
     // No deps.now — production pattern
     const loop = createRuntimeAgentLoop({
@@ -487,7 +545,10 @@ describe("runtimeAgentLoop — turnNow fallback when deps.now is not injected", 
       "booking_apply_preflight_past_time_round1",
       `Expected past-time block, got debug.reason=${(result.debug as Record<string, unknown>)?.reason}`,
     );
-    assert.deepStrictEqual(result.tool_results, []);
+    // Guarded tool result present in tool_results
+    const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+    assert.ok(bookingResult, "guarded booking.apply result must appear");
+    assert.strictEqual((bookingResult!.data as Record<string, unknown>).booking_status, "past_time");
   });
 
   it("existing injected deps.now tests remain deterministic (no wall-clock usage)", async () => {

@@ -10,7 +10,17 @@ export interface BookingApplyActionTruth {
     can_say_booking_created: boolean;
     can_say_booking_confirmed: boolean;
   };
-  required_next_action: "none" | "ask_for_phone" | "offer_another_time" | "admin_handoff" | "technical_fallback";
+  required_next_action:
+    | "none"
+    | "ask_for_phone"
+    | "ask_for_slot"
+    | "ask_for_name"
+    | "ask_for_service"
+    | "offer_another_time"
+    | "ask_for_alternative_time"
+    | "choose_from_available_slots"
+    | "admin_handoff"
+    | "technical_fallback";
 }
 
 /** True only when booking.apply returned all four proof fields indicating visit_created. */
@@ -61,11 +71,18 @@ export function buildBookingApplyActionTruth(results: RuntimeAgentToolResult[]):
 
 function resolveRequiredNextAction(bookingStatus: string): BookingApplyActionTruth["required_next_action"] {
   switch (bookingStatus) {
-    case "visit_created": return "none";
-    case "missing_phone": return "ask_for_phone";
-    case "slot_conflict": return "offer_another_time";
-    case "booking_write_disabled": return "admin_handoff";
-    default: return "technical_fallback";
+    case "visit_created":           return "none";
+    case "missing_phone":
+    case "missing_trusted_phone":   return "ask_for_phone";
+    case "missing_slot":            return "ask_for_slot";
+    case "missing_patient_name":    return "ask_for_name";
+    case "missing_service":         return "ask_for_service";
+    case "slot_conflict":
+    case "no_available_slots":
+    case "invalid_slot":
+    case "past_time":               return "offer_another_time";
+    case "booking_write_disabled":  return "admin_handoff";
+    default:                        return "technical_fallback";
   }
 }
 

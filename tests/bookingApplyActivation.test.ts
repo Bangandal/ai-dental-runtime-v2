@@ -159,7 +159,11 @@ test("C: no channel_contact → global preflight fires; contact button returned;
     type: "tool_requests",
     tool_requests: [{ tool: "booking.apply", call_id: "call_c", arguments: { first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2026-07-20", requested_time: "09:00" } }],
   }));
-  // No second pushCaller — preflight intercepts before the executor or second call run.
+  // Second caller: guarded finalization — model asks for phone after seeing guarded result
+  pushCaller(async () => ({
+    type: "final_response",
+    final_response: { final_patient_reply: "Для записи нужен ваш номер телефона. Поделитесь контактом." },
+  }));
 
   const result = await loop.runTurn({
     clinic_id: "clinic_1", contact_id: "c_c", case_id: null,
@@ -167,18 +171,18 @@ test("C: no channel_contact → global preflight fires; contact button returned;
     // No channel_contact
   });
 
-  // booking.apply executor was NOT called — tool_results is empty
-  assert.deepEqual(result.tool_results, []);
+  // booking.apply executor was NOT called — guarded result in tool_results instead
+  const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "missing_trusted_phone");
+  assert.equal((bookingResult!.data as Record<string, unknown>).created_visit, false);
+  assert.equal((bookingResult!.data as Record<string, unknown>).may_claim_booked, false);
   // No ClinicCard writes attempted
   assert.deepEqual(writeCalls, []);
   // debug indicates the global preflight fired
   assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_missing_trusted_phone_round1");
-  // UI includes the Telegram contact button
-  const ui = result.ui as { telegram?: { request_contact?: boolean } } | undefined;
-  assert.equal(ui?.telegram?.request_contact, true);
-  // conversation reset so no dirty conversation lingers
-  assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  // conversation NOT dirtied — guarded finalization succeeded (no conversation_id_resumable=false)
+  assert.notStrictEqual(result.conversation_id_resumable, false, "conversation must not be marked dirty");
 });
 
 // ── D: Slot conflict — action truth has required_next_action=offer_another_time ─

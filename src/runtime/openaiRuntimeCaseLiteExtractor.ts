@@ -1,5 +1,6 @@
 import type { OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
 import type { RuntimeCaseLite, RuntimeCaseLiteUpdate } from "./runtimeCaseLite.ts";
+import { readResponseOutputTextDeduped } from "./openaiResponsesOutputText.ts";
 
 export interface CaseLiteExtractor {
   extractCaseLiteUpdate(input: CaseLiteExtractorInput): Promise<RuntimeCaseLiteUpdate>;
@@ -94,9 +95,12 @@ export function createOpenAIRuntimeCaseLiteExtractor(deps: {
 
 function parseExtractorOutput(raw: unknown): RuntimeCaseLiteUpdate {
   const obj = asObject(raw);
+  // Dedup output[] first — gpt-5.4-mini can emit the same JSON as two identical
+  // output_text blocks, making the SDK-level output_text a doubled string that
+  // fails JSON.parse. Fall back to output_text only when output[] has no text parts.
   const text =
+    readResponseOutputTextDeduped(obj?.output) ??
     readString(obj?.output_text) ??
-    readFirstOutputText(obj?.output) ??
     "";
 
   if (!text) return {};
@@ -164,23 +168,6 @@ function isValidClinicalType(value: string | null): value is
   return value !== null && [
     "none", "tooth_pain", "bleeding", "swelling", "fever", "trauma", "severe_pain", "unknown",
   ].includes(value);
-}
-
-function readFirstOutputText(output: unknown): string | null {
-  if (!Array.isArray(output)) return null;
-  for (const item of output) {
-    const obj = asObject(item);
-    if (!obj || readString(obj.type) !== "message") continue;
-    const content = obj.content;
-    if (!Array.isArray(content)) continue;
-    for (const part of content) {
-      const partObj = asObject(part);
-      if (!partObj || readString(partObj.type) !== "output_text") continue;
-      const text = readString(partObj.text);
-      if (text) return text;
-    }
-  }
-  return null;
 }
 
 function extractJsonCandidate(text: string): string {

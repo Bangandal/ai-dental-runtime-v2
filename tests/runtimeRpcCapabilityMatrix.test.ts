@@ -94,6 +94,8 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/availabilityPresentationTruth.ts",
     "src/runtime/appointmentDisplayTruth.ts",
     "src/runtime/runtimeCaseLite.ts",
+    "src/runtime/openaiResponsesOutputText.ts",
+    "src/runtime/openaiRuntimeCaseLiteExtractor.ts",
     "Dockerfile",
     ".env.example",
     "sql/rpc/public.rpc_kb_search_v1.sql",

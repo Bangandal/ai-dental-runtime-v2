@@ -21,6 +21,7 @@ import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerE
 import { shouldInterceptForContactButton, buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
+import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -280,10 +281,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
       const availabilityPresentationTruth = buildAvailabilityPresentationTruth(toolResults);
+      const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
       const secondCallContext = {
         ...callerContext,
         ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
         ...(availabilityPresentationTruth ? { availability_presentation_truth: availabilityPresentationTruth } : {}),
+        ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
       };
 
       let secondOutput: RuntimeAgentCallerOutput;
@@ -434,6 +437,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
           const allResults = [...toolResults, bookingToolResult];
           const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
+          const bookingApplyDisplayTruth = buildAppointmentDisplayTruth(allResults);
 
           markConversationDirty(debug);
           await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
@@ -450,6 +454,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
                   ...callerContext,
                   resolved_context: allResults,
                   ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
+                  ...(bookingApplyDisplayTruth ? { appointment_display_truth: bookingApplyDisplayTruth } : {}),
                 },
               },
             });
@@ -511,6 +516,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
                   ...callerContext,
                   resolved_context: toolResults,
                   ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
+                  ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
                 },
                 // No tool_definitions → caller sends tools:[] → model must produce final_response.
                 // No tool_results → no function_call_output protocol messages.

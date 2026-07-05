@@ -137,7 +137,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           system_instruction: systemInstruction,
           input: {
             message: input.user_message,
-            context: callerContext,
+            context: { ...callerContext, booking_process_state: bookingProcessState },
             tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
           },
         });
@@ -180,9 +180,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       if (firstOutput.type === "final_response") {
         await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-        // Blocker D: If initial state computed a selected_slot from prior slots + patient message,
-        // persist it even when the model responds directly without calling tools.
-        if (deps.bookingProcessStateRepository && bookingProcessState.selected_slot) {
+        // Persist state on no-tool final_response: saves any state change this turn
+        // (selected_slot, phone_trusted, next_action, etc.) not just slot detection.
+        if (deps.bookingProcessStateRepository) {
           deps.bookingProcessStateRepository.saveState(
             { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
             bookingProcessState,

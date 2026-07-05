@@ -596,3 +596,163 @@ test("Blocker-D: selected_slot persisted when model returns final_response direc
   assert.equal((saved!.selected_slot as AvailableSlot).slot_id, "s1730",
     "Blocker-D: persisted slot must be 17:30");
 });
+
+// ── New tests: first-call context & broad no-tool persist ─────────────────────
+
+test("new-1: first caller call receives booking_process_state in context", async () => {
+  let capturedContext: Record<string, unknown> | undefined;
+  const repo = createInMemoryBookingProcessStateRepository();
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async (callerInput) => {
+      capturedContext = callerInput.input.context;
+      return {
+        type: "final_response",
+        conversation_id: "conv_new1",
+        final_response: { final_patient_reply: "Привет" },
+      };
+    },
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
+      "booking.apply": async () => ({ status: "success" as const, data: { booking_status: "visit_created" } }),
+    },
+    bookingProcessStateRepository: repo,
+    now: new Date("2026-08-05T10:00:00"),
+  });
+
+  await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    user_message: "Хочу записаться",
+    channel_contact: undefined,
+  });
+
+  assert.ok(capturedContext !== undefined, "new-1: caller must be called");
+  assert.ok(
+    "booking_process_state" in capturedContext!,
+    "new-1: first caller must receive booking_process_state in context",
+  );
+});
+
+test("new-2: prior state (service/name/slots) is visible in first call context", async () => {
+  let capturedContext: Record<string, unknown> | undefined;
+  const repo = createInMemoryBookingProcessStateRepository();
+
+  // Pre-seed prior state
+  const priorState = computeBookingProcessState({
+    prior: {
+      last_available_slots: [SLOT_1730],
+      service_reason: "чистка зубов",
+      first_name: "Иван",
+      last_name: "Петров",
+    },
+    channelContact: undefined,
+  });
+  await repo.saveState({ clinic_id: "clinic_1", contact_id: "contact_pr143", case_id: null }, priorState);
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async (callerInput) => {
+      capturedContext = callerInput.input.context;
+      return {
+        type: "final_response",
+        conversation_id: "conv_new2",
+        final_response: { final_patient_reply: "Ок" },
+      };
+    },
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
+      "booking.apply": async () => ({ status: "success" as const, data: { booking_status: "visit_created" } }),
+    },
+    bookingProcessStateRepository: repo,
+    now: new Date("2026-08-05T10:00:00"),
+  });
+
+  await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    user_message: "Что дальше?",
+    channel_contact: undefined,
+  });
+
+  assert.ok(capturedContext !== undefined, "new-2: caller must be called");
+  const bps = capturedContext!.booking_process_state as Record<string, unknown> | undefined;
+  assert.ok(bps !== undefined, "new-2: booking_process_state must be present");
+  assert.equal(bps!.service_reason, "чистка зубов", "new-2: service_reason from prior state visible");
+  assert.equal(bps!.first_name, "Иван", "new-2: first_name from prior state visible");
+  assert.ok(Array.isArray(bps!.last_available_slots), "new-2: last_available_slots from prior visible");
+});
+
+test("new-3: user says '17:30', first call context includes detected selected_slot", async () => {
+  let capturedContext: Record<string, unknown> | undefined;
+  const repo = createInMemoryBookingProcessStateRepository();
+
+  // Pre-seed prior state with slots offered
+  const priorState = computeBookingProcessState({
+    prior: { last_available_slots: [SLOT_1730, SLOT_1830] },
+    channelContact: undefined,
+  });
+  await repo.saveState({ clinic_id: "clinic_1", contact_id: "contact_pr143", case_id: null }, priorState);
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async (callerInput) => {
+      capturedContext = callerInput.input.context;
+      return {
+        type: "final_response",
+        conversation_id: "conv_new3",
+        final_response: { final_patient_reply: "Отлично, 17:30 выбрано." },
+      };
+    },
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
+      "booking.apply": async () => ({ status: "success" as const, data: { booking_status: "visit_created" } }),
+    },
+    bookingProcessStateRepository: repo,
+    now: new Date("2026-08-05T10:00:00"),
+  });
+
+  await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    user_message: "17:30",
+    channel_contact: undefined,
+  });
+
+  assert.ok(capturedContext !== undefined, "new-3: caller must be called");
+  const bps = capturedContext!.booking_process_state as Record<string, unknown> | undefined;
+  assert.ok(bps !== undefined, "new-3: booking_process_state must be present");
+  const sel = bps!.selected_slot as Record<string, unknown> | null | undefined;
+  assert.ok(sel !== null && sel !== undefined, "new-3: selected_slot must be detected in first call context");
+  assert.equal(sel!.slot_id, "s1730", "new-3: correct slot selected");
+});
+
+test("new-4: no-tool final_response persists state even when selected_slot is null but phone_trusted changed", async () => {
+  const repo = createInMemoryBookingProcessStateRepository();
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "final_response",
+      conversation_id: "conv_new4",
+      final_response: { final_patient_reply: "Контакт получен." },
+    }),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
+      "booking.apply": async () => ({ status: "success" as const, data: { booking_status: "visit_created" } }),
+    },
+    bookingProcessStateRepository: repo,
+    now: new Date("2026-08-05T10:00:00"),
+  });
+
+  // Run with trusted phone — selected_slot will be null (no prior slots), but phone_trusted should persist
+  await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    user_message: "Вот мой контакт",
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  const saved = await repo.loadState({ clinic_id: "clinic_1", contact_id: "contact_pr143", case_id: null });
+  assert.ok(saved !== null, "new-4: state must be saved even when selected_slot is null");
+  // State was saved (not only when selected_slot exists)
+  assert.equal(saved!.selected_slot, null, "new-4: selected_slot is null as expected");
+  assert.equal(saved!.phone_trusted, true, "new-4: phone_trusted must be persisted");
+});

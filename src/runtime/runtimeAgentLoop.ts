@@ -23,6 +23,11 @@ import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBe
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
+import {
+  computeBookingProcessState,
+  type BookingProcessStateRepository,
+  type BookingProcessState,
+} from "./bookingProcessState.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -57,6 +62,7 @@ export interface CreateRuntimeAgentLoopDeps {
   caller: RuntimeAgentCaller;
   executors: ToolExecutorRegistry;
   conversationMemoryRepository?: ConversationMemoryRepository;
+  bookingProcessStateRepository?: BookingProcessStateRepository;
   now?: Date;
   timezone?: string;
 }
@@ -100,6 +106,27 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       const callerContext = buildModelVisibleCallerContext(input);
+
+      // Load prior booking process state; compute initial per-turn state from it.
+      let priorProcessState: Partial<BookingProcessState> | null = null;
+      if (deps.bookingProcessStateRepository) {
+        try {
+          priorProcessState = await deps.bookingProcessStateRepository.loadState({
+            clinic_id: input.clinic_id,
+            contact_id: input.contact_id,
+            case_id: input.case_id,
+          });
+        } catch {
+          // non-blocking — state loss only affects field-memory hints, not safety
+        }
+      }
+
+      // Initial state derived from prior + patient message (no tool results yet this turn)
+      let bookingProcessState = computeBookingProcessState({
+        prior: priorProcessState,
+        patientMessage: input.user_message,
+        channelContact: input.channel_contact,
+      });
 
       let firstOutput: RuntimeAgentCallerOutput;
       try {
@@ -377,11 +404,28 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
       const availabilityPresentationTruth = buildAvailabilityPresentationTruth(toolResults);
       const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
+
+      // Update booking process state with tool results from this round (e.g. newly returned slots).
+      bookingProcessState = computeBookingProcessState({
+        prior: priorProcessState,
+        toolResults,
+        patientMessage: input.user_message,
+        channelContact: input.channel_contact,
+      });
+      // Persist updated state (best-effort — non-blocking).
+      if (deps.bookingProcessStateRepository) {
+        deps.bookingProcessStateRepository.saveState(
+          { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+          bookingProcessState,
+        ).catch(() => undefined);
+      }
+
       const secondCallContext = {
         ...callerContext,
         ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
         ...(availabilityPresentationTruth ? { availability_presentation_truth: availabilityPresentationTruth } : {}),
         ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
+        booking_process_state: bookingProcessState,
       };
 
       let secondOutput: RuntimeAgentCallerOutput;

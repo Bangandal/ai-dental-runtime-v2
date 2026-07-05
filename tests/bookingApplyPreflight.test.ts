@@ -42,6 +42,10 @@ import {
   getMissingBookingApplyNameFields,
   buildMissingSlotReply,
   buildMissingNameFieldsReply,
+  bookingApplyArgsMissingService,
+  buildMissingServiceReply,
+  shouldInterceptInvalidSlotTime,
+  buildInvalidSlotReply,
 } from "../src/runtime/bookingApplyPreflight.ts";
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
@@ -182,7 +186,6 @@ test("shouldInterceptNoSlotsBeforeBookingApply: true when booking.apply pending 
     shouldInterceptNoSlotsBeforeBookingApply({
       pendingToolRequests: [BOOKING_APPLY_REQUEST],
       completedToolResults: [AVAILABILITY_EMPTY],
-      channelContact: TRUSTED_CONTACT,
     }),
     true,
   );
@@ -193,20 +196,18 @@ test("shouldInterceptNoSlotsBeforeBookingApply: false when slots present", () =>
     shouldInterceptNoSlotsBeforeBookingApply({
       pendingToolRequests: [BOOKING_APPLY_REQUEST],
       completedToolResults: [AVAILABILITY_SUCCESS],
-      channelContact: TRUSTED_CONTACT,
     }),
     false,
   );
 });
 
-test("shouldInterceptNoSlotsBeforeBookingApply: false when no trusted phone (Guard A handles it)", () => {
+test("shouldInterceptNoSlotsBeforeBookingApply: true even when no trusted phone (no-slots gate fires before phone guard)", () => {
   assert.equal(
     shouldInterceptNoSlotsBeforeBookingApply({
       pendingToolRequests: [BOOKING_APPLY_REQUEST],
       completedToolResults: [AVAILABILITY_EMPTY],
-      channelContact: undefined,
     }),
-    false,
+    true,
   );
 });
 
@@ -215,7 +216,6 @@ test("shouldInterceptNoSlotsBeforeBookingApply: false when no booking.apply pend
     shouldInterceptNoSlotsBeforeBookingApply({
       pendingToolRequests: [AVAILABILITY_REQUEST],
       completedToolResults: [AVAILABILITY_EMPTY],
-      channelContact: TRUSTED_CONTACT,
     }),
     false,
   );
@@ -813,4 +813,356 @@ test("Test 6: golden flow regression — 0 slots → booking.apply executor not 
     reason === "booking_apply_preflight_no_slots" || reason === "booking_apply_preflight_missing_slot_round2",
     `debug.reason must identify no-slot intercept, got: ${reason}`,
   );
+});
+
+// ── Test 1a: No slots + NO trusted phone → no-slots reply (not contact button) ──
+// The no-slots gate must fire before the phone guard so we never ask for phone
+// when there are no slots to book.
+
+test("Test 1a: no slots + no trusted phone → no-slots reply, no contact button", async () => {
+  let bookingApplyExecutorCalled = false;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        conversation_id: "conv_1a",
+        tool_requests: [AVAILABILITY_REQUEST],
+      },
+      {
+        type: "tool_requests",
+        conversation_id: "conv_1a",
+        tool_requests: [BOOKING_APPLY_REQUEST],
+      },
+    ]),
+    executors: {
+      "availability.check": async () => ({
+        status: "success" as const,
+        data: { slots: [], total_slots: 0, free_slots_count: 0 },
+      }),
+      "booking.apply": async () => {
+        bookingApplyExecutorCalled = true;
+        return {
+          status: "success" as const,
+          data: { booking_action: "booking_apply", booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false },
+        };
+      },
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    conversation_id: "conv_1a",
+    channel_contact: undefined, // no trusted phone
+  });
+
+  assert.equal(bookingApplyExecutorCalled, false, "executor must not be called");
+
+  // Must be no-slots reply, NOT contact button
+  assert.equal(result.ui?.telegram?.request_contact, undefined, "must NOT return contact button when no slots");
+  assert.ok(
+    result.final_patient_reply.toLowerCase().includes("слот") ||
+      result.final_patient_reply.toLowerCase().includes("slot"),
+    `Reply must mention no slots: ${result.final_patient_reply}`,
+  );
+
+  assert.equal(result.conversation_id, null);
+  assert.equal(result.conversation_id_resumable, false);
+  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_no_slots");
+});
+
+// ── Unit: shouldInterceptInvalidSlotTime ──────────────────────────────────────
+
+test("shouldInterceptInvalidSlotTime: true when requested_time not in allowed slots", () => {
+  assert.equal(
+    shouldInterceptInvalidSlotTime({
+      pendingToolRequests: [{
+        tool: "booking.apply",
+        call_id: "c1",
+        arguments: { requested_date: "2026-07-09", requested_time: "13:00", first_name: "A", last_name: "B", service: "s" },
+      }],
+      completedToolResults: [AVAILABILITY_SUCCESS], // AVAILABILITY_SUCCESS has 12:00 slot
+    }),
+    true,
+  );
+});
+
+test("shouldInterceptInvalidSlotTime: false when requested_time matches a slot", () => {
+  assert.equal(
+    shouldInterceptInvalidSlotTime({
+      pendingToolRequests: [{
+        tool: "booking.apply",
+        call_id: "c2",
+        arguments: { requested_date: "2026-07-09", requested_time: "12:00", first_name: "A", last_name: "B", service: "s" },
+      }],
+      completedToolResults: [AVAILABILITY_SUCCESS], // has starts_at "2026-07-09T12:00:00"
+    }),
+    false,
+  );
+});
+
+test("shouldInterceptInvalidSlotTime: false when no availability results (nothing to validate against)", () => {
+  assert.equal(
+    shouldInterceptInvalidSlotTime({
+      pendingToolRequests: [BOOKING_APPLY_REQUEST],
+      completedToolResults: [],
+    }),
+    false,
+  );
+});
+
+test("shouldInterceptInvalidSlotTime: false when no booking.apply pending", () => {
+  assert.equal(
+    shouldInterceptInvalidSlotTime({
+      pendingToolRequests: [AVAILABILITY_REQUEST],
+      completedToolResults: [AVAILABILITY_SUCCESS],
+    }),
+    false,
+  );
+});
+
+test("shouldInterceptInvalidSlotTime: false when requested_time absent (Guard D handles it)", () => {
+  assert.equal(
+    shouldInterceptInvalidSlotTime({
+      pendingToolRequests: [{
+        tool: "booking.apply",
+        call_id: "c3",
+        arguments: { requested_date: "2026-07-09", first_name: "A", last_name: "B", service: "s" },
+      }],
+      completedToolResults: [AVAILABILITY_SUCCESS],
+    }),
+    false,
+  );
+});
+
+test("shouldInterceptInvalidSlotTime: handles HH:MM:SS format in requested_time", () => {
+  // requested_time "12:00:00" normalized to "12:00" should match slot at 12:00
+  assert.equal(
+    shouldInterceptInvalidSlotTime({
+      pendingToolRequests: [{
+        tool: "booking.apply",
+        call_id: "c4",
+        arguments: { requested_date: "2026-07-09", requested_time: "12:00:00", first_name: "A", last_name: "B", service: "s" },
+      }],
+      completedToolResults: [AVAILABILITY_SUCCESS],
+    }),
+    false,
+  );
+});
+
+// ── Unit: buildInvalidSlotReply ───────────────────────────────────────────────
+
+test("buildInvalidSlotReply: RU mentions time/slot", () => {
+  const r = buildInvalidSlotReply("ru");
+  assert.ok(r.includes("врем") || r.includes("слот"), `RU: ${r}`);
+});
+
+test("buildInvalidSlotReply: EN mentions time/slot", () => {
+  const r = buildInvalidSlotReply("en");
+  assert.ok(r.includes("time") || r.includes("slot"), `EN: ${r}`);
+});
+
+// ── Unit: bookingApplyArgsMissingService ──────────────────────────────────────
+
+test("bookingApplyArgsMissingService: true when both service and service_reason absent", () => {
+  assert.equal(bookingApplyArgsMissingService({}), true);
+});
+
+test("bookingApplyArgsMissingService: false when service is present", () => {
+  assert.equal(bookingApplyArgsMissingService({ service: "cleaning" }), false);
+});
+
+test("bookingApplyArgsMissingService: false when service_reason is present", () => {
+  assert.equal(bookingApplyArgsMissingService({ service_reason: "tooth pain" }), false);
+});
+
+test("bookingApplyArgsMissingService: true when service is empty string", () => {
+  assert.equal(bookingApplyArgsMissingService({ service: "  " }), true);
+});
+
+// ── Unit: buildMissingServiceReply ────────────────────────────────────────────
+
+test("buildMissingServiceReply: RU mentions visit reason", () => {
+  const r = buildMissingServiceReply("ru");
+  assert.ok(r.includes("визит") || r.includes("услуг"), `RU: ${r}`);
+});
+
+test("buildMissingServiceReply: EN is non-empty", () => {
+  assert.ok(buildMissingServiceReply("en").length > 0);
+});
+
+// ── Integration Test: slot validity (invalid time, round 2) ──────────────────
+
+test("Integration: invalid slot time in round-2 → executor not called, asks to choose slot", async () => {
+  let bookingApplyExecutorCalled = false;
+
+  const BOOKING_WRONG_TIME: RuntimeAgentToolRequest = {
+    tool: "booking.apply",
+    call_id: "call_wrong_time",
+    arguments: {
+      service: "chistka",
+      requested_date: "2026-07-09",
+      requested_time: "13:00", // NOT in availability results (slot is 12:00)
+      first_name: "Роман",
+      last_name: "Анбасадоров",
+    },
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        conversation_id: "conv_invalid_slot",
+        tool_requests: [AVAILABILITY_REQUEST],
+      },
+      {
+        type: "tool_requests",
+        conversation_id: "conv_invalid_slot",
+        tool_requests: [BOOKING_WRONG_TIME],
+      },
+    ]),
+    executors: {
+      "availability.check": async () => ({
+        status: "success" as const,
+        data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 }, // 12:00 slot
+      }),
+      "booking.apply": async () => {
+        bookingApplyExecutorCalled = true;
+        return { status: "success" as const, data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false } };
+      },
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    conversation_id: "conv_invalid_slot",
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  assert.equal(bookingApplyExecutorCalled, false, "executor must not be called for invalid slot time");
+  assert.equal(result.tool_results?.find((r) => r.tool === "booking.apply"), undefined, "booking.apply must not appear in results");
+  assert.ok(
+    result.final_patient_reply.toLowerCase().includes("врем") ||
+      result.final_patient_reply.toLowerCase().includes("слот") ||
+      result.final_patient_reply.toLowerCase().includes("time") ||
+      result.final_patient_reply.toLowerCase().includes("slot"),
+    `Reply must ask to choose available slot: ${result.final_patient_reply}`,
+  );
+  assert.equal(result.conversation_id, null);
+  assert.equal(result.conversation_id_resumable, false);
+  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_invalid_slot_round2");
+});
+
+// ── Integration Test: valid slot time passes preflight ────────────────────────
+
+test("Integration: valid slot time (12:00 in [12:00]) — passes slot validity, executor called", async () => {
+  let bookingApplyExecutorCalled = false;
+
+  const BOOKING_CORRECT_TIME: RuntimeAgentToolRequest = {
+    tool: "booking.apply",
+    call_id: "call_correct_time",
+    arguments: {
+      service: "chistka",
+      requested_date: "2026-07-09",
+      requested_time: "12:00", // matches the available slot
+      first_name: "Роман",
+      last_name: "Анбасадоров",
+    },
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        conversation_id: "conv_valid_slot",
+        tool_requests: [AVAILABILITY_REQUEST],
+      },
+      {
+        type: "tool_requests",
+        conversation_id: "conv_valid_slot",
+        tool_requests: [BOOKING_CORRECT_TIME],
+      },
+      {
+        type: "final_response",
+        conversation_id: "conv_valid_slot",
+        final_response: { final_patient_reply: "Запись оформлена." },
+      },
+    ]),
+    executors: {
+      "availability.check": async () => ({
+        status: "success" as const,
+        data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 },
+      }),
+      "booking.apply": async () => {
+        bookingApplyExecutorCalled = true;
+        return {
+          status: "success" as const,
+          data: { booking_action: "booking_apply", booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false },
+        };
+      },
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    conversation_id: "conv_valid_slot",
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  assert.equal(bookingApplyExecutorCalled, true, "executor must be called when slot time is valid");
+  assert.ok(
+    result.tool_results?.some((r) => r.tool === "booking.apply"),
+    "booking.apply must appear in tool_results",
+  );
+});
+
+// ── Integration Test: missing service in round-1 → executor not called ────────
+
+test("Integration: missing service in round-1 args → executor not called, asks for service reason", async () => {
+  let bookingApplyExecutorCalled = false;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "tool_requests",
+      tool_requests: [{
+        tool: "booking.apply",
+        call_id: "call_no_svc",
+        arguments: {
+          requested_date: "2026-07-09",
+          requested_time: "12:00",
+          first_name: "Роман",
+          last_name: "Анбасадоров",
+          // no service, no service_reason
+        },
+      }],
+    }),
+    executors: {
+      "booking.apply": async () => {
+        bookingApplyExecutorCalled = true;
+        return { status: "success" as const, data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false } };
+      },
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    channel_contact: TRUSTED_CONTACT,
+  });
+
+  assert.equal(bookingApplyExecutorCalled, false, "executor must not be called when service is missing");
+  assert.deepEqual(result.tool_results, []);
+  assert.ok(
+    result.final_patient_reply.toLowerCase().includes("визит") ||
+      result.final_patient_reply.toLowerCase().includes("услуг") ||
+      result.final_patient_reply.toLowerCase().includes("visit") ||
+      result.final_patient_reply.toLowerCase().includes("service"),
+    `Reply must ask for service reason: ${result.final_patient_reply}`,
+  );
+  assert.equal(result.conversation_id, null);
+  assert.equal(result.conversation_id_resumable, false);
+  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_missing_service_round1");
 });

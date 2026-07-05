@@ -19,7 +19,7 @@ import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { buildContactButtonReply, hasTrustedPhone } from "./bookingContactGuard.ts";
-import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, buildNoSlotsPreflightReply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, buildMissingSlotReply, buildMissingNameFieldsReply } from "./bookingApplyPreflight.ts";
+import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, buildNoSlotsPreflightReply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, buildMissingSlotReply, buildMissingNameFieldsReply, bookingApplyArgsMissingService, buildMissingServiceReply, shouldInterceptInvalidSlotTime, buildInvalidSlotReply } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
@@ -281,6 +281,22 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
       }
 
+      // Global preflight F — service-missing guard (round 1): name and slot present but
+      // neither service nor service_reason is specified.  Ask only for the service reason.
+      if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact) && bookingApplyArgsMissingService(bookingApplyRound1.arguments)) {
+        debug.reason = "booking_apply_preflight_missing_service_round1";
+        markConversationDirty(debug);
+        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        return {
+          final_patient_reply: buildMissingServiceReply(input.locale),
+          conversation_id: null,
+          conversation_id_resumable: false,
+          tool_requests: toolRequests,
+          tool_results: [],
+          debug,
+        };
+      }
+
       for (const request of toolRequests) {
         if (!ACTIVE_TOOL_SET.has(request.tool)) {
           toolResults.push({
@@ -391,9 +407,28 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       if (secondOutput.type === "tool_requests") {
+        // No-slots gate (round 2, first): availability.check returned 0 slots — no slot
+        // exists to confirm regardless of phone status, so intercept before asking for phone.
+        if (shouldInterceptNoSlotsBeforeBookingApply({
+          pendingToolRequests: secondOutput.tool_requests,
+          completedToolResults: toolResults,
+        })) {
+          debug.reason = "booking_apply_preflight_no_slots";
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: buildNoSlotsPreflightReply(input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: toolRequests,
+            tool_results: toolResults,
+            debug,
+          };
+        }
+
         // Guard A: booking.apply requested in round-2 but trusted phone absent — intercept
-        // before execution regardless of slot availability.  The conversation is dirty
-        // (function_call with no function_call_output) so we clear it.
+        // before execution.  Runs after the no-slots gate so we don't ask for a phone when
+        // there are no slots to book anyway.
         if (shouldInterceptMissingPhoneBeforeBookingApply({
           pendingToolRequests: secondOutput.tool_requests,
           channelContact: input.channel_contact,
@@ -410,26 +445,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             tool_results: toolResults,
             debug,
             ui: contactReply.ui,
-          };
-        }
-
-        // No-slots gate: booking.apply requested in round-2, trusted phone present, but
-        // availability.check returned 0 slots — intercept before executing booking.apply.
-        if (shouldInterceptNoSlotsBeforeBookingApply({
-          pendingToolRequests: secondOutput.tool_requests,
-          completedToolResults: toolResults,
-          channelContact: input.channel_contact,
-        })) {
-          debug.reason = "booking_apply_preflight_no_slots";
-          markConversationDirty(debug);
-          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-          return {
-            final_patient_reply: buildNoSlotsPreflightReply(input.locale),
-            conversation_id: null,
-            conversation_id_resumable: false,
-            tool_requests: toolRequests,
-            tool_results: toolResults,
-            debug,
           };
         }
 
@@ -488,6 +503,41 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
             return {
               final_patient_reply: buildMissingNameFieldsReply(round2MissingNames, input.locale),
+              conversation_id: null,
+              conversation_id_resumable: false,
+              tool_requests: toolRequests,
+              tool_results: toolResults,
+              debug,
+            };
+          }
+
+          // Guard F (round 2): name and slot present but service/service_reason absent.
+          if (bookingApplyArgsMissingService(pendingBookingApply.arguments)) {
+            debug.reason = "booking_apply_preflight_missing_service_round2";
+            markConversationDirty(debug);
+            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+            return {
+              final_patient_reply: buildMissingServiceReply(input.locale),
+              conversation_id: null,
+              conversation_id_resumable: false,
+              tool_requests: toolRequests,
+              tool_results: toolResults,
+              debug,
+            };
+          }
+
+          // Slot validity check (round 2): requested_time must match a slot returned by
+          // availability.check.  Guards D and no-slots handle missing date/time and 0-slot
+          // cases respectively, so by here date+time are present and ≥1 slot exists.
+          if (shouldInterceptInvalidSlotTime({
+            pendingToolRequests: secondOutput.tool_requests,
+            completedToolResults: toolResults,
+          })) {
+            debug.reason = "booking_apply_preflight_invalid_slot_round2";
+            markConversationDirty(debug);
+            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+            return {
+              final_patient_reply: buildInvalidSlotReply(input.locale),
               conversation_id: null,
               conversation_id_resumable: false,
               tool_requests: toolRequests,

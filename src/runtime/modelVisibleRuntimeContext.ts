@@ -41,14 +41,20 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
       reachable_in_current_channel: patientReachableInCurrentChannel,
     },
     task_state: {
-      collected: {
-        name: asNullableString(collected.name),
-        service_interest: asNullableString(collected.service_interest),
-        problem: asNullableString(collected.problem),
-        preferred_time: asNullableString(collected.preferred_time),
-        preferred_contact: asNullableString(collected.preferred_contact),
-        contact_channel_available: contactChannelAvailable ?? undefined,
-      },
+      // Only include non-null collected fields. A null value means the field has not been
+      // persisted to the booking system via booking.apply — it does NOT mean the patient
+      // hasn't provided it. Omitting nulls prevents the model from treating absent persistence
+      // as authoritative evidence that the field is unknown (it may be in conversation history).
+      collected: Object.fromEntries(
+        [
+          ["name", asNullableString(collected.name)],
+          ["service_interest", asNullableString(collected.service_interest)],
+          ["problem", asNullableString(collected.problem)],
+          ["preferred_time", asNullableString(collected.preferred_time)],
+          ["preferred_contact", asNullableString(collected.preferred_contact)],
+          ...(contactChannelAvailable !== null ? [["contact_channel_available", contactChannelAvailable]] : []),
+        ].filter(([, v]) => v !== null && v !== undefined),
+      ),
       missing_fields: Array.isArray(conversationState.missing_fields)
         ? conversationState.missing_fields.filter(
             (field): field is string =>

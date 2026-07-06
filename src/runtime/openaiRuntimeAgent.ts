@@ -158,7 +158,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## CONTEXT AUTHORITY (highest to lowest)",
     "1. Tool results — availability.check and booking.apply outcomes are ground truth.",
     "2. Runtime context — booking_apply_action_truth, appointment_display_truth, booking_process_state. Tool results and Supabase/runtime context are business truth.",
-    "   EXCEPTION: booking_process_state.name_known and service_known are persistence flags only — they reflect whether the runtime persisted the field via booking.apply, NOT whether the patient stated it. If name_known or service_known is false, check conversation history before asking: the patient may have already provided the field earlier in this conversation.",
+    "   EXCEPTION: booking_process_state.name_known, service_known, AND task_state.collected.name, task_state.collected.service_interest are persistence flags only — they reflect whether the runtime persisted the field via booking.apply, NOT whether the patient stated it. A null or absent collected field does NOT mean the patient has not provided it. Always check conversation history before asking for name or service: the patient may have already provided them in this conversation.",
     "3. Conversation memory is dialogue continuity only, not business truth. Use it to recall what the patient said, but do not treat it as confirmed business state.",
     "When sources conflict: higher-ranked source wins.",
 

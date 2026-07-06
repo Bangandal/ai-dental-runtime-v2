@@ -3,6 +3,24 @@ import test from "node:test";
 
 import { buildModelVisibleRuntimeContext } from "../src/runtime/modelVisibleRuntimeContext.ts";
 
+test("missing_fields: name fields are stripped so model relies on conversation history, not stale runtime signal", () => {
+  const result = buildModelVisibleRuntimeContext({
+    known_contact: {},
+    conversation_state: {
+      collected: {},
+      missing_fields: ["first_name", "last_name", "name", "preferred_time"],
+    },
+  });
+
+  const taskState = (result.task_state ?? {}) as Record<string, unknown>;
+  const missing = taskState.missing_fields as string[];
+
+  assert.equal(missing.includes("first_name"), false, "first_name must be stripped");
+  assert.equal(missing.includes("last_name"), false, "last_name must be stripped");
+  assert.equal(missing.includes("name"), false, "name must be stripped");
+  assert.equal(missing.includes("preferred_time"), true, "preferred_time must be kept");
+});
+
 test("model-visible runtime context excludes phone from collected intake fields", () => {
   const result = buildModelVisibleRuntimeContext({
     known_contact: { first_name: "Ada", last_name: "Lovelace", phone_e164: "+15550001111" },

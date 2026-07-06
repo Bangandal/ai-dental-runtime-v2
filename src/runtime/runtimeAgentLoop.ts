@@ -32,6 +32,7 @@ import {
   type BookingProcessState,
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
+import { buildPhoneCaptureUi } from "./channelCapabilityPolicy.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -212,7 +213,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_requests: [],
           tool_results: [],
           debug,
-          ui: maybeAttachPhoneRequestUI(firstCallVisibleState, firstOutput.final_response.ui),
+          ui: maybeAttachPhoneRequestUI(firstCallVisibleState, firstOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
         };
       }
 
@@ -916,7 +917,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         tool_requests: toolRequests,
         tool_results: toolResults,
         debug,
-        ui: maybeAttachPhoneRequestUI(secondCallVisibleState, secondOutput.final_response.ui),
+        ui: maybeAttachPhoneRequestUI(secondCallVisibleState, secondOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
       };
     },
   };
@@ -1019,18 +1020,16 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
   if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
     await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
 
-    // For phone guards, force the Telegram contact button regardless of what the model returned —
+    // For phone guards, force the contact capture UI regardless of what the model returned —
     // the model may omit it, but the UI must always show it deterministically.
     let ui = guardedOutput.final_response.ui;
     if (guardedData.required_next_action === "ask_for_phone") {
-      ui = {
-        ...ui,
-        telegram: {
-          ...(ui?.telegram ?? {}),
-          request_contact: true,
-          button_text: "📞 Поделиться контактом",
-        },
-      };
+      const captureUi = buildPhoneCaptureUi(
+        typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined,
+      );
+      if (captureUi) {
+        ui = { ...ui, ...captureUi, telegram: { ...(ui?.telegram ?? {}), ...(captureUi.telegram ?? {}) } };
+      }
     }
 
     return {
@@ -1107,7 +1106,7 @@ export function buildMultiRoundFallbackReply(locale?: string | null): string {
 }
 
 /**
- * Deterministically attaches the Telegram contact-share button when
+ * Deterministically attaches the channel-appropriate contact capture UI when
  * booking_process_state.next_action === "ask_for_phone" and phone is not yet trusted.
  * Applied to all final_response return paths so the button appears even when the
  * model skips booking.apply and returns a plain text response asking for contact.
@@ -1116,6 +1115,7 @@ export function buildMultiRoundFallbackReply(locale?: string | null): string {
 export function maybeAttachPhoneRequestUI(
   bookingProcessState: ModelVisibleBookingProcessState | BookingProcessState | null,
   existingUi: AgentUiActions | undefined,
+  channel?: string | null,
 ): AgentUiActions | undefined {
   // Only attach contact button when confidence is high (or not set, for compatibility with
   // the guarded booking.apply path which passes raw BookingProcessState).
@@ -1129,13 +1129,12 @@ export function maybeAttachPhoneRequestUI(
     bookingProcessState?.phone_trusted !== true
   ) {
     if (existingUi?.telegram?.request_contact) return existingUi;
+    const captureUi = buildPhoneCaptureUi(channel);
+    if (!captureUi) return existingUi;
     return {
       ...existingUi,
-      telegram: {
-        ...(existingUi?.telegram ?? {}),
-        request_contact: true,
-        button_text: "📞 Поделиться контактом",
-      },
+      ...captureUi,
+      telegram: { ...(existingUi?.telegram ?? {}), ...(captureUi.telegram ?? {}) },
     };
   }
   return existingUi;

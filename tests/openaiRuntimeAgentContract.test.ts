@@ -450,6 +450,14 @@ test("first-turn greeting: agent loop uses is_first_patient_turn=false to suppre
   assert.ok(!capturedInstruction?.includes("помощник администратора клиники"), "is_first_patient_turn=false must NOT include self-introduction");
 });
 
+test("booking.apply arg names: prompt uses first_name and last_name, not patient_first_name or patient_last_name", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(instruction, /\bfirst_name\b/, "prompt must contain first_name");
+  assert.match(instruction, /\blast_name\b/, "prompt must contain last_name");
+  assert.doesNotMatch(instruction, /patient_first_name/, "prompt must NOT contain patient_first_name");
+  assert.doesNotMatch(instruction, /patient_last_name/, "prompt must NOT contain patient_last_name");
+});
+
 test("first-turn greeting: is_first_patient_turn unset defaults to no self-introduction", async () => {
   let capturedInstruction: string | undefined;
   const caller: RuntimeAgentCaller = async (input) => {

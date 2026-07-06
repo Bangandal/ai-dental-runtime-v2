@@ -21,6 +21,37 @@ test("missing_fields: name fields are stripped so model relies on conversation h
   assert.equal(missing.includes("preferred_time"), true, "preferred_time must be kept");
 });
 
+test("collected: null fields are omitted so model does not treat missing persistence as evidence the patient never provided the field", () => {
+  const result = buildModelVisibleRuntimeContext({
+    known_contact: {},
+    conversation_state: {
+      collected: { name: null, service_interest: null, preferred_time: "morning" },
+    },
+  });
+
+  const taskState = (result.task_state ?? {}) as Record<string, unknown>;
+  const collected = (taskState.collected ?? {}) as Record<string, unknown>;
+
+  assert.equal("name" in collected, false, "null name must be omitted");
+  assert.equal("service_interest" in collected, false, "null service_interest must be omitted");
+  assert.equal(collected.preferred_time, "morning", "non-null preferred_time must be kept");
+});
+
+test("collected: non-null fields are included", () => {
+  const result = buildModelVisibleRuntimeContext({
+    known_contact: {},
+    conversation_state: {
+      collected: { name: "Анна Долгова", service_interest: "осмотр" },
+    },
+  });
+
+  const taskState = (result.task_state ?? {}) as Record<string, unknown>;
+  const collected = (taskState.collected ?? {}) as Record<string, unknown>;
+
+  assert.equal(collected.name, "Анна Долгова");
+  assert.equal(collected.service_interest, "осмотр");
+});
+
 test("model-visible runtime context excludes phone from collected intake fields", () => {
   const result = buildModelVisibleRuntimeContext({
     known_contact: { first_name: "Ada", last_name: "Lovelace", phone_e164: "+15550001111" },

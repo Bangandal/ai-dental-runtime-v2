@@ -564,12 +564,26 @@ test("context authority: name_known and service_known are persistence flags, not
   const instruction = buildRuntimeAgentSystemInstruction();
   assert.match(
     instruction,
-    /booking_process_state\.name_known and service_known are persistence flags only/i,
+    /booking_process_state\.name_known.*service_known.*persistence flags only/i,
     "CONTEXT AUTHORITY must clarify that name_known/service_known are persistence flags",
   );
   assert.match(
     instruction,
     /check conversation history before asking/i,
     "CONTEXT AUTHORITY must tell model to check conversation history when name_known/service_known is false",
+  );
+});
+
+test("context authority: task_state.collected nulls are also persistence flags — not ground truth about what patient stated", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /task_state\.collected\.name.*task_state\.collected\.service_interest.*persistence flags/i,
+    "CONTEXT AUTHORITY must extend persistence-flag exception to task_state.collected fields",
+  );
+  assert.match(
+    instruction,
+    /null or absent collected field does NOT mean the patient has not provided it/i,
+    "CONTEXT AUTHORITY must explicitly say null collected fields are not evidence the patient never stated the field",
   );
 });

@@ -50,7 +50,7 @@ test("maps real rpc_get_runtime_context out_* shape into compact runtime_context
   assert.equal(result.data.known_contact.chat_id, "chat_1");
   assert.equal(result.data.known_contact.external_user_id, "user_1");
   assert.deepEqual(result.data.topic_memory, { last_service_interest: "пломба", source: "turn_understanding", confidence: "high", updated_at: "2026-05-31T00:00:00.000Z" });
-  assert.deepEqual(result.data.recent_history, []);
+  assert.deepEqual(result.data.recent_history, [{ role: "user", text: "hi" }]);
   assert.equal(result.data.runtime_flags.available_recent_history_count, 1);
 });
 

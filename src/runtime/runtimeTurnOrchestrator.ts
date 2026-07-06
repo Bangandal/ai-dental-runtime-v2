@@ -463,7 +463,8 @@ export async function runRuntimeTurnOrchestrated(
         confidence: "medium",
         control_flags: { openai_conversation_id: conversationIdToPersist },
         topic_memory_patch: topicMemoryPatch,
-        case_context_lite: caseLiteCurrent,
+        // In shadow mode caseLiteCurrent is debug-only — never persist it to durable convo_state.
+        case_context_lite: getCaseLiteMode() === "shadow" ? null : caseLiteCurrent,
       }).catch(() => ({ ok: false } as const));
       persistenceDebug.merge_state = mergeState.ok ? { ok: true } : { ok: false, code: "convo_state_persist_failed" };
       if (topicMemoryPatch) {

@@ -17,12 +17,17 @@ import test from "node:test";
 import { buildModelVisibleCallerContext } from "../src/runtime/modelVisibleCallerContext.ts";
 import {
   getCaseLiteMode,
+  runRuntimeTurnOrchestrated,
   type CaseLiteMode,
 } from "../src/runtime/runtimeTurnOrchestrator.ts";
 import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntimeAgent.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import type { RuntimeAgentTurnInput, ChannelContact } from "../src/runtime/openaiRuntimeAgent.ts";
 import type { RuntimeAgentToolResult, RuntimeAgentToolRequest } from "../src/runtime/openaiRuntimeAgent.ts";
+import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
+import type { RuntimeContextRepository } from "../src/runtime/supabaseRuntimeContextRepository.ts";
+import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
+import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -352,6 +357,125 @@ test("H: getCaseLiteMode returns 'shadow' when RUNTIME_CASE_LITE_MODE=shadow", (
   try {
     const mode: CaseLiteMode = getCaseLiteMode();
     assert.equal(mode, "shadow");
+  } finally {
+    if (prev !== undefined) process.env.RUNTIME_CASE_LITE_MODE = prev;
+    else delete process.env.RUNTIME_CASE_LITE_MODE;
+  }
+});
+
+// ── Persistence tests (shadow mode must NOT persist case_context_lite) ────────
+
+const CLINIC_CODE = "clinic_persist_test";
+const CLINIC_UUID = "e8179559-fc8d-40e5-9808-287ed69fcf7d";
+
+const persistTestClinicResolver: ClinicIdentityResolver = {
+  async resolveClinicIdentity(input) {
+    if (input.clinic_identifier === CLINIC_CODE || input.clinic_identifier === CLINIC_UUID) {
+      return { ok: true, data: { clinic_id: CLINIC_UUID, clinic_code: CLINIC_CODE } };
+    }
+    return { ok: false, error: { code: "clinic_not_found", message: "not found", retryable: false } };
+  },
+};
+
+const CONTACT_UUID = "a1b2c3d4-e5f6-4890-abcd-ef1234567890";
+
+function makePersistenceRepoCapture(): {
+  repo: TurnPersistenceRepository;
+  capturedMerge: Array<Parameters<TurnPersistenceRepository["mergeConversationState"]>[0]>;
+} {
+  const capturedMerge: Array<Parameters<TurnPersistenceRepository["mergeConversationState"]>[0]> = [];
+  const repo: TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_UUID, clinic_id: CLINIC_UUID } };
+    },
+    async registerInboundEvent() {
+      // Non-null inbound_event_id means this is NOT a duplicate → processing continues
+      return { ok: true, data: { inbound_event_id: "evt_persist_test" } };
+    },
+    async saveMessage() {
+      return { ok: true, data: { message_id: "msg_persist_test" } };
+    },
+    async mergeConversationState(input) {
+      capturedMerge.push(input);
+      return { ok: true, data: { ok: true } };
+    },
+  };
+  return { repo, capturedMerge };
+}
+
+function makeRuntimeContextRepoWithCaseLite(): RuntimeContextRepository {
+  return {
+    async loadRuntimeContext() {
+      return {
+        ok: true,
+        data: {
+          known_contact: { first_name: "Иван", last_name: "Петров" },
+          conversation_state: { intent: "booking", qualification_stage: "intake", missing_fields: ["preferred_time"] },
+          topic_memory: null,
+          channel_contact: null,
+          case_context_lite: { booking: { service: "чистка зубов", name: "Иван Петров" } },
+          runtime_flags: { has_durable_context: true, context_source: "supabase", context_loaded_at: new Date().toISOString() },
+          recent_history: [],
+        },
+      };
+    },
+  };
+}
+
+function makeSimpleTurnService(): RuntimeTurnService {
+  return {
+    async runTurn() {
+      return { final_patient_reply: "Хорошо, проверим время.", tool_requests: [], tool_results: [] };
+    },
+  };
+}
+
+test("I: shadow mode does NOT persist case_context_lite to mergeConversationState", async () => {
+  const prev = process.env.RUNTIME_CASE_LITE_MODE;
+  process.env.RUNTIME_CASE_LITE_MODE = "shadow";
+  try {
+    const { repo, capturedMerge } = makePersistenceRepoCapture();
+    await runRuntimeTurnOrchestrated(
+      { clinic_code: CLINIC_CODE, channel: "telegram", external_user_id: "user_shadow", chat_id: "9001", text: "Запишите меня" },
+      {
+        runtimeTurnService: makeSimpleTurnService(),
+        clinicIdentityResolver: persistTestClinicResolver,
+        turnPersistenceRepository: repo,
+        runtimeContextRepository: makeRuntimeContextRepoWithCaseLite(),
+      },
+    );
+    assert.ok(capturedMerge.length > 0, "mergeConversationState must be called");
+    assert.equal(
+      capturedMerge[0]!.case_context_lite,
+      null,
+      "shadow mode must pass null for case_context_lite to mergeConversationState",
+    );
+  } finally {
+    if (prev !== undefined) process.env.RUNTIME_CASE_LITE_MODE = prev;
+    else delete process.env.RUNTIME_CASE_LITE_MODE;
+  }
+});
+
+test("J: disabled mode does NOT persist case_context_lite to mergeConversationState", async () => {
+  const prev = process.env.RUNTIME_CASE_LITE_MODE;
+  delete process.env.RUNTIME_CASE_LITE_MODE;
+  try {
+    const { repo, capturedMerge } = makePersistenceRepoCapture();
+    await runRuntimeTurnOrchestrated(
+      { clinic_code: CLINIC_CODE, channel: "telegram", external_user_id: "user_disabled", chat_id: "9002", text: "Запишите меня" },
+      {
+        runtimeTurnService: makeSimpleTurnService(),
+        clinicIdentityResolver: persistTestClinicResolver,
+        turnPersistenceRepository: repo,
+        runtimeContextRepository: makeRuntimeContextRepoWithCaseLite(),
+      },
+    );
+    assert.ok(capturedMerge.length > 0, "mergeConversationState must be called");
+    const caselite = capturedMerge[0]!.case_context_lite;
+    assert.ok(
+      caselite === null || caselite === undefined,
+      "disabled mode must pass null/undefined for case_context_lite to mergeConversationState",
+    );
   } finally {
     if (prev !== undefined) process.env.RUNTIME_CASE_LITE_MODE = prev;
     else delete process.env.RUNTIME_CASE_LITE_MODE;

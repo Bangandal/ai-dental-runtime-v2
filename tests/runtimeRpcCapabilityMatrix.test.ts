@@ -90,6 +90,8 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/bookingContactGuard.ts",
     "src/runtime/bookingPreflight.ts",
     "src/integrations/cliniccard/clinicCardAvailabilityExecutor.ts",
+    "src/integrations/cliniccard/clinicCardAvailability.ts",
+    "src/integrations/cliniccard/availabilityDiagnostics.ts",
     "src/runtime/openaiRuntimeAgent.ts",
     "src/runtime/availabilityPresentationTruth.ts",
     "src/runtime/appointmentDisplayTruth.ts",

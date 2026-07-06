@@ -70,17 +70,22 @@ test("A: first turn with no prior state does NOT pass next_action to model conte
   const visible = buildModelVisibleBookingProcessState({
     state,
     priorProcessState: null,
-    hasToolResults: false,
+    bookingStateGrounded: false,
   });
   assert.equal(visible.next_action_confidence, "low");
   assert.equal(visible.next_action, undefined, "next_action must be omitted on low confidence");
 });
 
-// ── Test B: prior state exists → high confidence → next_action included ────────
+// ── Test B: prior state exists with full name+service+slot → ask_for_phone exposed ────────
 
-test("B: prior state exists with meaningful data → next_action included with high confidence", () => {
-  // Prior has service_reason → hasMeaningfulBookingState=true → grounded
-  const prior: Partial<BookingProcessState> = { service_reason: "чистка" };
+test("B: prior state with service+name+slot known → ask_for_phone exposed with high confidence", () => {
+  // Only safe next_actions are exposed. Use a state where ask_for_phone is the action.
+  const prior: Partial<BookingProcessState> = {
+    service_reason: "чистка",
+    first_name: "Иван",
+    last_name: "Иванов",
+    selected_slot: { starts_at: "2026-08-05T14:00:00" },
+  };
   const state = computeBookingProcessState({ prior });
   const visible = buildModelVisibleBookingProcessState({
     state,
@@ -88,14 +93,16 @@ test("B: prior state exists with meaningful data → next_action included with h
     bookingStateGrounded: true,
   });
   assert.equal(visible.next_action_confidence, "high");
-  // service_reason is in prior → ask_for_service suppression does not apply; next_action is ask_for_name or similar
-  assert.ok(visible.next_action !== undefined, "next_action must be present when prior has meaningful data");
+  // Service+name+slot known, phone missing → ask_for_phone is safe and exposed
+  assert.equal(visible.next_action, "ask_for_phone",
+    "ask_for_phone must be present when name/service/slot all known from prior state");
 });
 
 // ── Test C: booking tool result grounds confidence ─────────────────────────────
 
-test("C: after availability.check tool result → high confidence; slot fields visible; ask_for_service suppressed if not in prior", () => {
-  // Service IS in prior → ask_for_name becomes next_action (not suppressed)
+test("C: after availability.check tool result → high confidence; slot fields visible; ask_for_name/service always suppressed", () => {
+  // Even when service is in prior (so next_action would be ask_for_name),
+  // ask_for_name is always suppressed — never exposed via booking_process_state.
   const prior: Partial<BookingProcessState> = { service_reason: "осмотр" };
   const toolResults = [{
     tool: "availability.check" as const,
@@ -112,9 +119,14 @@ test("C: after availability.check tool result → high confidence; slot fields v
   assert.equal(visible.next_action_confidence, "high");
   assert.ok(Array.isArray(visible.last_available_slots) && visible.last_available_slots!.length > 0,
     "last_available_slots must be visible");
-  // service_reason is in prior → next_action is ask_for_name (service known)
-  assert.ok(visible.next_action !== undefined, "next_action should be present when service is in prior");
-  assert.notEqual(visible.next_action, "ask_for_service");
+  // ask_for_name and ask_for_service are always suppressed regardless of confidence
+  assert.notEqual(visible.next_action, "ask_for_service",
+    "ask_for_service must never be exposed");
+  assert.notEqual(visible.next_action, "ask_for_name",
+    "ask_for_name must never be exposed — let conversation memory handle it");
+  // next_action is undefined here (name not known → would be ask_for_name → suppressed)
+  assert.equal(visible.next_action, undefined,
+    "next_action is suppressed when the only pending action is ask_for_name");
 });
 
 // ── Test D: recent_history bug fix ────────────────────────────────────────────
@@ -369,4 +381,114 @@ test("Blocker2-B: saveState — result.error (returned, not thrown) calls onDebu
   assert.ok(debugInfo !== null, "onDebug must be called on returned error");
   assert.equal(debugInfo!.saved, false, "saved must be false");
   assert.ok(typeof debugInfo!.error === "string" && debugInfo!.error.length > 0, "sanitized error must be present");
+});
+
+// ── New tests: slot-only prior state must NOT expose ask_for_service/name ─────
+
+test("Slot-only-1: prior state with only last_available_slots, patient selects slot → visible next_action NOT ask_for_service", () => {
+  // Scenario: prior state has slots from a previous availability.check turn.
+  // hasMeaningfulBookingState returns true (slots present) → firstCallGrounded=true.
+  // But service/name are NOT in prior. ask_for_service must still be suppressed.
+  const prior: Partial<BookingProcessState> = {
+    last_available_slots: [{ starts_at: "2026-08-05T10:00:00" }, { starts_at: "2026-08-05T14:00:00" }],
+  };
+  const state = computeBookingProcessState({
+    prior,
+    patientMessage: "10:00",
+  });
+  // Even with high confidence (prior has slots → grounded), ask_for_service must be suppressed.
+  const visible = buildModelVisibleBookingProcessState({
+    state,
+    priorProcessState: prior,
+    bookingStateGrounded: true, // prior has meaningful slot data
+  });
+  assert.notEqual(visible.next_action, "ask_for_service",
+    "ask_for_service must never be exposed — even when state is grounded via slot-only prior");
+  assert.notEqual(visible.next_action, "ask_for_name",
+    "ask_for_name must never be exposed");
+  // selected_slot should be detected and visible
+  assert.ok(visible.selected_slot != null, "selected_slot must be detected");
+});
+
+test("Slot-only-2: prior state with selected_slot but no service/name → next_action NOT ask_for_service or ask_for_name", () => {
+  const prior: Partial<BookingProcessState> = {
+    selected_slot: { starts_at: "2026-08-05T14:00:00" },
+  };
+  const state = computeBookingProcessState({ prior });
+  const visible = buildModelVisibleBookingProcessState({
+    state,
+    priorProcessState: prior,
+    bookingStateGrounded: true,
+  });
+  assert.notEqual(visible.next_action, "ask_for_service",
+    "ask_for_service must never be exposed");
+  assert.notEqual(visible.next_action, "ask_for_name",
+    "ask_for_name must never be exposed");
+});
+
+test("Guard-3: booking.apply missing_service guard fires via booking_apply_action_truth, not via booking_process_state.next_action", async () => {
+  // Verifies that the PR #142 guard still returns missing_service from booking_apply_action_truth.
+  // booking_process_state.next_action is suppressed but the guard runs independently.
+  const { buildBookingApplyActionTruth } = await import("../src/runtime/bookingApplyGuard.ts");
+  const guardedResults = [{
+    tool: "booking.apply" as const,
+    call_id: "call_g3",
+    status: "success" as const,
+    data: {
+      booking_status: "missing_service",
+      created_visit: false,
+      may_claim_booked: false,
+      required_next_action: "ask_for_service",
+      reason: "service_required",
+    },
+  }];
+  const truth = buildBookingApplyActionTruth(guardedResults as never);
+  assert.ok(truth !== null, "truth must be non-null");
+  assert.equal(truth!.booking_status, "missing_service",
+    "booking_apply_action_truth must carry missing_service from the guard result");
+  assert.equal(truth!.required_next_action, "ask_for_service",
+    "booking_apply_action_truth preserves required_next_action from guard for model context");
+  // This is separate from booking_process_state.next_action — guard output goes via action_truth, not state.
+});
+
+test("Guard-4: booking.apply missing_patient_name guard fires via booking_apply_action_truth, not via booking_process_state.next_action", async () => {
+  const { buildBookingApplyActionTruth } = await import("../src/runtime/bookingApplyGuard.ts");
+  const guardedResults = [{
+    tool: "booking.apply" as const,
+    call_id: "call_g4",
+    status: "success" as const,
+    data: {
+      booking_status: "missing_patient_name",
+      created_visit: false,
+      may_claim_booked: false,
+      required_next_action: "ask_for_name",
+      reason: "patient_name_required",
+      missing_fields: ["first_name"],
+    },
+  }];
+  const truth = buildBookingApplyActionTruth(guardedResults as never);
+  assert.ok(truth !== null, "truth must be non-null");
+  assert.equal(truth!.booking_status, "missing_patient_name",
+    "booking_apply_action_truth must carry missing_patient_name from the guard result");
+  assert.equal(truth!.required_next_action, "ask_for_name",
+    "booking_apply_action_truth preserves required_next_action from guard for model context");
+});
+
+test("Guard-5: when service+name+slot all grounded in prior state and phone missing → ask_for_phone still exposed", () => {
+  // Verifies that the safe ask_for_phone action is still exposed when all other fields are grounded.
+  const prior: Partial<BookingProcessState> = {
+    service_reason: "чистка зубов",
+    first_name: "Оксана",
+    last_name: "Ковальчук",
+    selected_slot: { starts_at: "2026-08-05T14:00:00" },
+  };
+  const state = computeBookingProcessState({ prior }); // phone_trusted=false (no channel_contact)
+  const visible = buildModelVisibleBookingProcessState({
+    state,
+    priorProcessState: prior,
+    bookingStateGrounded: true,
+  });
+  assert.equal(visible.next_action, "ask_for_phone",
+    "ask_for_phone must be exposed when all other proof fields are grounded and phone is missing");
+  assert.equal(visible.next_action_confidence, "high");
 });

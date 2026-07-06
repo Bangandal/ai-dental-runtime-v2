@@ -73,17 +73,31 @@ export function hasMeaningfulBookingState(state: Partial<BookingProcessState>): 
 }
 
 /**
+ * Safe next_action values that can be exposed to the model.
+ *
+ * ask_for_service and ask_for_name are NEVER exposed because the runtime cannot
+ * reliably extract service/name from free-form patient text. Exposing them causes
+ * the model to re-ask fields the patient already provided in conversation.
+ * Conversation memory + recent_history handle collection; booking.apply guards enforce
+ * that these fields are present before any live write.
+ */
+const SAFE_VISIBLE_NEXT_ACTIONS = new Set<BookingNextAction>([
+  "ask_for_slot",
+  "choose_from_available_slots",
+  "ask_for_phone",
+  "ask_for_alternative_time",
+  "ready_for_booking_apply",
+]);
+
+/**
  * Resolves which next_action (if any) to expose to the model.
  *
- * Even when state is grounded (high confidence), some next_action values are
- * only safe to expose when the relevant field is durably absent from prior state.
- * For example: ask_for_service should not override the model when service_reason
- * was only absent because it was never extracted from text (not because it was
- * explicitly missing across turns).
+ * Only safe, slot/phone-derived actions are exposed. ask_for_service and
+ * ask_for_name are always suppressed — let conversation memory handle them.
  */
 function resolveVisibleNextAction(
   state: BookingProcessState,
-  priorProcessState: Partial<BookingProcessState> | null,
+  _priorProcessState: Partial<BookingProcessState> | null,
   bookingStateGrounded: boolean,
 ): BookingNextAction | undefined {
   if (!bookingStateGrounded) return undefined; // low confidence — suppress entirely
@@ -91,16 +105,9 @@ function resolveVisibleNextAction(
   const na = state.next_action;
   if (!na) return undefined;
 
-  // When grounded only via booking tool results (no prior persisted state),
-  // suppress conversational field asks that may conflict with conversation memory.
-  // Patient may have stated service/name in conversation text that the runtime didn't extract.
-  // Only suppress when priorProcessState === null (no cross-turn state knowledge at all).
-  // When priorProcessState exists (from a previous turn), its absence of a field IS
-  // meaningful (the field was never captured across turns) — safe to expose.
-  if (priorProcessState === null) {
-    if (na === "ask_for_service") return undefined;
-    if (na === "ask_for_name") return undefined;
-  }
+  // Always suppress conversational field asks — runtime cannot extract these reliably.
+  // Patient may have stated service/name in conversation text that the runtime never persisted.
+  if (!SAFE_VISIBLE_NEXT_ACTIONS.has(na)) return undefined;
 
   return na;
 }

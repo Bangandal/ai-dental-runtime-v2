@@ -27,6 +27,18 @@ import { mergeRuntimeCaseLite, applyBookingStatusToCase, buildDefaultRuntimeCase
 import type { RuntimeCaseLite } from "./runtimeCaseLite.ts";
 import { buildCasePolicyTruth } from "./runtimeCasePolicyTruth.ts";
 
+// RUNTIME_CASE_LITE_MODE controls whether the LLM-based CaseLite extractor runs and
+// whether its output is visible to the main patient-facing model.
+// "disabled" (default): extractor does not run; case_context_lite / case_policy_truth
+//   are NOT injected into the main model context.
+// "shadow": extractor may run for analytics/debug; output goes to debug only, never
+//   to patient-facing model context.
+export type CaseLiteMode = "disabled" | "shadow";
+export function getCaseLiteMode(): CaseLiteMode {
+  const raw = process.env.RUNTIME_CASE_LITE_MODE ?? "disabled";
+  return raw === "shadow" ? "shadow" : "disabled";
+}
+
 export interface RuntimeTurnOrchestratorDeps {
   runtimeTurnService: RuntimeTurnService;
   runtimeTurnLogger?: RuntimeTurnLogger;
@@ -276,7 +288,8 @@ export async function runRuntimeTurnOrchestrated(
           locale: runtimeTurnInput.locale ?? null,
         });
 
-        if (deps.caseLiteExtractor) {
+        const caseLiteMode = getCaseLiteMode();
+        if (deps.caseLiteExtractor && caseLiteMode === "shadow") {
           try {
             const caseUpdate = await deps.caseLiteExtractor.extractCaseLiteUpdate({
               user_message: runtimeTurnInput.user_message,
@@ -287,22 +300,23 @@ export async function runRuntimeTurnOrchestrated(
           } catch {
             caseLiteCurrent = mergeRuntimeCaseLite(existingCaseLite, {}, channelContactForCase);
           }
-        } else {
+        } else if (caseLiteMode === "shadow") {
           caseLiteCurrent = mergeRuntimeCaseLite(existingCaseLite, {}, channelContactForCase);
         }
+        // caseLiteMode === "disabled": extractor does not run; caseLiteCurrent stays null.
 
         const baseRuntimeContext = mergeCaseContextIntoModelContext(
           applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data)),
           loadedCaseContext,
         );
-        const runtimeContextWithCase = caseLiteCurrent
-          ? { ...baseRuntimeContext, case_context_lite: caseLiteCurrent, case_policy_truth: buildCasePolicyTruth(caseLiteCurrent) }
-          : baseRuntimeContext;
+        // case_context_lite and case_policy_truth are NEVER injected into the patient-facing
+        // model context regardless of mode — they are LLM-extracted beliefs, not proof.
+        // In shadow mode they are available in debug only (see caseContextDebug below).
 
         runtimeGateSourceContext = mergeCaseContextIntoModelContext(asRecord(runtimeContextResult.data), loadedCaseContext);
         runtimeTurnInput.business_context = {
           ...(runtimeTurnInput.business_context ?? {}),
-          runtime_context: runtimeContextWithCase,
+          runtime_context: baseRuntimeContext,
         };
         if (channelContactForCase) {
           runtimeTurnInput.channel_contact = channelContactForCase;
@@ -449,7 +463,8 @@ export async function runRuntimeTurnOrchestrated(
         confidence: "medium",
         control_flags: { openai_conversation_id: conversationIdToPersist },
         topic_memory_patch: topicMemoryPatch,
-        case_context_lite: caseLiteCurrent,
+        // In shadow mode caseLiteCurrent is debug-only — never persist it to durable convo_state.
+        case_context_lite: getCaseLiteMode() === "shadow" ? null : caseLiteCurrent,
       }).catch(() => ({ ok: false } as const));
       persistenceDebug.merge_state = mergeState.ok ? { ok: true } : { ok: false, code: "convo_state_persist_failed" };
       if (topicMemoryPatch) {
@@ -468,8 +483,11 @@ export async function runRuntimeTurnOrchestrated(
     const serviceDebug = result.debug as Record<string, unknown> | undefined;
     const llmCalls = mergeRuntimeLlmCallDebug(turnLlmCalls, serviceDebug?.llm_calls);
 
+    const caseLiteShadowDebug = caseLiteCurrent
+      ? { case_context_lite: caseLiteCurrent, case_policy_truth: buildCasePolicyTruth(caseLiteCurrent), mode: getCaseLiteMode() }
+      : { mode: getCaseLiteMode() };
     const debugPayload = deps.debugEnabled
-      ? { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug }
+      ? { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, case_lite_shadow: caseLiteShadowDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug }
       : undefined;
 
     const sideEffects: unknown[] = [];

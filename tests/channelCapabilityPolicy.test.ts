@@ -15,6 +15,7 @@ import test from "node:test";
 import {
   getChannelCapabilityPolicy,
   buildPhoneCaptureUi,
+  sanitizePhoneCaptureUiForChannel,
 } from "../src/runtime/channelCapabilityPolicy.ts";
 import {
   maybeAttachPhoneRequestUI,
@@ -220,4 +221,69 @@ test("F: phone guard block does not produce booking confirmation in reply", asyn
       assert.equal(claims?.can_say_booking_created, false);
     }
   }
+});
+
+// ── sanitizePhoneCaptureUiForChannel tests ────────────────────────────────────
+
+test("sanitize: telegram channel keeps Telegram contact button unchanged", () => {
+  const ui = { telegram: { request_contact: true, button_text: "📞 Поделиться контактом" } };
+  const result = sanitizePhoneCaptureUiForChannel(ui, "telegram");
+  assert.deepEqual(result, ui);
+});
+
+test("sanitize: WhatsApp strips model-emitted Telegram UI", () => {
+  const ui = { telegram: { request_contact: true, button_text: "📞 Поделиться контактом" } };
+  const result = sanitizePhoneCaptureUiForChannel(ui, "whatsapp");
+  assert.equal(result?.telegram?.request_contact, undefined);
+  assert.equal(result?.telegram?.button_text, undefined);
+});
+
+test("sanitize: web channel strips model-emitted Telegram UI", () => {
+  const ui = { telegram: { request_contact: true, button_text: "📞 Поделиться контактом" } };
+  const result = sanitizePhoneCaptureUiForChannel(ui, "web");
+  assert.equal(result?.telegram?.request_contact, undefined);
+});
+
+test("sanitize: unknown channel strips model-emitted Telegram UI", () => {
+  const ui = { telegram: { request_contact: true, button_text: "📞 Поделиться контактом" } };
+  const result = sanitizePhoneCaptureUiForChannel(ui, "unknown");
+  assert.ok(!result?.telegram?.request_contact, "request_contact must be stripped");
+});
+
+test("sanitize: preserves unrelated UI fields when stripping Telegram button", () => {
+  const ui = { telegram: { request_contact: true, some_other_field: "keep_me" } as Record<string, unknown> };
+  const result = sanitizePhoneCaptureUiForChannel(ui as { telegram: { request_contact: boolean } }, "whatsapp");
+  // request_contact stripped; some_other_field preserved
+  assert.equal((result?.telegram as Record<string, unknown> | undefined)?.request_contact, undefined);
+  assert.equal((result?.telegram as Record<string, unknown> | undefined)?.some_other_field, "keep_me");
+});
+
+test("sanitize: undefined UI returned unchanged", () => {
+  const result = sanitizePhoneCaptureUiForChannel(undefined, "whatsapp");
+  assert.equal(result, undefined);
+});
+
+test("sanitize: maybeAttachPhoneRequestUI on WhatsApp strips model-emitted Telegram UI", () => {
+  // Model returned telegram UI but channel is WhatsApp — sanitizer must strip it
+  const modelUi = { telegram: { request_contact: true, button_text: "📞 Поделиться контактом" } };
+  const state = { next_action: "ask_for_slot" as const, phone_trusted: false, next_action_confidence: "high" as const };
+  const result = maybeAttachPhoneRequestUI(state, modelUi, "whatsapp");
+  assert.equal(result?.telegram?.request_contact, undefined);
+});
+
+test("sanitize: maybeAttachPhoneRequestUI on Telegram keeps contact button for ask_for_phone", () => {
+  const state = { next_action: "ask_for_phone" as const, phone_trusted: false, next_action_confidence: "high" as const };
+  const result = maybeAttachPhoneRequestUI(state, undefined, "telegram");
+  assert.equal(result?.telegram?.request_contact, true);
+});
+
+test("sanitize: trusted phone still suppresses contact request UI after sanitization", () => {
+  const modelUi = { telegram: { request_contact: true, button_text: "📞 Поделиться контактом" } };
+  const state = { next_action: "ask_for_phone" as const, phone_trusted: true, next_action_confidence: "high" as const };
+  // phone_trusted=true → maybeAttach doesn't add button; sanitize strips model-emitted one
+  const result = maybeAttachPhoneRequestUI(state, modelUi, "telegram");
+  // phone_trusted=true means we should NOT attach, but existing model-emitted is kept by sanitizer for telegram
+  // The phone_trusted suppression happens inside maybeAttachPhoneRequestUI logic
+  // Verify: result does NOT show contact request when phone_trusted
+  assert.equal(result?.telegram?.request_contact, undefined);
 });

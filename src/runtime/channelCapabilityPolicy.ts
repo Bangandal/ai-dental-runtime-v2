@@ -57,6 +57,31 @@ export function getChannelCapabilityPolicy(channel: string | null | undefined): 
 }
 
 /**
+ * Strips model-emitted Telegram contact UI for channels where the Telegram
+ * contact button is not permitted. Preserves all unrelated UI fields.
+ * Must be applied to every final_response path before returning to the caller.
+ */
+export function sanitizePhoneCaptureUiForChannel(
+  ui: AgentUiActions | undefined,
+  channel: string | null | undefined,
+): AgentUiActions | undefined {
+  if (!ui) return ui;
+  const policy = getChannelCapabilityPolicy(channel);
+  if (policy.phone_capture_method === "telegram_contact_button") {
+    // Telegram: contact button permitted — pass through unchanged
+    return ui;
+  }
+  // Non-Telegram: strip Telegram-specific contact request fields
+  if (!ui.telegram) return ui;
+  const { request_contact: _rc, button_text: _bt, ...restTelegram } = ui.telegram;
+  const hasRemainingTelegram = Object.keys(restTelegram).length > 0;
+  const { telegram: _tg, ...restUi } = ui;
+  return hasRemainingTelegram
+    ? { ...restUi, telegram: restTelegram }
+    : Object.keys(restUi).length > 0 ? restUi : undefined;
+}
+
+/**
  * Builds channel-appropriate contact capture UI for the phone request step.
  * Returns undefined for channels that handle phone capture natively or not at all —
  * only Telegram requires an explicit contact button injected by the runtime.

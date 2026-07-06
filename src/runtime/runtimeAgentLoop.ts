@@ -32,7 +32,7 @@ import {
   type BookingProcessState,
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
-import { buildPhoneCaptureUi } from "./channelCapabilityPolicy.ts";
+import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -802,7 +802,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               tool_requests: toolRequests,
               tool_results: allResults,
               debug,
-              ui: bookingFinalOutput.final_response.ui,
+              ui: sanitizePhoneCaptureUiForChannel(bookingFinalOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
             };
           }
 
@@ -892,7 +892,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               tool_requests: toolRequests,
               tool_results: toolResults,
               debug,
-              ui: forcedOutput.final_response.ui,
+              ui: sanitizePhoneCaptureUiForChannel(forcedOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
             };
           }
         }
@@ -1020,13 +1020,13 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
   if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
     await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
 
+    // Sanitize model-emitted Telegram UI for non-Telegram channels before merging.
+    const channel = typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined;
+    let ui = sanitizePhoneCaptureUiForChannel(guardedOutput.final_response.ui, channel);
     // For phone guards, force the contact capture UI regardless of what the model returned —
     // the model may omit it, but the UI must always show it deterministically.
-    let ui = guardedOutput.final_response.ui;
     if (guardedData.required_next_action === "ask_for_phone") {
-      const captureUi = buildPhoneCaptureUi(
-        typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined,
-      );
+      const captureUi = buildPhoneCaptureUi(channel);
       if (captureUi) {
         ui = { ...ui, ...captureUi, telegram: { ...(ui?.telegram ?? {}), ...(captureUi.telegram ?? {}) } };
       }
@@ -1117,27 +1117,41 @@ export function maybeAttachPhoneRequestUI(
   existingUi: AgentUiActions | undefined,
   channel?: string | null,
 ): AgentUiActions | undefined {
+  // Always sanitize model-emitted Telegram contact UI for channels that don't permit it.
+  let sanitized = sanitizePhoneCaptureUiForChannel(existingUi, channel);
+
+  // If phone is already trusted, also strip any model-emitted contact request — we should
+  // never ask the patient to share a phone we already have.
+  if (bookingProcessState?.phone_trusted === true && sanitized?.telegram?.request_contact) {
+    const { request_contact: _rc, button_text: _bt, ...restTelegram } = sanitized.telegram;
+    const hasRemainingTelegram = Object.keys(restTelegram).length > 0;
+    const { telegram: _tg, ...restUi } = sanitized;
+    sanitized = hasRemainingTelegram
+      ? { ...restUi, telegram: restTelegram }
+      : Object.keys(restUi).length > 0 ? restUi : undefined;
+  }
+
   // Only attach contact button when confidence is high (or not set, for compatibility with
   // the guarded booking.apply path which passes raw BookingProcessState).
   // Low-confidence state means next_action was derived from defaults without durable backing —
   // in that case we do not force a UI that may be wrong.
   const confidence = (bookingProcessState as ModelVisibleBookingProcessState)?.next_action_confidence;
-  if (confidence === "low") return existingUi;
+  if (confidence === "low") return sanitized;
 
   if (
     bookingProcessState?.next_action === "ask_for_phone" &&
     bookingProcessState?.phone_trusted !== true
   ) {
-    if (existingUi?.telegram?.request_contact) return existingUi;
+    if (sanitized?.telegram?.request_contact) return sanitized;
     const captureUi = buildPhoneCaptureUi(channel);
-    if (!captureUi) return existingUi;
+    if (!captureUi) return sanitized;
     return {
-      ...existingUi,
+      ...sanitized,
       ...captureUi,
-      telegram: { ...(existingUi?.telegram ?? {}), ...(captureUi.telegram ?? {}) },
+      telegram: { ...(sanitized?.telegram ?? {}), ...(captureUi.telegram ?? {}) },
     };
   }
-  return existingUi;
+  return sanitized;
 }
 
 function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): PlannerOutput {

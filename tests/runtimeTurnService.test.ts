@@ -149,6 +149,7 @@ test("createDentalRuntimeTurnService: ui.telegram from model JSON is preserved e
     conversation_id: "conv_1",
     user_message: "Запишите меня",
     locale: "ru",
+    business_context: { channel: "telegram" },
   });
 
   assert.equal(result.final_patient_reply, "Поделитесь номером телефона кнопкой ниже.");

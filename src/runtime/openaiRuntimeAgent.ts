@@ -204,10 +204,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- When booking_process_state.next_action_confidence is 'high': next_action is grounded in durable or tool-produced data. Use it as a strong signal for what to collect next.",
     "- Do NOT re-ask for information that appears in recent_history or in the current conversation turn, regardless of what next_action says.",
     "- booking_process_state.selected_slot and last_available_slots are always reliable (derived from tool results).",
-    "CASE CONTEXT AUTHORITY: When context contains case_context_lite and case_policy_truth, treat them as the verified summary of business state. Trust them over your own reasoning about intent or clinical level.",
-    "- If case_policy_truth.must_not_make_intake_main_response is true: provide clinical safety guidance first; booking intake must not be the main response.",
-    "- If case_policy_truth.must_not_claim_booking_created is true: do not claim the booking was created.",
-    "- case_context_lite.booking fields reflect confirmed details — do not re-ask for a field that is already set unless the patient explicitly corrects it.",
+    "SOURCE OF TRUTH: Tool results, trusted channel contact, and booking_apply_action_truth are authoritative. Conversation history is dialogue evidence. Model-extracted state is not business proof — do not treat any extracted context as verified unless it came from a tool result or booking_apply_action_truth.",
     "Always write in the patient's language — do not use hardcoded Russian/English unless that is the patient's language.",
   ].join("\n");
 }

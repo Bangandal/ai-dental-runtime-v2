@@ -558,3 +558,198 @@ test("B-guard-6: missing_slot / missing_patient_name / missing_service → speci
     assert.equal(truth!.required_next_action, expected, `B-guard-6 (${status}): must be ${expected}`);
   }
 });
+
+// ── PR #144 tests: maybeAttachPhoneRequestUI ──────────────────────────────────
+//
+// When booking_process_state.next_action === "ask_for_phone" and phone is not yet
+// trusted, the runtime must attach ui.telegram.request_contact=true on ALL
+// final_response paths — even when the model skips booking.apply entirely.
+
+import { maybeAttachPhoneRequestUI } from "../src/runtime/runtimeAgentLoop.ts";
+import type { BookingProcessState } from "../src/runtime/bookingProcessState.ts";
+
+function makeProcessState(overrides: Partial<BookingProcessState>): BookingProcessState {
+  return {
+    proof: {
+      service_known: false,
+      name_known: false,
+      slot_known: false,
+      trusted_phone_known: false,
+      ready_for_booking_apply: false,
+    },
+    ...overrides,
+  };
+}
+
+// ── PR144-A: no-tool final_response + ask_for_phone → contact button attached
+
+test("PR144-A: maybeAttachPhoneRequestUI attaches button when next_action=ask_for_phone and no trusted phone", () => {
+  const state = makeProcessState({ next_action: "ask_for_phone", phone_trusted: undefined });
+  const result = maybeAttachPhoneRequestUI(state, undefined);
+  assert.equal(result?.telegram?.request_contact, true, "PR144-A: request_contact must be true");
+  assert.equal(result?.telegram?.button_text, "📞 Поделиться контактом", "PR144-A: button_text must match");
+});
+
+test("PR144-A (no-tool loop): first-call final_response with ask_for_phone state returns ui.telegram.request_contact=true", async () => {
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "final_response" as const,
+      conversation_id: "conv_144_a",
+      final_response: { final_patient_reply: "Поделитесь контактом пожалуйста" },
+    }),
+    executors: {},
+    bookingProcessStateRepository: {
+      loadState: async () => ({
+        service_reason: "чистка зубов",
+        first_name: "Тест",
+        last_name: "Пациент",
+        selected_slot: { starts_at: "2026-08-05T14:00:00", slot_id: "s1" },
+        next_action: "ask_for_phone" as const,
+        phone_trusted: undefined,
+        proof: { service_known: true, name_known: true, slot_known: true, trusted_phone_known: false, ready_for_booking_apply: false },
+      }),
+      saveState: async () => undefined,
+    },
+  });
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "contact_144_a",
+    case_id: null,
+    conversation_id: null,
+    user_message: "Да давайте",
+    locale: "ru",
+    trace_id: "trace_144_a",
+  });
+
+  assert.equal(result.ui?.telegram?.request_contact, true, "PR144-A loop: ui.telegram.request_contact must be true");
+  assert.equal(result.ui?.telegram?.button_text, "📞 Поделиться контактом", "PR144-A loop: button_text must match");
+});
+
+// ── PR144-B: phone_trusted=true → no contact button
+
+test("PR144-B: maybeAttachPhoneRequestUI does not attach button when phone_trusted=true", () => {
+  const state = makeProcessState({ next_action: "ask_for_phone", phone_trusted: true });
+  const result = maybeAttachPhoneRequestUI(state, undefined);
+  assert.equal(!!result?.telegram?.request_contact, false, "PR144-B: request_contact must not be set when phone_trusted");
+});
+
+test("PR144-B (loop): no-tool final_response with phone_trusted=true does not return contact button", async () => {
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "final_response" as const,
+      conversation_id: "conv_144_b",
+      final_response: { final_patient_reply: "Телефон уже известен, продолжаем." },
+    }),
+    executors: {},
+    bookingProcessStateRepository: {
+      loadState: async () => ({
+        next_action: "ask_for_phone" as const,
+        phone_trusted: true,
+        proof: { service_known: true, name_known: true, slot_known: true, trusted_phone_known: true, ready_for_booking_apply: false },
+      }),
+      saveState: async () => undefined,
+    },
+  });
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "contact_144_b",
+    case_id: null,
+    conversation_id: null,
+    user_message: "Продолжаем",
+    locale: "ru",
+    trace_id: "trace_144_b",
+    channel_contact: { phone_number: "+380991350144", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(!!result.ui?.telegram?.request_contact, false, "PR144-B loop: must NOT attach contact button when phone already trusted");
+});
+
+// ── PR144-C: other next_action values → no contact button
+
+test("PR144-C: maybeAttachPhoneRequestUI does not attach button for ask_for_slot / ask_for_name / ask_for_service", () => {
+  for (const action of ["ask_for_slot", "ask_for_name", "ask_for_service", "ready_for_booking_apply", undefined] as const) {
+    const state = makeProcessState({ next_action: action as BookingProcessState["next_action"] });
+    const result = maybeAttachPhoneRequestUI(state, undefined);
+    assert.equal(
+      !!result?.telegram?.request_contact,
+      false,
+      `PR144-C: must not attach contact button for next_action=${action}`,
+    );
+  }
+});
+
+// ── PR144-D: guarded booking.apply missing-phone path (PR #142 regression)
+
+test("PR144-D: guarded booking.apply missing-phone path still returns ui.telegram.request_contact=true", async () => {
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      // Round 1: model requests booking.apply with no phone
+      { type: "tool_requests", conversation_id: "conv_144_d", tool_requests: [BOOKING_APPLY_NO_PHONE] },
+      // Guarded: model asks for contact
+      { type: "final_response", conversation_id: "conv_144_d", final_response: { final_patient_reply: "Нажмите кнопку для контакта" } },
+    ]),
+    executors: {
+      "booking.apply": async () => ({ status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } }),
+    },
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    conversation_id: "conv_144_d",
+    contact_id: "contact_144_d",
+    trace_id: "trace_144_d",
+    channel_contact: undefined, // no trusted phone
+  });
+
+  assert.equal(result.ui?.telegram?.request_contact, true, "PR144-D: guarded missing_trusted_phone must still return request_contact=true");
+});
+
+// ── PR144-E: no ClinicCard writes when attaching contact button
+
+test("PR144-E: no ClinicCard writes when contact button is attached via maybeAttachPhoneRequestUI", async () => {
+  let clinicCardWriteCalled = false;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "final_response" as const,
+      conversation_id: "conv_144_e",
+      final_response: { final_patient_reply: "Нажмите кнопку контакта" },
+    }),
+    executors: {
+      "booking.apply": async () => {
+        clinicCardWriteCalled = true;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: {
+      loadState: async () => ({
+        service_reason: "чистка зубов",
+        first_name: "Тест",
+        last_name: "Пациент",
+        selected_slot: { starts_at: "2026-08-05T14:00:00", slot_id: "s1" },
+        phone_trusted: undefined,
+        proof: { service_known: true, name_known: true, slot_known: true, trusted_phone_known: false, ready_for_booking_apply: false },
+      }),
+      saveState: async () => undefined,
+    },
+  });
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1",
+    contact_id: "contact_144_e",
+    case_id: null,
+    conversation_id: null,
+    user_message: "Хочу записаться",
+    locale: "ru",
+    trace_id: "trace_144_e",
+  });
+
+  assert.equal(clinicCardWriteCalled, false, "PR144-E: ClinicCard executor must not be called");
+  assert.equal(result.ui?.telegram?.request_contact, true, "PR144-E: contact button must still be attached");
+});

@@ -2,6 +2,7 @@ import {
   ACTIVE_RUNTIME_AGENT_TOOLS,
   RUNTIME_AGENT_TOOL_DEFINITIONS,
   buildRuntimeAgentSystemInstruction,
+  type AgentUiActions,
   type OpenAIRuntimeAgent,
   type RuntimeAgentFinalResponse,
   type RuntimeAgentToolRequest,
@@ -194,7 +195,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_requests: [],
           tool_results: [],
           debug,
-          ui: firstOutput.final_response.ui,
+          ui: maybeAttachPhoneRequestUI(bookingProcessState, firstOutput.final_response.ui),
         };
       }
 
@@ -879,7 +880,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         tool_requests: toolRequests,
         tool_results: toolResults,
         debug,
-        ui: secondOutput.final_response.ui,
+        ui: maybeAttachPhoneRequestUI(bookingProcessState, secondOutput.final_response.ui),
       };
     },
   };
@@ -1067,6 +1068,34 @@ export function buildMultiRoundFallbackReply(locale?: string | null): string {
     return "Ověřím podrobnosti s týmem kliniky — chvilku prosím.";
   }
   return "Уточню детали с командой клиники — один момент.";
+}
+
+/**
+ * Deterministically attaches the Telegram contact-share button when
+ * booking_process_state.next_action === "ask_for_phone" and phone is not yet trusted.
+ * Applied to all final_response return paths so the button appears even when the
+ * model skips booking.apply and returns a plain text response asking for contact.
+ * Preserves any existing ui fields; does not overwrite an already-set request_contact.
+ */
+export function maybeAttachPhoneRequestUI(
+  bookingProcessState: BookingProcessState | null,
+  existingUi: AgentUiActions | undefined,
+): AgentUiActions | undefined {
+  if (
+    bookingProcessState?.next_action === "ask_for_phone" &&
+    bookingProcessState?.phone_trusted !== true
+  ) {
+    if (existingUi?.telegram?.request_contact) return existingUi;
+    return {
+      ...existingUi,
+      telegram: {
+        ...(existingUi?.telegram ?? {}),
+        request_contact: true,
+        button_text: "📞 Поделиться контактом",
+      },
+    };
+  }
+  return existingUi;
 }
 
 function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): PlannerOutput {

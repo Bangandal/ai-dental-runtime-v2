@@ -46,6 +46,8 @@ export interface AvailabilityCheckSuccessResult extends ToolExecutionBase {
     total_slots?: number;
     free_slots_count?: number;
   };
+  /** Server-side debug only — never forwarded to the model. */
+  _diagnostic?: unknown;
 }
 
 export interface HoldCreateSuccessResult extends ToolExecutionBase {

@@ -5,6 +5,7 @@ import { checkClinicCardAvailability, type AvailabilityAdapter } from "./clinicC
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import { makeFailedToolResult } from "../../runtime/toolResults.ts";
 import { getTodayInTimezone, isPastSlotTime } from "../../runtime/bookingPreflight.ts";
+import { isAvailabilityDebugEnabled } from "./availabilityDiagnostics.ts";
 
 const DEFAULT_WORKING_HOURS_START = "09:00";
 const DEFAULT_WORKING_HOURS_END = "18:00";
@@ -80,6 +81,8 @@ export function createClinicCardAvailabilityExecutor(
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
 
+    const debugEnabled = isAvailabilityDebugEnabled(deps.env);
+
     const result = await checkClinicCardAvailability(
       {
         date: requestedDate,
@@ -89,6 +92,7 @@ export function createClinicCardAvailabilityExecutor(
         doctor_id: doctorId,
         cabinet_id: cabinetId,
         timezone,
+        debug: debugEnabled,
       },
       adapter,
     );
@@ -112,12 +116,14 @@ export function createClinicCardAvailabilityExecutor(
     if (requestedTime !== null) {
       freeSlots = freeSlots.filter((s) => s.time_start >= requestedTime);
     }
+    const countAfterTimeFilter = freeSlots.length;
 
     // Filter out past slots when the requested date is today in the clinic timezone.
     // This prevents the bot from offering times that have already passed.
     if (context.now && requestedDate === getTodayInTimezone(context.now, timezone)) {
       freeSlots = freeSlots.filter((s) => !isPastSlotTime(s.time_start, context.now!, timezone));
     }
+    const countAfterPastFilter = freeSlots.length;
 
     // Map to output format.
     const mappedSlots = freeSlots.map((s) => ({
@@ -130,6 +136,16 @@ export function createClinicCardAvailabilityExecutor(
     const limit = context.limit;
     const limitedSlots = limit !== undefined && limit > 0 ? mappedSlots.slice(0, limit) : mappedSlots;
 
+    // Patch post-filter counts into diagnostic if it was collected.
+    const diagnostic = result.data.diagnostic
+      ? {
+          ...result.data.diagnostic,
+          free_slots_count_after_requested_time_filter: countAfterTimeFilter,
+          free_slots_count_after_past_time_filter: countAfterPastFilter,
+          limited_slots_count: limitedSlots.length,
+        }
+      : undefined;
+
     return {
       tool: "availability.check",
       status: "success",
@@ -139,6 +155,7 @@ export function createClinicCardAvailabilityExecutor(
         total_slots,
         free_slots_count,
       },
+      ...(diagnostic !== undefined ? { _diagnostic: diagnostic } : {}),
     };
   };
 }

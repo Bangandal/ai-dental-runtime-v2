@@ -1,4 +1,5 @@
 import type { ClinicCardResult, ClinicCardVisit } from "./clinicCardTypes.ts";
+import { toVisitSample, type AvailabilityDiagnostic } from "./availabilityDiagnostics.ts";
 
 export interface AvailabilityAdapter {
   listVisits(from: string, to: string): Promise<ClinicCardResult<ClinicCardVisit[]>>;
@@ -13,6 +14,8 @@ export interface AvailabilityInput {
   doctor_id: number;
   cabinet_id: number;
   timezone: string;
+  /** When true, diagnostic counts and visit sample are collected and returned. */
+  debug?: boolean;
 }
 
 export interface AvailabilitySlot {
@@ -25,6 +28,8 @@ export interface AvailabilityOutput {
   slots: AvailabilitySlot[];
   total_slots: number;
   free_slots_count: number;
+  /** Present only when input.debug=true. Never contains patient PII. */
+  diagnostic?: AvailabilityDiagnostic;
 }
 
 function timeToMinutes(time: string): number {
@@ -95,6 +100,8 @@ export async function checkClinicCardAvailability(
     };
   }
 
+  const rawVisitsCount = visitsResult.data.length;
+
   // A slot is blocked if the same doctor is busy in any cabinet,
   // or the same cabinet is busy with any doctor.
   const relevantVisits = visitsResult.data.filter(
@@ -108,6 +115,7 @@ export async function checkClinicCardAvailability(
 
   const slots: AvailabilitySlot[] = [];
   let total_slots = 0;
+  let blocked_slots_count = 0;
 
   for (const date of dates) {
     const dayVisits = relevantVisits.filter((v) => v.date === date);
@@ -128,9 +136,34 @@ export async function checkClinicCardAvailability(
           time_start: minutesToTime(t),
           time_end: minutesToTime(slotEnd),
         });
+      } else {
+        blocked_slots_count++;
       }
     }
   }
+
+  const diagnostic: AvailabilityDiagnostic | undefined = input.debug
+    ? {
+        requested_date: input.date,
+        date_to: input.date_to,
+        timezone: input.timezone,
+        doctor_id: input.doctor_id,
+        cabinet_id: input.cabinet_id,
+        working_hours_start: input.working_hours_start,
+        working_hours_end: input.working_hours_end,
+        slot_duration_minutes: input.slot_duration_minutes,
+        raw_visits_count: rawVisitsCount,
+        relevant_visits_count: relevantVisits.length,
+        total_slots,
+        blocked_slots_count,
+        free_slots_count_before_filters: slots.length,
+        // post-filter counts filled in by the executor layer
+        free_slots_count_after_requested_time_filter: slots.length,
+        free_slots_count_after_past_time_filter: slots.length,
+        limited_slots_count: slots.length,
+        relevant_visits_sample: relevantVisits.slice(0, 5).map(toVisitSample),
+      }
+    : undefined;
 
   return {
     ok: true,
@@ -138,6 +171,7 @@ export async function checkClinicCardAvailability(
       slots,
       total_slots,
       free_slots_count: slots.length,
+      ...(diagnostic !== undefined ? { diagnostic } : {}),
     },
   };
 }

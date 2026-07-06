@@ -424,7 +424,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           registry: deps.executors,
           context: executionContext,
         });
-        toolResults.push(convertToolExecutionResult(request, executionResults[0]));
+        const execResult = executionResults[0];
+        if (execResult?.tool === "availability.check" && execResult.status === "success" && execResult._diagnostic !== undefined) {
+          debug.availability_diagnostic = execResult._diagnostic;
+        }
+        toolResults.push(convertToolExecutionResult(request, execResult));
       }
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);

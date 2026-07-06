@@ -154,8 +154,8 @@ export function createClinicCardAvailabilityExecutor(
         timezone,
         total_slots,
         free_slots_count,
-        ...(diagnostic !== undefined ? { diagnostic } : {}),
       },
+      ...(diagnostic !== undefined ? { _diagnostic: diagnostic } : {}),
     };
   };
 }

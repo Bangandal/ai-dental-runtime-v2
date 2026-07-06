@@ -50,7 +50,11 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
         contact_channel_available: contactChannelAvailable ?? undefined,
       },
       missing_fields: Array.isArray(conversationState.missing_fields)
-        ? conversationState.missing_fields.filter((field): field is string => typeof field === "string" && field !== "phone")
+        ? conversationState.missing_fields.filter(
+            (field): field is string =>
+              typeof field === "string" &&
+              !["phone", "first_name", "last_name", "name"].includes(field),
+          )
         : [],
       last_known_intent: asNullableString(conversationState.intent),
       intake_status: asNullableString(conversationState.qualification_stage) ?? asNullableString(conversationState.conversation_stage),

@@ -85,7 +85,6 @@ const SAFE_VISIBLE_NEXT_ACTIONS = new Set<BookingNextAction>([
   "ask_for_slot",
   "choose_from_available_slots",
   "ask_for_phone",
-  "ask_for_alternative_time",
   "ready_for_booking_apply",
 ]);
 

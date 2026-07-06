@@ -559,3 +559,17 @@ test("intake: snapshot — INTAKE FLOW section has the exact flexible wording fo
     "Name sub-rule must tell model to use name from any prior turn (Turn-2 guard)",
   );
 });
+
+test("context authority: name_known and service_known are persistence flags, not conversational truth", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /booking_process_state\.name_known and service_known are persistence flags only/i,
+    "CONTEXT AUTHORITY must clarify that name_known/service_known are persistence flags",
+  );
+  assert.match(
+    instruction,
+    /check conversation history before asking/i,
+    "CONTEXT AUTHORITY must tell model to check conversation history when name_known/service_known is false",
+  );
+});

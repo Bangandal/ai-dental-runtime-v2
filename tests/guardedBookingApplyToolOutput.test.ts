@@ -102,6 +102,7 @@ const BASE_TURN_INPUT = {
   user_message: "Запишите меня пожалуйста",
   locale: "ru",
   trace_id: "trace_pr142",
+  business_context: { channel: "telegram" },
 };
 
 function makeCallerSequence(outputs: Awaited<ReturnType<RuntimeAgentCaller>>[]): RuntimeAgentCaller {
@@ -585,7 +586,7 @@ function makeProcessState(overrides: Partial<BookingProcessState>): BookingProce
 
 test("PR144-A: maybeAttachPhoneRequestUI attaches button when next_action=ask_for_phone and no trusted phone", () => {
   const state = makeProcessState({ next_action: "ask_for_phone", phone_trusted: undefined });
-  const result = maybeAttachPhoneRequestUI(state, undefined);
+  const result = maybeAttachPhoneRequestUI(state, undefined, "telegram");
   assert.equal(result?.telegram?.request_contact, true, "PR144-A: request_contact must be true");
   assert.equal(result?.telegram?.button_text, "📞 Поделиться контактом", "PR144-A: button_text must match");
 });
@@ -621,6 +622,7 @@ test("PR144-A (no-tool loop): first-call final_response with ask_for_phone state
     user_message: "Да давайте",
     locale: "ru",
     trace_id: "trace_144_a",
+    business_context: { channel: "telegram" },
   });
 
   assert.equal(result.ui?.telegram?.request_contact, true, "PR144-A loop: ui.telegram.request_contact must be true");
@@ -748,6 +750,7 @@ test("PR144-E: no ClinicCard writes when contact button is attached via maybeAtt
     user_message: "Хочу записаться",
     locale: "ru",
     trace_id: "trace_144_e",
+    business_context: { channel: "telegram" },
   });
 
   assert.equal(clinicCardWriteCalled, false, "PR144-E: ClinicCard executor must not be called");

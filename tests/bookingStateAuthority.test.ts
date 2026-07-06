@@ -209,7 +209,7 @@ test("G2: maybeAttachPhoneRequestUI — high confidence DOES attach contact butt
     priorProcessState: prior,
     bookingStateGrounded: true,
   });
-  const result = maybeAttachPhoneRequestUI(highState, undefined);
+  const result = maybeAttachPhoneRequestUI(highState, undefined, "telegram");
   assert.equal(result?.telegram?.request_contact, true, "button must appear on high confidence ask_for_phone");
 });
 

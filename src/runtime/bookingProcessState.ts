@@ -34,9 +34,68 @@ export interface BookingProcessState {
   };
 }
 
+export type BookingStateConfidence = "high" | "low";
+
+export interface ModelVisibleBookingProcessState extends Partial<BookingProcessState> {
+  next_action_confidence: BookingStateConfidence;
+}
+
+export interface BookingProcessStateLoadDebug {
+  loaded: boolean;
+  reason?: "null_or_missing" | "rpc_error";
+  error?: string;
+}
+
 export interface BookingProcessStateRepository {
-  loadState(key: { clinic_id: string; contact_id?: string | null; case_id?: string | null }): Promise<Partial<BookingProcessState> | null>;
-  saveState(key: { clinic_id: string; contact_id?: string | null; case_id?: string | null }, state: BookingProcessState): Promise<void>;
+  loadState(
+    key: { clinic_id: string; contact_id?: string | null; case_id?: string | null },
+    onDebug?: (info: BookingProcessStateLoadDebug) => void,
+  ): Promise<Partial<BookingProcessState> | null>;
+  saveState(
+    key: { clinic_id: string; contact_id?: string | null; case_id?: string | null },
+    state: BookingProcessState,
+    onDebug?: (info: { saved: boolean; error?: string }) => void,
+  ): Promise<void>;
+}
+
+/**
+ * Builds the booking process state object that is safe to expose to the model.
+ *
+ * When prior state was null AND no tool results have been produced yet in this turn,
+ * the state is "low confidence": computed purely from defaults with no persisted data
+ * to back it up.  In that case, next_action is omitted to prevent the runtime from
+ * overriding the model's own understanding of the conversation.
+ *
+ * When prior state exists OR tool results are present, confidence is "high" and
+ * next_action is included — it is grounded in durable/tool-produced data.
+ *
+ * selected_slot and last_available_slots are always exposed regardless of confidence
+ * (they are derived from tool results which are inherently high-confidence).
+ */
+export function buildModelVisibleBookingProcessState(opts: {
+  state: BookingProcessState;
+  priorProcessState: Partial<BookingProcessState> | null;
+  hasToolResults: boolean;
+}): ModelVisibleBookingProcessState {
+  const { state, priorProcessState, hasToolResults } = opts;
+  const confidence: BookingStateConfidence =
+    priorProcessState !== null || hasToolResults ? "high" : "low";
+
+  if (confidence === "low") {
+    // Only expose slot-related fields (grounded in tool results) and proof.
+    // Omit next_action so the model relies on conversation memory instead.
+    return {
+      last_available_slots: state.last_available_slots,
+      selected_slot: state.selected_slot,
+      proof: state.proof,
+      next_action_confidence: "low",
+    };
+  }
+
+  return {
+    ...state,
+    next_action_confidence: "high",
+  };
 }
 
 // ── Slot extraction ────────────────────────────────────────────────────────────
@@ -340,11 +399,14 @@ export function createInMemoryBookingProcessStateRepository(): BookingProcessSta
   }
 
   return {
-    async loadState(key) {
-      return store.get(makeKey(key)) ?? null;
+    async loadState(key, onDebug) {
+      const result = store.get(makeKey(key)) ?? null;
+      onDebug?.({ loaded: result !== null, reason: result === null ? "null_or_missing" : undefined });
+      return result;
     },
-    async saveState(key, state) {
+    async saveState(key, state, onDebug) {
       store.set(makeKey(key), state);
+      onDebug?.({ saved: true });
     },
   };
 }

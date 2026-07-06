@@ -119,7 +119,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
             context_loaded_at: loadedAt,
             available_recent_history_count: recentMessages.length,
           },
-          recent_history: [],
+          recent_history: recentMessages,
         },
       };
     },

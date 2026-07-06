@@ -26,8 +26,10 @@ import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTr
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
 import {
   computeBookingProcessState,
+  buildModelVisibleBookingProcessState,
   type BookingProcessStateRepository,
   type BookingProcessState,
+  type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
 
 export interface RuntimeAgentCallerInput {
@@ -112,13 +114,16 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       let priorProcessState: Partial<BookingProcessState> | null = null;
       if (deps.bookingProcessStateRepository) {
         try {
-          priorProcessState = await deps.bookingProcessStateRepository.loadState({
-            clinic_id: input.clinic_id,
-            contact_id: input.contact_id,
-            case_id: input.case_id,
-          });
-        } catch {
-          // non-blocking — state loss only affects field-memory hints, not safety
+          priorProcessState = await deps.bookingProcessStateRepository.loadState(
+            { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+            (info) => { debug.booking_process_state = info; },
+          );
+        } catch (err) {
+          debug.booking_process_state = {
+            loaded: false,
+            reason: "rpc_error",
+            error: sanitizeErrorMessage(err instanceof Error ? err.message : String(err)),
+          };
         }
       }
 
@@ -127,6 +132,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         prior: priorProcessState,
         patientMessage: input.user_message,
         channelContact: input.channel_contact,
+      });
+
+      const firstCallVisibleState = buildModelVisibleBookingProcessState({
+        state: bookingProcessState,
+        priorProcessState,
+        hasToolResults: false,
       });
 
       let firstOutput: RuntimeAgentCallerOutput;
@@ -138,7 +149,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           system_instruction: systemInstruction,
           input: {
             message: input.user_message,
-            context: { ...callerContext, booking_process_state: bookingProcessState },
+            context: { ...callerContext, booking_process_state: firstCallVisibleState },
             tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
           },
         });
@@ -187,6 +198,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           deps.bookingProcessStateRepository.saveState(
             { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
             bookingProcessState,
+            (info) => { if (!info.saved) debug.booking_process_state_save = info; },
           ).catch(() => undefined);
         }
         return {
@@ -195,7 +207,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_requests: [],
           tool_results: [],
           debug,
-          ui: maybeAttachPhoneRequestUI(bookingProcessState, firstOutput.final_response.ui),
+          ui: maybeAttachPhoneRequestUI(firstCallVisibleState, firstOutput.final_response.ui),
         };
       }
 
@@ -426,15 +438,23 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         deps.bookingProcessStateRepository.saveState(
           { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
           bookingProcessState,
+          (info) => { if (!info.saved) debug.booking_process_state_save = info; },
         ).catch(() => undefined);
       }
+
+      // After tool results, confidence is always high — state is grounded in tool output.
+      const secondCallVisibleState = buildModelVisibleBookingProcessState({
+        state: bookingProcessState,
+        priorProcessState,
+        hasToolResults: true,
+      });
 
       const secondCallContext = {
         ...callerContext,
         ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
         ...(availabilityPresentationTruth ? { availability_presentation_truth: availabilityPresentationTruth } : {}),
         ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
-        booking_process_state: bookingProcessState,
+        booking_process_state: secondCallVisibleState,
       };
 
       let secondOutput: RuntimeAgentCallerOutput;
@@ -880,7 +900,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         tool_requests: toolRequests,
         tool_results: toolResults,
         debug,
-        ui: maybeAttachPhoneRequestUI(bookingProcessState, secondOutput.final_response.ui),
+        ui: maybeAttachPhoneRequestUI(secondCallVisibleState, secondOutput.final_response.ui),
       };
     },
   };
@@ -1078,9 +1098,16 @@ export function buildMultiRoundFallbackReply(locale?: string | null): string {
  * Preserves any existing ui fields; does not overwrite an already-set request_contact.
  */
 export function maybeAttachPhoneRequestUI(
-  bookingProcessState: BookingProcessState | null,
+  bookingProcessState: ModelVisibleBookingProcessState | BookingProcessState | null,
   existingUi: AgentUiActions | undefined,
 ): AgentUiActions | undefined {
+  // Only attach contact button when confidence is high (or not set, for compatibility with
+  // the guarded booking.apply path which passes raw BookingProcessState).
+  // Low-confidence state means next_action was derived from defaults without durable backing —
+  // in that case we do not force a UI that may be wrong.
+  const confidence = (bookingProcessState as ModelVisibleBookingProcessState)?.next_action_confidence;
+  if (confidence === "low") return existingUi;
+
   if (
     bookingProcessState?.next_action === "ask_for_phone" &&
     bookingProcessState?.phone_trusted !== true

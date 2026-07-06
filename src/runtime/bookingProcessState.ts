@@ -59,30 +59,81 @@ export interface BookingProcessStateRepository {
 }
 
 /**
+ * Returns true if the persisted state contains meaningful booking data
+ * (not just an empty-state default).
+ */
+export function hasMeaningfulBookingState(state: Partial<BookingProcessState>): boolean {
+  return !!(
+    state.service_reason ||
+    state.first_name ||
+    state.last_name ||
+    state.selected_slot ||
+    (state.last_available_slots && state.last_available_slots.length > 0)
+  );
+}
+
+/**
+ * Resolves which next_action (if any) to expose to the model.
+ *
+ * Even when state is grounded (high confidence), some next_action values are
+ * only safe to expose when the relevant field is durably absent from prior state.
+ * For example: ask_for_service should not override the model when service_reason
+ * was only absent because it was never extracted from text (not because it was
+ * explicitly missing across turns).
+ */
+function resolveVisibleNextAction(
+  state: BookingProcessState,
+  priorProcessState: Partial<BookingProcessState> | null,
+  bookingStateGrounded: boolean,
+): BookingNextAction | undefined {
+  if (!bookingStateGrounded) return undefined; // low confidence — suppress entirely
+
+  const na = state.next_action;
+  if (!na) return undefined;
+
+  // When grounded only via booking tool results (no prior persisted state),
+  // suppress conversational field asks that may conflict with conversation memory.
+  // Patient may have stated service/name in conversation text that the runtime didn't extract.
+  // Only suppress when priorProcessState === null (no cross-turn state knowledge at all).
+  // When priorProcessState exists (from a previous turn), its absence of a field IS
+  // meaningful (the field was never captured across turns) — safe to expose.
+  if (priorProcessState === null) {
+    if (na === "ask_for_service") return undefined;
+    if (na === "ask_for_name") return undefined;
+  }
+
+  return na;
+}
+
+/**
  * Builds the booking process state object that is safe to expose to the model.
  *
- * When prior state was null AND no tool results have been produced yet in this turn,
- * the state is "low confidence": computed purely from defaults with no persisted data
- * to back it up.  In that case, next_action is omitted to prevent the runtime from
- * overriding the model's own understanding of the conversation.
+ * Confidence is "high" only when state is genuinely grounded:
+ *   - priorProcessState is non-null and contains meaningful booking data, OR
+ *   - current turn produced booking-relevant evidence (availability.check / booking.apply
+ *     tool results, or selected_slot detected from offered slots).
  *
- * When prior state exists OR tool results are present, confidence is "high" and
- * next_action is included — it is grounded in durable/tool-produced data.
+ * Non-booking tools (knowledge.search, faq, etc.) do NOT make state grounded.
  *
- * selected_slot and last_available_slots are always exposed regardless of confidence
- * (they are derived from tool results which are inherently high-confidence).
+ * Even when grounded, ask_for_service / ask_for_name are suppressed when the field
+ * is absent only because it was never persisted (the patient may have stated it in
+ * conversation text that the runtime didn't extract).
+ *
+ * selected_slot and last_available_slots are always exposed (inherently high-confidence,
+ * derived from slot-detection / tool results).
  */
 export function buildModelVisibleBookingProcessState(opts: {
   state: BookingProcessState;
   priorProcessState: Partial<BookingProcessState> | null;
-  hasToolResults: boolean;
+  bookingStateGrounded: boolean;
 }): ModelVisibleBookingProcessState {
-  const { state, priorProcessState, hasToolResults } = opts;
-  const confidence: BookingStateConfidence =
-    priorProcessState !== null || hasToolResults ? "high" : "low";
+  const { state, priorProcessState, bookingStateGrounded } = opts;
+  const confidence: BookingStateConfidence = bookingStateGrounded ? "high" : "low";
+
+  const visibleNextAction = resolveVisibleNextAction(state, priorProcessState, bookingStateGrounded);
 
   if (confidence === "low") {
-    // Only expose slot-related fields (grounded in tool results) and proof.
+    // Only expose slot-related fields (inherently grounded) and proof.
     // Omit next_action so the model relies on conversation memory instead.
     return {
       last_available_slots: state.last_available_slots,
@@ -94,6 +145,7 @@ export function buildModelVisibleBookingProcessState(opts: {
 
   return {
     ...state,
+    next_action: visibleNextAction,
     next_action_confidence: "high",
   };
 }

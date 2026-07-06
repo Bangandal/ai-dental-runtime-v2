@@ -21,7 +21,19 @@ export function createSupabaseBookingProcessStateRepository(deps: { rpc: RpcCall
             p_contact_id: key.contact_id,
           },
         );
-        if (result.error || !Array.isArray(result.data) || result.data.length === 0) {
+        if (result.error) {
+          onDebug?.({
+            loaded: false,
+            reason: "rpc_error",
+            error: sanitizeErrorMessage(
+              typeof (result.error as { message?: string }).message === "string"
+                ? (result.error as { message: string }).message
+                : String(result.error),
+            ),
+          });
+          return null;
+        }
+        if (!Array.isArray(result.data) || result.data.length === 0) {
           onDebug?.({ loaded: false, reason: "null_or_missing" });
           return null;
         }
@@ -45,11 +57,22 @@ export function createSupabaseBookingProcessStateRepository(deps: { rpc: RpcCall
     async saveState(key, state, onDebug) {
       if (!key.contact_id) return;
       try {
-        await deps.rpc<unknown>("rpc_upsert_booking_process_state_v1", {
+        const result = await deps.rpc<unknown>("rpc_upsert_booking_process_state_v1", {
           p_clinic_id: key.clinic_id,
           p_contact_id: key.contact_id,
           p_state: state,
         });
+        if (result.error) {
+          onDebug?.({
+            saved: false,
+            error: sanitizeErrorMessage(
+              typeof (result.error as { message?: string }).message === "string"
+                ? (result.error as { message: string }).message
+                : String(result.error),
+            ),
+          });
+          return;
+        }
         onDebug?.({ saved: true });
       } catch (err) {
         onDebug?.({

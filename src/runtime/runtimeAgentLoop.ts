@@ -27,6 +27,7 @@ import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
 import {
   computeBookingProcessState,
   buildModelVisibleBookingProcessState,
+  hasMeaningfulBookingState,
   type BookingProcessStateRepository,
   type BookingProcessState,
   type ModelVisibleBookingProcessState,
@@ -134,10 +135,14 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         channelContact: input.channel_contact,
       });
 
+      // First call: grounded only if prior state has meaningful booking data.
+      // Non-booking tool results and empty prior state do NOT make it grounded.
+      const firstCallGrounded =
+        priorProcessState !== null && hasMeaningfulBookingState(priorProcessState);
       const firstCallVisibleState = buildModelVisibleBookingProcessState({
         state: bookingProcessState,
         priorProcessState,
-        hasToolResults: false,
+        bookingStateGrounded: firstCallGrounded,
       });
 
       let firstOutput: RuntimeAgentCallerOutput;
@@ -442,11 +447,22 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         ).catch(() => undefined);
       }
 
-      // After tool results, confidence is always high — state is grounded in tool output.
+      // Second call: grounded when prior state had meaningful booking data, OR
+      // when the current turn produced booking-relevant evidence (availability.check /
+      // booking.apply tool results, or selected_slot detected from offered slots).
+      // Non-booking tools (knowledge.search, faq, etc.) do NOT make state grounded.
+      const hasBookingToolResult = toolResults.some(
+        (r) => r.tool === "availability.check" || r.tool === "booking.apply",
+      );
+      const selectedSlotDetected = bookingProcessState.selected_slot != null;
+      const secondCallGrounded =
+        (priorProcessState !== null && hasMeaningfulBookingState(priorProcessState)) ||
+        hasBookingToolResult ||
+        selectedSlotDetected;
       const secondCallVisibleState = buildModelVisibleBookingProcessState({
         state: bookingProcessState,
         priorProcessState,
-        hasToolResults: true,
+        bookingStateGrounded: secondCallGrounded,
       });
 
       const secondCallContext = {

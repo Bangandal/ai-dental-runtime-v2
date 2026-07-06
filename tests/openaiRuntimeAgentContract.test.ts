@@ -475,3 +475,87 @@ test("first-turn greeting: is_first_patient_turn unset defaults to no self-intro
   });
   assert.ok(!capturedInstruction?.includes("помощник администратора клиники"), "missing is_first_patient_turn must default to no self-introduction");
 });
+
+// ── Multi-turn name regression fix (PR #148) ─────────────────────────────────
+
+test("intake: prompt uses flexible collection, not rigid Service→Name→Time order", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(instruction, /collect missing details flexibly/i, "must say 'collect missing details flexibly'");
+  assert.match(instruction, /fallback, not a strict order/i, "must say the sequence is a fallback, not a strict order");
+});
+
+test("intake: prompt does not enforce 'collect in order' mandatory sequence", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.doesNotMatch(instruction, /collect in order/i, "must NOT say 'collect in order'");
+  assert.doesNotMatch(instruction, /collect in strict order/i, "must NOT say 'collect in strict order'");
+});
+
+test("intake: prompt instructs model to check current message and conversation history before asking", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /Check the current message and available conversation history first/i,
+    "must instruct model to check current message and conversation history before asking",
+  );
+});
+
+test("intake: prompt says do not re-ask for a field only because BPS has not persisted it", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /do not re-ask for a field only because booking_process_state has not persisted it/i,
+    "must say: do not re-ask for a field only because booking_process_state has not persisted it",
+  );
+});
+
+test("intake: prompt uses first_name/last_name (not patient_first_name/patient_last_name)", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(instruction, /\bfirst_name\b/, "prompt must contain first_name");
+  assert.match(instruction, /\blast_name\b/, "prompt must contain last_name");
+  assert.doesNotMatch(instruction, /patient_first_name/, "prompt must NOT contain patient_first_name");
+  assert.doesNotMatch(instruction, /patient_last_name/, "prompt must NOT contain patient_last_name");
+});
+
+test("intake: prompt excludes CASE CONTEXT AUTHORITY", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.doesNotMatch(instruction, /CASE CONTEXT AUTHORITY/i, "prompt must NOT contain CASE CONTEXT AUTHORITY");
+});
+
+test("intake: slot_conflict rule instructs model to retain name/service, ask only for new time", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /After slot_conflict.*do NOT restart intake/i,
+    "must say: After slot_conflict do NOT restart intake",
+  );
+  assert.match(
+    instruction,
+    /Retain name and service from the current conversation/i,
+    "must say: Retain name and service from the current conversation",
+  );
+  assert.match(
+    instruction,
+    /Ask only for a new time/i,
+    "must say: Ask only for a new time (after slot_conflict)",
+  );
+});
+
+test("intake: snapshot — INTAKE FLOW section has the exact flexible wording for Turn-2 name retention", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  // Verify the full flexible intake rule as written in the prompt
+  assert.ok(
+    instruction.includes(
+      "collect missing details flexibly. Check the current message and available conversation history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known.",
+    ),
+    "INTAKE FLOW flexible rule must be present verbatim (snapshot guard against regression)",
+  );
+
+  // Verify the name retention sub-rule for Turn-2
+  assert.ok(
+    instruction.includes(
+      "use first_name and last_name from the current message or any prior turn in this conversation. Do NOT re-ask if the patient stated their name at any point in this conversation.",
+    ),
+    "Name sub-rule must tell model to use name from any prior turn (Turn-2 guard)",
+  );
+});

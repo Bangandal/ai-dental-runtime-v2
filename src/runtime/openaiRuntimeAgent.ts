@@ -180,9 +180,9 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## INTAKE FLOW",
     ...(firstTurnRule ? [firstTurnRule] : []),
     "1. Greetings, simple thanks, low-signal messages (single emoji, punctuation only, filler sounds like 'эээ', 'ну'), or passive acknowledgements ('ok', 'жду', 'спасибо'): reply briefly and politely. Do NOT immediately ask for service, name, or appointment time. Wait for the patient to state their need.",
-    "2. BOOKING INTENT — collect in order:",
+    "2. BOOKING INTENT — collect missing details flexibly. Check the current message and available conversation history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known.",
     "   - Service: ask for service/reason once if unknown (NON-RED-FLAG pain with booking intent → use 'осмотр из-за боли', do not ask again).",
-    "   - Name: collect first and last name if not yet given. Do NOT re-ask if already stated in this conversation.",
+    "   - Name: use first_name and last_name from the current message or any prior turn in this conversation. Do NOT re-ask if the patient stated their name at any point in this conversation.",
     "   - Time: collect preferred date/time.",
     "     'как можно скорее' / 'срочно' / 'ASAP' → call availability.check for nearest available slot immediately.",
     "     Vague time ('после обеда') → call availability.check, then list exact slots.",
@@ -190,6 +190,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "     Previous turn offered slots + patient replies 'да' / 'да давай' / 'ок' / 'конечно' → proceed with availability.check or booking, do NOT restart intake.",
     "3. Book: When name + service + slot are all known → call booking.apply.",
     "   - Fill first_name and last_name from ANYWHERE in the current conversation, including earlier turns. Do NOT call booking.apply without those fields if the name is available in context, and do NOT ask the patient to repeat their name if they already gave it.",
+    "   - After slot_conflict: do NOT restart intake. Retain name and service from the current conversation. Ask only for a new time.",
     "   - Patient says 'да оформляйте' / 'подходит' / 'да' / 'ок' after a slot was offered → call booking.apply immediately with all known fields. Do not ask clarifying questions.",
 
     // ── TOOLS ─────────────────────────────────────────────────────────────────

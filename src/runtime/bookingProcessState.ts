@@ -149,8 +149,17 @@ export function buildModelVisibleBookingProcessState(opts: {
     };
   }
 
+  // name_known and service_known are persistence flags: they are true only when the runtime
+  // confirmed the field via booking.apply. When false they do NOT mean the patient hasn't stated
+  // the field — the patient may have said their name in conversation text the runtime never
+  // parsed. Exposing false would create a conflicting authority signal that overrides the
+  // intake-flow rule telling the model to use conversation history. Omit when false; only
+  // expose when true (a positive signal that the name/service was persisted).
+  const { name_known, service_known, ...stateWithoutFlags } = state;
   return {
-    ...state,
+    ...stateWithoutFlags,
+    ...(name_known ? { name_known: true } : {}),
+    ...(service_known ? { service_known: true } : {}),
     next_action: visibleNextAction,
     next_action_confidence: "high",
   };

@@ -21,6 +21,7 @@ import {
   extractSlotTime,
   extractSlotsFromToolResults,
   createInMemoryBookingProcessStateRepository,
+  buildModelVisibleBookingProcessState,
   type AvailableSlot,
 } from "../src/runtime/bookingProcessState.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
@@ -755,4 +756,88 @@ test("new-4: no-tool final_response persists state even when selected_slot is nu
   // State was saved (not only when selected_slot exists)
   assert.equal(saved!.selected_slot, null, "new-4: selected_slot is null as expected");
   assert.equal(saved!.phone_trusted, true, "new-4: phone_trusted must be persisted");
+});
+
+// ── buildModelVisibleBookingProcessState proof sanitization (PR #154) ─────────
+
+function makeState(overrides: {
+  nameKnown: boolean;
+  serviceKnown: boolean;
+  slotKnown?: boolean;
+  phoneTrusted?: boolean;
+}): import("../src/runtime/bookingProcessState.ts").BookingProcessState {
+  const slotKnown = overrides.slotKnown ?? false;
+  const phoneTrusted = overrides.phoneTrusted ?? false;
+  return {
+    proof: {
+      name_known: overrides.nameKnown,
+      service_known: overrides.serviceKnown,
+      slot_known: slotKnown,
+      trusted_phone_known: phoneTrusted,
+      ready_for_booking_apply: overrides.nameKnown && overrides.serviceKnown && slotKnown && phoneTrusted,
+    },
+    last_available_slots: [],
+    selected_slot: null,
+  };
+}
+
+test("buildModelVisibleBookingProcessState A: high-confidence with name_known=false/service_known=false → JSON must NOT contain false flags", () => {
+  const state = makeState({ nameKnown: false, serviceKnown: false });
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  const json = JSON.stringify(visible);
+
+  assert.ok(!json.includes('"name_known":false'), 'A: JSON must NOT contain "name_known":false at top level');
+  assert.ok(!json.includes('"service_known":false'), 'A: JSON must NOT contain "service_known":false at top level');
+  assert.ok(!json.includes('"name_known": false'), 'A: JSON must NOT contain "name_known": false');
+  assert.ok(!json.includes('"service_known": false'), 'A: JSON must NOT contain "service_known": false');
+
+  // proof must also not contain false flags
+  const proof = visible.proof as Record<string, unknown>;
+  assert.equal(proof?.["name_known"], undefined, "A: proof.name_known must be omitted when false");
+  assert.equal(proof?.["service_known"], undefined, "A: proof.service_known must be omitted when false");
+});
+
+test("buildModelVisibleBookingProcessState B: high-confidence with name_known=true/service_known=true → positive flags present in proof", () => {
+  const state = makeState({ nameKnown: true, serviceKnown: true, slotKnown: true, phoneTrusted: true });
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+
+  // name_known/service_known live only inside proof, not at the top level of BookingProcessState
+  const proof = visible.proof as Record<string, unknown>;
+  assert.equal(proof?.["name_known"], true, "B: proof.name_known must be true when true");
+  assert.equal(proof?.["service_known"], true, "B: proof.service_known must be true when true");
+  // Verify they appear in JSON
+  const json = JSON.stringify(visible);
+  assert.ok(json.includes('"name_known":true'), 'B: JSON must contain "name_known":true');
+  assert.ok(json.includes('"service_known":true'), 'B: JSON must contain "service_known":true');
+});
+
+test("buildModelVisibleBookingProcessState C: low-confidence with name_known=false/service_known=false → JSON must NOT contain false flags", () => {
+  const state = makeState({ nameKnown: false, serviceKnown: false });
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: false });
+  const json = JSON.stringify(visible);
+
+  assert.ok(!json.includes('"name_known":false'), 'C: low-confidence JSON must NOT contain "name_known":false');
+  assert.ok(!json.includes('"service_known":false'), 'C: low-confidence JSON must NOT contain "service_known":false');
+
+  const proof = visible.proof as Record<string, unknown>;
+  assert.equal(proof?.["name_known"], undefined, "C: low-confidence proof.name_known must be omitted when false");
+  assert.equal(proof?.["service_known"], undefined, "C: low-confidence proof.service_known must be omitted when false");
+});
+
+test("buildModelVisibleBookingProcessState D: safety flags slot_known, trusted_phone_known, ready_for_booking_apply remain visible", () => {
+  const state = makeState({ nameKnown: false, serviceKnown: false, slotKnown: true, phoneTrusted: true });
+
+  // High-confidence
+  const high = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  const highProof = high.proof as Record<string, unknown>;
+  assert.equal(highProof?.["slot_known"], true, "D: high-confidence proof.slot_known must be present");
+  assert.equal(highProof?.["trusted_phone_known"], true, "D: high-confidence proof.trusted_phone_known must be present");
+  assert.equal(typeof highProof?.["ready_for_booking_apply"], "boolean", "D: high-confidence proof.ready_for_booking_apply must be present");
+
+  // Low-confidence
+  const low = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: false });
+  const lowProof = low.proof as Record<string, unknown>;
+  assert.equal(lowProof?.["slot_known"], true, "D: low-confidence proof.slot_known must be present");
+  assert.equal(lowProof?.["trusted_phone_known"], true, "D: low-confidence proof.trusted_phone_known must be present");
+  assert.equal(typeof lowProof?.["ready_for_booking_apply"], "boolean", "D: low-confidence proof.ready_for_booking_apply must be present");
 });

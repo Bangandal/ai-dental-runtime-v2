@@ -128,6 +128,24 @@ function resolveVisibleNextAction(
  * selected_slot and last_available_slots are always exposed (inherently high-confidence,
  * derived from slot-detection / tool results).
  */
+// Sanitize proof before exposing it to the model.
+// name_known and service_known in proof are persistence flags: true only when the runtime
+// persisted the field via booking.apply. When false they do NOT mean the patient hasn't stated
+// the field in conversation. Exposing false creates a conflicting authority signal.
+// Safety flags (slot_known, trusted_phone_known, ready_for_booking_apply) are always included.
+function sanitizeProofForModel(
+  proof: BookingProcessState["proof"],
+): Partial<BookingProcessState["proof"]> {
+  const sanitized: Partial<BookingProcessState["proof"]> = {
+    slot_known: proof.slot_known,
+    trusted_phone_known: proof.trusted_phone_known,
+    ready_for_booking_apply: proof.ready_for_booking_apply,
+  };
+  if (proof.name_known) sanitized.name_known = true;
+  if (proof.service_known) sanitized.service_known = true;
+  return sanitized;
+}
+
 export function buildModelVisibleBookingProcessState(opts: {
   state: BookingProcessState;
   priorProcessState: Partial<BookingProcessState> | null;
@@ -139,27 +157,19 @@ export function buildModelVisibleBookingProcessState(opts: {
   const visibleNextAction = resolveVisibleNextAction(state, priorProcessState, bookingStateGrounded);
 
   if (confidence === "low") {
-    // Only expose slot-related fields (inherently grounded) and proof.
+    // Only expose slot-related fields (inherently grounded) and sanitized proof.
     // Omit next_action so the model relies on conversation memory instead.
     return {
       last_available_slots: state.last_available_slots,
       selected_slot: state.selected_slot,
-      proof: state.proof,
+      proof: sanitizeProofForModel(state.proof),
       next_action_confidence: "low",
     };
   }
 
-  // name_known and service_known are persistence flags: they are true only when the runtime
-  // confirmed the field via booking.apply. When false they do NOT mean the patient hasn't stated
-  // the field — the patient may have said their name in conversation text the runtime never
-  // parsed. Exposing false would create a conflicting authority signal that overrides the
-  // intake-flow rule telling the model to use conversation history. Omit when false; only
-  // expose when true (a positive signal that the name/service was persisted).
-  const { name_known, service_known, ...stateWithoutFlags } = state;
   return {
-    ...stateWithoutFlags,
-    ...(name_known ? { name_known: true } : {}),
-    ...(service_known ? { service_known: true } : {}),
+    ...state,
+    proof: sanitizeProofForModel(state.proof),
     next_action: visibleNextAction,
     next_action_confidence: "high",
   };

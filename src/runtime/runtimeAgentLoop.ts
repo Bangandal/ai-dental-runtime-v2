@@ -32,6 +32,7 @@ import {
   type BookingProcessState,
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
+import { hydrateBookingApplyArgs } from "./bookingApplyArgHydrator.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -253,7 +254,18 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       // Global preflight A — past-time guard: if booking.apply is requested for a
       // same-day slot that has already passed, reject before executing any tool.
       // Applies to round 1 (booking.apply as the first tool of a turn).
-      const bookingApplyRound1 = toolRequests.find((r) => r.tool === "booking.apply");
+      const bookingApplyRound1Raw = toolRequests.find((r) => r.tool === "booking.apply");
+      if (bookingApplyRound1Raw) {
+        // Hydrate missing args from conversation context before any guard runs.
+        const round1Hydration = hydrateBookingApplyArgs(bookingApplyRound1Raw.arguments, {
+          userMessage: input.user_message,
+          recentHistory: extractRecentHistory(callerContext),
+          bookingProcessState: bookingProcessState ?? null,
+        });
+        if (round1Hydration.applied) debug.booking_apply_hydration_round1 = round1Hydration.debug;
+        bookingApplyRound1Raw.arguments = round1Hydration.args;
+      }
+      const bookingApplyRound1 = bookingApplyRound1Raw;
       if (bookingApplyRound1) {
         if (isPastBookingTime({
           requestedDate: typeof bookingApplyRound1.arguments.requested_date === "string"
@@ -601,7 +613,18 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // forced_finalization would let the model hallucinate a confirmation without any
         // booking.apply execution, violating the invariant that may_claim_booked requires
         // a booking_status=visit_created proof.
-        const pendingBookingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply");
+        const pendingBookingApplyRaw = secondOutput.tool_requests.find((r) => r.tool === "booking.apply");
+        if (pendingBookingApplyRaw) {
+          // Hydrate missing args from conversation context before any guard runs (round 2).
+          const round2Hydration = hydrateBookingApplyArgs(pendingBookingApplyRaw.arguments, {
+            userMessage: input.user_message,
+            recentHistory: extractRecentHistory(callerContext),
+            bookingProcessState: bookingProcessState ?? null,
+          });
+          if (round2Hydration.applied) debug.booking_apply_hydration_round2 = round2Hydration.debug;
+          pendingBookingApplyRaw.arguments = round2Hydration.args;
+        }
+        const pendingBookingApply = pendingBookingApplyRaw;
         if (pendingBookingApply && hasTrustedPhone(input.channel_contact)) {
           // Past-time preflight for Guard B: submit guarded tool_result if slot has passed.
           if (isPastBookingTime({
@@ -1337,4 +1360,21 @@ async function clearConversationMemory(
     debug.memory_cleared = false;
     debug.memory_save_error = error instanceof Error ? error.message : String(error);
   }
+}
+
+/**
+ * Safely extract recent_history from caller context.
+ * runtime_context is untyped (Record<string, unknown>), so we cast conservatively.
+ */
+function extractRecentHistory(callerContext: Record<string, unknown>): Array<{ role: string; content: string }> {
+  const runtimeContext = callerContext.runtime_context;
+  if (!runtimeContext || typeof runtimeContext !== "object") return [];
+  const history = (runtimeContext as Record<string, unknown>).recent_history;
+  if (!Array.isArray(history)) return [];
+  return history.filter(
+    (m): m is { role: string; content: string } =>
+      typeof m === "object" && m !== null &&
+      typeof (m as Record<string, unknown>).role === "string" &&
+      typeof (m as Record<string, unknown>).content === "string",
+  );
 }

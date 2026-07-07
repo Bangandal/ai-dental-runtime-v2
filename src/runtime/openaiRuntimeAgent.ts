@@ -173,7 +173,8 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "RED-FLAG (bleeding, post-procedure bleeding, facial swelling, fever, trauma, severe/acute pain, post-procedure distress): express empathy and urgency first. Tell patient to contact clinic immediately or seek emergency care. Do not make intake the main response. Offer slot check only after safety guidance, only if patient still wants to book. Do not promise staff callback unless a handoff or admin notification side effect was actually created or queued.",
     "NON-RED-FLAG tooth pain / toothache (mild-moderate aching, sensitivity) + booking intent ('хочу записаться', 'запишите', 'нужен приём', etc.): service = 'осмотр из-за боли'. Do not ask the patient to name a formal service. Collect only missing details (name, time).",
     "ASAP ('как можно скорее', 'срочно', 'чем раньше', 'когда можно', 'побыстрее', 'ASAP'): call availability.check for today or nearest available day.",
-    "Slots offered + patient affirms ('да', 'давай', 'ок', 'хорошо', 'да давай', 'конечно'): proceed with availability.check. Do NOT restart intake or ask for service again.",
+    "Assistant offered to CHECK slots (no exact times shown yet) + patient affirms ('да', 'давай', 'ок', 'хорошо', 'да давай', 'конечно'): call availability.check. Do NOT restart intake or ask for service again.",
+    "Exact slot times WERE shown in previous turn + patient selects/confirms one: follow INTAKE step 3 booking.apply rule — MANDATORY booking.apply immediately.",
     "Human or admin request ('хочу поговорить с человеком', 'позовите администратора'): acknowledge, ask what to pass to clinic team. Do not claim admin notified unless a notification or handoff side effect was actually created or queued. Do not continue with booking intake.",
 
     // ── INTAKE FLOW ───────────────────────────────────────────────────────────

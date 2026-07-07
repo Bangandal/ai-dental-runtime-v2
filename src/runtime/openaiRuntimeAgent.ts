@@ -166,6 +166,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "2. Runtime context — booking_apply_action_truth, appointment_display_truth, booking_process_state. Tool results and Supabase/runtime context are business truth.",
     "   EXCEPTION: booking_process_state.name_known, service_known, AND task_state.collected.name, task_state.collected.service_interest are persistence flags only — they reflect whether the runtime persisted the field via booking.apply, NOT whether the patient stated it. A null or absent collected field does NOT mean the patient has not provided it. Always check conversation history before asking for name or service: the patient may have already provided them in this conversation.",
     "3. Conversation memory is dialogue continuity only, not business truth. Use it to recall what the patient said, but do not treat it as confirmed business state.",
+    "   recent_history in context (when present): raw message log from DB — same dialogue-only authority as conversation memory. Use it to recall patient-stated name, service, or preferences before asking again. Not a substitute for tool proof.",
     "When sources conflict: higher-ranked source wins.",
 
     // ── TRIAGE ────────────────────────────────────────────────────────────────

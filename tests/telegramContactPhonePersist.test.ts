@@ -268,21 +268,115 @@ test("no ClinicCard createPatient or createVisit calls in telegramWebhookRoute s
   }
 });
 
-// ── test 9: patient-facing confirmation text does not claim booked/confirmed ──
+// ── test 9: fallback confirmation text does not claim booked/confirmed ────────
 
-test("patient-facing contact confirmation text does not claim booked or confirmed", async () => {
+test("fallback contact confirmation text does not claim booked or confirmed", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const routeSrc = await readFile(resolve(thisDir, "../src/runtime/telegramWebhookRoute.ts"), "utf8");
 
   const confirmMatch = routeSrc.match(/Спасибо, номер получен[^"']*/);
-  assert.ok(confirmMatch, "Confirmation message must be present in route");
+  assert.ok(confirmMatch, "Fallback confirmation message must be present in route");
   const confirmText = confirmMatch[0];
 
   const forbidden = ["записан", "подтвержд", "забронирован", "booked", "confirmed", "reserved"];
   for (const word of forbidden) {
     assert.ok(
       !confirmText.toLowerCase().includes(word),
-      `Confirmation text must not claim "${word}" — only phone receipt should be acknowledged`,
+      `Fallback confirmation text must not claim "${word}" — only phone receipt should be acknowledged`,
     );
   }
+});
+
+// ── CCE-1: contact event routes through runtime (regression for stale OpenAI thread) ──
+// Root cause (PR #165): contact button bypass the runtime → OpenAI thread stale →
+// next user turn sees "waiting for phone" and model repeats phone request instead of
+// asking for name/last_name.
+// Fix: after persistChannelContactPhone, call runRuntimeTurnOrchestrated with
+// user_message="[contact_shared]" so OpenAI thread is updated.
+
+test("CCE-1: contact event routes through runtimeTurnService after persist — reply comes from runtime not hardcoded", async () => {
+  const runTurnCalls: Array<{ user_message: string }> = [];
+  const RUNTIME_REPLY = "Номер получен! Напишите, пожалуйста, ваше имя и фамилию для записи.";
+
+  const stubServiceForContact: RuntimeTurnService = {
+    async runTurn(input) {
+      runTurnCalls.push({ user_message: input.user_message });
+      return {
+        final_patient_reply: RUNTIME_REPLY,
+        conversation_id: "conv_cce1_test",
+        conversation_id_resumable: true,
+        tool_requests: [],
+        tool_results: [],
+      };
+    },
+  };
+
+  const sendCalls: Array<{ chatId: string; text: string; replyMarkup: unknown }> = [];
+
+  const stubPersistenceForCce: TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_UUID, clinic_id: CLINIC_UUID } };
+    },
+    async registerInboundEvent() {
+      // Return non-null inbound_event_id so the orchestrator does not short-circuit as duplicate
+      return { ok: true, data: { inbound_event_id: "evt_cce1" } };
+    },
+    async saveMessage() {
+      return { ok: true, data: { message_id: "msg_cce1" } };
+    },
+    async mergeConversationState() {
+      return { ok: true, data: { ok: true } };
+    },
+  };
+
+  let handler: ((request: unknown, reply: unknown) => Promise<void>) | undefined;
+  registerTelegramWebhookRoute(
+    { post(_path, h) { handler = h; } },
+    {
+      runtimeTurnService: stubServiceForContact,
+      clinicIdentityResolver: stubClinicResolver,
+      turnPersistenceRepository: stubPersistenceForCce,
+      botToken: "bot_cce1",
+      webhookSecret: undefined,
+      defaultClinicCode: CLINIC,
+      isProduction: false,
+      fetch: async (_url, init) => {
+        const body = JSON.parse((init as RequestInit)?.body as string);
+        sendCalls.push({
+          chatId: String(body.chat_id),
+          text: String(body.text),
+          replyMarkup: body.reply_markup,
+        });
+        return new Response('{"ok":true,"result":{"message_id":200}}', { status: 200 });
+      },
+    },
+  );
+
+  const fakeReply = { code(_: number) { return fakeReply; }, send(_: unknown) {} };
+  await (handler as Function)({ body: OWN_CONTACT_UPDATE, headers: {}, ip: "127.0.0.1" }, fakeReply);
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Runtime must be called once with [contact_shared]
+  assert.equal(runTurnCalls.length, 1, "runtimeTurnService.runTurn must be called exactly once for contact event");
+  assert.equal(
+    runTurnCalls[0]!.user_message,
+    "[contact_shared]",
+    "synthetic turn must use [contact_shared] as user_message so OpenAI thread is updated",
+  );
+
+  // Telegram reply must come from runtime (not hardcoded fallback)
+  assert.equal(sendCalls.length, 1, "exactly one Telegram message must be sent");
+  assert.equal(
+    sendCalls[0]!.text,
+    RUNTIME_REPLY,
+    "reply text must come from runtimeTurnService, not hardcoded 'Спасибо, номер получен'",
+  );
+
+  // Contact keyboard must be dismissed after phone capture regardless of runtime UI
+  const markup = sendCalls[0]!.replyMarkup as Record<string, unknown> | undefined;
+  assert.equal(
+    markup?.remove_keyboard,
+    true,
+    "reply_markup must have remove_keyboard=true to dismiss contact keyboard after phone capture",
+  );
 });

@@ -132,7 +132,16 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
   const isNewConversation = opts?.is_new_conversation ?? false;
 
   const firstTurnRule = isNewConversation
-    ? "0. First-turn self-introduction: This is the very first message in a new conversation. Introduce yourself as the clinic's virtual assistant (\"помощник администратора клиники\" in Russian, or equivalent in the patient's language). Use a warm, concise opening — e.g. in Russian: \"Здравствуйте! Я помощник администратора клиники. Помогу записаться на приём, подобрать удобное время или ответить на вопросы об услугах. Что вас интересует?\" — adapt phrasing to the patient's language. Do NOT claim to be a human administrator. Do NOT repeat this introduction on subsequent turns."
+    ? [
+        "0. FIRST-TURN ROUTING: This is the very first patient message in a new conversation. Choose the path that matches the message:",
+        "   PATH A — Low-signal (no clear intent): message is a pure greeting ('привет', 'здравствуйте'), emoji, punctuation only, filler ('эээ', 'ну'), or a vague opener ('можно спросить?') with no stated intent. → Introduce yourself briefly as the clinic's virtual assistant ('помощник администратора клиники' in Russian, or equivalent in the patient's language). Ask 'Что вас интересует?' or equivalent. Do NOT claim to be a human administrator. Do NOT repeat this introduction on subsequent turns.",
+        "   PATH B — Clear intent already in first message. Reply with 'Здравствуйте!' (or equivalent) and act immediately — do NOT ask 'Что вас интересует?':",
+        "     B1. Red-flag symptoms (facial swelling, fever, trauma, severe/acute pain, bleeding, post-procedure distress) → safety guidance first per TRIAGE rules. No normal availability intake as main response. No booking.apply.",
+        "     B2. Price or FAQ question ('сколько стоит', 'цена', 'прайс', 'стоимость', 'когда работаете') → call kb.search or answer from KB. No booking intake. No 'Что вас интересует?'",
+        "     B3. Booking intent + ASAP urgency ('как можно скорее', 'срочно', 'чем раньше', 'побыстрее', 'ASAP') → call availability.check for today or nearest available day. Non-red-flag pain + booking intent → service = 'осмотр из-за боли'; do not ask 'какая услуга?' or 'Что вас интересует?'",
+        "     B4. Booking intent + time hint ('завтра', 'в пятницу', 'в 09:00', 'утром', 'после обеда') → call availability.check. No generic opening question.",
+        "     B5. Booking intent without time ('хочу записаться на чистку', 'хочу к врачу') → ask only the missing detail (preferred day/time, and/or name if not stated). Do not ask 'Что вас интересует?' — intent is already known.",
+      ].join("\n")
     : null;
 
   return [

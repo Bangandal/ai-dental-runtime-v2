@@ -402,6 +402,53 @@ test("first-turn greeting: is_new_conversation=true instructs no re-introduction
   assert.match(instruction, /Do NOT repeat this introduction on subsequent turns/i, "must suppress re-introduction after first turn");
 });
 
+test("first-turn routing: low-signal message (PATH A) → self-introduction and open question allowed", () => {
+  const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
+  assert.match(instruction, /PATH A/i, "must define PATH A for low-signal messages");
+  assert.match(instruction, /помощник администратора клиники/i, "PATH A must include clinic assistant self-introduction");
+  assert.match(instruction, /Что вас интересует/i, "PATH A must include open-ended question");
+  assert.match(instruction, /Do NOT claim to be a human administrator/i, "must prohibit claiming to be human");
+  assert.match(instruction, /Do NOT repeat this introduction on subsequent turns/i, "must suppress re-introduction on later turns");
+});
+
+test("first-turn routing: price/FAQ question (PATH B2) → kb.search, no 'Что вас интересует?'", () => {
+  const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
+  assert.match(instruction, /B2/i, "must define PATH B2 for price/FAQ");
+  assert.match(instruction, /kb\.search/i, "B2 must route to kb.search");
+  assert.match(instruction, /сколько стоит/i, "B2 must reference price trigger phrase");
+  assert.match(instruction, /PATH B.*do NOT ask.*Что вас интересует|PATH B.*Что вас интересует/is, "PATH B must prohibit open question for clear-intent messages");
+});
+
+test("first-turn routing: red-flag symptoms (PATH B1) → safety guidance first, no availability intake as main response", () => {
+  const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
+  assert.match(instruction, /B1/i, "must define PATH B1 for red-flag");
+  assert.match(instruction, /safety guidance first/i, "B1 must mandate safety guidance first");
+  assert.match(instruction, /No normal availability intake/i, "B1 must prohibit availability intake as main response");
+  assert.match(instruction, /No booking\.apply/i, "B1 must prohibit booking.apply in red-flag path");
+});
+
+test("first-turn routing: booking + ASAP (PATH B3) → availability.check for nearest slot, service = осмотр из-за боли", () => {
+  const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
+  assert.match(instruction, /B3/i, "must define PATH B3 for ASAP booking");
+  assert.match(instruction, /как можно скорее.*availability\.check|availability\.check.*как можно скорее/is, "B3 must reference ASAP → availability.check");
+  assert.match(instruction, /осмотр из-за боли/i, "B3 must map non-red-flag pain + booking intent to correct service");
+  assert.match(instruction, /do not ask.*какая услуга|do not ask.*Что вас интересует/i, "B3 must suppress both open questions");
+});
+
+test("first-turn routing: booking + time hint (PATH B4) → availability.check, no generic question", () => {
+  const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
+  assert.match(instruction, /B4/i, "must define PATH B4 for booking + time hint");
+  assert.match(instruction, /B4.*availability\.check/is, "B4 must call availability.check");
+  assert.match(instruction, /No generic opening question/i, "B4 must prohibit generic intro question");
+});
+
+test("first-turn routing: booking without time (PATH B5) → ask only missing detail, not 'Что вас интересует?'", () => {
+  const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
+  assert.match(instruction, /B5/i, "must define PATH B5 for booking without time");
+  assert.match(instruction, /ask only the missing detail/i, "B5 must instruct to ask only what is missing");
+  assert.match(instruction, /Do not ask.*Что вас интересует/i, "B5 must prohibit open question when intent is known");
+});
+
 test("first-turn greeting: is_new_conversation=false omits clinic assistant self-introduction", () => {
   const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: false });
   assert.doesNotMatch(instruction, /помощник администратора клиники/i, "must NOT include self-introduction on subsequent turns");

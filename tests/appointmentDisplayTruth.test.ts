@@ -28,6 +28,13 @@ import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
 import type { RuntimeAgentToolResult } from "../src/runtime/openaiRuntimeAgent.ts";
 import { buildBookingApplyActionTruth } from "../src/runtime/bookingApplyGuard.ts";
 
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function makeBookingSuccessResult(overrides: Record<string, unknown> = {}): RuntimeAgentToolResult {
@@ -283,6 +290,7 @@ describe("PR #136 — F: appointment_display_truth injected in second model call
       } as unknown as ToolExecutorRegistry,
       now: new Date("2026-07-05T09:00:00.000Z"),
       timezone: "Europe/Prague",
+      bookingProcessStateRepository: makeSlotStateRepo("2026-07-07T14:00:00"),
     });
 
     await loop.runTurn({

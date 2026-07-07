@@ -47,6 +47,13 @@ import {
   shouldInterceptInvalidSlotTime,
   buildInvalidSlotReply,
 } from "../src/runtime/bookingApplyPreflight.ts";
+
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
@@ -728,6 +735,7 @@ test("Test 5: full proof + BOOKING_MODE=disabled → booking_write_disabled, no 
         adapterFactory: () => mockAdapter,
       }),
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
   });
 
   const result = await loop.runTurn({

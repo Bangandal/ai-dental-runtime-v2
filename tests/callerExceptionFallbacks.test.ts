@@ -22,6 +22,13 @@ import { resolveAdminNotifyReason } from "../src/integrations/adminNotify/adminN
 import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
 import type { ConversationMemoryRepository } from "../src/runtime/runtimeRepositories.ts";
 
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
+
 function makeInput(locale: string | null, conversation_id?: string | null) {
   return {
     clinic_id: "clinic_1",
@@ -133,7 +140,7 @@ test("D: second caller exception after booking.apply returns booking emergency f
     }
     throw new Error("second call boom");
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.doesNotMatch(result.final_patient_reply, /having trouble/i);
@@ -153,7 +160,7 @@ test("E: second caller exception after booking.apply preserves tool_results for 
     }
     throw new Error("second call boom");
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.equal(result.tool_requests.length, 1);

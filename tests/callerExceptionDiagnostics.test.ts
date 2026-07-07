@@ -19,6 +19,13 @@ import {
 import { buildBookingApplyActionTruth } from "../src/runtime/bookingApplyGuard.ts";
 import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
 
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
+
 function makeInput(locale: string | null, conversation_id?: string | null) {
   return {
     clinic_id: "clinic_1",
@@ -141,7 +148,7 @@ test("second-call exception with booking_apply_action_truth: booking fallback st
     }
     throw Object.assign(new Error("openai_internal_error"), { code: "internal_error", request_id: "req_xyz" });
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.equal((result.debug as any).reason, "agent_second_call_exception_booking_fallback");

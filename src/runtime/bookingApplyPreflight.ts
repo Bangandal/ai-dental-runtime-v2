@@ -186,3 +186,63 @@ const INVALID_SLOT_REPLIES: Record<string, string> = {
 export function buildInvalidSlotReply(locale?: string | null): string {
   return INVALID_SLOT_REPLIES[resolveLocaleKey(locale)];
 }
+
+// ── Slot proof guard ──────────────────────────────────────────────────────────
+
+import type { AvailableSlot } from "./bookingProcessState.ts";
+
+/**
+ * Returns true when booking.apply is pending but there is no verified slot proof:
+ * no successful availability.check in the current turn AND no selectedSlot from
+ * booking process state that matches the requested date and time.
+ *
+ * Only fires when completedToolResults contains no successful availability.check —
+ * when avail.check results are present, shouldInterceptInvalidSlotTime handles
+ * time mismatches. Missing date/time is handled upstream by bookingApplyArgsMissingSlot.
+ */
+export function shouldInterceptMissingSlotProof(params: {
+  pendingToolRequests: RuntimeAgentToolRequest[];
+  completedToolResults: RuntimeAgentToolResult[];
+  selectedSlot?: AvailableSlot | null;
+}): boolean {
+  if (!hasBookingApplyPending(params.pendingToolRequests)) return false;
+
+  const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
+  if (!req) return false;
+
+  const requestedDate =
+    typeof req.arguments.requested_date === "string" ? req.arguments.requested_date.trim() : null;
+  const requestedTime =
+    typeof req.arguments.requested_time === "string" ? req.arguments.requested_time.trim() : null;
+
+  // Missing date/time handled upstream by bookingApplyArgsMissingSlot
+  if (!requestedDate || !requestedTime) return false;
+
+  // If successful avail.check results exist in this turn, let shouldInterceptInvalidSlotTime
+  // handle the mismatch case — don't double-intercept.
+  const hasSuccessfulAvailCheck = params.completedToolResults.some(
+    (r) => r.tool === "availability.check" && r.status === "success",
+  );
+  if (hasSuccessfulAvailCheck) return false;
+
+  // No avail.check in this turn — check if selectedSlot from state covers the request.
+  const slot = params.selectedSlot;
+  if (slot?.starts_at) {
+    const slotDate = slot.starts_at.slice(0, 10);
+    const slotTime = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(11, 16);
+    const normalizedReq = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
+    if (slotDate === requestedDate && slotTime === normalizedReq) return false;
+  }
+
+  return true;
+}
+
+const MISSING_SLOT_PROOF_REPLIES: Record<string, string> = {
+  ru: "Сначала проверим доступное время. На какую дату вас записать?",
+  cs: "Nejdříve zkontrolujeme dostupné termíny. Na jaký den vás zapsat?",
+  en: "Let me check available times first. What date works for you?",
+};
+
+export function buildMissingSlotProofReply(locale?: string | null): string {
+  return MISSING_SLOT_PROOF_REPLIES[resolveLocaleKey(locale)];
+}

@@ -24,6 +24,13 @@ import type { ConversationMemoryRepository } from "../src/runtime/runtimeReposit
 
 const MALFORMED_MARKER = ["malformed_openai_response"];
 
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
+
 function malformedOutput(): RuntimeAgentCallerOutput {
   return {
     type: "final_response",
@@ -140,6 +147,7 @@ test("Codex-P2-B: second-call malformed clears conversation memory and returns n
     caller,
     executors: bookingApplyExecutors("booking_write_disabled"),
     conversationMemoryRepository: repo,
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00"),
   });
   const result = await agent.runTurn(makeInput("ru"));
 
@@ -175,7 +183,7 @@ test("Codex-P2-D: debug reasons unaffected by the memory-save fix", async () => 
     }
     return malformedOutput();
   };
-  const bookingResult = await createRuntimeAgentLoop({ model: "m", caller: bookingCaller, executors: bookingApplyExecutors("booking_write_disabled") }).runTurn(makeInput("ru"));
+  const bookingResult = await createRuntimeAgentLoop({ model: "m", caller: bookingCaller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") }).runTurn(makeInput("ru"));
   assert.equal((bookingResult.debug as any).reason, "malformed_second_model_response_booking_fallback");
 
   let round2 = 0;
@@ -225,7 +233,7 @@ test("C: second call malformed after booking_write_disabled returns booking emer
     }
     return malformedOutput();
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.doesNotMatch(result.final_patient_reply, /having trouble/i);
@@ -246,7 +254,7 @@ test("D: second call malformed after booking.apply never claims booked/confirmed
     }
     return malformedOutput();
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("cliniccard_write_failed") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("cliniccard_write_failed"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.doesNotMatch(result.final_patient_reply, /запись (создана|подтверждена)/i);
@@ -329,7 +337,7 @@ test("H: malformed second-call path preserves tool_results so admin_notification
     }
     return malformedOutput();
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
   const result = await agent.runTurn(makeInput("ru"));
 
   const { buildBookingApplyActionTruth } = await import("../src/runtime/bookingApplyGuard.ts");
@@ -476,6 +484,7 @@ test("RC2-E: second caller throws after tool execution → conversation_id_resum
     model: "gpt-test",
     caller,
     executors: bookingApplyExecutors("booking_write_disabled"),
+    bookingProcessStateRepository: makeSlotStateRepo("2099-01-20T10:00:00"),
   });
   const result = await agent.runTurn(makeInput("ru"));
 
@@ -502,6 +511,7 @@ test("RC2-F: second caller malformed after tool execution → conversation_id_re
     model: "gpt-test",
     caller,
     executors: bookingApplyExecutors("booking_write_disabled"),
+    bookingProcessStateRepository: makeSlotStateRepo("2099-01-20T10:00:00"),
   });
   const result = await agent.runTurn(makeInput("ru"));
 

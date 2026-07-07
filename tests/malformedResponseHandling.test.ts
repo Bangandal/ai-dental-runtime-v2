@@ -122,7 +122,7 @@ test("Codex-P2-A: first-call malformed with conversation_id from caller persists
   assert.equal((result.debug as any).reason, "malformed_first_model_response");
 });
 
-test("Codex-P2-B: second-call malformed with conversation_id from caller persists memory once", async () => {
+test("Codex-P2-B: second-call malformed clears conversation memory and returns null conversation_id", async () => {
   let round = 0;
   const caller: RuntimeAgentCaller = async () => {
     round += 1;
@@ -143,9 +143,11 @@ test("Codex-P2-B: second-call malformed with conversation_id from caller persist
   });
   const result = await agent.runTurn(makeInput("ru"));
 
+  // clearConversationMemory saves conversation_id: "" to clear the dirty id
   assert.equal(saveCalls.length, 1);
-  assert.equal((saveCalls[0] as any).conversation_id, "conv_from_second_call");
-  assert.equal(result.conversation_id, "conv_from_second_call");
+  assert.equal((saveCalls[0] as any).conversation_id, "");
+  assert.equal(result.conversation_id, null);
+  assert.equal(result.conversation_id_resumable, false);
   assert.equal((result.debug as any).reason, "malformed_second_model_response_booking_fallback");
 });
 
@@ -454,4 +456,116 @@ test("RC4-D: booking.apply tool args logged with date/time/service; name/phone r
   // PII: first_name and last_name must NOT be logged
   assert.equal(ba.first_name, undefined);
   assert.equal(ba.last_name, undefined);
+});
+
+// ── PR #160 — Blockers: second-call dirty + round-2 logging ─────────────────
+
+test("RC2-E: second caller throws after tool execution → conversation_id_resumable=false, conversation_id=null", async () => {
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-20", requested_time: "10:00" } }],
+      };
+    }
+    throw new Error("OpenAI second call timeout");
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "gpt-test",
+    caller,
+    executors: bookingApplyExecutors("booking_write_disabled"),
+  });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  assert.equal(result.conversation_id_resumable, false,
+    "second-call exception must dirty the conversation");
+  assert.equal(result.conversation_id, null,
+    "dirty conversation must not be returned as resumable id");
+  assert.equal((result.debug as any).reason, "agent_second_call_exception_booking_fallback");
+});
+
+test("RC2-F: second caller malformed after tool execution → conversation_id_resumable=false, conversation_id=null", async () => {
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-20", requested_time: "10:00" } }],
+      };
+    }
+    return { ...malformedOutput(), conversation_id: "conv_dirty_456" };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "gpt-test",
+    caller,
+    executors: bookingApplyExecutors("booking_write_disabled"),
+  });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  assert.equal(result.conversation_id_resumable, false,
+    "second-call malformed must dirty the conversation");
+  assert.equal(result.conversation_id, null,
+    "dirty conversation_id must not be returned");
+  assert.equal((result.debug as any).reason, "malformed_second_model_response_booking_fallback");
+});
+
+test("RC4-E: round-1 availability.check + round-2 booking.apply both appear in debug.tool_call_args", async () => {
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", call_id: "a1", arguments: { requested_date: "2099-01-15", requested_time: "10:00" } }],
+      };
+    }
+    if (round === 2) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "b1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-15", requested_time: "10:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Записан." } };
+  };
+  const executors: ToolExecutorRegistry = {
+    "availability.check": async () => ({
+      tool: "availability.check",
+      status: "success",
+      data: { slots: [{ slot_id: "s1", starts_at: "2099-01-15T10:00:00", ends_at: "2099-01-15T10:30:00" }] },
+    }),
+    "booking.apply": async () => ({
+      tool: "booking.apply",
+      status: "success",
+      data: {
+        booking_action: "booking_apply",
+        booking_status: "booking_write_disabled",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: "booking_write_disabled",
+        proof: null,
+      },
+    }),
+  };
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  const args = (result.debug as any).tool_call_args;
+  assert.ok(Array.isArray(args), "debug.tool_call_args must be an array");
+
+  const avail = args.find((a: any) => a.tool === "availability.check");
+  assert.ok(avail, "round-1 availability.check entry must be present");
+  assert.equal(avail.requested_date, "2099-01-15");
+  assert.equal(avail.requested_time, "10:00");
+
+  const booking = args.find((a: any) => a.tool === "booking.apply");
+  assert.ok(booking, "round-2 booking.apply entry must be present");
+  assert.equal(booking.requested_date, "2099-01-15");
+  assert.equal(booking.requested_time, "10:00");
+  assert.equal(booking.service, "чистка");
+  assert.equal(booking.first_name, undefined, "first_name must not be logged (PII)");
+  assert.equal(booking.last_name, undefined, "last_name must not be logged (PII)");
 });

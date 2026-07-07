@@ -406,6 +406,27 @@ test("buildBookingApplyEmergencyFallback: returns locale-aware minimal fallback 
   assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "cs"), /telefon/);
 });
 
+// ── PR #160 — RC#3b: visit_created emergency fallback must be truthful ───────
+
+test("RC3b: buildBookingApplyEmergencyFallback with visit_created never says 'не могу подтвердить'", () => {
+  const make = (status: string) => [{
+    tool: "booking.apply" as const,
+    status: "success" as const,
+    data: { booking_status: status, created_visit: true, may_claim_booked: true, cliniccard_visit_id: "58782156" },
+  }];
+
+  // Must NOT claim it cannot confirm — the visit IS in ClinicCard
+  assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("visit_created"), "ru"), /не могу подтвердить/i);
+  assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("visit_created"), "en"), /unable to confirm/i);
+  assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("visit_created"), "cs"), /nemohu.*potvrdit/i);
+
+  // Must acknowledge booking was saved + advise to contact clinic for details
+  assert.match(buildBookingApplyEmergencyFallback(make("visit_created"), "ru"), /создана в системе/i);
+  assert.match(buildBookingApplyEmergencyFallback(make("visit_created"), "ru"), /клиник/i);
+  assert.match(buildBookingApplyEmergencyFallback(make("visit_created"), "en"), /saved in our system/i);
+  assert.match(buildBookingApplyEmergencyFallback(make("visit_created"), "cs"), /uložena v systému/i);
+});
+
 // ── T9: no ClinicCard writes outside bookingApplyExecutor ────────────────────
 
 test("T9: no createPatient or createVisit calls outside bookingApplyExecutor and ClinicCard adapter files", async () => {

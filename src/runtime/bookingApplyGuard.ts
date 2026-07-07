@@ -106,6 +106,7 @@ export function buildBookingApplyEmergencyFallback(
   // promise clinic staff will follow up or reach out. Direct the patient to contact the
   // clinic directly instead of claiming an outreach that never happens.
   if (normalized.startsWith("en")) {
+    if (status === "visit_created") return "Your appointment has been saved in our system, but a technical error prevented the confirmation message from sending. Please contact the clinic to verify your booking details.";
     if (status === "missing_phone") return "I need your phone number to complete the booking. Please share your contact or type your number.";
     if (status === "slot_conflict") return "That time slot is no longer available. I can check other times.";
     if (status === "booking_write_disabled") return "Online booking is currently unavailable. Please contact the clinic directly to book your appointment.";
@@ -113,6 +114,7 @@ export function buildBookingApplyEmergencyFallback(
   }
 
   if (normalized.startsWith("cs")) {
+    if (status === "visit_created") return "Vaše rezervace byla uložena v systému, ale při odeslání potvrzení došlo k technické chybě. Kontaktujte prosím kliniku pro ověření podrobností.";
     if (status === "missing_phone") return "Pro rezervaci potřebuji váš telefon. Sdílejte kontakt nebo napište číslo.";
     if (status === "slot_conflict") return "Tento čas je obsazen. Mohu zkontrolovat jiný termín.";
     if (status === "booking_write_disabled") return "Online rezervace není momentálně dostupná. Kontaktujte prosím kliniku přímo pro rezervaci.";
@@ -120,6 +122,8 @@ export function buildBookingApplyEmergencyFallback(
   }
 
   // Default: Russian
+  // visit_created: booking IS in ClinicCard — never say "не могу подтвердить".
+  if (status === "visit_created") return "Запись создана в системе, но при отправке ответа произошла техническая ошибка. Пожалуйста, уточните детали у клиники.";
   if (status === "missing_phone") return "Для записи нужен номер телефона. Поделитесь контактом или напишите номер.";
   if (status === "slot_conflict") return "Это время уже недоступно. Могу проверить другое время.";
   if (status === "booking_write_disabled") return "Онлайн-запись временно недоступна. Пожалуйста, свяжитесь с клиникой напрямую для записи.";

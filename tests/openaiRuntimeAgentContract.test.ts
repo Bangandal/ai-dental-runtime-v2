@@ -634,3 +634,25 @@ test("context authority: task_state.collected nulls are also persistence flags �
     "CONTEXT AUTHORITY must explicitly say null collected fields are not evidence the patient never stated the field",
   );
 });
+
+// ── PR #160 — RC#4: exact time AVAILABILITY RULES ────────────────────────────
+
+test("RC4-C: exact time rule: if available, confirm only that time; list alternatives only if unavailable", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+
+  // Must say: confirm ONLY that time if available
+  assert.ok(
+    instruction.includes("if that exact time is available, confirm ONLY that time"),
+    "AVAILABILITY RULES must say confirm ONLY that time when exact time is available",
+  );
+  // Must say: do NOT list other slots alongside
+  assert.ok(
+    instruction.includes("do NOT list other slots alongside it"),
+    "AVAILABILITY RULES must prohibit listing other slots when exact time is available",
+  );
+  // Must say: list alternatives only when exact time is NOT available
+  assert.ok(
+    instruction.includes("List alternatives only when the exact requested time is NOT available"),
+    "AVAILABILITY RULES must say alternatives only when exact time is not available",
+  );
+});

@@ -174,6 +174,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         return {
           final_patient_reply: buildMalformedResponseFallback(input.locale),
           conversation_id: conversationId,
+          // Malformed/unparseable first response leaves OpenAI conversation in unknown state.
+          // Mark dirty so orchestrator clears it rather than resuming on the next turn.
+          conversation_id_resumable: false,
           tool_requests: [],
           tool_results: [],
           debug,
@@ -190,6 +193,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         return {
           final_patient_reply: buildMalformedResponseFallback(input.locale),
           conversation_id: conversationId,
+          // Malformed output means OpenAI conversation state is unreliable — dirty it.
+          conversation_id_resumable: false,
           tool_requests: [],
           tool_results: [],
           debug,
@@ -219,6 +224,29 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       const toolRequests = firstOutput.tool_requests;
       const toolResults: RuntimeAgentToolResult[] = [];
+
+      // Debug: log tool call args for observability (date/time/service only; name/phone redacted).
+      debug.tool_call_args = toolRequests.map((r) => {
+        const args = r.arguments ?? {};
+        if (r.tool === "availability.check") {
+          return {
+            tool: r.tool,
+            requested_date: args.requested_date ?? null,
+            requested_time: args.requested_time ?? null,
+            service_interest: args.service_interest ?? null,
+          };
+        }
+        if (r.tool === "booking.apply") {
+          return {
+            tool: r.tool,
+            requested_date: args.requested_date ?? null,
+            requested_time: args.requested_time ?? null,
+            service: args.service ?? null,
+            // first_name/last_name deliberately omitted — patient PII
+          };
+        }
+        return { tool: r.tool };
+      });
 
       // Global preflight C — availability past-time guard: if availability.check is
       // requested for today at a time that has already passed, return the past-time reply
@@ -509,10 +537,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           toolResults,
           bookingApplyActionTruth: bookingActionTruth,
         });
-        await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        markConversationDirty(debug);
+        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
           final_patient_reply: emergencyReply,
-          conversation_id: conversationId,
+          conversation_id: null,
+          conversation_id_resumable: false,
           tool_requests: toolRequests,
           tool_results: toolResults,
           debug,
@@ -530,10 +560,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         debug.reason = bookingActionTruth
           ? "malformed_second_model_response_booking_fallback"
           : "malformed_second_model_response_generic_fallback";
-        await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        markConversationDirty(debug);
+        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
           final_patient_reply: malformedReply,
-          conversation_id: conversationId,
+          conversation_id: null,
+          conversation_id_resumable: false,
           tool_requests: toolRequests,
           tool_results: toolResults,
           debug,
@@ -541,6 +573,31 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       if (secondOutput.type === "tool_requests") {
+        // Debug: append round-2 tool args (same PII-safe pattern as round 1).
+        if (Array.isArray(debug.tool_call_args)) {
+          const round2Args = secondOutput.tool_requests.map((r) => {
+            const args = r.arguments ?? {};
+            if (r.tool === "availability.check") {
+              return {
+                tool: r.tool,
+                requested_date: args.requested_date ?? null,
+                requested_time: args.requested_time ?? null,
+                service_interest: args.service_interest ?? null,
+              };
+            }
+            if (r.tool === "booking.apply") {
+              return {
+                tool: r.tool,
+                requested_date: args.requested_date ?? null,
+                requested_time: args.requested_time ?? null,
+                service: args.service ?? null,
+              };
+            }
+            return { tool: r.tool };
+          });
+          debug.tool_call_args = [...(debug.tool_call_args as unknown[]), ...round2Args];
+        }
+
         // No-slots gate (round 2, first): availability.check returned 0 slots — no slot
         // exists to confirm regardless of phone status, so intercept before asking for phone.
         if (shouldInterceptNoSlotsBeforeBookingApply({

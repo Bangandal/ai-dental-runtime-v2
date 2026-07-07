@@ -1326,7 +1326,7 @@ test("turn understanding sanitizer does not change main agent runtime_context", 
   const mainContext = calls[0].business_context.runtime_context;
   assert.equal(mainContext.task_state.last_bot_question, undefined);
   assert.equal(mainContext.task_state.pending_slots, undefined);
-  assert.deepEqual(mainContext.recent_history, []);
+  assert.deepEqual(mainContext.recent_history, [{ role: "assistant", text: "raw" }]);
   assert.equal(calls[0].business_context.topic_memory_candidate, undefined);
   assert.equal(calls[0].business_context.runtime_context.topic_memory, undefined);
   assert.deepEqual(turnUnderstandingInputs[0].topic_memory, { last_service_interest: "пломба" });

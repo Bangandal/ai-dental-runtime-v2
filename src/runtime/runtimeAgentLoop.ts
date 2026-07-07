@@ -21,7 +21,7 @@ import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
 import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotDateTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
-import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
+import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
 import {
@@ -265,6 +265,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           timezone,
           now: turnNow,
         })) {
+          debug.past_time_detail = {
+            requestedDate: typeof availCheckRound1.arguments.requested_date === "string" ? availCheckRound1.arguments.requested_date : undefined,
+            requestedTime: availTime,
+            timezone,
+            nowISO: turnNow.toISOString(),
+            todayInTimezone: getTodayInTimezone(turnNow, timezone),
+          };
           debug.reason = "availability_preflight_past_time";
           markConversationDirty(debug);
           await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
@@ -292,6 +299,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           timezone,
           now: turnNow,
         })) {
+          debug.past_time_detail = {
+            requestedDate: typeof bookingApplyRound1.arguments.requested_date === "string" ? bookingApplyRound1.arguments.requested_date : undefined,
+            requestedTime: typeof bookingApplyRound1.arguments.requested_time === "string" ? bookingApplyRound1.arguments.requested_time : undefined,
+            timezone,
+            nowISO: turnNow.toISOString(),
+            todayInTimezone: getTodayInTimezone(turnNow, timezone),
+          };
           debug.reason = "booking_apply_preflight_past_time_round1";
           return await finalizeBlockedBookingApplyWithToolOutput({
             pendingBookingApply: bookingApplyRound1,
@@ -705,6 +719,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               timezone,
               now: turnNow,
             })) {
+              debug.past_time_detail = {
+                requestedDate: typeof pendingBookingApply.arguments.requested_date === "string" ? pendingBookingApply.arguments.requested_date : undefined,
+                requestedTime: typeof pendingBookingApply.arguments.requested_time === "string" ? pendingBookingApply.arguments.requested_time : undefined,
+                timezone,
+                nowISO: turnNow.toISOString(),
+                todayInTimezone: getTodayInTimezone(turnNow, timezone),
+              };
               debug.reason = "booking_apply_preflight_past_time_round2";
               return await finalizeBlockedBookingApplyWithToolOutput({
                 pendingBookingApply,

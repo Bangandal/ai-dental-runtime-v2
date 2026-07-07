@@ -29,6 +29,13 @@ import type { RuntimeContextRepository } from "../src/runtime/supabaseRuntimeCon
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
 import type { RuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 function makeCallerCapture(): {
@@ -221,6 +228,7 @@ test("D: channel_contact is available in turn input and trusted phone works thro
     // now = 08:00 Prague (UTC+2 CEST) → slot at 14:00 is safely in the future
     now: new Date("2026-07-10T06:00:00.000Z"),
     timezone: "Europe/Prague",
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-10T14:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -281,6 +289,7 @@ test("E: booking_apply_action_truth is produced correctly in second-call context
     // now = 08:00 Prague (UTC+2 CEST) → slot at 14:00 is safely in the future
     now: new Date("2026-07-10T06:00:00.000Z"),
     timezone: "Europe/Prague",
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-10T14:00:00"),
   });
 
   await loop.runTurn({

@@ -140,11 +140,13 @@ function extractHHMM(startsAt: string): string | null {
 }
 
 /**
- * Returns true when booking.apply requested_time doesn't match any HH:MM from
- * availability.check slots. Only fires when availability returned ≥1 slot —
- * the 0-slot case is handled by shouldInterceptNoSlotsBeforeBookingApply upstream.
+ * Returns true when booking.apply requested date+time doesn't match any slot from
+ * availability.check results. Validates full date+time (not just time) to prevent
+ * cross-date booking when the same time exists on a different date.
+ * Only fires when availability returned ≥1 slot — the 0-slot case is handled by
+ * shouldInterceptNoSlotsBeforeBookingApply upstream.
  */
-export function shouldInterceptInvalidSlotTime(params: {
+export function shouldInterceptInvalidSlotDateTime(params: {
   pendingToolRequests: RuntimeAgentToolRequest[];
   completedToolResults: RuntimeAgentToolResult[];
 }): boolean {
@@ -152,29 +154,32 @@ export function shouldInterceptInvalidSlotTime(params: {
 
   const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
   if (!req) return false;
+  const requestedDate =
+    typeof req.arguments.requested_date === "string" ? req.arguments.requested_date.trim() : null;
   const requestedTime =
     typeof req.arguments.requested_time === "string" ? req.arguments.requested_time.trim() : null;
-  if (!requestedTime) return false; // missing date/time handled by bookingApplyArgsMissingSlot
+  if (!requestedDate || !requestedTime) return false; // missing date/time handled upstream
 
-  // Collect all allowed HH:MM from successful availability results
-  const allowedTimes = new Set<string>();
+  // Collect all allowed "YYYY-MM-DDTHH:MM" from successful availability results
+  const allowedSlots = new Set<string>();
   for (const r of params.completedToolResults) {
     if (r.tool !== "availability.check" || r.status !== "success") continue;
     const data = r.data as { slots?: Array<{ starts_at?: string }> } | null | undefined;
     if (!Array.isArray(data?.slots)) continue;
     for (const slot of data.slots) {
       if (typeof slot.starts_at === "string") {
-        const hhmm = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(0, 5);
-        if (hhmm) allowedTimes.add(hhmm);
+        const date = slot.starts_at.slice(0, 10);
+        const hhmm = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(11, 16);
+        if (date && hhmm) allowedSlots.add(`${date}T${hhmm}`);
       }
     }
   }
 
-  if (allowedTimes.size === 0) return false; // no slots to validate against
+  if (allowedSlots.size === 0) return false; // no slots to validate against
 
   // Normalize to HH:MM (model may emit "12:00:00" format)
-  const normalized = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
-  return !allowedTimes.has(normalized);
+  const normalizedTime = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
+  return !allowedSlots.has(`${requestedDate}T${normalizedTime}`);
 }
 
 const INVALID_SLOT_REPLIES: Record<string, string> = {
@@ -185,4 +190,64 @@ const INVALID_SLOT_REPLIES: Record<string, string> = {
 
 export function buildInvalidSlotReply(locale?: string | null): string {
   return INVALID_SLOT_REPLIES[resolveLocaleKey(locale)];
+}
+
+// ── Slot proof guard ──────────────────────────────────────────────────────────
+
+import type { AvailableSlot } from "./bookingProcessState.ts";
+
+/**
+ * Returns true when booking.apply is pending but there is no verified slot proof:
+ * no successful availability.check in the current turn AND no selectedSlot from
+ * booking process state that matches the requested date and time.
+ *
+ * Only fires when completedToolResults contains no successful availability.check —
+ * when avail.check results are present, shouldInterceptInvalidSlotTime handles
+ * time mismatches. Missing date/time is handled upstream by bookingApplyArgsMissingSlot.
+ */
+export function shouldInterceptMissingSlotProof(params: {
+  pendingToolRequests: RuntimeAgentToolRequest[];
+  completedToolResults: RuntimeAgentToolResult[];
+  selectedSlot?: AvailableSlot | null;
+}): boolean {
+  if (!hasBookingApplyPending(params.pendingToolRequests)) return false;
+
+  const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
+  if (!req) return false;
+
+  const requestedDate =
+    typeof req.arguments.requested_date === "string" ? req.arguments.requested_date.trim() : null;
+  const requestedTime =
+    typeof req.arguments.requested_time === "string" ? req.arguments.requested_time.trim() : null;
+
+  // Missing date/time handled upstream by bookingApplyArgsMissingSlot
+  if (!requestedDate || !requestedTime) return false;
+
+  // If successful avail.check results exist in this turn, let shouldInterceptInvalidSlotTime
+  // handle the mismatch case — don't double-intercept.
+  const hasSuccessfulAvailCheck = params.completedToolResults.some(
+    (r) => r.tool === "availability.check" && r.status === "success",
+  );
+  if (hasSuccessfulAvailCheck) return false;
+
+  // No avail.check in this turn — check if selectedSlot from state covers the request.
+  const slot = params.selectedSlot;
+  if (slot?.starts_at) {
+    const slotDate = slot.starts_at.slice(0, 10);
+    const slotTime = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(11, 16);
+    const normalizedReq = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
+    if (slotDate === requestedDate && slotTime === normalizedReq) return false;
+  }
+
+  return true;
+}
+
+const MISSING_SLOT_PROOF_REPLIES: Record<string, string> = {
+  ru: "Сначала проверим доступное время. На какую дату вас записать?",
+  cs: "Nejdříve zkontrolujeme dostupné termíny. Na jaký den vás zapsat?",
+  en: "Let me check available times first. What date works for you?",
+};
+
+export function buildMissingSlotProofReply(locale?: string | null): string {
+  return MISSING_SLOT_PROOF_REPLIES[resolveLocaleKey(locale)];
 }

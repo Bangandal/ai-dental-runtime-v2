@@ -71,7 +71,14 @@ function makeAdapter(overrides: Partial<ClinicCardAdapter> = {}): ClinicCardAdap
   };
 }
 
-function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Partial<ClinicCardAdapter> = {}) {
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
+
+function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Partial<ClinicCardAdapter> = {}, slotStartsAt?: string) {
   const callerQueue: RuntimeAgentCaller[] = [];
   return {
     pushCaller(caller: RuntimeAgentCaller) { callerQueue.push(caller); },
@@ -88,6 +95,7 @@ function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Part
           adapterFactory: () => makeAdapter(adapterOverrides),
         }),
       },
+      ...(slotStartsAt ? { bookingProcessStateRepository: makeSlotStateRepo(slotStartsAt) } : {}),
     }),
   };
 }
@@ -107,7 +115,7 @@ test("B: CLINICCARD_BOOKING_MODE disabled → booking_write_disabled; action tru
   const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV, {
     createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "X", phone: null } }; },
     createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
-  });
+  }, "2026-07-15T10:00:00");
 
   // Round 1: model requests booking.apply
   pushCaller(async () => ({
@@ -215,7 +223,7 @@ test("E: visit_created → action truth can_say_booking_created=true; model repl
       executorPhones.push(input.phone ?? "");
       return { ok: true, data: { id: 42, name: input.name, phone: input.phone ?? null } };
     },
-  });
+  }, "2026-07-15T10:00:00");
 
   pushCaller(async () => ({
     type: "tool_requests",
@@ -258,7 +266,7 @@ test("E: visit_created → action truth can_say_booking_created=true; model repl
 test("F: forced finalization path receives booking_apply_action_truth in resolved_context", async () => {
   let forcedCallContext: Record<string, unknown> | undefined;
 
-  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV);
+  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV, {}, "2026-07-15T10:00:00");
 
   // Round 1: model requests booking.apply
   pushCaller(async () => ({

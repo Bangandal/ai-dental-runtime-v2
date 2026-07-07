@@ -20,7 +20,7 @@ import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
-import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotTime } from "./bookingApplyPreflight.ts";
+import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotDateTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
@@ -419,6 +419,37 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         });
       }
 
+      // Global preflight G — slot proof guard (round 1): trusted phone + all fields
+      // present but no availability.check was done in this turn and no selected_slot
+      // from prior state matches the requested date/time. Prevents an unverified
+      // booking write for a slot the patient never confirmed from avail.check output.
+      if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact) &&
+          shouldInterceptMissingSlotProof({
+            pendingToolRequests: toolRequests,
+            completedToolResults: [],
+            selectedSlot: bookingProcessState.selected_slot,
+          })) {
+        debug.reason = "booking_apply_preflight_missing_slot_proof_round1";
+        return await finalizeBlockedBookingApplyWithToolOutput({
+          pendingBookingApply: bookingApplyRound1,
+          guardedData: {
+            booking_status: "slot_not_verified",
+            created_visit: false,
+            may_claim_booked: false,
+            required_next_action: "ask_for_slot",
+            reason: "slot_proof_required",
+          },
+          previousToolResults: [],
+          toolRequests,
+          conversationId,
+          systemInstruction,
+          callerContext,
+          input,
+          debug,
+          deps,
+        });
+      }
+
       for (const request of toolRequests) {
         if (!ACTIVE_TOOL_SET.has(request.tool)) {
           toolResults.push({
@@ -767,10 +798,39 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             });
           }
 
-          // Slot validity check (round 2): requested_time must match a slot returned by
-          // availability.check.  Guards D and no-slots handle missing date/time and 0-slot
-          // cases respectively, so by here date+time are present and ≥1 slot exists.
-          if (shouldInterceptInvalidSlotTime({
+          // Guard G (round 2): slot proof — no successful availability.check in this turn
+          // and no selected_slot from state matches the requested date/time. Prevents an
+          // unverified booking write for a slot the patient never confirmed from avail.check.
+          if (shouldInterceptMissingSlotProof({
+            pendingToolRequests: secondOutput.tool_requests,
+            completedToolResults: toolResults,
+            selectedSlot: bookingProcessState.selected_slot,
+          })) {
+            debug.reason = "booking_apply_preflight_missing_slot_proof_round2";
+            return await finalizeBlockedBookingApplyWithToolOutput({
+              pendingBookingApply,
+              guardedData: {
+                booking_status: "slot_not_verified",
+                created_visit: false,
+                may_claim_booked: false,
+                required_next_action: "ask_for_slot",
+                reason: "slot_proof_required",
+              },
+              previousToolResults: toolResults,
+              toolRequests,
+              conversationId,
+              systemInstruction,
+              callerContext,
+              input,
+              debug,
+              deps,
+            });
+          }
+
+          // Slot validity check (round 2): requested date+time must match a slot returned
+          // by availability.check. Guards D and no-slots handle missing date/time and
+          // 0-slot cases respectively, so by here date+time are present and ≥1 slot exists.
+          if (shouldInterceptInvalidSlotDateTime({
             pendingToolRequests: secondOutput.tool_requests,
             completedToolResults: toolResults,
           })) {

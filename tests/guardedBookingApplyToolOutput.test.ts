@@ -110,6 +110,13 @@ function makeCallerSequence(outputs: Awaited<ReturnType<RuntimeAgentCaller>>[]):
   return async () => outputs[call++] ?? outputs[outputs.length - 1];
 }
 
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
+
 // Helper to assert guarded tool result invariants
 function assertGuardedResult(
   result: Awaited<ReturnType<ReturnType<typeof createRuntimeAgentLoop>["runTurn"]>>,
@@ -411,6 +418,7 @@ test("F: full proof + CLINICCARD_BOOKING_MODE=disabled → executor runs, bookin
         adapterFactory: () => mockAdapter,
       }),
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, channel_contact: TRUSTED_CONTACT });

@@ -27,6 +27,13 @@ import type { OpenAIConversationMemoryRepository } from "../src/runtime/supabase
 import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
 import type { ConversationMemoryRepository } from "../src/runtime/runtimeRepositories.ts";
 
+function makeSlotStateRepo(starts_at: string) {
+  return {
+    async loadState() { return { selected_slot: { starts_at } }; },
+    async saveState() {},
+  };
+}
+
 process.env.LEGACY_CASE_ROUTER_ENABLED = "false";
 
 const CLINIC_UUID = "11111111-1111-4111-8111-111111111111";
@@ -122,7 +129,7 @@ test("multi-round fallback with a prior booking.apply result still uses the book
       data: { booking_action: "booking_apply", booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null, reason: "booking_write_disabled", proof: null },
     }),
   };
-  const result = await createRuntimeAgentLoop({ model: "m", caller, executors }).runTurn({
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors, bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") }).runTurn({
     clinic_id: "clinic_1", contact_id: "contact_1", case_id: "case_1", user_message: "test", locale: "ru",
     truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
     // Trusted phone required so the round-1 global phone preflight (PR #133) does not

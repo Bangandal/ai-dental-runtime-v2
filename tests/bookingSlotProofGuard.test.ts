@@ -88,7 +88,7 @@ test("BSPG-1: intercepts when no avail.check in results and no selectedSlot", ()
   );
 });
 
-test("BSPG-2: does NOT intercept when successful avail.check result is present (shouldInterceptInvalidSlotTime handles mismatch)", () => {
+test("BSPG-2: does NOT intercept when successful avail.check result is present (shouldInterceptInvalidSlotDateTime handles mismatch)", () => {
   assert.equal(
     shouldInterceptMissingSlotProof({
       pendingToolRequests: [BOOKING_APPLY_FULL],

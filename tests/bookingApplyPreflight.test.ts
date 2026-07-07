@@ -44,7 +44,7 @@ import {
   buildMissingNameFieldsReply,
   bookingApplyArgsMissingService,
   buildMissingServiceReply,
-  shouldInterceptInvalidSlotTime,
+  shouldInterceptInvalidSlotDateTime,
   buildInvalidSlotReply,
 } from "../src/runtime/bookingApplyPreflight.ts";
 
@@ -917,11 +917,11 @@ test("Test 1a: no slots + no trusted phone → no-slots guarded result, conversa
   assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_no_slots");
 });
 
-// ── Unit: shouldInterceptInvalidSlotTime ──────────────────────────────────────
+// ── Unit: shouldInterceptInvalidSlotDateTime ──────────────────────────────────────
 
-test("shouldInterceptInvalidSlotTime: true when requested_time not in allowed slots", () => {
+test("shouldInterceptInvalidSlotDateTime: true when requested_time not in allowed slots", () => {
   assert.equal(
-    shouldInterceptInvalidSlotTime({
+    shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
         tool: "booking.apply",
         call_id: "c1",
@@ -933,9 +933,9 @@ test("shouldInterceptInvalidSlotTime: true when requested_time not in allowed sl
   );
 });
 
-test("shouldInterceptInvalidSlotTime: false when requested_time matches a slot", () => {
+test("shouldInterceptInvalidSlotDateTime: false when requested_time matches a slot", () => {
   assert.equal(
-    shouldInterceptInvalidSlotTime({
+    shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
         tool: "booking.apply",
         call_id: "c2",
@@ -947,9 +947,9 @@ test("shouldInterceptInvalidSlotTime: false when requested_time matches a slot",
   );
 });
 
-test("shouldInterceptInvalidSlotTime: false when no availability results (nothing to validate against)", () => {
+test("shouldInterceptInvalidSlotDateTime: false when no availability results (nothing to validate against)", () => {
   assert.equal(
-    shouldInterceptInvalidSlotTime({
+    shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [BOOKING_APPLY_REQUEST],
       completedToolResults: [],
     }),
@@ -957,9 +957,9 @@ test("shouldInterceptInvalidSlotTime: false when no availability results (nothin
   );
 });
 
-test("shouldInterceptInvalidSlotTime: false when no booking.apply pending", () => {
+test("shouldInterceptInvalidSlotDateTime: false when no booking.apply pending", () => {
   assert.equal(
-    shouldInterceptInvalidSlotTime({
+    shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [AVAILABILITY_REQUEST],
       completedToolResults: [AVAILABILITY_SUCCESS],
     }),
@@ -967,9 +967,9 @@ test("shouldInterceptInvalidSlotTime: false when no booking.apply pending", () =
   );
 });
 
-test("shouldInterceptInvalidSlotTime: false when requested_time absent (Guard D handles it)", () => {
+test("shouldInterceptInvalidSlotDateTime: false when requested_time absent (Guard D handles it)", () => {
   assert.equal(
-    shouldInterceptInvalidSlotTime({
+    shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
         tool: "booking.apply",
         call_id: "c3",
@@ -981,10 +981,10 @@ test("shouldInterceptInvalidSlotTime: false when requested_time absent (Guard D 
   );
 });
 
-test("shouldInterceptInvalidSlotTime: handles HH:MM:SS format in requested_time", () => {
+test("shouldInterceptInvalidSlotDateTime: handles HH:MM:SS format in requested_time", () => {
   // requested_time "12:00:00" normalized to "12:00" should match slot at 12:00
   assert.equal(
-    shouldInterceptInvalidSlotTime({
+    shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
         tool: "booking.apply",
         call_id: "c4",
@@ -993,6 +993,22 @@ test("shouldInterceptInvalidSlotTime: handles HH:MM:SS format in requested_time"
       completedToolResults: [AVAILABILITY_SUCCESS],
     }),
     false,
+  );
+});
+
+test("shouldInterceptInvalidSlotDateTime: true when time matches but date differs from slot date", () => {
+  // AVAILABILITY_SUCCESS has starts_at "2026-07-09T12:00:00" — date is 2026-07-09.
+  // Requesting same time (12:00) on a different date (2026-07-07) must be blocked.
+  assert.equal(
+    shouldInterceptInvalidSlotDateTime({
+      pendingToolRequests: [{
+        tool: "booking.apply",
+        call_id: "c5",
+        arguments: { requested_date: "2026-07-07", requested_time: "12:00", first_name: "A", last_name: "B", service: "s" },
+      }],
+      completedToolResults: [AVAILABILITY_SUCCESS],
+    }),
+    true,
   );
 });
 

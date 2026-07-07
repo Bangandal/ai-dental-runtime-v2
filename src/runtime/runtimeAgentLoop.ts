@@ -20,7 +20,7 @@ import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
-import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
+import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotDateTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
@@ -827,10 +827,10 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             });
           }
 
-          // Slot validity check (round 2): requested_time must match a slot returned by
-          // availability.check.  Guards D and no-slots handle missing date/time and 0-slot
-          // cases respectively, so by here date+time are present and ≥1 slot exists.
-          if (shouldInterceptInvalidSlotTime({
+          // Slot validity check (round 2): requested date+time must match a slot returned
+          // by availability.check. Guards D and no-slots handle missing date/time and
+          // 0-slot cases respectively, so by here date+time are present and ≥1 slot exists.
+          if (shouldInterceptInvalidSlotDateTime({
             pendingToolRequests: secondOutput.tool_requests,
             completedToolResults: toolResults,
           })) {

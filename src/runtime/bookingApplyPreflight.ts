@@ -140,11 +140,13 @@ function extractHHMM(startsAt: string): string | null {
 }
 
 /**
- * Returns true when booking.apply requested_time doesn't match any HH:MM from
- * availability.check slots. Only fires when availability returned ≥1 slot —
- * the 0-slot case is handled by shouldInterceptNoSlotsBeforeBookingApply upstream.
+ * Returns true when booking.apply requested date+time doesn't match any slot from
+ * availability.check results. Validates full date+time (not just time) to prevent
+ * cross-date booking when the same time exists on a different date.
+ * Only fires when availability returned ≥1 slot — the 0-slot case is handled by
+ * shouldInterceptNoSlotsBeforeBookingApply upstream.
  */
-export function shouldInterceptInvalidSlotTime(params: {
+export function shouldInterceptInvalidSlotDateTime(params: {
   pendingToolRequests: RuntimeAgentToolRequest[];
   completedToolResults: RuntimeAgentToolResult[];
 }): boolean {
@@ -152,29 +154,32 @@ export function shouldInterceptInvalidSlotTime(params: {
 
   const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
   if (!req) return false;
+  const requestedDate =
+    typeof req.arguments.requested_date === "string" ? req.arguments.requested_date.trim() : null;
   const requestedTime =
     typeof req.arguments.requested_time === "string" ? req.arguments.requested_time.trim() : null;
-  if (!requestedTime) return false; // missing date/time handled by bookingApplyArgsMissingSlot
+  if (!requestedDate || !requestedTime) return false; // missing date/time handled upstream
 
-  // Collect all allowed HH:MM from successful availability results
-  const allowedTimes = new Set<string>();
+  // Collect all allowed "YYYY-MM-DDTHH:MM" from successful availability results
+  const allowedSlots = new Set<string>();
   for (const r of params.completedToolResults) {
     if (r.tool !== "availability.check" || r.status !== "success") continue;
     const data = r.data as { slots?: Array<{ starts_at?: string }> } | null | undefined;
     if (!Array.isArray(data?.slots)) continue;
     for (const slot of data.slots) {
       if (typeof slot.starts_at === "string") {
-        const hhmm = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(0, 5);
-        if (hhmm) allowedTimes.add(hhmm);
+        const date = slot.starts_at.slice(0, 10);
+        const hhmm = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(11, 16);
+        if (date && hhmm) allowedSlots.add(`${date}T${hhmm}`);
       }
     }
   }
 
-  if (allowedTimes.size === 0) return false; // no slots to validate against
+  if (allowedSlots.size === 0) return false; // no slots to validate against
 
   // Normalize to HH:MM (model may emit "12:00:00" format)
-  const normalized = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
-  return !allowedTimes.has(normalized);
+  const normalizedTime = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
+  return !allowedSlots.has(`${requestedDate}T${normalizedTime}`);
 }
 
 const INVALID_SLOT_REPLIES: Record<string, string> = {

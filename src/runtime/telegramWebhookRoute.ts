@@ -76,17 +76,67 @@ export function registerTelegramWebhookRoute(
     // Contact update: patient shared their own phone via Telegram contact button.
     if (normalized.type === "contact") {
       const persistResult = await persistChannelContactPhone(normalized, deps).catch(() => "state_persist_failed" as const);
-      const replyText = persistResult === "persisted"
-        ? "Спасибо, номер получен. Можем продолжить запись."
-        : "Не получилось сохранить номер. Попробуйте поделиться контактом ещё раз или свяжитесь с клиникой напрямую.";
-      void sendTelegramMessage({
+      if (persistResult !== "persisted") {
+        void sendTelegramMessage({
+          botToken: deps.botToken,
+          chatId: normalized.chat_id,
+          text: "Не получилось сохранить номер. Попробуйте поделиться контактом ещё раз или свяжитесь с клиникой напрямую.",
+          fetch: deps.fetch,
+        });
+        reply.code(200).send({ ok: true });
+        return;
+      }
+
+      // Phone persisted — run through the runtime so the OpenAI conversation thread is
+      // updated. Without this, the next user turn would see stale thread history ("waiting
+      // for phone") and the model would incorrectly repeat the phone request instead of
+      // asking for the missing name.
+      const contactTurnResult = await runRuntimeTurnOrchestrated(
+        {
+          clinic_code: normalized.clinic_code,
+          channel: "telegram",
+          external_user_id: normalized.external_user_id,
+          chat_id: normalized.chat_id,
+          text: "[contact_shared]",
+          meta: {
+            update_id: normalized.update_id,
+            message_id: normalized.message_id,
+            username: null,
+            first_name: null,
+            last_name: null,
+            telegram_chat_type: "private",
+          },
+        },
+        deps,
+      );
+
+      let contactReplyText: string;
+      let contactTraceId: string | undefined;
+      if (contactTurnResult.outcome === "success") {
+        contactReplyText = contactTurnResult.payload.final_patient_reply;
+        contactTraceId = contactTurnResult.payload.trace_id ?? undefined;
+      } else if (contactTurnResult.outcome === "error") {
+        contactReplyText = contactTurnResult.fallbackPayload.final_patient_reply;
+        contactTraceId = contactTurnResult.fallbackPayload.trace_id ?? undefined;
+      } else {
+        // duplicate / invalid_request / clinic_not_found — safe fallback
+        contactReplyText = "Спасибо, номер получен. Можем продолжить запись.";
+      }
+
+      // Always dismiss the contact keyboard after phone capture, regardless of runtime UI.
+      const contactDelivery = await sendTelegramMessageWithRetry({
         botToken: deps.botToken,
         chatId: normalized.chat_id,
-        text: replyText,
-        // Dismiss the contact keyboard after phone is successfully captured.
-        replyMarkup: persistResult === "persisted" ? buildRemoveKeyboardMarkup() : undefined,
+        text: contactReplyText,
+        replyMarkup: buildRemoveKeyboardMarkup(),
         fetch: deps.fetch,
+        retryBackoffMs: deps.telegramRetryBackoffMs,
       });
+      try {
+        if (contactTraceId) deps.onTelegramDelivery?.({ ...contactDelivery, trace_id: contactTraceId });
+      } catch {
+        // swallow observability failure
+      }
       reply.code(200).send({ ok: true });
       return;
     }

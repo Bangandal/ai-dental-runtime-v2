@@ -174,6 +174,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         return {
           final_patient_reply: buildMalformedResponseFallback(input.locale),
           conversation_id: conversationId,
+          // Malformed/unparseable first response leaves OpenAI conversation in unknown state.
+          // Mark dirty so orchestrator clears it rather than resuming on the next turn.
+          conversation_id_resumable: false,
           tool_requests: [],
           tool_results: [],
           debug,
@@ -190,6 +193,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         return {
           final_patient_reply: buildMalformedResponseFallback(input.locale),
           conversation_id: conversationId,
+          // Malformed output means OpenAI conversation state is unreliable — dirty it.
+          conversation_id_resumable: false,
           tool_requests: [],
           tool_results: [],
           debug,
@@ -219,6 +224,29 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       const toolRequests = firstOutput.tool_requests;
       const toolResults: RuntimeAgentToolResult[] = [];
+
+      // Debug: log tool call args for observability (date/time/service only; name/phone redacted).
+      debug.tool_call_args = toolRequests.map((r) => {
+        const args = r.arguments ?? {};
+        if (r.tool === "availability.check") {
+          return {
+            tool: r.tool,
+            requested_date: args.requested_date ?? null,
+            requested_time: args.requested_time ?? null,
+            service_interest: args.service_interest ?? null,
+          };
+        }
+        if (r.tool === "booking.apply") {
+          return {
+            tool: r.tool,
+            requested_date: args.requested_date ?? null,
+            requested_time: args.requested_time ?? null,
+            service: args.service ?? null,
+            // first_name/last_name deliberately omitted — patient PII
+          };
+        }
+        return { tool: r.tool };
+      });
 
       // Global preflight C — availability past-time guard: if availability.check is
       // requested for today at a time that has already passed, return the past-time reply

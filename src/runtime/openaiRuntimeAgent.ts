@@ -201,7 +201,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- Never claim a slot/time/day available without availability.check results from this turn.",
     "- Cite only exact slot starts from tool_results.data.slots (allowed_slot_starts in context). No ranges or approximations ('13:00–18:00', 'с 13 до 18', 'после обеда', 'примерно в 14') — forbidden.",
     "- List up to 5 slot start times; invite patient to choose.",
-    "- Vague time → check first, list exact slots. Exact time → check first, confirm if available, else list alternatives.",
+    "- Vague time → check first, list exact slots. Exact time → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available.",
 
     // ── BOOKING FLOW ──────────────────────────────────────────────────────────
     "## BOOKING FLOW",

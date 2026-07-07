@@ -367,3 +367,91 @@ test("regression: availability check then malformed confirmation turn returns lo
   // No booking.apply was ever requested -> no ClinicCard write path touched.
   assert.equal(result.tool_results.some((r) => r.tool === "booking.apply"), false);
 });
+
+// ── PR #160 — RC#2: malformed first response must dirty the conversation ────
+
+test("RC2-A: malformed first model response sets conversation_id_resumable=false", async () => {
+  const caller: RuntimeAgentCaller = async () => malformedOutput();
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {} });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  assert.equal(result.conversation_id_resumable, false,
+    "malformed first response must mark conversation dirty so orchestrator clears it");
+});
+
+test("RC2-B: first-call exception sets conversation_id_resumable=false", async () => {
+  const caller: RuntimeAgentCaller = async () => { throw new Error("OpenAI timeout"); };
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {} });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  assert.equal(result.conversation_id_resumable, false,
+    "first-call exception must also dirty the conversation");
+});
+
+// ── PR #160 — Test D: tool call args logged in debug ────────────────────────
+
+test("RC4-D: availability.check tool args (date/time/service) are present in debug.tool_call_args", async () => {
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", call_id: "a1", arguments: { requested_date: "2026-07-08", requested_time: "12:00", service_interest: "чистка" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "На 2026-07-08 в 12:00 есть." } };
+  };
+  const executors: ToolExecutorRegistry = {
+    "availability.check": async () => ({
+      tool: "availability.check",
+      status: "success",
+      data: { slots: [{ slot_id: "2026-07-08T12:00", starts_at: "2026-07-08T12:00:00", ends_at: "2026-07-08T12:30:00" }] },
+    }),
+  };
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  const args = (result.debug as any).tool_call_args;
+  assert.ok(Array.isArray(args), "debug.tool_call_args must be an array");
+  const avail = args.find((a: any) => a.tool === "availability.check");
+  assert.ok(avail, "availability.check entry must be present in tool_call_args");
+  assert.equal(avail.requested_date, "2026-07-08");
+  assert.equal(avail.requested_time, "12:00");
+  assert.equal(avail.service_interest, "чистка");
+  // PII fields must not be logged
+  assert.equal(avail.first_name, undefined);
+  assert.equal(avail.last_name, undefined);
+});
+
+test("RC4-D: booking.apply tool args logged with date/time/service; name/phone redacted", async () => {
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round += 1;
+    if (round === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "b1", arguments: { first_name: "Иван", last_name: "Петров", service: "чистка", requested_date: "2026-07-08", requested_time: "12:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Записан." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "gpt-test",
+    caller,
+    executors: bookingApplyExecutors("booking_write_disabled"),
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } as any,
+  });
+  const result = await agent.runTurn(makeInput("ru"));
+
+  const args = (result.debug as any).tool_call_args;
+  assert.ok(Array.isArray(args), "debug.tool_call_args must be an array");
+  const ba = args.find((a: any) => a.tool === "booking.apply");
+  assert.ok(ba, "booking.apply entry must be present in tool_call_args");
+  assert.equal(ba.requested_date, "2026-07-08");
+  assert.equal(ba.requested_time, "12:00");
+  assert.equal(ba.service, "чистка");
+  // PII: first_name and last_name must NOT be logged
+  assert.equal(ba.first_name, undefined);
+  assert.equal(ba.last_name, undefined);
+});

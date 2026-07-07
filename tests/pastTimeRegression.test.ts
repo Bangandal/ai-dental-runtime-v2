@@ -140,8 +140,8 @@ describe("BPTZ-3: model passes today's date for 'завтра' — guard fires, 
   });
 });
 
-describe("BPTZ-4: model correctly passes tomorrow — past_time guard does NOT fire", () => {
-  test("booking.apply with tomorrow's date is not blocked as past_time", async () => {
+describe("BPTZ-4: model correctly passes tomorrow — past_time guard does NOT fire, slot_proof guard does", () => {
+  test("booking.apply with tomorrow's date: not past_time, next guard is slot_not_verified", async () => {
     let callCount = 0;
 
     const caller: RuntimeAgentCaller = async () => {
@@ -162,9 +162,10 @@ describe("BPTZ-4: model correctly passes tomorrow — past_time guard does NOT f
           }],
         } as RuntimeAgentCallerOutput;
       }
+      // Second call: model receives slot_not_verified guarded result, asks to verify first
       return {
         type: "final_response",
-        final_response: { final_patient_reply: "Хорошо, записываю." },
+        final_response: { final_patient_reply: "Сначала проверю доступное время на завтра в 12:00." },
       } as RuntimeAgentCallerOutput;
     };
 
@@ -187,13 +188,40 @@ describe("BPTZ-4: model correctly passes tomorrow — past_time guard does NOT f
     const debug = result.debug as Record<string, unknown>;
 
     // Must NOT be blocked as past_time
-    assert.notStrictEqual(debug.reason, "booking_apply_preflight_past_time_round1");
-    assert.notStrictEqual(debug.reason, "booking_apply_preflight_past_time_round2");
+    assert.notStrictEqual(debug.reason, "booking_apply_preflight_past_time_round1",
+      "tomorrow must not be blocked as past_time round1");
+    assert.notStrictEqual(debug.reason, "booking_apply_preflight_past_time_round2",
+      "tomorrow must not be blocked as past_time round2");
 
-    // debug.past_time_detail must NOT be set (guard never fired)
+    // debug.past_time_detail must NOT be set (past_time guard never fired)
     assert.ok(
       debug.past_time_detail === undefined || debug.past_time_detail === null,
-      "past_time_detail must not be set when guard does not fire",
+      "past_time_detail must not be set when past_time guard does not fire",
     );
+
+    // Next guard must be slot_proof (no avail.check proof in this turn, no selectedSlot)
+    assert.strictEqual(
+      debug.reason,
+      "booking_apply_preflight_missing_slot_proof_round1",
+      "slot_proof guard must fire when no avail.check proof and no selectedSlot",
+    );
+
+    // Guarded tool_result must carry slot_not_verified — no visit created
+    const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+    assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+    const bookingData = bookingResult!.data as Record<string, unknown>;
+    assert.strictEqual(bookingData.booking_status, "slot_not_verified");
+    assert.strictEqual(bookingData.created_visit, false);
+    assert.strictEqual(bookingData.may_claim_booked, false);
+
+    // Final reply must not contain booking confirmation wording
+    const reply = result.final_patient_reply;
+    const forbidden = ["записываю", "записал", "записано", "подтверждено", "booked", "confirmed"];
+    for (const word of forbidden) {
+      assert.ok(
+        !reply.toLowerCase().includes(word),
+        `final_patient_reply must not contain booking confirmation word "${word}" without visit_created proof — got: ${reply}`,
+      );
+    }
   });
 });

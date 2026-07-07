@@ -537,12 +537,12 @@ test("intake: prompt does not enforce 'collect in order' mandatory sequence", ()
   assert.doesNotMatch(instruction, /collect in strict order/i, "must NOT say 'collect in strict order'");
 });
 
-test("intake: prompt instructs model to check current message and conversation history before asking", () => {
+test("intake: prompt instructs model to check current message and recent_history before asking", () => {
   const instruction = buildRuntimeAgentSystemInstruction();
   assert.match(
     instruction,
-    /Check the current message and available conversation history first/i,
-    "must instruct model to check current message and conversation history before asking",
+    /Check the current message and runtime_context\.recent_history first/i,
+    "must instruct model to check current message and runtime_context.recent_history before asking",
   );
 });
 
@@ -593,7 +593,7 @@ test("intake: snapshot — INTAKE FLOW section has the exact flexible wording fo
   // Verify the full flexible intake rule as written in the prompt
   assert.ok(
     instruction.includes(
-      "collect missing details flexibly. Check the current message and available conversation history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known.",
+      "collect missing details flexibly. Check the current message and runtime_context.recent_history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known.",
     ),
     "INTAKE FLOW flexible rule must be present verbatim (snapshot guard against regression)",
   );
@@ -601,9 +601,9 @@ test("intake: snapshot — INTAKE FLOW section has the exact flexible wording fo
   // Verify the name retention sub-rule for Turn-2
   assert.ok(
     instruction.includes(
-      "use first_name and last_name from the current message or any prior turn in this conversation. Do NOT re-ask if the patient stated their name at any point in this conversation.",
+      "use first_name and last_name from the current message or runtime_context.recent_history. Do not re-ask if visible there.",
     ),
-    "Name sub-rule must tell model to use name from any prior turn (Turn-2 guard)",
+    "Name sub-rule must tell model to use name from recent_history (Turn-2 guard)",
   );
 });
 
@@ -632,6 +632,44 @@ test("context authority: task_state.collected nulls are also persistence flags �
     instruction,
     /null or absent collected field does NOT mean the patient has not provided it/i,
     "CONTEXT AUTHORITY must explicitly say null collected fields are not evidence the patient never stated the field",
+  );
+});
+
+// ── PR #162 — DIALOGUE HISTORY compact rule ──────────────────────────────────
+
+test("PR162: DIALOGUE HISTORY section present with compact recent_history rule", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /## DIALOGUE HISTORY/,
+    "prompt must have a DIALOGUE HISTORY section",
+  );
+  assert.ok(
+    instruction.includes("runtime_context.recent_history as dialogue evidence"),
+    "DIALOGUE HISTORY must name recent_history as dialogue evidence source",
+  );
+  assert.ok(
+    instruction.includes("recent_history is not business proof"),
+    "DIALOGUE HISTORY must explicitly state recent_history is not business proof",
+  );
+});
+
+test("PR162: 'scan full conversation history' and '5+ turns back' wording removed", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.doesNotMatch(
+    instruction,
+    /5\+\s*turns back/i,
+    "prompt must not contain '5+ turns back'",
+  );
+  assert.doesNotMatch(
+    instruction,
+    /scanning EVERY prior turn/i,
+    "prompt must not contain 'scanning EVERY prior turn'",
+  );
+  assert.doesNotMatch(
+    instruction,
+    /Scan the full conversation history/i,
+    "prompt must not contain 'Scan the full conversation history'",
   );
 });
 

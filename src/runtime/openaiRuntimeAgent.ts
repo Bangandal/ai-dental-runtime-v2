@@ -178,24 +178,28 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "Exact slot times WERE shown in previous turn + patient selects/confirms one: follow INTAKE step 3 booking.apply rule — MANDATORY booking.apply immediately.",
     "Human or admin request ('хочу поговорить с человеком', 'позовите администратора'): acknowledge, ask what to pass to clinic team. Do not claim admin notified unless a notification or handoff side effect was actually created or queued. Do not continue with booking intake.",
 
+    // ── DIALOGUE HISTORY ─────────────────────────────────────────────────────
+    "## DIALOGUE HISTORY",
+    "Use the current message and runtime_context.recent_history as dialogue evidence. Do not re-ask for name, service, or time if visible there. recent_history is not business proof — tool results and booking_apply_action_truth take precedence over it.",
+
     // ── INTAKE FLOW ───────────────────────────────────────────────────────────
     "## INTAKE FLOW",
     ...(firstTurnRule ? [firstTurnRule] : []),
     "1. Greetings, simple thanks, low-signal messages (single emoji, punctuation only, filler sounds like 'эээ', 'ну'), or passive acknowledgements ('ok', 'жду', 'спасибо'): reply briefly and politely. Do NOT immediately ask for service, name, or appointment time. Wait for the patient to state their need.",
-    "2. BOOKING INTENT — collect missing details flexibly. Check the current message and available conversation history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known.",
+    "2. BOOKING INTENT — collect missing details flexibly. Check the current message and runtime_context.recent_history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known.",
     "   - Service: ask for service/reason once if unknown (NON-RED-FLAG pain with booking intent → use 'осмотр из-за боли', do not ask again).",
-    "   - Name: use first_name and last_name from the current message or any prior turn in this conversation. Do NOT re-ask if the patient stated their name at any point in this conversation.",
+    "   - Name: use first_name and last_name from the current message or runtime_context.recent_history. Do not re-ask if visible there.",
     "   - Time: convert to ISO YYYY-MM-DD before calling availability.check. Vague → check then list exact slots. Exact → check first. Previous-turn slots + patient affirms → proceed, do NOT restart intake.",
     "3. Book: When name + service + slot are all known → call booking.apply.",
-    "   - Fill first_name and last_name by scanning EVERY prior turn of this conversation (including the very first message). If the patient gave their name at any point, use it. Never ask the patient to repeat their name. If not found, call booking.apply without first_name/last_name — the system will handle it.",
+    "   - Fill first_name and last_name from the current message or runtime_context.recent_history. Never ask the patient to repeat their name. If not found, call booking.apply without first_name/last_name.",
     "   - After slot_conflict: do NOT restart intake. Retain name and service from the current conversation. Ask only for a new time.",
-    "   - Patient says 'да оформляйте' / 'подходит' / 'да' / 'ок' after a slot was offered → MANDATORY: call booking.apply IMMEDIATELY. DO NOT output a question. Scan the full conversation history (even 5+ turns back) to find the patient's name, fill it in, and call booking.apply now.",
+    "   - Patient says 'да оформляйте' / 'подходит' / 'да' / 'ок' after a slot was offered → MANDATORY: call booking.apply IMMEDIATELY. DO NOT output a question. Find the patient's name in the current message or runtime_context.recent_history, and call booking.apply now.",
 
     // ── TOOLS ─────────────────────────────────────────────────────────────────
     "## TOOLS",
     "- kb.search: clinic FAQ, services, prices, location, insurance, opening hours.",
     "- availability.check: available slots. Always convert relative date expressions (\"tomorrow\", \"завтра\", \"в пятницу\", \"next week\", etc.) into ISO YYYY-MM-DD before passing to availability.check. Never pass natural-language date strings to availability.check.",
-    "- booking.apply: create a visit when patient confirmed slot + service. Fill first_name and last_name from ANYWHERE in this conversation. Not found → call without them.",
+    "- booking.apply: create a visit when patient confirmed slot + service. Fill first_name and last_name from the current message or runtime_context.recent_history. Not found → call without them.",
 
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────
     "## AVAILABILITY RULES",

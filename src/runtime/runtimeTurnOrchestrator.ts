@@ -22,6 +22,13 @@ import { buildBookingApplyActionTruth } from "./bookingApplyGuard.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
 import type { ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import { extractTypedPhone } from "./typedPhoneExtractor.ts";
+import {
+  preUpdateBookingSubjects,
+  postUpdateBookingSubjects,
+  buildSubjectsContextPayload,
+  detectSubjectMismatch,
+} from "./bookingSubjectsState.ts";
+import type { BookingSubjectsState, S1Seed } from "./bookingSubjectsState.ts";
 import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
 import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
@@ -271,6 +278,7 @@ export async function runRuntimeTurnOrchestrated(
   const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0, topic_memory: null };
   let runtimeGateSourceContext: unknown = null;
   let caseLiteCurrent: RuntimeCaseLite | null = null;
+  let bookingSubjectsForTurn: BookingSubjectsState | null = null;
   if (!canonicalContactId) {
     runtimeContextDebug.skip_reason = "contact_unavailable";
   } else if (deps.runtimeContextRepository) {
@@ -303,6 +311,27 @@ export async function runRuntimeTurnOrchestrated(
 
         const providedPhoneForTurn: ProvidedPhone | null = typedContactToStore ?? existingProvidedPhone;
 
+        // Build s1 seed from prior booking state so s1 is not blank when s2 is lazily created.
+        const conversationStateRaw = runtimeContextResult.data.conversation_state as Record<string, unknown>;
+        const collectedRaw = asRecord(conversationStateRaw.collected) ?? {};
+        const s1FirstName = asString(collectedRaw.first_name) ?? asString(collectedRaw.patient_first_name);
+        const s1LastName = asString(collectedRaw.last_name) ?? asString(collectedRaw.patient_last_name);
+        const s1FullName = s1FirstName && s1LastName ? `${s1FirstName} ${s1LastName}` : (s1FirstName ?? s1LastName ?? null);
+        const s1Seed: S1Seed = {
+          name: s1FullName,
+          service: asString(collectedRaw.service) ?? asString(collectedRaw.service_reason),
+          slot: runtimeContextResult.data.selected_slot_starts_at,
+        };
+
+        // Pre-turn booking subjects update: switch signals + phone status.
+        bookingSubjectsForTurn = preUpdateBookingSubjects({
+          current: runtimeContextResult.data.booking_subjects ?? null,
+          userMessage: runtimeTurnInput.user_message,
+          channelContact: channelContactForCase ?? null,
+          providedPhone: providedPhoneForTurn,
+          s1Seed,
+        });
+
         const existingCaseLite: RuntimeCaseLite = runtimeContextResult.data.case_context_lite ?? buildDefaultRuntimeCaseLite({
           clinic_id: runtimeTurnInput.clinic_id,
           channel: validBody.channel.trim(),
@@ -327,10 +356,15 @@ export async function runRuntimeTurnOrchestrated(
         }
         // caseLiteMode === "disabled": extractor does not run; caseLiteCurrent stays null.
 
-        const baseRuntimeContext = mergeCaseContextIntoModelContext(
-          applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data), channelContactForCase, providedPhoneForTurn),
-          loadedCaseContext,
+        const modelVisibleBase = applyMessengerPhonePolicy(
+          buildModelVisibleRuntimeContext(runtimeContextResult.data),
+          channelContactForCase,
+          providedPhoneForTurn,
         );
+        const modelVisibleWithSubjects = bookingSubjectsForTurn
+          ? { ...modelVisibleBase, booking_subjects: buildSubjectsContextPayload(bookingSubjectsForTurn) }
+          : modelVisibleBase;
+        const baseRuntimeContext = mergeCaseContextIntoModelContext(modelVisibleWithSubjects, loadedCaseContext);
         // case_context_lite and case_policy_truth are NEVER injected into the patient-facing
         // model context regardless of mode — they are LLM-extracted beliefs, not proof.
         // In shadow mode they are available in debug only (see caseContextDebug below).
@@ -458,6 +492,14 @@ export async function runRuntimeTurnOrchestrated(
       caseLiteCurrent = applyBookingStatusToCase(caseLiteCurrent, result.tool_results);
     }
 
+    const bookingSubjectsToStore: BookingSubjectsState | null = bookingSubjectsForTurn
+      ? postUpdateBookingSubjects({
+          current: bookingSubjectsForTurn,
+          toolRequests: result.tool_requests ?? [],
+          toolResults: result.tool_results ?? [],
+        })
+      : null;
+
     if (deps.turnPersistenceRepository && canonicalContactId) {
       const assistantSave = await deps.turnPersistenceRepository.saveMessage({
         contact_id: canonicalContactId,
@@ -489,6 +531,7 @@ export async function runRuntimeTurnOrchestrated(
         control_flags: {
           openai_conversation_id: conversationIdToPersist,
           ...(runtimeTurnInput.provided_phone ? { provided_phone: runtimeTurnInput.provided_phone } : {}),
+          ...(bookingSubjectsToStore ? { booking_subjects: bookingSubjectsToStore } : {}),
         },
         topic_memory_patch: topicMemoryPatch,
         // In shadow mode caseLiteCurrent is debug-only — never persist it to durable convo_state.
@@ -514,8 +557,16 @@ export async function runRuntimeTurnOrchestrated(
     const caseLiteShadowDebug = caseLiteCurrent
       ? { case_context_lite: caseLiteCurrent, case_policy_truth: buildCasePolicyTruth(caseLiteCurrent), mode: getCaseLiteMode() }
       : { mode: getCaseLiteMode() };
+    const bookingSubjectsMismatch = bookingSubjectsToStore
+      ? detectSubjectMismatch({
+          state: bookingSubjectsToStore,
+          toolRequests: result.tool_requests ?? [],
+          channelContact: runtimeTurnInput.channel_contact ?? null,
+          providedPhone: runtimeTurnInput.provided_phone ?? null,
+        })
+      : null;
     const debugPayload = deps.debugEnabled
-      ? { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, case_lite_shadow: caseLiteShadowDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug }
+      ? { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, case_lite_shadow: caseLiteShadowDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug, booking_subjects_mismatch: bookingSubjectsMismatch }
       : undefined;
 
     const sideEffects: unknown[] = [];

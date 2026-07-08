@@ -285,20 +285,20 @@ export async function runRuntimeTurnOrchestrated(
         const channelContactForCase = runtimeContextResult.data.channel_contact;
         const existingProvidedPhone = runtimeContextResult.data.provided_phone ?? null;
 
-        // Detect typed phone from current message when no trusted phone exists.
+        // Always try to extract a typed phone from the current message.
+        // If the patient typed a number (e.g. for a third-party booking), it takes priority
+        // over channel_contact in booking.apply — even when a trusted contact exists.
         // Stored separately from channel_contact — never promoted to trusted.
         let typedContactToStore: ProvidedPhone | null = null;
-        if (!hasTrustedPhone(channelContactForCase)) {
-          const detectedPhone = extractTypedPhone(runtimeTurnInput.user_message);
-          if (detectedPhone) {
-            typedContactToStore = {
-              phone_number: detectedPhone,
-              phone_source: "typed",
-              phone_trust: "unverified",
-              phone_consent: false,
-              phone_collected_at: new Date().toISOString(),
-            };
-          }
+        const detectedPhone = extractTypedPhone(runtimeTurnInput.user_message);
+        if (detectedPhone) {
+          typedContactToStore = {
+            phone_number: detectedPhone,
+            phone_source: "typed",
+            phone_trust: "unverified",
+            phone_consent: false,
+            phone_collected_at: new Date().toISOString(),
+          };
         }
 
         const providedPhoneForTurn: ProvidedPhone | null = typedContactToStore ?? existingProvidedPhone;

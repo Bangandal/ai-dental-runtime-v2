@@ -1394,12 +1394,12 @@ function buildExecutionContext(
     truth_snapshot,
     now,
     // booking.apply fields — from model args and channel_contact / provided_phone.
-    // Prefer trusted channel_contact; fall back to patient-typed provided_phone.
+    // Prefer patient-typed provided_phone (e.g. booking for a third party); fall back to channel_contact.
     first_name: typeof request.arguments.first_name === "string" ? request.arguments.first_name : undefined,
     last_name: typeof request.arguments.last_name === "string" ? request.arguments.last_name : undefined,
-    phone_number: input.channel_contact?.phone_number ?? input.provided_phone?.phone_number,
-    phone_source: input.channel_contact?.phone_source ?? input.provided_phone?.phone_source,
-    phone_trust: input.channel_contact ? undefined : input.provided_phone?.phone_trust,
+    phone_number: input.provided_phone?.phone_number ?? input.channel_contact?.phone_number,
+    phone_source: input.provided_phone?.phone_source ?? input.channel_contact?.phone_source,
+    phone_trust: input.provided_phone ? input.provided_phone.phone_trust : undefined,
   } as ToolExecutionContext;
 }
 

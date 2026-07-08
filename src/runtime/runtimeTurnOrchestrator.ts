@@ -22,6 +22,12 @@ import { buildBookingApplyActionTruth } from "./bookingApplyGuard.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
 import type { ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import { extractTypedPhone } from "./typedPhoneExtractor.ts";
+import {
+  preUpdateBookingSubjects,
+  postUpdateBookingSubjects,
+  buildSubjectsContextPayload,
+} from "./bookingSubjectsState.ts";
+import type { BookingSubjectsState } from "./bookingSubjectsState.ts";
 import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
 import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
@@ -271,6 +277,7 @@ export async function runRuntimeTurnOrchestrated(
   const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0, topic_memory: null };
   let runtimeGateSourceContext: unknown = null;
   let caseLiteCurrent: RuntimeCaseLite | null = null;
+  let bookingSubjectsForTurn: BookingSubjectsState | null = null;
   if (!canonicalContactId) {
     runtimeContextDebug.skip_reason = "contact_unavailable";
   } else if (deps.runtimeContextRepository) {
@@ -303,6 +310,16 @@ export async function runRuntimeTurnOrchestrated(
 
         const providedPhoneForTurn: ProvidedPhone | null = typedContactToStore ?? existingProvidedPhone;
 
+        // Booking subjects — lazy multi-subject state for third-party bookings.
+        // Pre-update applies switch signal + phone status before model call.
+        const existingBookingSubjects = runtimeContextResult.data.booking_subjects ?? null;
+        bookingSubjectsForTurn = preUpdateBookingSubjects({
+          current: existingBookingSubjects,
+          userMessage: runtimeTurnInput.user_message,
+          channelContact: channelContactForCase ?? null,
+          providedPhone: providedPhoneForTurn,
+        });
+
         const existingCaseLite: RuntimeCaseLite = runtimeContextResult.data.case_context_lite ?? buildDefaultRuntimeCaseLite({
           clinic_id: runtimeTurnInput.clinic_id,
           channel: validBody.channel.trim(),
@@ -327,10 +344,15 @@ export async function runRuntimeTurnOrchestrated(
         }
         // caseLiteMode === "disabled": extractor does not run; caseLiteCurrent stays null.
 
-        const baseRuntimeContext = mergeCaseContextIntoModelContext(
-          applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data), channelContactForCase, providedPhoneForTurn),
-          loadedCaseContext,
+        const modelVisibleBase = applyMessengerPhonePolicy(
+          buildModelVisibleRuntimeContext(runtimeContextResult.data),
+          channelContactForCase,
+          providedPhoneForTurn,
         );
+        const modelVisibleWithSubjects = bookingSubjectsForTurn
+          ? { ...modelVisibleBase, booking_subjects: buildSubjectsContextPayload(bookingSubjectsForTurn) }
+          : modelVisibleBase;
+        const baseRuntimeContext = mergeCaseContextIntoModelContext(modelVisibleWithSubjects, loadedCaseContext);
         // case_context_lite and case_policy_truth are NEVER injected into the patient-facing
         // model context regardless of mode — they are LLM-extracted beliefs, not proof.
         // In shadow mode they are available in debug only (see caseContextDebug below).
@@ -458,6 +480,15 @@ export async function runRuntimeTurnOrchestrated(
       caseLiteCurrent = applyBookingStatusToCase(caseLiteCurrent, result.tool_results);
     }
 
+    // Post-turn subject update: apply booking.apply args and visit_created from this turn.
+    const bookingSubjectsToStore: BookingSubjectsState | null = bookingSubjectsForTurn
+      ? postUpdateBookingSubjects({
+          current: bookingSubjectsForTurn,
+          toolRequests: result.tool_requests,
+          toolResults: result.tool_results,
+        })
+      : null;
+
     if (deps.turnPersistenceRepository && canonicalContactId) {
       const assistantSave = await deps.turnPersistenceRepository.saveMessage({
         contact_id: canonicalContactId,
@@ -489,6 +520,7 @@ export async function runRuntimeTurnOrchestrated(
         control_flags: {
           openai_conversation_id: conversationIdToPersist,
           ...(runtimeTurnInput.provided_phone ? { provided_phone: runtimeTurnInput.provided_phone } : {}),
+          ...(bookingSubjectsToStore ? { booking_subjects: bookingSubjectsToStore } : {}),
         },
         topic_memory_patch: topicMemoryPatch,
         // In shadow mode caseLiteCurrent is debug-only — never persist it to durable convo_state.

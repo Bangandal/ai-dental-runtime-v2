@@ -45,13 +45,18 @@ function bookingResult(partial: Omit<BookingApplyResult, "booking_action">): Boo
 }
 
 // Phone sources that represent a platform-verified or ClinicCard-verified contact.
-// "manual_input" (patient free-typed a number) is intentionally excluded — live writes
-// require a stronger proof of contact than unverified free text.
+// "typed" (patient free-typed a number in chat) is accepted for booking when the
+// system detects it in the inbound message and explicitly stores it as channel_contact.
+// This covers the case where the patient books for a third party and cannot share
+// the other person's Telegram contact via button.
+// "manual_input" (legacy label) is still excluded — "typed" replaces it with a
+// narrower, runtime-controlled path rather than open-ended model text collection.
 // Exported so the booking contact guard can reuse the same authoritative set.
 export const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
   "telegram_contact_button",
   "whatsapp_sender",
   "existing_cliniccard_patient",
+  "typed",
 ]);
 
 /**

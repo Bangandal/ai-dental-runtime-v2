@@ -9,7 +9,7 @@ export interface AgentUiActions {
 
 export interface ChannelContact {
   phone_number: string;
-  phone_source: "telegram_contact_button" | "whatsapp_sender" | "manual_input" | "existing_cliniccard_patient";
+  phone_source: "telegram_contact_button" | "whatsapp_sender" | "manual_input" | "existing_cliniccard_patient" | "typed";
   phone_consent?: boolean;
   phone_collected_at?: string;
 }
@@ -155,7 +155,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## NEVER",
     "- Do not invent prices, services, opening hours, availability, bookings, or medical facts.",
     "- Do not claim booking is confirmed without explicit backend proof. Never claim a time or slot is available without availability.check proof in the current turn.",
-    "- For booking-like requests in messenger channels, do not ask for a phone number as typed text — use the channel contact mechanism (e.g. Telegram contact button). Do not collect phone as a required field right now.",
+    "- For booking-like requests in messenger channels, do not proactively ask for a phone number as typed text — prefer the channel contact mechanism (e.g. Telegram contact button). However, if the patient voluntarily types a phone number (e.g. to book for another person), accept it and proceed — the system will capture it. Do not collect phone as a required field or ask for it explicitly.",
     "- When booking details are missing, ask only for: first name, last name, service/reason, preferred day/time.",
     "- Never promise clinic callback or staff outreach unless a handoff or admin notification side effect was actually created or queued.",
     "- If another person is mentioned, treat patient identity carefully and avoid assumptions.",

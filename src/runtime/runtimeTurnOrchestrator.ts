@@ -27,6 +27,7 @@ import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
 import { mergeRuntimeCaseLite, applyBookingStatusToCase, buildDefaultRuntimeCaseLite } from "./runtimeCaseLite.ts";
 import type { RuntimeCaseLite } from "./runtimeCaseLite.ts";
 import { buildCasePolicyTruth } from "./runtimeCasePolicyTruth.ts";
+import { extractTypedPhone } from "./typedPhoneExtractor.ts";
 
 // RUNTIME_CASE_LITE_MODE controls whether the LLM-based CaseLite extractor runs and
 // whether its output is visible to the main patient-facing model.
@@ -270,6 +271,7 @@ export async function runRuntimeTurnOrchestrated(
   const runtimeContextDebug: Record<string, unknown> = { loaded: false, source: "supabase", recent_history_count: 0, topic_memory: null };
   let runtimeGateSourceContext: unknown = null;
   let caseLiteCurrent: RuntimeCaseLite | null = null;
+  let typedContactToStore: ChannelContact | null = null;
   if (!canonicalContactId) {
     runtimeContextDebug.skip_reason = "contact_unavailable";
   } else if (deps.runtimeContextRepository) {
@@ -281,7 +283,24 @@ export async function runRuntimeTurnOrchestrated(
         runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
         runtimeContextDebug.topic_memory = runtimeContextResult.data.topic_memory ?? null;
 
-        const channelContactForCase = runtimeContextResult.data.channel_contact;
+        // If no trusted phone is stored yet and the patient typed a phone number
+        // in this message (e.g. for a third-party booking), detect and use it.
+        // The detected contact is injected into this turn and persisted at end-of-turn
+        // via control_flags.channel_contact in mergeConversationState.
+        let channelContactForCase: ChannelContact | null = runtimeContextResult.data.channel_contact;
+        if (!hasTrustedPhone(channelContactForCase ?? undefined) && runtimeTurnInput.user_message) {
+          const typedPhone = extractTypedPhone(runtimeTurnInput.user_message);
+          if (typedPhone) {
+            typedContactToStore = {
+              phone_number: typedPhone,
+              phone_source: "typed",
+              phone_consent: false,
+              phone_collected_at: new Date().toISOString(),
+            };
+            channelContactForCase = typedContactToStore;
+          }
+        }
+
         const existingCaseLite: RuntimeCaseLite = runtimeContextResult.data.case_context_lite ?? buildDefaultRuntimeCaseLite({
           clinic_id: runtimeTurnInput.clinic_id,
           channel: validBody.channel.trim(),
@@ -462,7 +481,11 @@ export async function runRuntimeTurnOrchestrated(
         conversation_intent: String((result.debug as Record<string, unknown> | undefined)?.last_intent ?? (result.debug as Record<string, unknown> | undefined)?.conversation_intent ?? "unknown"),
         handoff_recommended: Boolean((result.debug as Record<string, unknown> | undefined)?.handoff_recommended ?? false),
         confidence: "medium",
-        control_flags: { openai_conversation_id: conversationIdToPersist },
+        control_flags: {
+          openai_conversation_id: conversationIdToPersist,
+          // Persist typed phone detected in this turn so future turns see it as channel_contact.
+          ...(typedContactToStore ? { channel_contact: typedContactToStore } : {}),
+        },
         topic_memory_patch: topicMemoryPatch,
         // In shadow mode caseLiteCurrent is debug-only — never persist it to durable convo_state.
         case_context_lite: getCaseLiteMode() === "shadow" ? null : caseLiteCurrent,

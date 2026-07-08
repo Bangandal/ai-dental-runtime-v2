@@ -199,7 +199,8 @@ import type { AvailableSlot } from "./bookingProcessState.ts";
 /**
  * Returns true when booking.apply is pending but there is no verified slot proof:
  * no successful availability.check in the current turn AND no selectedSlot from
- * booking process state that matches the requested date and time.
+ * booking process state that matches the requested date and time, AND the requested
+ * time is not in the last_available_slots previously shown to the patient.
  *
  * Only fires when completedToolResults contains no successful availability.check —
  * when avail.check results are present, shouldInterceptInvalidSlotTime handles
@@ -209,6 +210,7 @@ export function shouldInterceptMissingSlotProof(params: {
   pendingToolRequests: RuntimeAgentToolRequest[];
   completedToolResults: RuntimeAgentToolResult[];
   selectedSlot?: AvailableSlot | null;
+  lastAvailableSlots?: AvailableSlot[] | null;
 }): boolean {
   if (!hasBookingApplyPending(params.pendingToolRequests)) return false;
 
@@ -230,14 +232,26 @@ export function shouldInterceptMissingSlotProof(params: {
   );
   if (hasSuccessfulAvailCheck) return false;
 
+  const normalizedReq = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
+
   // No avail.check in this turn — check if selectedSlot from state covers the request.
   const slot = params.selectedSlot;
   if (slot?.starts_at) {
     const slotDate = slot.starts_at.slice(0, 10);
     const slotTime = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(11, 16);
-    const normalizedReq = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
     if (slotDate === requestedDate && slotTime === normalizedReq) return false;
   }
+
+  // Defense in depth: if requested time was in the last availability.check results
+  // shown to the patient (stored in bookingProcessState), treat it as verified.
+  // This handles cases where selected_slot wasn't set (e.g. patient wrote "15 00"
+  // with a space and text matching missed it) but the slot was genuinely offered.
+  const lastSlots = params.lastAvailableSlots ?? [];
+  if (lastSlots.some((s) => {
+    const sDate = s.starts_at.slice(0, 10);
+    const sTime = extractHHMM(s.starts_at) ?? s.starts_at.slice(11, 16);
+    return sDate === requestedDate && sTime === normalizedReq;
+  })) return false;
 
   return true;
 }

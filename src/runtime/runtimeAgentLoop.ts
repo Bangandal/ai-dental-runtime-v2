@@ -362,6 +362,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         pendingToolRequests: toolRequests,
         completedToolResults: [],
         selectedSlot: bookingProcessState.selected_slot,
+        lastAvailableSlots: bookingProcessState.last_available_slots,
       })) {
         debug.reason = "booking_apply_preflight_missing_slot_proof_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
@@ -740,6 +741,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             pendingToolRequests: secondOutput.tool_requests,
             completedToolResults: toolResults,
             selectedSlot: bookingProcessState.selected_slot,
+            lastAvailableSlots: bookingProcessState.last_available_slots,
           })) {
             debug.reason = "booking_apply_preflight_missing_slot_proof_round2";
             return await finalizeBlockedBookingApplyWithToolOutput({

@@ -1,8 +1,23 @@
-import type { RuntimeAgentToolRequest, RuntimeAgentToolResult, ChannelContact } from "./openaiRuntimeAgent.ts";
+import type { RuntimeAgentToolRequest, RuntimeAgentToolResult, ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import { TRUSTED_PHONE_SOURCES } from "../integrations/cliniccard/bookingApplyExecutor.ts";
 
-export function hasTrustedPhone(channelContact: ChannelContact | undefined): boolean {
-  return channelContact !== undefined && TRUSTED_PHONE_SOURCES.has(channelContact.phone_source);
+export function hasTrustedPhone(channelContact: ChannelContact | undefined | null): boolean {
+  return channelContact != null && TRUSTED_PHONE_SOURCES.has(channelContact.phone_source);
+}
+
+/**
+ * Returns true when a booking can proceed with the available phone contact —
+ * either a trusted channel phone (Telegram button, WhatsApp, existing patient)
+ * OR a patient-typed provided phone (unverified but acceptable for booking).
+ *
+ * hasTrustedPhone(typed) is always false — this function is the right predicate
+ * for the phone-blocking guard, not hasTrustedPhone.
+ */
+export function hasBookingContactPhone(params: {
+  channelContact?: ChannelContact | null;
+  providedPhone?: ProvidedPhone | null;
+}): boolean {
+  return hasTrustedPhone(params.channelContact) || params.providedPhone != null;
 }
 
 export function hasBookingApplyPending(toolRequests: RuntimeAgentToolRequest[]): boolean {

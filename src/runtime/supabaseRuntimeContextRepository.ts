@@ -1,5 +1,5 @@
 import type { RuntimeResult, RpcCaller } from "./runtimeRepositories.ts";
-import type { ChannelContact } from "./openaiRuntimeAgent.ts";
+import type { ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import { parseRuntimeCaseLite } from "./runtimeCaseLite.ts";
 import type { RuntimeCaseLite } from "./runtimeCaseLite.ts";
 
@@ -15,6 +15,7 @@ export interface RuntimeContext {
   conversation_state: Record<string, unknown>;
   topic_memory: TopicMemory | null;
   channel_contact: ChannelContact | null;
+  provided_phone: ProvidedPhone | null;
   case_context_lite: RuntimeCaseLite | null;
   runtime_flags: {
     has_durable_context: boolean;
@@ -76,6 +77,19 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
           }
         : null;
 
+      const providedPhoneRaw = asRecord(stateJson?.provided_phone);
+      const providedPhoneNumber = asStr(providedPhoneRaw?.phone_number);
+      const providedPhone: ProvidedPhone | null =
+        providedPhoneNumber && providedPhoneRaw?.phone_source === "typed"
+          ? {
+              phone_number: providedPhoneNumber,
+              phone_source: "typed",
+              phone_trust: "unverified",
+              phone_consent: false,
+              phone_collected_at: asStr(providedPhoneRaw?.phone_collected_at) ?? new Date().toISOString(),
+            }
+          : null;
+
       const caseLite = parseRuntimeCaseLite(stateJson?.case_context_lite);
 
       const knownContact: Record<string, unknown> = {
@@ -112,6 +126,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
           conversation_state: conversationState,
           topic_memory: topicMemory,
           channel_contact: channelContact,
+          provided_phone: providedPhone,
           case_context_lite: caseLite,
           runtime_flags: {
             has_durable_context: Boolean(row),

@@ -148,6 +148,10 @@ test("E: booking.apply guard intercepts missing trusted phone — returns ask_fo
     executors: {},
     // now = 08:00 UTC = 10:00 Prague; slot is 14:00 Prague — clearly future
     now: new Date("2026-07-15T08:00:00Z"),
+    bookingProcessStateRepository: {
+      async loadState() { return { selected_slot: { starts_at: "2026-07-15T14:00:00" } }; },
+      async saveState() {},
+    },
   });
 
   const result = await agent.runTurn({
@@ -197,6 +201,10 @@ test("F: phone guard block does not produce booking confirmation in reply", asyn
     caller,
     executors: {},
     now: new Date("2026-07-15T08:00:00Z"),
+    bookingProcessStateRepository: {
+      async loadState() { return { selected_slot: { starts_at: "2026-07-15T14:00:00" } }; },
+      async saveState() {},
+    },
   });
 
   const result = await agent.runTurn({

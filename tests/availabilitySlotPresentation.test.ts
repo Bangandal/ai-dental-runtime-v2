@@ -393,6 +393,10 @@ describe("PR #135 — H: booking.apply phone and past-time guard regression", ()
       executors: {} as ToolExecutorRegistry,
       now: new Date("2026-07-04T10:00:00.000Z"),
       timezone: "Europe/Prague",
+      bookingProcessStateRepository: {
+        async loadState() { return { selected_slot: { starts_at: "2026-07-11T14:00:00" } }; },
+        async saveState() {},
+      },
     });
 
     const result = await loop.runTurn({
@@ -402,7 +406,7 @@ describe("PR #135 — H: booking.apply phone and past-time guard regression", ()
       locale: "ru",
     });
 
-    // No channel_contact → phone guard fires
+    // No channel_contact → phone guard fires (slot proof passes via selectedSlot)
     assert.strictEqual(
       (result.debug as Record<string, unknown>).reason,
       "booking_apply_preflight_missing_trusted_phone_round1",

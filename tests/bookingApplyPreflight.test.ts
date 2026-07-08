@@ -591,6 +591,7 @@ test("Test 4a: Guard E (round 1) — first_name missing → submits guarded resu
         return { status: "success" as const, data: { booking_action: "booking_apply", booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" } };
       },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-15T10:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -653,6 +654,7 @@ test("Test 4b: Guard E (round 1) — last_name missing → submits guarded resul
         return { status: "success" as const, data: { booking_action: "booking_apply", booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" } };
       },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-15T10:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -1221,6 +1223,7 @@ test("Integration: missing service in round-1 args → executor not called, asks
         return { status: "success" as const, data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false } };
       },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
   });
 
   const result = await loop.runTurn({

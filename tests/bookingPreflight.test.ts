@@ -287,6 +287,10 @@ describe("runtimeAgentLoop — booking.apply phone preflight (round 1)", () => {
       executors: {} as ToolExecutorRegistry,
       now: new Date("2026-07-03T20:25:00.000Z"),
       timezone: "Europe/Prague",
+      bookingProcessStateRepository: {
+        async loadState() { return { selected_slot: { starts_at: "2026-07-04T13:00:00" } }; },
+        async saveState() {},
+      },
     });
 
     const result: RuntimeAgentTurnResult = await loop.runTurn({

@@ -141,7 +141,15 @@ test("CA-5: phone guard still intercepts booking.apply when channel_contact abse
     }
     return { type: "final_response", final_response: { final_patient_reply: "Нам нужен номер телефона." } };
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {} });
+  const agent = createRuntimeAgentLoop({
+    model: "gpt-test",
+    caller,
+    executors: {},
+    bookingProcessStateRepository: {
+      async loadState() { return { selected_slot: { starts_at: "2099-01-15T10:00:00" } }; },
+      async saveState() {},
+    },
+  });
 
   // Input has recent_history injected into business_context.runtime_context — but no channel_contact
   const result = await agent.runTurn({

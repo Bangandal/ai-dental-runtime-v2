@@ -198,6 +198,10 @@ export function extractSlotTime(text: string): string | null {
   const dotMatch = text.match(/\b(\d{1,2})\.(\d{2})\b/);
   if (dotMatch) return normalizeHHMM(`${dotMatch[1]}:${dotMatch[2]}`);
 
+  // Space separator (e.g. "15 00", "на 15 00") — patient omits colon
+  const spaceMatch = text.match(/\b(\d{1,2}) (\d{2})\b/);
+  if (spaceMatch) return normalizeHHMM(`${spaceMatch[1]}:${spaceMatch[2]}`);
+
   return null;
 }
 

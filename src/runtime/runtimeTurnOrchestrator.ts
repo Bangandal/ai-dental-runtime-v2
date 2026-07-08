@@ -676,7 +676,7 @@ function mergeCaseContextIntoModelContext(baseContext: Record<string, unknown>, 
   };
 }
 
-function applyMessengerPhonePolicy(
+export function applyMessengerPhonePolicy(
   baseContext: Record<string, unknown>,
   channelContact?: ChannelContact | null,
   providedPhone?: ProvidedPhone | null,
@@ -687,10 +687,10 @@ function applyMessengerPhonePolicy(
     ? taskState.missing_fields.filter((field): field is string => typeof field === "string" && field !== "phone")
     : [];
   let phonePatch: Record<string, unknown> = {};
-  if (channelContact && hasTrustedPhone(channelContact)) {
+  if (providedPhone) {
+    phonePatch = { phone_received: true, phone_source: "typed", phone_trust: "unverified" };
+  } else if (channelContact && hasTrustedPhone(channelContact)) {
     phonePatch = { phone_captured: true, phone_source: channelContact.phone_source };
-  } else if (providedPhone) {
-    phonePatch = { phone_received: true, phone_trust: "unverified" };
   }
   return {
     ...baseContext,

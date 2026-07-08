@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { TRUSTED_PHONE_SOURCES } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import { hasTrustedPhone, hasBookingContactPhone } from "../src/runtime/bookingContactGuard.ts";
 import { extractTypedPhone } from "../src/runtime/typedPhoneExtractor.ts";
+import { applyMessengerPhonePolicy } from "../src/runtime/runtimeTurnOrchestrator.ts";
 import type { ProvidedPhone } from "../src/runtime/openaiRuntimeAgent.ts";
 import type { ChannelContact } from "../src/runtime/openaiRuntimeAgent.ts";
 
@@ -115,5 +116,56 @@ describe("hasBookingContactPhone", () => {
 
   it("O: true when both trusted contact and providedPhone present", () => {
     assert.equal(hasBookingContactPhone({ channelContact: trustedContact, providedPhone }), true);
+  });
+});
+
+// E. applyMessengerPhonePolicy — provided_phone takes priority over trusted channel_contact
+describe("applyMessengerPhonePolicy — phone context priority", () => {
+  const trustedContact: ChannelContact = {
+    phone_number: "+420724334616",
+    phone_source: "telegram_contact_button",
+    phone_captured: true,
+  };
+  const providedPhone: ProvidedPhone = {
+    phone_number: "+420728945521",
+    phone_source: "typed",
+    phone_trust: "unverified",
+    phone_consent: false,
+    phone_collected_at: new Date().toISOString(),
+  };
+  const baseCtx = { task_state: { missing_fields: ["phone"] }, runtime_policy: { phone_required: true } };
+
+  it("P: trusted contact only → phone_captured=true in task_state", () => {
+    const result = applyMessengerPhonePolicy(baseCtx, trustedContact, null);
+    const ts = result.task_state as Record<string, unknown>;
+    assert.equal(ts.phone_captured, true);
+    assert.equal(ts.phone_source, "telegram_contact_button");
+    assert.equal(ts.phone_received, undefined);
+  });
+
+  it("Q: provided_phone only → phone_received=true, phone_source=typed, phone_trust=unverified", () => {
+    const result = applyMessengerPhonePolicy(baseCtx, null, providedPhone);
+    const ts = result.task_state as Record<string, unknown>;
+    assert.equal(ts.phone_received, true);
+    assert.equal(ts.phone_source, "typed");
+    assert.equal(ts.phone_trust, "unverified");
+    assert.equal(ts.phone_captured, undefined);
+  });
+
+  it("R: trusted contact + provided_phone → provided_phone wins (phone_received, not phone_captured)", () => {
+    const result = applyMessengerPhonePolicy(baseCtx, trustedContact, providedPhone);
+    const ts = result.task_state as Record<string, unknown>;
+    assert.equal(ts.phone_received, true);
+    assert.equal(ts.phone_source, "typed");
+    assert.equal(ts.phone_trust, "unverified");
+    assert.equal(ts.phone_captured, undefined, "phone_captured must NOT appear when provided_phone is active booking phone");
+  });
+
+  it("S: neither → no phone patch, phone removed from missing_fields", () => {
+    const result = applyMessengerPhonePolicy(baseCtx, null, null);
+    const ts = result.task_state as Record<string, unknown>;
+    assert.equal(ts.phone_captured, undefined);
+    assert.equal(ts.phone_received, undefined);
+    assert.deepEqual(ts.missing_fields, []);
   });
 });

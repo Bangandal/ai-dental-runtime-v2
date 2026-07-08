@@ -161,7 +161,7 @@ test("C: no channel_contact → global preflight fires; contact button returned;
   const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV, {
     createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "", phone: null } }; },
     createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
-  });
+  }, "2026-07-20T09:00:00");
 
   pushCaller(async () => ({
     type: "tool_requests",

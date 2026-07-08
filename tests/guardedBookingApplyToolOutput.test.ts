@@ -165,6 +165,7 @@ test("A: round 1 booking.apply — no trusted phone → guarded missing_trusted_
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "v1" } };
       },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, channel_contact: undefined });
@@ -229,6 +230,7 @@ test("B2: round 1 booking.apply — missing first_name → guarded missing_patie
     executors: {
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_b2", channel_contact: TRUSTED_CONTACT });
@@ -261,6 +263,7 @@ test("B3: round 1 booking.apply — missing service → guarded missing_service,
     executors: {
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_b3", channel_contact: TRUSTED_CONTACT });
@@ -483,6 +486,7 @@ test("B-phone-1: round 1 missing_trusted_phone → ui.telegram.request_contact=t
       { type: "final_response", conversation_id: "conv_bp1", final_response: { final_patient_reply: "Поделитесь контактом." } },
     ]),
     executors: {},
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_bp1", channel_contact: undefined });
@@ -521,6 +525,7 @@ test("B-phone-3: CS locale missing phone → ui.telegram.request_contact=true", 
       { type: "final_response", conversation_id: "conv_bp3", final_response: { final_patient_reply: "Sdílejte kontakt prosím." } },
     ]),
     executors: {},
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_bp3", locale: "cs", channel_contact: undefined });
@@ -706,6 +711,7 @@ test("PR144-D: guarded booking.apply missing-phone path still returns ui.telegra
     executors: {
       "booking.apply": async () => ({ status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } }),
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({

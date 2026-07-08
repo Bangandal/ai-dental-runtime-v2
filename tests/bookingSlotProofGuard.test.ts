@@ -252,7 +252,10 @@ test("BSPG-7: round-1 booking.apply with all fields but no slot proof → slot_n
 
 // ── Integration: phone guard has priority over slot proof guard ───────────────
 
-test("BSPG-8: phone guard fires before slot proof guard — missing phone + no avail.check → missing_trusted_phone, not slot_not_verified", async () => {
+test("BSPG-8: slot proof guard fires before phone guard — missing phone + no avail.check → slot_not_verified, not missing_trusted_phone", async () => {
+  // PR #167: guard order changed. Slot proof (G) fires before phone (A) so invalid/unverified
+  // slots are caught before asking for the patient's contact. Round-1 booking.apply with full
+  // fields but no avail.check proof → slot_not_verified must fire, not missing_trusted_phone.
   let bookingExecutorCalled = false;
 
   const loop = createRuntimeAgentLoop({
@@ -266,7 +269,7 @@ test("BSPG-8: phone guard fires before slot proof guard — missing phone + no a
       {
         type: "final_response",
         conversation_id: "conv_bspg8",
-        final_response: { final_patient_reply: "Нажмите кнопку для отправки номера телефона." },
+        final_response: { final_patient_reply: "Сначала проверим доступное время — на какую дату удобно?" },
       },
     ]),
     executors: {
@@ -289,16 +292,16 @@ test("BSPG-8: phone guard fires before slot proof guard — missing phone + no a
   assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
   assert.equal(
     (bookingResult!.data as Record<string, unknown>).booking_status,
-    "missing_trusted_phone",
-    "phone guard must fire before slot proof guard",
+    "slot_not_verified",
+    "slot proof guard must fire before phone guard",
   );
   assert.notEqual(
     (bookingResult!.data as Record<string, unknown>).booking_status,
-    "slot_not_verified",
-    "slot_not_verified must NOT fire when phone guard already blocked",
+    "missing_trusted_phone",
+    "phone guard must NOT fire before slot proof guard",
   );
   assert.equal(
     (result.debug as Record<string, unknown>)?.reason,
-    "booking_apply_preflight_missing_trusted_phone_round1",
+    "booking_apply_preflight_missing_slot_proof_round1",
   );
 });

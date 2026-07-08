@@ -20,6 +20,7 @@ import { buildRuntimeLlmCallDebug, mergeRuntimeLlmCallDebug } from "./llmCallDeb
 import type { RuntimeTurnHttpRequestBody, RuntimeTurnHttpSuccessResponse } from "./runtimeTurnHttpRoute.ts";
 import { buildBookingApplyActionTruth } from "./bookingApplyGuard.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
+import type { ChannelContact } from "./openaiRuntimeAgent.ts";
 import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
 import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
@@ -306,7 +307,7 @@ export async function runRuntimeTurnOrchestrated(
         // caseLiteMode === "disabled": extractor does not run; caseLiteCurrent stays null.
 
         const baseRuntimeContext = mergeCaseContextIntoModelContext(
-          applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data)),
+          applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data), channelContactForCase),
           loadedCaseContext,
         );
         // case_context_lite and case_policy_truth are NEVER injected into the patient-facing
@@ -648,15 +649,21 @@ function mergeCaseContextIntoModelContext(baseContext: Record<string, unknown>, 
   };
 }
 
-function applyMessengerPhonePolicy(baseContext: Record<string, unknown>): Record<string, unknown> {
+function applyMessengerPhonePolicy(
+  baseContext: Record<string, unknown>,
+  channelContact?: ChannelContact | null,
+): Record<string, unknown> {
   const taskState = asRecord(baseContext.task_state);
   const runtimePolicy = asRecord(baseContext.runtime_policy);
   const missingFields = Array.isArray(taskState.missing_fields)
     ? taskState.missing_fields.filter((field): field is string => typeof field === "string" && field !== "phone")
     : [];
+  const phoneCaptured = channelContact && hasTrustedPhone(channelContact)
+    ? { phone_captured: true, phone_source: channelContact.phone_source }
+    : {};
   return {
     ...baseContext,
-    task_state: { ...taskState, missing_fields: missingFields },
+    task_state: { ...taskState, missing_fields: missingFields, ...phoneCaptured },
     runtime_policy: { ...runtimePolicy, phone_required: false },
   };
 }

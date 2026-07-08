@@ -19,7 +19,7 @@ import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
-import { hasTrustedPhone } from "./bookingContactGuard.ts";
+import { hasTrustedPhone, hasBookingContactPhone } from "./bookingContactGuard.ts";
 import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotDateTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
@@ -387,7 +387,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       // Global preflight B — phone guard: fires only after slot validity is confirmed.
       // A verified (or selected) slot must exist before collecting the patient's phone.
-      if (bookingApplyRound1 && !hasTrustedPhone(input.channel_contact)) {
+      if (bookingApplyRound1 && !hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: input.provided_phone })) {
         debug.reason = "booking_apply_preflight_missing_trusted_phone_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
           pendingBookingApply: bookingApplyRound1,
@@ -411,7 +411,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       // Global preflight E — name-missing guard (round 1): trusted phone and valid slot
       // are present but first_name or last_name is absent from booking.apply args.
-      if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact)) {
+      if (bookingApplyRound1 && hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: input.provided_phone })) {
         const missingNames = getMissingBookingApplyNameFields(bookingApplyRound1.arguments);
         if (missingNames.length > 0) {
           debug.reason = "booking_apply_preflight_missing_name_round1";
@@ -440,7 +440,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       // Global preflight F — service-missing guard (round 1): name and slot present but
       // neither service nor service_reason is specified.
-      if (bookingApplyRound1 && hasTrustedPhone(input.channel_contact) && bookingApplyArgsMissingService(bookingApplyRound1.arguments)) {
+      if (bookingApplyRound1 && hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: input.provided_phone }) && bookingApplyArgsMissingService(bookingApplyRound1.arguments)) {
         debug.reason = "booking_apply_preflight_missing_service_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
           pendingBookingApply: bookingApplyRound1,
@@ -801,6 +801,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         if (shouldInterceptMissingPhoneBeforeBookingApply({
           pendingToolRequests: secondOutput.tool_requests,
           channelContact: input.channel_contact,
+          providedPhone: input.provided_phone,
         })) {
           const missingPhonePendingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply")!;
           debug.reason = "booking_apply_intercepted_missing_trusted_phone";
@@ -831,7 +832,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // forced_finalization would let the model hallucinate a confirmation without any
         // booking.apply execution, violating the invariant that may_claim_booked requires
         // a booking_status=visit_created proof.
-        if (pendingBookingApply && hasTrustedPhone(input.channel_contact)) {
+        if (pendingBookingApply && hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: input.provided_phone })) {
           // Guard E (round 2): slot and phone present but first_name or last_name absent.
           const round2MissingNames = getMissingBookingApplyNameFields(pendingBookingApply.arguments);
           if (round2MissingNames.length > 0) {
@@ -1392,11 +1393,13 @@ function buildExecutionContext(
     planner,
     truth_snapshot,
     now,
-    // booking.apply fields — from model args and channel_contact.
+    // booking.apply fields — from model args and channel_contact / provided_phone.
+    // Prefer patient-typed provided_phone (e.g. booking for a third party); fall back to channel_contact.
     first_name: typeof request.arguments.first_name === "string" ? request.arguments.first_name : undefined,
     last_name: typeof request.arguments.last_name === "string" ? request.arguments.last_name : undefined,
-    phone_number: input.channel_contact?.phone_number,
-    phone_source: input.channel_contact?.phone_source,
+    phone_number: input.provided_phone?.phone_number ?? input.channel_contact?.phone_number,
+    phone_source: input.provided_phone?.phone_source ?? input.channel_contact?.phone_source,
+    phone_trust: input.provided_phone ? input.provided_phone.phone_trust : undefined,
   } as ToolExecutionContext;
 }
 

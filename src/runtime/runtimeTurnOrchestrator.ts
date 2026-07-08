@@ -20,7 +20,8 @@ import { buildRuntimeLlmCallDebug, mergeRuntimeLlmCallDebug } from "./llmCallDeb
 import type { RuntimeTurnHttpRequestBody, RuntimeTurnHttpSuccessResponse } from "./runtimeTurnHttpRoute.ts";
 import { buildBookingApplyActionTruth } from "./bookingApplyGuard.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
-import type { ChannelContact } from "./openaiRuntimeAgent.ts";
+import type { ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
+import { extractTypedPhone } from "./typedPhoneExtractor.ts";
 import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
 import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
@@ -282,6 +283,26 @@ export async function runRuntimeTurnOrchestrated(
         runtimeContextDebug.topic_memory = runtimeContextResult.data.topic_memory ?? null;
 
         const channelContactForCase = runtimeContextResult.data.channel_contact;
+        const existingProvidedPhone = runtimeContextResult.data.provided_phone ?? null;
+
+        // Always try to extract a typed phone from the current message.
+        // If the patient typed a number (e.g. for a third-party booking), it takes priority
+        // over channel_contact in booking.apply — even when a trusted contact exists.
+        // Stored separately from channel_contact — never promoted to trusted.
+        let typedContactToStore: ProvidedPhone | null = null;
+        const detectedPhone = extractTypedPhone(runtimeTurnInput.user_message);
+        if (detectedPhone) {
+          typedContactToStore = {
+            phone_number: detectedPhone,
+            phone_source: "typed",
+            phone_trust: "unverified",
+            phone_consent: false,
+            phone_collected_at: new Date().toISOString(),
+          };
+        }
+
+        const providedPhoneForTurn: ProvidedPhone | null = typedContactToStore ?? existingProvidedPhone;
+
         const existingCaseLite: RuntimeCaseLite = runtimeContextResult.data.case_context_lite ?? buildDefaultRuntimeCaseLite({
           clinic_id: runtimeTurnInput.clinic_id,
           channel: validBody.channel.trim(),
@@ -307,7 +328,7 @@ export async function runRuntimeTurnOrchestrated(
         // caseLiteMode === "disabled": extractor does not run; caseLiteCurrent stays null.
 
         const baseRuntimeContext = mergeCaseContextIntoModelContext(
-          applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data), channelContactForCase),
+          applyMessengerPhonePolicy(buildModelVisibleRuntimeContext(runtimeContextResult.data), channelContactForCase, providedPhoneForTurn),
           loadedCaseContext,
         );
         // case_context_lite and case_policy_truth are NEVER injected into the patient-facing
@@ -321,6 +342,9 @@ export async function runRuntimeTurnOrchestrated(
         };
         if (channelContactForCase) {
           runtimeTurnInput.channel_contact = channelContactForCase;
+        }
+        if (providedPhoneForTurn) {
+          runtimeTurnInput.provided_phone = providedPhoneForTurn;
         }
       } else {
         runtimeContextDebug.error = runtimeContextResult.error;
@@ -462,7 +486,10 @@ export async function runRuntimeTurnOrchestrated(
         conversation_intent: String((result.debug as Record<string, unknown> | undefined)?.last_intent ?? (result.debug as Record<string, unknown> | undefined)?.conversation_intent ?? "unknown"),
         handoff_recommended: Boolean((result.debug as Record<string, unknown> | undefined)?.handoff_recommended ?? false),
         confidence: "medium",
-        control_flags: { openai_conversation_id: conversationIdToPersist },
+        control_flags: {
+          openai_conversation_id: conversationIdToPersist,
+          ...(runtimeTurnInput.provided_phone ? { provided_phone: runtimeTurnInput.provided_phone } : {}),
+        },
         topic_memory_patch: topicMemoryPatch,
         // In shadow mode caseLiteCurrent is debug-only — never persist it to durable convo_state.
         case_context_lite: getCaseLiteMode() === "shadow" ? null : caseLiteCurrent,
@@ -649,21 +676,25 @@ function mergeCaseContextIntoModelContext(baseContext: Record<string, unknown>, 
   };
 }
 
-function applyMessengerPhonePolicy(
+export function applyMessengerPhonePolicy(
   baseContext: Record<string, unknown>,
   channelContact?: ChannelContact | null,
+  providedPhone?: ProvidedPhone | null,
 ): Record<string, unknown> {
   const taskState = asRecord(baseContext.task_state);
   const runtimePolicy = asRecord(baseContext.runtime_policy);
   const missingFields = Array.isArray(taskState.missing_fields)
     ? taskState.missing_fields.filter((field): field is string => typeof field === "string" && field !== "phone")
     : [];
-  const phoneCaptured = channelContact && hasTrustedPhone(channelContact)
-    ? { phone_captured: true, phone_source: channelContact.phone_source }
-    : {};
+  let phonePatch: Record<string, unknown> = {};
+  if (providedPhone) {
+    phonePatch = { phone_received: true, phone_source: "typed", phone_trust: "unverified" };
+  } else if (channelContact && hasTrustedPhone(channelContact)) {
+    phonePatch = { phone_captured: true, phone_source: channelContact.phone_source };
+  }
   return {
     ...baseContext,
-    task_state: { ...taskState, missing_fields: missingFields, ...phoneCaptured },
+    task_state: { ...taskState, missing_fields: missingFields, ...phonePatch },
     runtime_policy: { ...runtimePolicy, phone_required: false },
   };
 }

@@ -1,5 +1,5 @@
-import type { RuntimeAgentToolRequest, RuntimeAgentToolResult, ChannelContact } from "./openaiRuntimeAgent.ts";
-import { hasTrustedPhone, hasBookingApplyPending } from "./bookingContactGuard.ts";
+import type { RuntimeAgentToolRequest, RuntimeAgentToolResult, ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
+import { hasTrustedPhone, hasBookingContactPhone, hasBookingApplyPending } from "./bookingContactGuard.ts";
 
 export function hasAvailabilitySuccessWithNoSlots(toolResults: RuntimeAgentToolResult[]): boolean {
   return toolResults.some((r) => {
@@ -15,11 +15,12 @@ export function hasAvailabilitySuccessWithNoSlots(toolResults: RuntimeAgentToolR
  */
 export function shouldInterceptMissingPhoneBeforeBookingApply(params: {
   pendingToolRequests: RuntimeAgentToolRequest[];
-  channelContact: ChannelContact | undefined;
+  channelContact: ChannelContact | undefined | null;
+  providedPhone?: ProvidedPhone | null;
 }): boolean {
   return (
     hasBookingApplyPending(params.pendingToolRequests) &&
-    !hasTrustedPhone(params.channelContact)
+    !hasBookingContactPhone({ channelContact: params.channelContact, providedPhone: params.providedPhone })
   );
 }
 

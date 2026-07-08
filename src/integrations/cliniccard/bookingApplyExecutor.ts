@@ -134,13 +134,18 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    if (!context.phone_source || !TRUSTED_PHONE_SOURCES.has(context.phone_source)) {
+    // Allow booking if phone comes from a trusted source OR from a typed provided phone
+    // (phone_source="typed", phone_trust="unverified"). Typed phones are patient-supplied
+    // text and carry lower trust, but are the only option when booking for a third party.
+    const isVerifiedPhone = TRUSTED_PHONE_SOURCES.has(context.phone_source ?? "");
+    const isProvidedTypedPhone = context.phone_source === "typed" && context.phone_trust === "unverified";
+    if (!isVerifiedPhone && !isProvidedTypedPhone) {
       return bookingResult({
         booking_status: "missing_phone",
         created_visit: false,
         may_claim_booked: false,
         cliniccard_visit_id: null,
-        reason: `phone_source "${context.phone_source ?? "unknown"}" is not a trusted contact proof for live booking; capture phone via the channel contact mechanism`,
+        reason: `phone_source "${context.phone_source ?? "unknown"}" is not a trusted contact proof for live booking; capture phone via the channel contact mechanism or have the patient type their phone number`,
         proof: null,
       });
     }

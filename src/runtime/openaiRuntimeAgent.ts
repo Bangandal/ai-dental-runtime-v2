@@ -14,6 +14,20 @@ export interface ChannelContact {
   phone_collected_at?: string;
 }
 
+/**
+ * Phone supplied by the patient as typed text — used when booking for a third
+ * party who cannot share their own Telegram contact. Trust level is "unverified"
+ * (no channel mechanism confirmed ownership). hasTrustedPhone() returns false;
+ * hasBookingContactPhone() returns true so booking.apply can proceed.
+ */
+export interface ProvidedPhone {
+  phone_number: string;
+  phone_source: "typed";
+  phone_trust: "unverified";
+  phone_consent: false;
+  phone_collected_at: string;
+}
+
 export interface RuntimeAgentTurnInput {
   trace_id?: string;
   clinic_id: string;
@@ -29,6 +43,8 @@ export interface RuntimeAgentTurnInput {
   is_first_patient_turn?: boolean;
   /** Phone captured from the channel (e.g. Telegram contact button). Forwarded to booking.apply executor via ToolExecutionContext. */
   channel_contact?: ChannelContact;
+  /** Phone typed as text by the patient — unverified, lower trust than channel_contact. Used when channel_contact is absent (e.g. booking for a third party). */
+  provided_phone?: ProvidedPhone | null;
 }
 
 export type RuntimeAgentToolName =

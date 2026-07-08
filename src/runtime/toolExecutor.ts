@@ -25,10 +25,12 @@ export interface ToolExecutionContext {
   first_name?: string;
   /** Patient last name — extracted from booking.apply tool arguments. */
   last_name?: string;
-  /** Phone number captured from the channel contact mechanism (e.g. contact button). */
+  /** Phone number captured from the channel contact mechanism (e.g. contact button) or patient-typed text. */
   phone_number?: string;
   /** Source of the captured phone number. */
   phone_source?: string;
+  /** Trust level of the phone — "unverified" for patient-typed numbers, absent/undefined for trusted sources. */
+  phone_trust?: "unverified";
 }
 
 export type ToolExecutor = (

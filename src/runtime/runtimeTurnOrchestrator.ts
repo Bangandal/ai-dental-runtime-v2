@@ -326,11 +326,14 @@ export async function runRuntimeTurnOrchestrated(
         };
 
         // Pre-turn booking subjects update: switch signals + phone status.
+        // Pass only the current-turn typed phone — existingProvidedPhone must not
+        // recreate pending_typed_phone on subsequent turns after it was already
+        // classified and assigned to a subject.
         bookingSubjectsForTurn = preUpdateBookingSubjects({
           current: runtimeContextResult.data.booking_subjects ?? null,
           userMessage: runtimeTurnInput.user_message,
           channelContact: channelContactForCase ?? null,
-          providedPhone: providedPhoneForTurn,
+          providedPhone: typedContactToStore,
           s1Seed,
         });
 

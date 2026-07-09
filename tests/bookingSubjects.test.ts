@@ -852,3 +852,80 @@ describe("PR#174-fix: pending_typed_phone not cleared until classified", () => {
     assert.equal(s2?.status, "booked");
   });
 });
+
+// ── PR#175: classified s2 phone must not be reinjected as pending on next turn ──
+
+describe("PR#175: existingProvidedPhone must not recreate pending_typed_phone", () => {
+  // State after Turn 3: s2 has classified typed_unverified phone, pending_typed_phone = null.
+  // existingProvidedPhone still exists in control_flags.provided_phone from Turn 2.
+  // On Turn 4 ("да, всё верно"), no new typed phone → preUpdateBookingSubjects must
+  // NOT set pending_typed_phone from existingProvidedPhone.
+
+  const stateAfterClassification: BookingSubjectsState = {
+    active_subject_id: "s2",
+    subjects: [
+      { id: "s1", label: "sender", name: "Миша Бондаренко", service: "Чистка", slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      { id: "s2", label: "mentioned_person", name: "Анна Бондаренко", service: "Чистка", slot: null, phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+    ],
+    pending_typed_phone: null,
+  };
+
+  it("A175: no current-turn typed phone → pending_typed_phone stays null (existingProvidedPhone not injected)", () => {
+    // Orchestrator now passes typedContactToStore (null here) — not existingProvidedPhone
+    const result = preUpdateBookingSubjects({
+      current: stateAfterClassification,
+      userMessage: "да, всё верно",
+      channelContact: null,
+      providedPhone: null,  // typedContactToStore = null (no phone in current message)
+    });
+    assert.ok(result !== null, "booking_subjects state preserved");
+    assert.equal(result.pending_typed_phone, null, "pending_typed_phone must remain null — s2 phone already classified");
+    const s2 = result.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.phone_number, "+420728123456", "s2 phone preserved");
+    assert.equal(s2?.phone_status, "typed_unverified", "s2 phone_status preserved");
+  });
+
+  it("B175: pending carried from previous turn (not yet consumed) when no new phone typed", () => {
+    // Turn 2 state: phone typed, Guard I blocked → pending preserved
+    const stateWithPending: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: null, service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Анна", service: null, slot: null, phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      ],
+      pending_typed_phone: "+420728123456",
+    };
+    // Turn 3: "это номер мамы" — no new typed phone, but pending must carry forward
+    const result = preUpdateBookingSubjects({
+      current: stateWithPending,
+      userMessage: "это номер мамы",
+      channelContact: null,
+      providedPhone: null,  // no new phone typed
+    });
+    assert.ok(result !== null);
+    assert.equal(result.pending_typed_phone, "+420728123456", "pending preserved from current state so model can classify it");
+  });
+
+  it("C175: new typed phone on a later turn overrides previous pending", () => {
+    // User types a completely different phone after classification
+    const result = preUpdateBookingSubjects({
+      current: stateAfterClassification,
+      userMessage: "мой номер +380991234567",
+      channelContact: null,
+      providedPhone: { phone_number: "+380991234567", phone_source: "typed", phone_trust: "unverified", phone_consent: false, phone_collected_at: new Date().toISOString() },
+    });
+    assert.ok(result !== null);
+    assert.equal(result.pending_typed_phone, "+380991234567", "new phone takes priority over null current pending");
+  });
+
+  it("D175: single-subject mode unaffected — null preUpdate result when no second-person signal", () => {
+    // No booking_subjects active, user confirms booking — no subject expansion
+    const result = preUpdateBookingSubjects({
+      current: null,
+      userMessage: "да, всё верно",
+      channelContact: null,
+      providedPhone: null,
+    });
+    assert.equal(result, null, "single-subject mode: no booking_subjects created for confirmation message");
+  });
+});

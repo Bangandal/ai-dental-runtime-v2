@@ -305,8 +305,9 @@ export function preUpdateBookingSubjects(params: {
   }
 
   const subjects: BookingSubject[] = s2 ? [s1, s2] : [s1];
-  // Store pending_typed_phone so model can see it and potentially reassign via subject_intent
-  const pending_typed_phone = providedPhone?.phone_number ?? null;
+  // A new current-turn typed phone refreshes pending; otherwise carry forward the
+  // existing pending (it was preserved by postUpdate until consumed by subject_intent).
+  const pending_typed_phone = providedPhone?.phone_number ?? current?.pending_typed_phone ?? null;
   return { active_subject_id: activeId, subjects, pending_typed_phone };
 }
 

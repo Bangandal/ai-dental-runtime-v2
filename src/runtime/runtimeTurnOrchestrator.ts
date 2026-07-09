@@ -358,10 +358,12 @@ export async function runRuntimeTurnOrchestrated(
         }
         // caseLiteMode === "disabled": extractor does not run; caseLiteCurrent stays null.
 
+        // When booking_subjects is active, suppress global phone fields from model context —
+        // the model uses per-subject phone_status instead to avoid phone_received confusion.
         const modelVisibleBase = applyMessengerPhonePolicy(
           buildModelVisibleRuntimeContext(runtimeContextResult.data),
-          channelContactForCase,
-          providedPhoneForTurn,
+          bookingSubjectsForTurn ? null : channelContactForCase,
+          bookingSubjectsForTurn ? null : providedPhoneForTurn,
         );
         const modelVisibleWithSubjects = bookingSubjectsForTurn
           ? { ...modelVisibleBase, booking_subjects: buildSubjectsContextPayload(bookingSubjectsForTurn) }
@@ -379,13 +381,13 @@ export async function runRuntimeTurnOrchestrated(
         if (channelContactForCase) {
           runtimeTurnInput.channel_contact = channelContactForCase;
         }
-        // Guard: when subjects state is active and active_subject_id=s1, the correct phone
-        // for booking.apply is channel_contact (s1=sender). Do NOT pass provided_phone into
-        // tool execution — that phone belongs to s2 and would cause a wrong-subject write.
-        // provided_phone is still persisted to control_flags for s2 across turns.
-        const activeSubjectForExecution = bookingSubjectsForTurn?.active_subject_id;
-        if (providedPhoneForTurn && (!bookingSubjectsForTurn || activeSubjectForExecution === "s2")) {
+        // Pass provided_phone for single-subject (backward compat) — when booking_subjects is set,
+        // buildSubjectAwarePhoneFields in runtimeAgentLoop uses active subject's phone instead.
+        if (providedPhoneForTurn) {
           runtimeTurnInput.provided_phone = providedPhoneForTurn;
+        }
+        if (bookingSubjectsForTurn) {
+          runtimeTurnInput.booking_subjects = bookingSubjectsForTurn;
         }
       } else {
         runtimeContextDebug.error = runtimeContextResult.error;
@@ -504,6 +506,7 @@ export async function runRuntimeTurnOrchestrated(
           current: bookingSubjectsForTurn,
           toolRequests: result.tool_requests ?? [],
           toolResults: result.tool_results ?? [],
+          subjectIntent: result.subject_intent ?? null,
         })
       : null;
 

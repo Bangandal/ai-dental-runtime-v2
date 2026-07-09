@@ -9,11 +9,14 @@ import {
   computeMissing,
   computeReadyForBooking,
   deserializeBookingSubjects,
+  applySubjectIntent,
+  parseSubjectIntent,
 } from "../src/runtime/bookingSubjectsState.ts";
 import type {
   BookingSubjectsState,
   BookingSubject,
   S1Seed,
+  SubjectIntent,
 } from "../src/runtime/bookingSubjectsState.ts";
 import type { ChannelContact, ProvidedPhone } from "../src/runtime/openaiRuntimeAgent.ts";
 
@@ -37,9 +40,10 @@ function makeS2State(s2Name: string | null = "Иван"): BookingSubjectsState {
   return {
     active_subject_id: "s2",
     subjects: [
-      { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_status: "trusted", status: "collecting" },
-      { id: "s2", label: "mentioned_person", name: s2Name, service: null, slot: null, phone_number: null, phone_status: null, status: "collecting" },
+      { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
+      { id: "s2", label: "mentioned_person", name: s2Name, service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
     ],
+    pending_typed_phone: null,
   };
 }
 
@@ -120,9 +124,10 @@ describe("blocker 3: third-party switch to existing s2", () => {
     const current: BookingSubjectsState = {
       active_subject_id: "s1",
       subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_status: null, status: "collecting" },
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
       ],
+      pending_typed_phone: null,
     };
     const result = preUpdateBookingSubjects({
       current,
@@ -224,9 +229,10 @@ describe("blocker 5: mismatch detection", () => {
     const state: BookingSubjectsState = {
       active_subject_id: "s1",
       subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: "+420728945521", phone_status: "typed_unverified", status: "collecting" },
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
       ],
+      pending_typed_phone: null,
     };
     const mismatch = detectSubjectMismatch({
       state,
@@ -243,8 +249,9 @@ describe("blocker 5: mismatch detection", () => {
     const state: BookingSubjectsState = {
       active_subject_id: "s1",
       subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_status: "trusted", status: "collecting" },
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
       ],
+      pending_typed_phone: null,
     };
     const mismatch = detectSubjectMismatch({
       state,
@@ -287,9 +294,10 @@ describe("postUpdateBookingSubjects", () => {
     const state: BookingSubjectsState = {
       active_subject_id: "s2",
       subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_status: "typed_unverified", status: "collecting" },
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
       ],
+      pending_typed_phone: null,
     };
     const updated = postUpdateBookingSubjects({
       current: state,
@@ -309,9 +317,10 @@ describe("postUpdateBookingSubjects", () => {
     const state: BookingSubjectsState = {
       active_subject_id: "s2",
       subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: null, service: null, slot: null, phone_number: null, phone_status: null, status: "collecting" },
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: null, service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
       ],
+      pending_typed_phone: null,
     };
     const updated = postUpdateBookingSubjects({
       current: state,
@@ -331,19 +340,19 @@ describe("postUpdateBookingSubjects", () => {
 
 describe("computeMissing / computeReadyForBooking", () => {
   it("Q: empty subject missing all 4 fields", () => {
-    const s: BookingSubject = { id: "s2", label: "mentioned_person", name: null, service: null, slot: null, phone_number: null, phone_status: null, status: "collecting" };
+    const s: BookingSubject = { id: "s2", label: "mentioned_person", name: null, service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" };
     assert.deepEqual(computeMissing(s), ["name", "slot", "service", "phone"]);
     assert.equal(computeReadyForBooking(s), false);
   });
 
   it("R: fully populated subject is ready", () => {
-    const s: BookingSubject = { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420728945521", phone_status: "typed_unverified", status: "collecting" };
+    const s: BookingSubject = { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" };
     assert.deepEqual(computeMissing(s), []);
     assert.equal(computeReadyForBooking(s), true);
   });
 
   it("S: booked subject is not ready_for_booking (already done)", () => {
-    const s: BookingSubject = { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_status: "trusted", status: "booked" };
+    const s: BookingSubject = { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "booked" };
     assert.equal(computeReadyForBooking(s), false);
   });
 });
@@ -380,9 +389,10 @@ describe("execution guard: mismatch visible even when guard suppresses phone", (
     const state: BookingSubjectsState = {
       active_subject_id: "s1",
       subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: "+420728945521", phone_status: "typed_unverified", status: "collecting" },
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
       ],
+      pending_typed_phone: null,
     };
     const mismatch = detectSubjectMismatch({
       state,
@@ -430,5 +440,415 @@ describe("single-subject flow (no second person)", () => {
       providedPhone: null,
     });
     assert.equal(result, null);
+  });
+});
+
+// ── K. PR #173 phone source tests (Misha's A-I spec) ─────────────────────
+
+describe("PR#173: subject-aware phone assignment", () => {
+  // A: multi-subject state active=s1, typed phone → s1 gets typed_unverified
+  it("A173: active=s1 receives typed phone when no trusted contact", () => {
+    const current: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const result = preUpdateBookingSubjects({
+      current,
+      userMessage: "это мой номер",
+      channelContact: null,
+      providedPhone,
+    });
+    assert.ok(result !== null);
+    assert.equal(result.active_subject_id, "s1");
+    const s1 = result.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.phone_number, providedPhone.phone_number);
+    assert.equal(s1?.phone_status, "typed_unverified");
+    assert.equal(s1?.phone_source, "typed");
+    // pending_typed_phone set so model can re-classify if needed
+    assert.equal(result.pending_typed_phone, providedPhone.phone_number);
+  });
+
+  // B: Telegram button (trusted) wins over typed for s1
+  it("B173: s1 trusted channel_contact wins over co-present typed phone", () => {
+    const current: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const result = preUpdateBookingSubjects({
+      current,
+      userMessage: "вот мой номер",
+      channelContact: trustedContact,
+      providedPhone, // typed phone also present — trusted should win for s1
+    });
+    assert.ok(result !== null);
+    const s1 = result.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.phone_number, trustedContact.phone_number);
+    assert.equal(s1?.phone_status, "trusted");
+    assert.equal(s1?.phone_source, trustedContact.phone_source);
+  });
+
+  // C: "а вот номер Ивана" → switches to s2, typed phone goes to s2
+  it("C173: switch to Ivan + typed phone → s2 gets typed_unverified, s1 trusted untouched", () => {
+    const current: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    // "а Ивана" → third_party_switch to s2 (stem "Иван")
+    const result = preUpdateBookingSubjects({
+      current,
+      userMessage: "а Ивана +420728945521",
+      channelContact: trustedContact,
+      providedPhone,
+    });
+    assert.ok(result !== null);
+    assert.equal(result.active_subject_id, "s2");
+    const s2 = result.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.phone_number, providedPhone.phone_number);
+    assert.equal(s2?.phone_status, "typed_unverified");
+    const s1 = result.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.phone_status, "trusted"); // s1 trusted phone unchanged
+  });
+
+  // D: after switch to self (s1), booking.apply marks s1 as booked
+  it("D173: switch to self → postUpdate marks s1 booked on visit_created=true", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима", requested_date: "2026-07-10", requested_time: "10:00" } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+    });
+    const s1 = updated.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.status, "booked");
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.status, "collecting"); // s2 untouched
+  });
+
+  // E: active=s2 → booking.apply marks s2 booked
+  it("E173: active=s2 → postUpdate marks s2 booked on visit_created=true, s1 untouched", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "booked" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+    });
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.status, "booked");
+    const s1 = updated.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.status, "booked"); // already booked, unchanged
+  });
+
+  // F: ambiguous typed phone (no switch signal) → goes to active subject
+  it("F173: ambiguous typed phone assigned to active subject, stored as pending_typed_phone", () => {
+    const current: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const result = preUpdateBookingSubjects({
+      current,
+      userMessage: "вот номер", // no switch signal — active stays s2
+      channelContact: null,
+      providedPhone,
+    });
+    assert.ok(result !== null);
+    assert.equal(result.active_subject_id, "s2");
+    const s2 = result.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.phone_number, providedPhone.phone_number);
+    assert.equal(s2?.phone_status, "typed_unverified");
+    assert.equal(result.pending_typed_phone, providedPhone.phone_number);
+  });
+
+  // G: multi-language subject intent via model subject_intent (not regex)
+  it("G173: applySubjectIntent switches to s2 from English/Czech model output (high confidence)", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Anna", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Ivan", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
+    const updated = applySubjectIntent(state, intent);
+    assert.equal(updated.active_subject_id, "s2");
+  });
+
+  it("G173b: applySubjectIntent switches back to self from Czech 'pro mě'", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Anna", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Ivan", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const intent: SubjectIntent = { action: "switch_subject", target: "self", confidence: "high" };
+    const updated = applySubjectIntent(state, intent);
+    assert.equal(updated.active_subject_id, "s1");
+  });
+
+  it("G173c: low confidence subject_intent is ignored", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Anna", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Ivan", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "low" };
+    const updated = applySubjectIntent(state, intent);
+    assert.equal(updated.active_subject_id, "s1"); // unchanged — low confidence ignored
+  });
+
+  // H: no unsafe booked claim when visit_created=false
+  it("H173: visit_created=false does NOT mark subject as booked", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: false } }],
+    });
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.status, "collecting"); // NOT booked when visit_created=false
+  });
+
+  // I: wrong-subject regression — active_subject_id determines which phone is used
+  it("I173: mismatch flag reflects active_subject mismatch; s2 active has no mismatch", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    // s1 active + s2's typed phone passed = mismatch
+    const s1Mismatch = detectSubjectMismatch({
+      state,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима" } }],
+      channelContact: null,
+      providedPhone,
+    });
+    assert.ok(s1Mismatch !== null);
+    assert.equal(s1Mismatch.mismatch, true, "s1 active + no channel_contact + typed phone = mismatch");
+
+    // s2 active + typed phone = no mismatch (correct subject's phone)
+    const s2Mismatch = detectSubjectMismatch({
+      state: { ...state, active_subject_id: "s2" },
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван" } }],
+      channelContact: null,
+      providedPhone,
+    });
+    assert.ok(s2Mismatch !== null);
+    assert.equal(s2Mismatch.mismatch, false, "s2 active + typed phone = no mismatch");
+  });
+});
+
+// ── PR #174: subject_intent formal contract tests ──────────────────────────────
+
+describe("PR#174: postUpdateBookingSubjects uses typed subjectIntent", () => {
+  it("J174a: subjectIntent switch_subject/self switches active from s2→s1", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const intent: SubjectIntent = { action: "switch_subject", target: "self", confidence: "high" };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [],
+      toolResults: [],
+      subjectIntent: intent,
+    });
+    assert.equal(updated.active_subject_id, "s1");
+  });
+
+  it("J174b: subjectIntent switch clears pending_typed_phone and reassigns to new active subject", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: "+420728123456",
+    };
+    // Model says: switch to s2 (mentioned_person) — the pending phone belongs to Ivan
+    const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [],
+      toolResults: [],
+      subjectIntent: intent,
+    });
+    assert.equal(updated.active_subject_id, "s2");
+    assert.equal(updated.pending_typed_phone, null, "pending_typed_phone must be consumed");
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.phone_number, "+420728123456", "phone reassigned to s2");
+    assert.equal(s2?.phone_status, "typed_unverified");
+    const s1 = updated.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.phone_number, null, "s1 phone unchanged");
+  });
+
+  it("J174c: null subjectIntent leaves state unchanged", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [],
+      toolResults: [],
+      subjectIntent: null,
+    });
+    assert.equal(updated.active_subject_id, "s1");
+  });
+});
+
+describe("PR#174: parseSubjectIntent validates model output", () => {
+  it("K174a: valid subject_intent object parses correctly", () => {
+    const raw = { action: "switch_subject", target: "self", confidence: "high" };
+    const result = parseSubjectIntent(raw);
+    assert.ok(result !== null);
+    assert.equal(result!.action, "switch_subject");
+    assert.equal(result!.target, "self");
+    assert.equal(result!.confidence, "high");
+  });
+
+  it("K174b: invalid action rejects", () => {
+    const raw = { action: "fly_to_mars", target: "self", confidence: "high" };
+    assert.equal(parseSubjectIntent(raw), null);
+  });
+
+  it("K174c: null input returns null", () => {
+    assert.equal(parseSubjectIntent(null), null);
+    assert.equal(parseSubjectIntent(undefined), null);
+    assert.equal(parseSubjectIntent("string"), null);
+  });
+
+  it("K174d: missing confidence rejects", () => {
+    const raw = { action: "none", target: "active" };
+    assert.equal(parseSubjectIntent(raw), null);
+  });
+
+  it("K174e: display_name is preserved when present", () => {
+    const raw = { action: "create_subject", target: "mentioned_person", confidence: "high", display_name: "Анна" };
+    const result = parseSubjectIntent(raw);
+    assert.ok(result !== null);
+    assert.equal(result!.display_name, "Анна");
+  });
+});
+
+// ── PR#174 fix: pending_typed_phone preservation tests ────────────────────────
+
+describe("PR#174-fix: pending_typed_phone not cleared until classified", () => {
+  const BASE_STATE: BookingSubjectsState = {
+    active_subject_id: "s2",
+    subjects: [
+      { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+    ],
+    pending_typed_phone: "+420728123456",
+  };
+
+  it("A174-fix: pending_typed_phone preserved when booking blocked for classification (no subjectIntent)", () => {
+    const updated = postUpdateBookingSubjects({
+      current: BASE_STATE,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-09", requested_time: "12:00", service: "Чистка" } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "pending_phone_classification", created_visit: false, may_claim_booked: false, required_next_action: "none", reason: "typed_phone_subject_unclear" } }],
+      subjectIntent: null,
+    });
+    assert.equal(updated.pending_typed_phone, "+420728123456", "phone must be preserved when classification is pending");
+    // subject must NOT be marked booked
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.status, "collecting");
+  });
+
+  it("B174-fix: pending_typed_phone consumed and assigned to s2 when subjectIntent switches to mentioned_person", () => {
+    const stateFromS1: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: "+420728123456",
+    };
+    const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
+    const updated = postUpdateBookingSubjects({
+      current: stateFromS1,
+      toolRequests: [],
+      toolResults: [],
+      subjectIntent: intent,
+    });
+    assert.equal(updated.pending_typed_phone, null, "phone must be consumed after subjectIntent assigns it");
+    assert.equal(updated.active_subject_id, "s2");
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.phone_number, "+420728123456", "phone assigned to s2");
+    assert.equal(s2?.phone_source, "typed");
+    assert.equal(s2?.phone_status, "typed_unverified");
+    const s1 = updated.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.phone_number, null, "s1 phone unchanged");
+  });
+
+  it("A174-fix-b: normal booking without pending phone → pending_typed_phone stays null", () => {
+    const stateNoPending: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const updated = postUpdateBookingSubjects({
+      current: stateNoPending,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-09", requested_time: "12:00", service: "Чистка" } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      subjectIntent: null,
+    });
+    assert.equal(updated.pending_typed_phone, null, "no pending phone to preserve");
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.status, "booked");
   });
 });

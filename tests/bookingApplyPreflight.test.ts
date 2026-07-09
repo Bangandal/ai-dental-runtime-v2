@@ -1246,3 +1246,129 @@ test("Integration: missing service in round-1 args → executor not called, asks
   assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
   assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_missing_service_round1");
 });
+
+// ── PR#174: Guard I — pending_typed_phone blocks booking.apply ────────────────
+
+import type { BookingSubjectsState } from "../src/runtime/bookingSubjectsState.ts";
+
+test("PR#174 Guard I (round 1): booking.apply blocked when booking_subjects.pending_typed_phone present", async () => {
+  let bookingApplyExecutorCalled = false;
+
+  const SUBJECTS_WITH_PENDING_PHONE: BookingSubjectsState = {
+    active_subject_id: "s2",
+    subjects: [
+      { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: "+380991350135", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
+      { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+    ],
+    pending_typed_phone: "+420728123456",  // not yet classified
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "call_guard_i",
+          arguments: { service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
+        }],
+      },
+      {
+        type: "final_response",
+        final_response: { final_patient_reply: "Уточните, пожалуйста, чей это номер — ваш или Ивана?" },
+      },
+    ]),
+    executors: {
+      "booking.apply": async () => {
+        bookingApplyExecutorCalled = true;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    booking_subjects: SUBJECTS_WITH_PENDING_PHONE,
+  });
+
+  assert.equal(bookingApplyExecutorCalled, false, "executor must NOT be called when pending_typed_phone present");
+  const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "pending_phone_classification");
+  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_pending_typed_phone_round1");
+});
+
+test("PR#174 Guard I (round 2): booking.apply blocked when booking_subjects.pending_typed_phone present", async () => {
+  let bookingApplyExecutorCalled = false;
+
+  const SUBJECTS_WITH_PENDING_PHONE: BookingSubjectsState = {
+    active_subject_id: "s2",
+    subjects: [
+      { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+    ],
+    pending_typed_phone: "+420728123456",
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", call_id: "call_avail_gi", arguments: { requested_date: "2026-07-09" } }],
+      },
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "call_book_gi",
+          arguments: { service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
+        }],
+      },
+      {
+        type: "final_response",
+        final_response: { final_patient_reply: "Чей это номер — ваш или Ивана?" },
+      },
+    ]),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 } }),
+      "booking.apply": async () => {
+        bookingApplyExecutorCalled = true;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+  });
+
+  const result = await loop.runTurn({
+    ...BASE_TURN_INPUT,
+    booking_subjects: SUBJECTS_WITH_PENDING_PHONE,
+  });
+
+  assert.equal(bookingApplyExecutorCalled, false, "executor must NOT be called in round 2 when pending_typed_phone present");
+  const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "pending_phone_classification");
+  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_pending_typed_phone_round2");
+});
+
+test("PR#174: subject_intent from model final_response propagated in turn result", async () => {
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => ({
+      type: "final_response" as const,
+      final_response: {
+        final_patient_reply: "Отлично, запишем вас.",
+        subject_intent: { action: "switch_subject" as const, target: "self" as const, confidence: "high" as const },
+      },
+    }),
+    executors: {},
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN_INPUT });
+  assert.ok(result.subject_intent != null, "subject_intent must be propagated from model response");
+  assert.equal(result.subject_intent!.action, "switch_subject");
+  assert.equal(result.subject_intent!.target, "self");
+});

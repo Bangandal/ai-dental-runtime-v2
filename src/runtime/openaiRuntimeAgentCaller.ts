@@ -4,6 +4,7 @@ import {
   type RuntimeAgentFinalResponse,
   type RuntimeAgentToolRequest,
 } from "./openaiRuntimeAgent.ts";
+import { parseSubjectIntent } from "./bookingSubjectsState.ts";
 import type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeAgentLoop.ts";
 import { readResponseOutputTextDeduped } from "./openaiResponsesOutputText.ts";
 
@@ -197,12 +198,15 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
       }
     : undefined;
 
+  const subjectIntent = parseSubjectIntent(final?.subject_intent) ?? undefined;
+
   return {
     final_patient_reply: outputText,
     language: readString(final?.language) ?? null,
     reply_reason: readString(final?.reply_reason) ?? null,
     safety_notes: toStringArray(final?.safety_notes),
     ...(ui !== undefined ? { ui } : {}),
+    ...(subjectIntent !== undefined ? { subject_intent: subjectIntent } : {}),
   };
 }
 

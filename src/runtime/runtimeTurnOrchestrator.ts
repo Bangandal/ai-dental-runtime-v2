@@ -279,6 +279,7 @@ export async function runRuntimeTurnOrchestrated(
   let runtimeGateSourceContext: unknown = null;
   let caseLiteCurrent: RuntimeCaseLite | null = null;
   let bookingSubjectsForTurn: BookingSubjectsState | null = null;
+  let providedPhoneForTurnOuter: ProvidedPhone | null = null;
   if (!canonicalContactId) {
     runtimeContextDebug.skip_reason = "contact_unavailable";
   } else if (deps.runtimeContextRepository) {
@@ -310,6 +311,7 @@ export async function runRuntimeTurnOrchestrated(
         }
 
         const providedPhoneForTurn: ProvidedPhone | null = typedContactToStore ?? existingProvidedPhone;
+        providedPhoneForTurnOuter = providedPhoneForTurn;
 
         // Build s1 seed from prior booking state so s1 is not blank when s2 is lazily created.
         const conversationStateRaw = runtimeContextResult.data.conversation_state as Record<string, unknown>;
@@ -377,7 +379,12 @@ export async function runRuntimeTurnOrchestrated(
         if (channelContactForCase) {
           runtimeTurnInput.channel_contact = channelContactForCase;
         }
-        if (providedPhoneForTurn) {
+        // Guard: when subjects state is active and active_subject_id=s1, the correct phone
+        // for booking.apply is channel_contact (s1=sender). Do NOT pass provided_phone into
+        // tool execution — that phone belongs to s2 and would cause a wrong-subject write.
+        // provided_phone is still persisted to control_flags for s2 across turns.
+        const activeSubjectForExecution = bookingSubjectsForTurn?.active_subject_id;
+        if (providedPhoneForTurn && (!bookingSubjectsForTurn || activeSubjectForExecution === "s2")) {
           runtimeTurnInput.provided_phone = providedPhoneForTurn;
         }
       } else {
@@ -530,7 +537,9 @@ export async function runRuntimeTurnOrchestrated(
         confidence: "medium",
         control_flags: {
           openai_conversation_id: conversationIdToPersist,
-          ...(runtimeTurnInput.provided_phone ? { provided_phone: runtimeTurnInput.provided_phone } : {}),
+          // Always persist the full provided_phone (includes s2's typed phone even when
+          // it was suppressed from tool execution because active=s1 this turn).
+          ...(providedPhoneForTurnOuter ? { provided_phone: providedPhoneForTurnOuter } : {}),
           ...(bookingSubjectsToStore ? { booking_subjects: bookingSubjectsToStore } : {}),
         },
         topic_memory_patch: topicMemoryPatch,
@@ -562,7 +571,9 @@ export async function runRuntimeTurnOrchestrated(
           state: bookingSubjectsToStore,
           toolRequests: result.tool_requests ?? [],
           channelContact: runtimeTurnInput.channel_contact ?? null,
-          providedPhone: runtimeTurnInput.provided_phone ?? null,
+          // Use the original provided_phone (before execution guard) so mismatch
+          // detection sees the real state even when the phone was suppressed.
+          providedPhone: providedPhoneForTurnOuter,
         })
       : null;
     const debugPayload = deps.debugEnabled

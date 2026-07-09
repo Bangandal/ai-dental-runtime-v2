@@ -369,7 +369,47 @@ describe("deserializeBookingSubjects", () => {
   });
 });
 
-// ── I. Single-subject flow untouched ──────────────────────────────────────
+// ── I. Execution guard: detectSubjectMismatch with unfiltered phone ───────────
+// The orchestrator passes providedPhoneForTurnOuter (pre-guard) to detectSubjectMismatch
+// so that debug accurately reflects when the guard had to suppress the phone.
+
+describe("execution guard: mismatch visible even when guard suppresses phone", () => {
+  it("X: mismatch=true when active=s1, unfiltered provided_phone passed, no channel_contact", () => {
+    // Simulate what the orchestrator does: pass providedPhoneForTurnOuter (unfiltered) to
+    // detectSubjectMismatch even though runtimeTurnInput.provided_phone was cleared (active=s1).
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: "+420728945521", phone_status: "typed_unverified", status: "collecting" },
+      ],
+    };
+    const mismatch = detectSubjectMismatch({
+      state,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима" } }],
+      channelContact: null,
+      // This is the UNFILTERED providedPhone — the guard suppressed it from tool execution,
+      // but we still pass it here so mismatch detection shows the corrected case.
+      providedPhone: providedPhone,
+    });
+    assert.ok(mismatch !== null);
+    assert.equal(mismatch.mismatch, true, "debug must still flag that guard had to act");
+  });
+
+  it("Y: mismatch=false when active=s2 and provided_phone present (correct s2 booking)", () => {
+    const state = makeS2State("Иван");
+    const mismatch = detectSubjectMismatch({
+      state,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван" } }],
+      channelContact: null,
+      providedPhone: providedPhone,
+    });
+    assert.ok(mismatch !== null);
+    assert.equal(mismatch.mismatch, false, "s2 booking with provided_phone is correct — no mismatch");
+  });
+});
+
+// ── J. Single-subject flow untouched ──────────────────────────────────────
 
 describe("single-subject flow (no second person)", () => {
   it("V: ordinary message with no third-party signals returns null (no subjects state)", () => {

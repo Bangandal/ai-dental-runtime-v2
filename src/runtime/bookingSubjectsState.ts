@@ -355,8 +355,23 @@ export function postUpdateBookingSubjects(params: {
     return updated;
   });
 
-  // Clear pending_typed_phone — it's been either consumed by subject_intent or assigned by pre-turn
-  return { ...state, subjects, pending_typed_phone: null };
+  // Determine what happens to pending_typed_phone:
+  // - consumed by subjectIntent (subject switched, phone reassigned) → clear it
+  // - booking blocked for pending_phone_classification (Guard I fired, no subjectIntent yet) → preserve it
+  // - otherwise → use whatever state holds after applying intent (may be null or still pending)
+  const bookingApplyData = applyResult?.data as Record<string, unknown> | undefined;
+  const blockedForPendingClassification = bookingApplyData?.booking_status === "pending_phone_classification";
+  const hadPendingPhone = current.pending_typed_phone != null;
+  const stillPendingAfterIntent = state.pending_typed_phone != null;
+  const consumedByIntent = hadPendingPhone && !stillPendingAfterIntent;
+
+  const nextPendingPhone = consumedByIntent
+    ? null
+    : blockedForPendingClassification
+      ? current.pending_typed_phone
+      : state.pending_typed_phone;
+
+  return { ...state, subjects, pending_typed_phone: nextPendingPhone };
 }
 
 // ── active-subject vs booking.apply mismatch detection ────────────────────

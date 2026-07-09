@@ -780,3 +780,75 @@ describe("PR#174: parseSubjectIntent validates model output", () => {
     assert.equal(result!.display_name, "Анна");
   });
 });
+
+// ── PR#174 fix: pending_typed_phone preservation tests ────────────────────────
+
+describe("PR#174-fix: pending_typed_phone not cleared until classified", () => {
+  const BASE_STATE: BookingSubjectsState = {
+    active_subject_id: "s2",
+    subjects: [
+      { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+    ],
+    pending_typed_phone: "+420728123456",
+  };
+
+  it("A174-fix: pending_typed_phone preserved when booking blocked for classification (no subjectIntent)", () => {
+    const updated = postUpdateBookingSubjects({
+      current: BASE_STATE,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-09", requested_time: "12:00", service: "Чистка" } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "pending_phone_classification", created_visit: false, may_claim_booked: false, required_next_action: "none", reason: "typed_phone_subject_unclear" } }],
+      subjectIntent: null,
+    });
+    assert.equal(updated.pending_typed_phone, "+420728123456", "phone must be preserved when classification is pending");
+    // subject must NOT be marked booked
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.status, "collecting");
+  });
+
+  it("B174-fix: pending_typed_phone consumed and assigned to s2 when subjectIntent switches to mentioned_person", () => {
+    const stateFromS1: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: "+420728123456",
+    };
+    const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
+    const updated = postUpdateBookingSubjects({
+      current: stateFromS1,
+      toolRequests: [],
+      toolResults: [],
+      subjectIntent: intent,
+    });
+    assert.equal(updated.pending_typed_phone, null, "phone must be consumed after subjectIntent assigns it");
+    assert.equal(updated.active_subject_id, "s2");
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.phone_number, "+420728123456", "phone assigned to s2");
+    assert.equal(s2?.phone_source, "typed");
+    assert.equal(s2?.phone_status, "typed_unverified");
+    const s1 = updated.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.phone_number, null, "s1 phone unchanged");
+  });
+
+  it("A174-fix-b: normal booking without pending phone → pending_typed_phone stays null", () => {
+    const stateNoPending: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const updated = postUpdateBookingSubjects({
+      current: stateNoPending,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-09", requested_time: "12:00", service: "Чистка" } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      subjectIntent: null,
+    });
+    assert.equal(updated.pending_typed_phone, null, "no pending phone to preserve");
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.status, "booked");
+  });
+});

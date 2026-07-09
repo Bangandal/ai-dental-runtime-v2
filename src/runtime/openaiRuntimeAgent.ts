@@ -45,6 +45,8 @@ export interface RuntimeAgentTurnInput {
   channel_contact?: ChannelContact;
   /** Phone typed as text by the patient — unverified, lower trust than channel_contact. Used when channel_contact is absent (e.g. booking for a third party). */
   provided_phone?: ProvidedPhone | null;
+  /** Booking subjects state — when present, execution context uses active subject's phone instead of global provided_phone/channel_contact. */
+  booking_subjects?: import("./bookingSubjectsState.ts").BookingSubjectsState | null;
 }
 
 export type RuntimeAgentToolName =

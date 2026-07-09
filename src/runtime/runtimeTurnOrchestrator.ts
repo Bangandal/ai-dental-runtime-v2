@@ -506,7 +506,7 @@ export async function runRuntimeTurnOrchestrated(
           current: bookingSubjectsForTurn,
           toolRequests: result.tool_requests ?? [],
           toolResults: result.tool_results ?? [],
-          modelDebug: (result.debug as Record<string, unknown> | null) ?? null,
+          subjectIntent: result.subject_intent ?? null,
         })
       : null;
 

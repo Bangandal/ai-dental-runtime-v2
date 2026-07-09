@@ -219,6 +219,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_results: [],
           debug,
           ui: maybeAttachPhoneRequestUI(firstCallVisibleState, firstOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
+          ...(firstOutput.final_response.subject_intent != null ? { subject_intent: firstOutput.final_response.subject_intent } : {}),
         };
       }
 
@@ -373,6 +374,31 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             may_claim_booked: false,
             required_next_action: "ask_for_slot",
             reason: "slot_proof_required",
+          },
+          previousToolResults: [],
+          toolRequests,
+          conversationId,
+          systemInstruction,
+          callerContext,
+          input,
+          debug,
+          deps,
+        });
+      }
+
+      // Global preflight I — pending typed phone guard (round 1): booking_subjects has a
+      // pending_typed_phone that hasn't been classified by subject_intent yet. Block
+      // booking.apply so the model asks whose phone it is before the booking executes.
+      if (bookingApplyRound1 && input.booking_subjects?.pending_typed_phone) {
+        debug.reason = "booking_apply_preflight_pending_typed_phone_round1";
+        return await finalizeBlockedBookingApplyWithToolOutput({
+          pendingBookingApply: bookingApplyRound1,
+          guardedData: {
+            booking_status: "pending_phone_classification",
+            created_visit: false,
+            may_claim_booked: false,
+            required_next_action: "none",
+            reason: "typed_phone_subject_unclear",
           },
           previousToolResults: [],
           toolRequests,
@@ -792,6 +818,29 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               deps,
             });
           }
+          // Guard I (round 2): pending typed phone not yet classified by subject_intent.
+          // Block booking.apply so the model can ask whose phone it is.
+          if (input.booking_subjects?.pending_typed_phone) {
+            debug.reason = "booking_apply_preflight_pending_typed_phone_round2";
+            return await finalizeBlockedBookingApplyWithToolOutput({
+              pendingBookingApply,
+              guardedData: {
+                booking_status: "pending_phone_classification",
+                created_visit: false,
+                may_claim_booked: false,
+                required_next_action: "none",
+                reason: "typed_phone_subject_unclear",
+              },
+              previousToolResults: toolResults,
+              toolRequests,
+              conversationId,
+              systemInstruction,
+              callerContext,
+              input,
+              debug,
+              deps,
+            });
+          }
         }
 
         // Guard A: booking.apply requested in round-2 but trusted phone absent — submit
@@ -947,6 +996,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               tool_results: allResults,
               debug,
               ui: sanitizePhoneCaptureUiForChannel(bookingFinalOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
+              ...(bookingFinalOutput.final_response.subject_intent != null ? { subject_intent: bookingFinalOutput.final_response.subject_intent } : {}),
             };
           }
 
@@ -1037,6 +1087,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               tool_results: toolResults,
               debug,
               ui: sanitizePhoneCaptureUiForChannel(forcedOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
+              ...(forcedOutput.final_response.subject_intent != null ? { subject_intent: forcedOutput.final_response.subject_intent } : {}),
             };
           }
         }
@@ -1062,6 +1113,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         tool_results: toolResults,
         debug,
         ui: maybeAttachPhoneRequestUI(secondCallVisibleState, secondOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
+        ...(secondOutput.final_response.subject_intent != null ? { subject_intent: secondOutput.final_response.subject_intent } : {}),
       };
     },
   };
@@ -1183,6 +1235,7 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
       tool_results: allResults,
       debug,
       ui,
+      ...(guardedOutput.final_response.subject_intent != null ? { subject_intent: guardedOutput.final_response.subject_intent } : {}),
     };
   }
 

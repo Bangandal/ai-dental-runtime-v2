@@ -61,8 +61,8 @@ test("system instruction includes safety and ownership boundaries", () => {
   assert.match(instruction, /Do not invent prices, services, opening hours, availability, bookings/i);
   assert.match(instruction, /Conversation memory is dialogue continuity only/i);
   assert.match(instruction, /Tool results and Supabase\/runtime context are business truth/i);
-  assert.match(instruction, /do not ask for a phone number/i);
-  assert.match(instruction, /Do not collect phone as a required field/i);
+  assert.match(instruction, /do not ask them to type their own number/i);
+  assert.match(instruction, /typed phone is acceptable/i);
   assert.match(instruction, /ask only for: first name, last name, service\/reason, preferred day\/time/i);
   assert.match(instruction, /Final patient reply must be in the patient'?s language/i);
 });

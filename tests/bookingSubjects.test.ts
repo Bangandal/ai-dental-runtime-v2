@@ -10,6 +10,7 @@ import {
   computeReadyForBooking,
   deserializeBookingSubjects,
   applySubjectIntent,
+  parseSubjectIntent,
 } from "../src/runtime/bookingSubjectsState.ts";
 import type {
   BookingSubjectsState,
@@ -677,5 +678,105 @@ describe("PR#173: subject-aware phone assignment", () => {
     });
     assert.ok(s2Mismatch !== null);
     assert.equal(s2Mismatch.mismatch, false, "s2 active + typed phone = no mismatch");
+  });
+});
+
+// ── PR #174: subject_intent formal contract tests ──────────────────────────────
+
+describe("PR#174: postUpdateBookingSubjects uses typed subjectIntent", () => {
+  it("J174a: subjectIntent switch_subject/self switches active from s2→s1", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const intent: SubjectIntent = { action: "switch_subject", target: "self", confidence: "high" };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [],
+      toolResults: [],
+      subjectIntent: intent,
+    });
+    assert.equal(updated.active_subject_id, "s1");
+  });
+
+  it("J174b: subjectIntent switch clears pending_typed_phone and reassigns to new active subject", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: "+420728123456",
+    };
+    // Model says: switch to s2 (mentioned_person) — the pending phone belongs to Ivan
+    const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [],
+      toolResults: [],
+      subjectIntent: intent,
+    });
+    assert.equal(updated.active_subject_id, "s2");
+    assert.equal(updated.pending_typed_phone, null, "pending_typed_phone must be consumed");
+    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(s2?.phone_number, "+420728123456", "phone reassigned to s2");
+    assert.equal(s2?.phone_status, "typed_unverified");
+    const s1 = updated.subjects.find((s) => s.id === "s1");
+    assert.equal(s1?.phone_number, null, "s1 phone unchanged");
+  });
+
+  it("J174c: null subjectIntent leaves state unchanged", () => {
+    const state: BookingSubjectsState = {
+      active_subject_id: "s1",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+      ],
+      pending_typed_phone: null,
+    };
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [],
+      toolResults: [],
+      subjectIntent: null,
+    });
+    assert.equal(updated.active_subject_id, "s1");
+  });
+});
+
+describe("PR#174: parseSubjectIntent validates model output", () => {
+  it("K174a: valid subject_intent object parses correctly", () => {
+    const raw = { action: "switch_subject", target: "self", confidence: "high" };
+    const result = parseSubjectIntent(raw);
+    assert.ok(result !== null);
+    assert.equal(result!.action, "switch_subject");
+    assert.equal(result!.target, "self");
+    assert.equal(result!.confidence, "high");
+  });
+
+  it("K174b: invalid action rejects", () => {
+    const raw = { action: "fly_to_mars", target: "self", confidence: "high" };
+    assert.equal(parseSubjectIntent(raw), null);
+  });
+
+  it("K174c: null input returns null", () => {
+    assert.equal(parseSubjectIntent(null), null);
+    assert.equal(parseSubjectIntent(undefined), null);
+    assert.equal(parseSubjectIntent("string"), null);
+  });
+
+  it("K174d: missing confidence rejects", () => {
+    const raw = { action: "none", target: "active" };
+    assert.equal(parseSubjectIntent(raw), null);
+  });
+
+  it("K174e: display_name is preserved when present", () => {
+    const raw = { action: "create_subject", target: "mentioned_person", confidence: "high", display_name: "Анна" };
+    const result = parseSubjectIntent(raw);
+    assert.ok(result !== null);
+    assert.equal(result!.display_name, "Анна");
   });
 });

@@ -316,18 +316,15 @@ export function postUpdateBookingSubjects(params: {
   current: BookingSubjectsState;
   toolRequests: RuntimeAgentToolRequest[];
   toolResults: RuntimeAgentToolResult[];
-  modelDebug?: Record<string, unknown> | null;
+  /** Validated subject_intent from the model's final_response (not raw debug). */
+  subjectIntent?: SubjectIntent | null;
 }): BookingSubjectsState {
-  const { current, toolRequests, toolResults, modelDebug } = params;
+  const { current, toolRequests, toolResults, subjectIntent } = params;
 
-  // Apply subject_intent from model output (multi-language subject switching)
+  // Apply subject_intent from model's formal output field (multi-language subject switching)
   let state = current;
-  const rawIntent = modelDebug?.subject_intent;
-  if (rawIntent) {
-    const intent = parseSubjectIntent(rawIntent);
-    if (intent) {
-      state = applySubjectIntent(state, intent);
-    }
+  if (subjectIntent) {
+    state = applySubjectIntent(state, subjectIntent);
   }
 
   const applyReq = toolRequests.find((r) => r.tool === "booking.apply");

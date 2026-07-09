@@ -91,6 +91,8 @@ export interface RuntimeAgentFinalResponse {
   reply_reason?: string | null;
   safety_notes?: string[];
   ui?: AgentUiActions;
+  /** Model-produced subject switch intent for multi-person booking flows. */
+  subject_intent?: import("./bookingSubjectsState.ts").SubjectIntent | null;
 }
 
 export interface RuntimeAgentTurnResult {
@@ -105,6 +107,9 @@ export interface RuntimeAgentTurnResult {
   tool_results: RuntimeAgentToolResult[];
   debug?: Record<string, unknown>;
   ui?: AgentUiActions;
+  /** Validated subject_intent from the model's final response — propagated for
+   * postUpdateBookingSubjects to apply after the turn completes. */
+  subject_intent?: import("./bookingSubjectsState.ts").SubjectIntent | null;
 }
 
 export interface OpenAIRuntimeAgent {
@@ -173,7 +178,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## NEVER",
     "- Do not invent prices, services, opening hours, availability, bookings, or medical facts.",
     "- Do not claim booking is confirmed without explicit backend proof. Never claim a time or slot is available without availability.check proof in the current turn.",
-    "- For booking-like requests in messenger channels, do not ask for a phone number as typed text — use the channel contact mechanism (e.g. Telegram contact button). Do not collect phone as a required field right now.",
+    "- For the SENDER's phone: use the Telegram contact button — do not ask them to type their own number. For a THIRD PARTY (booking_subjects.s2): typed phone is acceptable and unverified — do not ask the patient to re-confirm a phone they already typed.",
     "- When booking details are missing, ask only for: first name, last name, service/reason, preferred day/time.",
     "- Never promise clinic callback or staff outreach unless a handoff or admin notification side effect was actually created or queued.",
     "- If another person is mentioned, treat patient identity carefully and avoid assumptions.",
@@ -225,6 +230,16 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- Cite only exact slot starts from tool_results.data.slots (allowed_slot_starts in context). No ranges or approximations ('13:00–18:00', 'с 13 до 18', 'после обеда', 'примерно в 14') — forbidden.",
     "- List up to 5 slot start times; invite patient to choose.",
     "- Vague time → check first, list exact slots. Exact time → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available.",
+
+    // ── BOOKING SUBJECTS ─────────────────────────────────────────────────────
+    "## BOOKING SUBJECTS",
+    "Present in context when booking for multiple people. active_subject_id=s1 = sender; s2 = another person (friend, family member). Each subject has its own phone_status, service, and slot.",
+    "SUBJECT INTENT: Include subject_intent in your final_response JSON when the patient's message signals a subject switch or introduces a new person to book. Omit it (or use action='none') when no subject change is happening.",
+    "Format: { \"action\": \"none\" | \"switch_subject\" | \"create_subject\" | \"create_or_switch_subject\", \"target\": \"self\" | \"mentioned_person\" | \"active\", \"display_name\": \"Name or null\", \"confidence\": \"low\" | \"medium\" | \"high\" }",
+    "Examples: patient says 'теперь запишите меня' → action=switch_subject, target=self, confidence=high. 'и ещё мою маму Анну' → action=create_subject, target=mentioned_person, display_name='Анна', confidence=high. 'назад к Ивану' → action=switch_subject, target=mentioned_person, confidence=high.",
+    "PENDING PHONE: When booking_subjects.pending_typed_phone is present, a typed phone was received this turn and its subject is not yet confirmed. Do NOT call booking.apply in this case. Instead, ask the patient whose phone it is (e.g. 'Этот номер для вас или для Ивана?') and include subject_intent in your reply to classify it.",
+    "When booking_status=pending_phone_classification in booking_apply_action_truth: the booking was blocked because pending_typed_phone needs classification first. Ask the patient whose phone it is.",
+    "PHONE TRUST: Telegram contact button (phone_source=telegram_contact_button) = trusted for s1. Typed phone (phone_status=typed_unverified) = acceptable for s2 (they cannot share a contact button for someone else). Never re-ask for a phone already received.",
 
     // ── BOOKING FLOW ──────────────────────────────────────────────────────────
     "## BOOKING FLOW",

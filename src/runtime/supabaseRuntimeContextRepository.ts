@@ -2,6 +2,8 @@ import type { RuntimeResult, RpcCaller } from "./runtimeRepositories.ts";
 import type { ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import { parseRuntimeCaseLite } from "./runtimeCaseLite.ts";
 import type { RuntimeCaseLite } from "./runtimeCaseLite.ts";
+import { deserializeBookingSubjects } from "./bookingSubjectsState.ts";
+import type { BookingSubjectsState } from "./bookingSubjectsState.ts";
 
 export interface TopicMemory {
   last_service_interest?: string;
@@ -16,6 +18,8 @@ export interface RuntimeContext {
   topic_memory: TopicMemory | null;
   channel_contact: ChannelContact | null;
   provided_phone: ProvidedPhone | null;
+  booking_subjects: BookingSubjectsState | null;
+  selected_slot_starts_at: string | null;
   case_context_lite: RuntimeCaseLite | null;
   runtime_flags: {
     has_durable_context: boolean;
@@ -91,6 +95,10 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
           : null;
 
       const caseLite = parseRuntimeCaseLite(stateJson?.case_context_lite);
+      const bookingSubjects = deserializeBookingSubjects(stateJson?.booking_subjects);
+      const bookingProcessStateRaw = asRecord(stateJson?.booking_process_state);
+      const selectedSlotRaw = asRecord(bookingProcessStateRaw?.selected_slot);
+      const selectedSlotStartsAt = asStr(selectedSlotRaw?.starts_at);
 
       const knownContact: Record<string, unknown> = {
         contact_id: input.contact_id,
@@ -127,6 +135,8 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
           topic_memory: topicMemory,
           channel_contact: channelContact,
           provided_phone: providedPhone,
+          booking_subjects: bookingSubjects,
+          selected_slot_starts_at: selectedSlotStartsAt,
           case_context_lite: caseLite,
           runtime_flags: {
             has_durable_context: Boolean(row),

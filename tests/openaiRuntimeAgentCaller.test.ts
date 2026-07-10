@@ -625,13 +625,100 @@ test("SI-3: model outputs plain text → used as patient reply, no subject_inten
   assert.equal(result.final_response.subject_intent, undefined);
 });
 
-test("SI-4: model outputs JSON with unknown action → entire JSON used as patient reply, no subject_intent", async () => {
+test("SI-4: model outputs JSON with unknown action → reply field extracted as patient text, no subject_intent", async () => {
+  // Unknown action (not a subject-intent action) — reply must still be extracted.
+  // Raw JSON must never be sent to the patient.
   const modelJson = JSON.stringify({ action: "book_appointment", reply: "Готово!" });
   const caller = createOpenAIRuntimeAgentCaller({
     client: { responses: { create: async () => makeOutputResponse(modelJson) } },
   });
   const result = await caller(makeInput());
   assert.equal(result.type, "final_response");
-  assert.equal(result.final_response.final_patient_reply, modelJson);
-  assert.equal(result.final_response.subject_intent, undefined);
+  assert.equal(result.final_response.final_patient_reply, "Готово!", "reply field must be patient text, not raw JSON");
+  assert.equal(result.final_response.subject_intent, undefined, "unknown action must not produce subject_intent");
+});
+
+test("SI-5: exact production JSON (no target, no count) — normalizes to mentioned_person+count=1", async () => {
+  const modelJson = JSON.stringify({
+    action: "create_subjects",
+    reply: "Хорошо, запишу вас и маму.",
+    labels: ["мама"],
+    confidence: "high",
+  });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse(modelJson) } },
+  });
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, "Хорошо, запишу вас и маму.");
+  assert.equal(result.final_response.subject_intent?.action, "create_subjects");
+  assert.equal(result.final_response.subject_intent?.target, "mentioned_person", "missing target defaults to mentioned_person");
+  assert.equal(result.final_response.subject_intent?.count, 1, "count derived from labels.length");
+  assert.deepEqual(result.final_response.subject_intent?.labels, ["мама"]);
+  assert.equal(result.final_response.subject_intent?.confidence, "high", "explicit confidence preserved");
+});
+
+test("SI-6: missing confidence → defaults to medium", async () => {
+  const modelJson = JSON.stringify({
+    action: "create_subjects",
+    reply: "Хорошо.",
+    labels: ["мама"],
+  });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse(modelJson) } },
+  });
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, "Хорошо.");
+  assert.equal(result.final_response.subject_intent?.target, "mentioned_person");
+  assert.equal(result.final_response.subject_intent?.count, 1);
+  assert.equal(result.final_response.subject_intent?.confidence, "medium", "missing confidence defaults to medium");
+});
+
+test("SI-7: multiple labels → count derived from labels.length", async () => {
+  const modelJson = JSON.stringify({
+    action: "create_subjects",
+    reply: "Хорошо.",
+    labels: ["дочь 1", "дочь 2"],
+    confidence: "high",
+  });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse(modelJson) } },
+  });
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.subject_intent?.count, 2, "count must match labels.length");
+  assert.equal(result.final_response.subject_intent?.target, "mentioned_person");
+  assert.deepEqual(result.final_response.subject_intent?.labels, ["дочь 1", "дочь 2"]);
+});
+
+test("SI-8: ambiguous switch_subject (no target, no subject_id) → reply extracted, no subject_intent", async () => {
+  const modelJson = JSON.stringify({ action: "switch_subject", reply: "Хорошо." });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse(modelJson) } },
+  });
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, "Хорошо.", "reply must be extracted");
+  assert.equal(result.final_response.subject_intent, undefined, "ambiguous switch must not mutate state");
+});
+
+test("SI-9: full integration — real caller + real loop on exact production JSON", async () => {
+  // Uses real createOpenAIRuntimeAgentCaller (mock HTTP) piped into real createRuntimeAgentLoop.
+  const productionJson = JSON.stringify({
+    action: "create_subjects",
+    reply: "Хорошо, запишу вас и маму.",
+    labels: ["мама"],
+    confidence: "high",
+  });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse(productionJson) } },
+  });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {} });
+  const result = await agent.runTurn(makeInput());
+
+  assert.equal(result.final_patient_reply, "Хорошо, запишу вас и маму.", "raw JSON must not be patient text");
+  assert.equal(result.subject_intent?.action, "create_subjects");
+  assert.equal(result.subject_intent?.target, "mentioned_person");
+  assert.equal(result.subject_intent?.count, 1);
 });

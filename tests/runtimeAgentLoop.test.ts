@@ -516,7 +516,7 @@ test("safety: forced finalization does not call booking.confirm, hold.create, or
 
 // ── E2E subject_intent extraction through runtime loop ────────────────────────
 
-test("SI-5: valid subject_intent without reply survives runtime loop — not intercepted as malformed", async () => {
+test("loop-SI-1: valid subject_intent without reply survives runtime loop — not intercepted as malformed", async () => {
   // Model returns JSON with valid intent but no reply field.
   // normalizeOpenAIResponse must classify this as subject_intent_reply_missing (not malformed),
   // so isMalformedFinalResponse() does NOT intercept it in runtimeAgentLoop.
@@ -540,7 +540,7 @@ test("SI-5: valid subject_intent without reply survives runtime loop — not int
   assert.equal(result.conversation_id, "conv_si5");
 });
 
-test("SI-6: truly malformed output (no text, no intent) remains malformed and localized", async () => {
+test("loop-SI-2: truly malformed output (no text, no intent) remains malformed and localized", async () => {
   // Model returns empty reply with malformed_openai_response — existing behavior must be unchanged.
   const caller: RuntimeAgentCaller = async () => ({
     type: "final_response",
@@ -559,7 +559,7 @@ test("SI-6: truly malformed output (no text, no intent) remains malformed and lo
   assert.equal(result.subject_intent, undefined, "truly malformed response must not carry subject_intent");
 });
 
-test("SI-7: JSON with reply and intent reaches runtime loop intact", async () => {
+test("loop-SI-3: JSON with reply and intent reaches runtime loop intact", async () => {
   // Model returns caller-processed result: reply extracted, intent extracted.
   // Runtime loop must propagate both without modification.
   const caller: RuntimeAgentCaller = async () => ({

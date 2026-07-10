@@ -203,16 +203,16 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     readString(final?.final_patient_reply) ??
     "";
 
-  // The model sometimes outputs a JSON object embedding subject_intent fields alongside
-  // a "reply" field. Parse it so we can extract both the patient reply and the intent.
-  // Only treat it as a subject-intent JSON when the "action" field matches a known intent.
-  const parsedOutput = tryParseSubjectIntentJson(rawOutputText);
+  // Step 1: Try to parse any JSON envelope from model text output.
+  // Extracts reply/ui regardless of action — raw JSON must never reach the patient.
+  const envelope = tryParseJsonEnvelope(rawOutputText);
 
-  const outputText = parsedOutput !== null
-    ? (readString(parsedOutput.reply) ?? readString(parsedOutput.final_patient_reply) ?? "")
+  // Step 2: Extract patient reply from envelope; fall back to raw text for plain strings.
+  const outputText = envelope !== null
+    ? (readString(envelope.reply) ?? readString(envelope.final_patient_reply) ?? "")
     : rawOutputText;
 
-  const uiRaw = asObject(final?.ui ?? parsedOutput?.ui);
+  const uiRaw = asObject(final?.ui ?? envelope?.ui);
   const uiTelegramRaw = asObject(uiRaw?.telegram);
   const ui: AgentUiActions | undefined = uiTelegramRaw
     ? {
@@ -223,11 +223,12 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
       }
     : undefined;
 
-  // subject_intent may live in response.final_response.subject_intent (structured output path)
-  // or be the entire model text output (model embeds intent in reply JSON).
+  // Step 3: Normalize envelope for known subject-intent actions, then parse.
+  // subject_intent may also live in response.final_response.subject_intent (structured-output path).
+  const normalizedEnvelope = envelope !== null ? normalizeSubjectIntentEnvelope(envelope) : null;
   const subjectIntent =
     parseSubjectIntent(final?.subject_intent) ??
-    (parsedOutput !== null ? parseSubjectIntent(parsedOutput) : null) ??
+    (normalizedEnvelope !== null ? parseSubjectIntent(normalizedEnvelope) : null) ??
     undefined;
 
   return {
@@ -240,10 +241,8 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
   };
 }
 
-const SUBJECT_INTENT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject"]);
-
-/** Parse model text output as JSON only when it looks like a subject_intent envelope. */
-function tryParseSubjectIntentJson(text: string): Record<string, unknown> | null {
+/** Parse any JSON object from model text output — used to extract reply/ui/subject_intent. */
+function tryParseJsonEnvelope(text: string): Record<string, unknown> | null {
   if (!text.trim().startsWith("{")) return null;
   let parsed: unknown;
   try {
@@ -251,10 +250,54 @@ function tryParseSubjectIntentJson(text: string): Record<string, unknown> | null
   } catch {
     return null;
   }
-  const obj = asObject(parsed);
-  if (!obj) return null;
+  return asObject(parsed);
+}
+
+const KNOWN_SUBJECT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject"]);
+const VALID_TARGETS = new Set(["self", "mentioned_person", "active"]);
+
+/**
+ * Apply bounded defaults for known subject-intent actions before parseSubjectIntent.
+ * Returns null for unknown actions or when switch_subject target is unresolvable.
+ * Does not invent semantics — only fills structurally missing defaults.
+ */
+function normalizeSubjectIntentEnvelope(obj: Record<string, unknown>): Record<string, unknown> | null {
   const action = readString(obj.action);
-  if (!action || !SUBJECT_INTENT_ACTIONS.has(action)) return null;
+  if (!action || !KNOWN_SUBJECT_ACTIONS.has(action)) return null;
+
+  if (action === "switch_subject") {
+    const target = readString(obj.target);
+    const subjectId = readString(obj.subject_id);
+    // Cannot determine switch target without either a valid target or a subject_id
+    if (!VALID_TARGETS.has(target ?? "") && !subjectId) return null;
+    return { ...obj, confidence: readString(obj.confidence) ?? "medium" };
+  }
+
+  if (action === "create_subjects") {
+    const rawLabels = Array.isArray(obj.labels)
+      ? (obj.labels as unknown[]).filter((l): l is string => typeof l === "string")
+      : [];
+    const rawCount = typeof obj.count === "number" ? obj.count : rawLabels.length || 1;
+    const count = Math.max(1, Math.min(4, rawCount));
+    return {
+      ...obj,
+      target: readString(obj.target) ?? "mentioned_person",
+      confidence: readString(obj.confidence) ?? "medium",
+      count,
+      labels: rawLabels.length > 0 ? rawLabels : null,
+    };
+  }
+
+  if (action === "create_or_switch_subject") {
+    const target = readString(obj.target);
+    return {
+      ...obj,
+      target: VALID_TARGETS.has(target ?? "") ? target : "mentioned_person",
+      confidence: readString(obj.confidence) ?? "medium",
+    };
+  }
+
+  // action === "none"
   return obj;
 }
 

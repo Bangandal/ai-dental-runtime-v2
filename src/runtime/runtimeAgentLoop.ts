@@ -1450,24 +1450,45 @@ function buildExecutionContext(
 }
 
 /** Returns the active subject's phone fields for booking.apply, or falls back to global contacts. */
+type SubjectLike = { id: string; booking_contact?: unknown };
+
+/** Resolves booking phone fields from a booking_contact, handling shared_from_subject by
+ *  looking up the owner subject's actual contact source. Never passes "shared_from_subject"
+ *  to the executor — always resolves to the underlying original source. */
+function resolveBookingContactFields(
+  bc: Record<string, unknown>,
+  allSubjects: SubjectLike[],
+): { phone_number: string | undefined; phone_source: string | undefined; phone_trust: string | undefined } {
+  if (bc.source === "shared_from_subject") {
+    const ownerId = bc.owner_subject_id as string | null | undefined;
+    if (!ownerId) return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
+    const owner = allSubjects.find((s) => s.id === ownerId);
+    const ownerBc = (owner?.booking_contact ?? null) as Record<string, unknown> | null;
+    if (!ownerBc?.phone_number) return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
+    return {
+      phone_number: ownerBc.phone_number as string,
+      phone_source: ownerBc.source as string | undefined,
+      // Inherit owner trust — never upgrade typed/unverified to trusted
+      phone_trust: ownerBc.trust === "trusted" ? "trusted" : "unverified",
+    };
+  }
+  return {
+    phone_number: bc.phone_number as string,
+    phone_source: bc.source as string | undefined,
+    phone_trust: (bc.trust === "trusted" || bc.trust === "trusted_contact_owner") ? "trusted" : "unverified",
+  };
+}
+
 function buildSubjectAwarePhoneFields(input: RuntimeAgentTurnInput): {
   phone_number: string | undefined;
   phone_source: string | undefined;
   phone_trust: string | undefined;
 } {
   if (input.booking_subjects) {
-    const active = input.booking_subjects.subjects.find(
-      (s) => s.id === input.booking_subjects!.active_subject_id,
-    );
-    // v2: use booking_contact
-    const bc = (active as Record<string, unknown> | undefined)?.booking_contact as Record<string, unknown> | undefined | null;
-    if (bc?.phone_number) {
-      return {
-        phone_number: bc.phone_number as string,
-        phone_source: bc.source as string | undefined,
-        phone_trust: (bc.trust === "trusted" || bc.trust === "trusted_contact_owner") ? "trusted" : "unverified",
-      };
-    }
+    const subjects = input.booking_subjects.subjects as SubjectLike[];
+    const active = subjects.find((s) => s.id === input.booking_subjects!.active_subject_id);
+    const bc = (active?.booking_contact ?? null) as Record<string, unknown> | null;
+    if (bc?.phone_number) return resolveBookingContactFields(bc, subjects);
     return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
   }
   // Single-subject fallback
@@ -1481,11 +1502,18 @@ function buildSubjectAwarePhoneFields(input: RuntimeAgentTurnInput): {
 /** True when the active subject (or global contact) has a phone suitable for booking. */
 function hasActiveSubjectOrContactPhone(input: RuntimeAgentTurnInput): boolean {
   if (input.booking_subjects) {
-    const active = input.booking_subjects.subjects.find(
-      (s) => s.id === input.booking_subjects!.active_subject_id,
-    );
-    const bc = (active as Record<string, unknown> | undefined)?.booking_contact as Record<string, unknown> | undefined | null;
-    return bc?.phone_number != null;
+    const subjects = input.booking_subjects.subjects as SubjectLike[];
+    const active = subjects.find((s) => s.id === input.booking_subjects!.active_subject_id);
+    const bc = (active?.booking_contact ?? null) as Record<string, unknown> | null;
+    if (!bc?.phone_number) return false;
+    if (bc.source === "shared_from_subject") {
+      const ownerId = bc.owner_subject_id as string | null | undefined;
+      if (!ownerId) return false;
+      const owner = subjects.find((s) => s.id === ownerId);
+      const ownerBc = (owner?.booking_contact ?? null) as Record<string, unknown> | null;
+      return ownerBc?.phone_number != null;
+    }
+    return true;
   }
   return hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: input.provided_phone });
 }

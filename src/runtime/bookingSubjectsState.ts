@@ -161,17 +161,39 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
     } else if (intent.target === "mentioned_person") {
       if (intent.subject_id && subjects.some((s) => s.id === intent.subject_id)) {
         active_subject_id = intent.subject_id;
+        // Fill patient_name from display_name if missing (Blocker 2 fix)
+        if (intent.display_name) {
+          subjects = subjects.map((s) =>
+            s.id === intent.subject_id && !s.patient_name
+              ? { ...s, patient_name: intent.display_name! }
+              : s,
+          );
+        }
       } else {
         const mp = subjects.find((s) => s.role === "mentioned_person");
         if (mp) {
           active_subject_id = mp.id;
-          if (intent.display_name && !mp.label) {
-            subjects = subjects.map((s) => s.id === mp.id ? { ...s, label: intent.display_name! } : s);
+          // Fill label and patient_name from display_name if missing (Blocker 2 fix)
+          if (intent.display_name) {
+            subjects = subjects.map((s) =>
+              s.id === mp.id
+                ? {
+                    ...s,
+                    label: s.label ?? intent.display_name!,
+                    patient_name: s.patient_name ?? intent.display_name!,
+                  }
+                : s,
+            );
           }
         } else if (intent.action === "create_or_switch_subject") {
           const newId = nextSubjectId(subjects);
           if (newId && subjects.length < MAX) {
-            subjects = [...subjects, createSubject(newId, "mentioned_person", intent.display_name ?? null)];
+            const newSubject = {
+              ...createSubject(newId, "mentioned_person", intent.display_name ?? null),
+              patient_name: intent.display_name ?? null,  // Blocker 2 fix: persist display_name
+            };
+            newSubject.missing = computeMissing(newSubject);
+            subjects = [...subjects, newSubject];
             active_subject_id = newId;
           }
         }
@@ -193,32 +215,53 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
     const requestedCount = intent.count ?? 1;
     const toCreate = Math.min(requestedCount - labelIdx, MAX - subjects.length);
 
+    // display_name applied to patient_name when creating a single subject (Blocker 2 fix)
+    const singleDisplayName = toCreate === 1 ? (intent.display_name ?? null) : null;
+
     let firstCreatedId: SubjectId | null = null;
     for (let i = 0; i < toCreate; i++) {
       const newId = nextSubjectId(subjects);
       if (!newId) break;
       const label = labelIdx < intentLabels.length ? intentLabels[labelIdx++] : null;
-      subjects = [...subjects, createSubject(newId, "mentioned_person", label)];
+      const newSubject = {
+        ...createSubject(newId, "mentioned_person", label),
+        patient_name: singleDisplayName,
+      };
+      newSubject.missing = computeMissing(newSubject);
+      subjects = [...subjects, newSubject];
       if (!firstCreatedId) firstCreatedId = newId;
     }
     if (firstCreatedId) active_subject_id = firstCreatedId;
   }
 
-  // Assign pending typed phone to new active subject if it has no booking_contact
-  if (pending_typed_phone && active_subject_id !== prevActiveId) {
-    subjects = subjects.map((s) => {
-      if (s.id !== active_subject_id) return s;
-      if (s.booking_contact?.trust === "trusted") return s;
-      const bc: BookingContact = {
-        phone_number: pending_typed_phone!,
-        source: "typed",
-        trust: "unverified",
-        owner_subject_id: active_subject_id,
-        collected_at: new Date().toISOString(),
-      };
-      return { ...s, booking_contact: bc };
-    });
-    pending_typed_phone = null;
+  // Resolve the phone target: intent.subject_id if valid, else derive from target/action.
+  // Consume pending_typed_phone whenever intent confirms an owner — even if active didn't change.
+  // (Bug fix: previous code required active_subject_id !== prevActiveId, which broke the case
+  //  where the user confirms "номер мамы" while subject_2 is already active.)
+  if (pending_typed_phone) {
+    let phoneTargetId: SubjectId | null = null;
+    if (intent.subject_id && subjects.some((s) => s.id === intent.subject_id)) {
+      phoneTargetId = intent.subject_id;
+    } else if (intent.target === "self") {
+      phoneTargetId = "subject_1" as SubjectId;
+    } else if (intent.target === "active" || intent.target === "mentioned_person") {
+      phoneTargetId = active_subject_id;
+    }
+    if (phoneTargetId) {
+      subjects = subjects.map((s) => {
+        if (s.id !== phoneTargetId) return s;
+        if (s.booking_contact?.trust === "trusted") return s;
+        const bc: BookingContact = {
+          phone_number: pending_typed_phone!,
+          source: "typed",
+          trust: "unverified",
+          owner_subject_id: phoneTargetId!,
+          collected_at: new Date().toISOString(),
+        };
+        return { ...s, booking_contact: bc };
+      });
+      pending_typed_phone = null;
+    }
   }
 
   subjects = subjects.map((s) => ({ ...s, missing: computeMissing(s) }));

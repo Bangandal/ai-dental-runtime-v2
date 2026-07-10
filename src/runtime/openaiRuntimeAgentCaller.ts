@@ -118,6 +118,22 @@ export function normalizeOpenAIResponse(raw: unknown, fallbackConversationId?: s
     };
   }
 
+  // Valid subject_intent was parsed but the model omitted a reply field.
+  // Use a safe fallback reply but do NOT mark as malformed_openai_response —
+  // isMalformedFinalResponse() checks for that note and would strip the intent.
+  if (finalResponse.subject_intent != null) {
+    return {
+      type: "final_response",
+      conversation_id: conversationId,
+      final_response: {
+        final_patient_reply: SAFE_FALLBACK_REPLY,
+        subject_intent: finalResponse.subject_intent,
+        safety_notes: ["subject_intent_reply_missing"],
+      },
+      usage: response?.usage,
+    };
+  }
+
   return {
     type: "final_response",
     conversation_id: conversationId,
@@ -181,13 +197,22 @@ function parseArguments(value: unknown): Record<string, unknown> {
 
 function readFinalResponse(response: Record<string, unknown> | null): RuntimeAgentFinalResponse {
   const final = asObject(response?.final_response);
-  const outputText =
+  const rawOutputText =
     readResponseOutputTextDeduped(response?.output) ??
     readString(response?.output_text) ??
     readString(final?.final_patient_reply) ??
     "";
 
-  const uiRaw = asObject(final?.ui);
+  // Step 1: Try to parse any JSON envelope from model text output.
+  // Extracts reply/ui regardless of action — raw JSON must never reach the patient.
+  const envelope = tryParseJsonEnvelope(rawOutputText);
+
+  // Step 2: Extract patient reply from envelope; fall back to raw text for plain strings.
+  const outputText = envelope !== null
+    ? (readString(envelope.reply) ?? readString(envelope.final_patient_reply) ?? "")
+    : rawOutputText;
+
+  const uiRaw = asObject(final?.ui ?? envelope?.ui);
   const uiTelegramRaw = asObject(uiRaw?.telegram);
   const ui: AgentUiActions | undefined = uiTelegramRaw
     ? {
@@ -198,7 +223,13 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
       }
     : undefined;
 
-  const subjectIntent = parseSubjectIntent(final?.subject_intent) ?? undefined;
+  // Step 3: Normalize envelope for known subject-intent actions, then parse.
+  // subject_intent may also live in response.final_response.subject_intent (structured-output path).
+  const normalizedEnvelope = envelope !== null ? normalizeSubjectIntentEnvelope(envelope) : null;
+  const subjectIntent =
+    parseSubjectIntent(final?.subject_intent) ??
+    (normalizedEnvelope !== null ? parseSubjectIntent(normalizedEnvelope) : null) ??
+    undefined;
 
   return {
     final_patient_reply: outputText,
@@ -208,6 +239,77 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     ...(ui !== undefined ? { ui } : {}),
     ...(subjectIntent !== undefined ? { subject_intent: subjectIntent } : {}),
   };
+}
+
+/** Parse any JSON object from model text output — used to extract reply/ui/subject_intent. */
+function tryParseJsonEnvelope(text: string): Record<string, unknown> | null {
+  if (!text.trim().startsWith("{")) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.trim());
+  } catch {
+    return null;
+  }
+  return asObject(parsed);
+}
+
+const KNOWN_SUBJECT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject"]);
+const VALID_TARGETS = new Set(["self", "mentioned_person", "active"]);
+const SUBJECT_ID_RE = /^subject_\d+$/;
+
+/**
+ * Apply bounded defaults for known subject-intent actions before parseSubjectIntent.
+ * Returns null for unknown actions or when switch_subject target is unresolvable.
+ * Does not invent semantics — only fills structurally missing defaults.
+ */
+function normalizeSubjectIntentEnvelope(obj: Record<string, unknown>): Record<string, unknown> | null {
+  const action = readString(obj.action);
+  if (!action || !KNOWN_SUBJECT_ACTIONS.has(action)) return null;
+
+  if (action === "switch_subject") {
+    const target = readString(obj.target);
+    const subjectId = readString(obj.subject_id);
+    const hasValidTarget = VALID_TARGETS.has(target ?? "");
+    const hasValidSubjectId = subjectId !== null && SUBJECT_ID_RE.test(subjectId);
+
+    // An explicit canonical subject_id is sufficient to identify the subject.
+    // Normalize target to mentioned_person because applySubjectIntent prioritizes
+    // intent.subject_id inside that deterministic branch.
+    if (!hasValidTarget && !hasValidSubjectId) return null;
+    return {
+      ...obj,
+      target: hasValidTarget ? target : "mentioned_person",
+      ...(hasValidSubjectId ? { subject_id: subjectId } : {}),
+      confidence: readString(obj.confidence) ?? "medium",
+    };
+  }
+
+  if (action === "create_subjects") {
+    const rawLabels = Array.isArray(obj.labels)
+      ? (obj.labels as unknown[]).filter((l): l is string => typeof l === "string")
+      : [];
+    const rawCount = typeof obj.count === "number" ? obj.count : rawLabels.length || 1;
+    const count = Math.max(1, Math.min(4, rawCount));
+    return {
+      ...obj,
+      target: readString(obj.target) ?? "mentioned_person",
+      confidence: readString(obj.confidence) ?? "medium",
+      count,
+      labels: rawLabels.length > 0 ? rawLabels : null,
+    };
+  }
+
+  if (action === "create_or_switch_subject") {
+    const target = readString(obj.target);
+    return {
+      ...obj,
+      target: VALID_TARGETS.has(target ?? "") ? target : "mentioned_person",
+      confidence: readString(obj.confidence) ?? "medium",
+    };
+  }
+
+  // action === "none"
+  return obj;
 }
 
 

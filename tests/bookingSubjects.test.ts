@@ -1332,6 +1332,28 @@ describe("PR#175-review: Blocker 2 — display_name stored as patient_name", () 
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.equal(s2?.patient_name, "Анна Петрова", "existing patient_name must not be overwritten");
   });
+
+  it("C4: create_subjects fills display_name into existing unlabeled mentioned_person subject", () => {
+    // Regression: when subject_2 already exists as unlabeled mentioned_person,
+    // create_subjects only labeled it but lost display_name (patient_name stayed null).
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person"),
+    ]);
+    const intent: SubjectIntent = {
+      action: "create_subjects",
+      target: "mentioned_person",
+      count: 1,
+      labels: ["мама"],
+      display_name: "Анна",
+      confidence: "high",
+    };
+    const updated = applySubjectIntent(state, intent);
+    assert.equal(updated.subjects.length, 2, "no new subject must be created");
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.label, "мама", "label must be applied");
+    assert.equal(s2?.patient_name, "Анна", "display_name must be stored as patient_name");
+  });
 });
 
 describe("PR#175-review: Blocker 3 — shared_from_subject resolves owner contact", () => {

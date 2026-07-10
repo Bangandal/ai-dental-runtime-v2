@@ -204,15 +204,21 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
     let labelIdx = 0;
 
     // Label existing unlabeled mentioned_person subjects first
+    const requestedCount = intent.count ?? 1;
+    const singleTarget = requestedCount === 1 && intentLabels.length <= 1;
     subjects = subjects.map((s) => {
       if (s.role === "mentioned_person" && !s.label && labelIdx < intentLabels.length) {
-        return { ...s, label: intentLabels[labelIdx++] };
+        const updated = { ...s, label: intentLabels[labelIdx++] };
+        // When a single existing subject is being labeled, propagate display_name → patient_name
+        if (singleTarget && intent.display_name && !updated.patient_name) {
+          updated.patient_name = intent.display_name;
+        }
+        return updated;
       }
       return s;
     });
 
     // Create only remaining subjects after labeling existing ones
-    const requestedCount = intent.count ?? 1;
     const toCreate = Math.min(requestedCount - labelIdx, MAX - subjects.length);
 
     // display_name applied to patient_name when creating a single subject (Blocker 2 fix)

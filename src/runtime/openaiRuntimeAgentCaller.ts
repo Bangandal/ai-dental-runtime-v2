@@ -118,15 +118,28 @@ export function normalizeOpenAIResponse(raw: unknown, fallbackConversationId?: s
     };
   }
 
+  // Valid subject_intent was parsed but the model omitted a reply field.
+  // Use a safe fallback reply but do NOT mark as malformed_openai_response —
+  // isMalformedFinalResponse() checks for that note and would strip the intent.
+  if (finalResponse.subject_intent != null) {
+    return {
+      type: "final_response",
+      conversation_id: conversationId,
+      final_response: {
+        final_patient_reply: SAFE_FALLBACK_REPLY,
+        subject_intent: finalResponse.subject_intent,
+        safety_notes: ["subject_intent_reply_missing"],
+      },
+      usage: response?.usage,
+    };
+  }
+
   return {
     type: "final_response",
     conversation_id: conversationId,
     final_response: {
       final_patient_reply: SAFE_FALLBACK_REPLY,
       safety_notes: ["malformed_openai_response"],
-      // Preserve subject_intent even when reply text is missing — the model may have
-      // correctly emitted the intent but omitted the reply field.
-      ...(finalResponse.subject_intent != null ? { subject_intent: finalResponse.subject_intent } : {}),
     },
     usage: response?.usage,
   };

@@ -513,3 +513,76 @@ test("safety: forced finalization does not call booking.confirm, hold.create, or
   await createRuntimeAgentLoop({ model: "m", caller, executors }).runTurn(makeInput());
   assert.deepEqual(forbiddenCalls, [], "no booking/hold/notification executors must be called during forced finalization");
 });
+
+// ── E2E subject_intent extraction through runtime loop ────────────────────────
+
+test("SI-5: valid subject_intent without reply survives runtime loop — not intercepted as malformed", async () => {
+  // Model returns JSON with valid intent but no reply field.
+  // normalizeOpenAIResponse must classify this as subject_intent_reply_missing (not malformed),
+  // so isMalformedFinalResponse() does NOT intercept it in runtimeAgentLoop.
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    final_response: {
+      final_patient_reply: "Sorry, I'm having trouble processing that right now. Please try again in a moment.",
+      subject_intent: { action: "switch_subject", target: "self", confidence: "high" },
+      safety_notes: ["subject_intent_reply_missing"],
+    },
+    conversation_id: "conv_si5",
+  });
+
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {} });
+  const result = await agent.runTurn(makeInput());
+
+  assert.ok(result.final_patient_reply.length > 0, "patient must receive a reply");
+  assert.equal(result.subject_intent?.action, "switch_subject", "subject_intent must reach RuntimeAgentTurnResult");
+  assert.equal(result.subject_intent?.target, "self");
+  // conversation_id must be preserved (not marked dirty)
+  assert.equal(result.conversation_id, "conv_si5");
+});
+
+test("SI-6: truly malformed output (no text, no intent) remains malformed and localized", async () => {
+  // Model returns empty reply with malformed_openai_response — existing behavior must be unchanged.
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    final_response: {
+      final_patient_reply: "",
+      safety_notes: ["malformed_openai_response"],
+    },
+    conversation_id: "conv_si6",
+  });
+
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {} });
+  const result = await agent.runTurn({ ...makeInput(), locale: "ru" });
+
+  assert.ok(result.final_patient_reply.length > 0, "localized fallback must be non-empty");
+  // Malformed path must NOT produce a subject_intent
+  assert.equal(result.subject_intent, undefined, "truly malformed response must not carry subject_intent");
+});
+
+test("SI-7: JSON with reply and intent reaches runtime loop intact", async () => {
+  // Model returns caller-processed result: reply extracted, intent extracted.
+  // Runtime loop must propagate both without modification.
+  const caller: RuntimeAgentCaller = async () => ({
+    type: "final_response",
+    final_response: {
+      final_patient_reply: "Хорошо, уточним данные для вашей мамы.",
+      subject_intent: {
+        action: "create_subjects",
+        target: "mentioned_person",
+        count: 1,
+        labels: ["мама"],
+        display_name: "Анна",
+        confidence: "high",
+      },
+    },
+    conversation_id: "conv_si7",
+  });
+
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: {} });
+  const result = await agent.runTurn(makeInput());
+
+  assert.equal(result.final_patient_reply, "Хорошо, уточним данные для вашей мамы.", "raw JSON must never be patient text");
+  assert.equal(result.subject_intent?.action, "create_subjects");
+  assert.equal(result.subject_intent?.labels?.[0], "мама");
+  assert.equal(result.subject_intent?.display_name, "Анна");
+});

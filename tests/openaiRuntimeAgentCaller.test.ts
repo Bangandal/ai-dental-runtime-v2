@@ -591,7 +591,7 @@ test("SI-1: model outputs subject_intent JSON with reply → reply is patient te
   assert.equal(result.final_response.subject_intent?.display_name, "Анна");
 });
 
-test("SI-2: model outputs subject_intent JSON without reply → malformed fallback reply, intent still extracted", async () => {
+test("SI-2: model outputs subject_intent JSON without reply → safe fallback reply, intent preserved, NOT malformed", async () => {
   const modelJson = JSON.stringify({
     action: "switch_subject",
     target: "self",
@@ -602,9 +602,17 @@ test("SI-2: model outputs subject_intent JSON without reply → malformed fallba
   });
   const result = await caller(makeInput());
   assert.equal(result.type, "final_response");
-  // Empty reply triggers the SAFE_FALLBACK_REPLY path in normalizeOpenAIResponse
-  assert.ok(result.final_response.final_patient_reply.length > 0, "fallback reply must be non-empty");
+  assert.ok(result.final_response.final_patient_reply.length > 0, "safe fallback reply must be non-empty");
   assert.equal(result.final_response.subject_intent?.action, "switch_subject");
+  // Must NOT carry malformed_openai_response — isMalformedFinalResponse() must return false
+  assert.ok(
+    !(result.final_response.safety_notes ?? []).includes("malformed_openai_response"),
+    "subject_intent_reply_missing must not trigger isMalformedFinalResponse",
+  );
+  assert.ok(
+    (result.final_response.safety_notes ?? []).includes("subject_intent_reply_missing"),
+    "safety_notes must indicate reply was missing",
+  );
 });
 
 test("SI-3: model outputs plain text → used as patient reply, no subject_intent", async () => {

@@ -124,6 +124,9 @@ export function normalizeOpenAIResponse(raw: unknown, fallbackConversationId?: s
     final_response: {
       final_patient_reply: SAFE_FALLBACK_REPLY,
       safety_notes: ["malformed_openai_response"],
+      // Preserve subject_intent even when reply text is missing — the model may have
+      // correctly emitted the intent but omitted the reply field.
+      ...(finalResponse.subject_intent != null ? { subject_intent: finalResponse.subject_intent } : {}),
     },
     usage: response?.usage,
   };
@@ -181,13 +184,22 @@ function parseArguments(value: unknown): Record<string, unknown> {
 
 function readFinalResponse(response: Record<string, unknown> | null): RuntimeAgentFinalResponse {
   const final = asObject(response?.final_response);
-  const outputText =
+  const rawOutputText =
     readResponseOutputTextDeduped(response?.output) ??
     readString(response?.output_text) ??
     readString(final?.final_patient_reply) ??
     "";
 
-  const uiRaw = asObject(final?.ui);
+  // The model sometimes outputs a JSON object embedding subject_intent fields alongside
+  // a "reply" field. Parse it so we can extract both the patient reply and the intent.
+  // Only treat it as a subject-intent JSON when the "action" field matches a known intent.
+  const parsedOutput = tryParseSubjectIntentJson(rawOutputText);
+
+  const outputText = parsedOutput !== null
+    ? (readString(parsedOutput.reply) ?? readString(parsedOutput.final_patient_reply) ?? "")
+    : rawOutputText;
+
+  const uiRaw = asObject(final?.ui ?? parsedOutput?.ui);
   const uiTelegramRaw = asObject(uiRaw?.telegram);
   const ui: AgentUiActions | undefined = uiTelegramRaw
     ? {
@@ -198,7 +210,12 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
       }
     : undefined;
 
-  const subjectIntent = parseSubjectIntent(final?.subject_intent) ?? undefined;
+  // subject_intent may live in response.final_response.subject_intent (structured output path)
+  // or be the entire model text output (model embeds intent in reply JSON).
+  const subjectIntent =
+    parseSubjectIntent(final?.subject_intent) ??
+    (parsedOutput !== null ? parseSubjectIntent(parsedOutput) : null) ??
+    undefined;
 
   return {
     final_patient_reply: outputText,
@@ -208,6 +225,24 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     ...(ui !== undefined ? { ui } : {}),
     ...(subjectIntent !== undefined ? { subject_intent: subjectIntent } : {}),
   };
+}
+
+const SUBJECT_INTENT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject"]);
+
+/** Parse model text output as JSON only when it looks like a subject_intent envelope. */
+function tryParseSubjectIntentJson(text: string): Record<string, unknown> | null {
+  if (!text.trim().startsWith("{")) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.trim());
+  } catch {
+    return null;
+  }
+  const obj = asObject(parsed);
+  if (!obj) return null;
+  const action = readString(obj.action);
+  if (!action || !SUBJECT_INTENT_ACTIONS.has(action)) return null;
+  return obj;
 }
 
 

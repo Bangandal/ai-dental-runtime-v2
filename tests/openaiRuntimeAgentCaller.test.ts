@@ -558,3 +558,72 @@ test("actual OpenAI payload excludes backend/transport/debug ids from context", 
   assert.equal(context.runtime_context.patient_context.display_name, "Ada");
   assert.deepEqual(context.runtime_context.recent_history, []);
 });
+
+// ── subject_intent extraction from model JSON text output ───────────────────
+// Regression: the model sometimes outputs a JSON object with subject_intent fields
+// and a "reply" field instead of plain text. The parser must extract both.
+
+function makeOutputResponse(text: string) {
+  return {
+    conversation_id: "conv_si",
+    output: [{ type: "message", content: [{ type: "output_text", text }] }],
+  };
+}
+
+test("SI-1: model outputs subject_intent JSON with reply → reply is patient text, intent extracted", async () => {
+  const modelJson = JSON.stringify({
+    action: "create_subjects",
+    target: "mentioned_person",
+    count: 1,
+    labels: ["мама"],
+    display_name: "Анна",
+    confidence: "high",
+    reply: "Хорошо, запишу вас и маму.",
+  });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse(modelJson) } },
+  });
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, "Хорошо, запишу вас и маму.");
+  assert.equal(result.final_response.subject_intent?.action, "create_subjects");
+  assert.equal(result.final_response.subject_intent?.labels?.[0], "мама");
+  assert.equal(result.final_response.subject_intent?.display_name, "Анна");
+});
+
+test("SI-2: model outputs subject_intent JSON without reply → malformed fallback reply, intent still extracted", async () => {
+  const modelJson = JSON.stringify({
+    action: "switch_subject",
+    target: "self",
+    confidence: "high",
+  });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse(modelJson) } },
+  });
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  // Empty reply triggers the SAFE_FALLBACK_REPLY path in normalizeOpenAIResponse
+  assert.ok(result.final_response.final_patient_reply.length > 0, "fallback reply must be non-empty");
+  assert.equal(result.final_response.subject_intent?.action, "switch_subject");
+});
+
+test("SI-3: model outputs plain text → used as patient reply, no subject_intent", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse("Чем могу помочь?") } },
+  });
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, "Чем могу помочь?");
+  assert.equal(result.final_response.subject_intent, undefined);
+});
+
+test("SI-4: model outputs JSON with unknown action → entire JSON used as patient reply, no subject_intent", async () => {
+  const modelJson = JSON.stringify({ action: "book_appointment", reply: "Готово!" });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: { responses: { create: async () => makeOutputResponse(modelJson) } },
+  });
+  const result = await caller(makeInput());
+  assert.equal(result.type, "final_response");
+  assert.equal(result.final_response.final_patient_reply, modelJson);
+  assert.equal(result.final_response.subject_intent, undefined);
+});

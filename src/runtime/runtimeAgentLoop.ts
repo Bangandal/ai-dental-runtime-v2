@@ -1459,17 +1459,18 @@ function buildSubjectAwarePhoneFields(input: RuntimeAgentTurnInput): {
     const active = input.booking_subjects.subjects.find(
       (s) => s.id === input.booking_subjects!.active_subject_id,
     );
-    if (active?.phone_number) {
+    // v2: use booking_contact
+    const bc = (active as Record<string, unknown> | undefined)?.booking_contact as Record<string, unknown> | undefined | null;
+    if (bc?.phone_number) {
       return {
-        phone_number: active.phone_number,
-        phone_source: active.phone_source ?? undefined,
-        phone_trust: active.phone_status === "typed_unverified" ? "unverified" : undefined,
+        phone_number: bc.phone_number as string,
+        phone_source: bc.source as string | undefined,
+        phone_trust: (bc.trust === "trusted" || bc.trust === "trusted_contact_owner") ? "trusted" : "unverified",
       };
     }
-    // Active subject has no phone — return undefined so booking guard fires
     return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
   }
-  // Single-subject fallback: provided_phone takes priority (typed for third party), then channel_contact
+  // Single-subject fallback
   return {
     phone_number: input.provided_phone?.phone_number ?? input.channel_contact?.phone_number,
     phone_source: input.provided_phone?.phone_source ?? input.channel_contact?.phone_source,
@@ -1483,7 +1484,8 @@ function hasActiveSubjectOrContactPhone(input: RuntimeAgentTurnInput): boolean {
     const active = input.booking_subjects.subjects.find(
       (s) => s.id === input.booking_subjects!.active_subject_id,
     );
-    return active?.phone_number != null;
+    const bc = (active as Record<string, unknown> | undefined)?.booking_contact as Record<string, unknown> | undefined | null;
+    return bc?.phone_number != null;
   }
   return hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: input.provided_phone });
 }

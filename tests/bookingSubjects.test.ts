@@ -9,12 +9,18 @@ import {
   computeMissing,
   computeReadyForBooking,
   deserializeBookingSubjects,
+  normalizeBookingSubjectsState,
   applySubjectIntent,
   parseSubjectIntent,
+  buildSubjectsContextPayload,
 } from "../src/runtime/bookingSubjectsState.ts";
 import type {
   BookingSubjectsState,
   BookingSubject,
+  BookingContact,
+  BookingContactSource,
+  BookingContactTrust,
+  SubjectId,
   S1Seed,
   SubjectIntent,
 } from "../src/runtime/bookingSubjectsState.ts";
@@ -36,21 +42,65 @@ const providedPhone: ProvidedPhone = {
   phone_collected_at: new Date().toISOString(),
 };
 
-function makeS2State(s2Name: string | null = "Иван"): BookingSubjectsState {
-  return {
-    active_subject_id: "s2",
-    subjects: [
-      { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
-      { id: "s2", label: "mentioned_person", name: s2Name, service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-    ],
-    pending_typed_phone: null,
-  };
+function makeBC(
+  phone: string,
+  source: BookingContactSource,
+  trust: BookingContactTrust,
+  ownerId: SubjectId,
+): BookingContact {
+  return { phone_number: phone, source, trust, owner_subject_id: ownerId, collected_at: null };
 }
 
-// ── A. "Запишите Ивана" without phone → s2 created, active=s2 ─────────────
+function makeSubject(
+  id: SubjectId,
+  role: "sender" | "mentioned_person",
+  overrides: Partial<Omit<BookingSubject, "id" | "role" | "missing">> = {},
+): BookingSubject {
+  const s: BookingSubject = {
+    id, role,
+    label: null,
+    patient_name: null,
+    service: null,
+    slot: null,
+    booking_contact: null,
+    status: "collecting",
+    missing: [],
+    ...overrides,
+  };
+  // compute missing based on actual fields
+  const missing: string[] = [];
+  if (!s.patient_name) missing.push("patient_name");
+  if (!s.slot) missing.push("slot");
+  if (!s.service) missing.push("service");
+  if (!s.booking_contact) missing.push("booking_contact");
+  s.missing = missing;
+  return s;
+}
+
+function makeState(
+  activeId: SubjectId,
+  subjects: BookingSubject[],
+  pendingPhone: string | null = null,
+): BookingSubjectsState {
+  return { version: 2, active_subject_id: activeId, subjects, pending_typed_phone: pendingPhone, max_subjects: 4 };
+}
+
+function makeS2State(s2Name: string | null = "Иван"): BookingSubjectsState {
+  return makeState("subject_2", [
+    makeSubject("subject_1", "sender", {
+      patient_name: "Рима",
+      service: "Чистка",
+      slot: "2026-07-10T10:00",
+      booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+    }),
+    makeSubject("subject_2", "mentioned_person", { patient_name: s2Name }),
+  ]);
+}
+
+// ── A. "Запишите Ивана" without phone → subject_2 created, active=subject_2 ──
 
 describe("blocker 2: s2 created from text signal", () => {
-  it("A: 'Запишите Ивана' without phone creates s2 and sets active=s2", () => {
+  it("A: 'Запишите Ивана' without phone creates subject_2 and sets active=subject_2", () => {
     const result = preUpdateBookingSubjects({
       current: null,
       userMessage: "Запишите Ивана на завтра",
@@ -58,11 +108,11 @@ describe("blocker 2: s2 created from text signal", () => {
       providedPhone: null,
     });
     assert.ok(result !== null, "expected state to be created");
-    assert.equal(result.active_subject_id, "s2");
-    assert.ok(result.subjects.some((s) => s.id === "s2"), "s2 should exist");
+    assert.equal(result.active_subject_id, "subject_2");
+    assert.ok(result.subjects.some((s) => s.id === "subject_2"), "subject_2 should exist");
   });
 
-  it("B: 'Ещё одного человека' creates s2", () => {
+  it("B: 'Ещё одного человека' creates subject_2", () => {
     const result = preUpdateBookingSubjects({
       current: null,
       userMessage: "Ещё одного человека нужно записать",
@@ -70,10 +120,10 @@ describe("blocker 2: s2 created from text signal", () => {
       providedPhone: null,
     });
     assert.ok(result !== null);
-    assert.ok(result.subjects.some((s) => s.id === "s2"));
+    assert.ok(result.subjects.some((s) => s.id === "subject_2"));
   });
 
-  it("C: 'И его тоже запишите' creates s2", () => {
+  it("C: 'И его тоже запишите' creates subject_2", () => {
     const result = preUpdateBookingSubjects({
       current: null,
       userMessage: "И его тоже запишите",
@@ -81,14 +131,14 @@ describe("blocker 2: s2 created from text signal", () => {
       providedPhone: null,
     });
     assert.ok(result !== null);
-    assert.ok(result.subjects.some((s) => s.id === "s2"));
+    assert.ok(result.subjects.some((s) => s.id === "subject_2"));
   });
 });
 
-// ── B. "тогда меня" → active=s1, s1 data preserved ───────────────────────
+// ── B. "тогда меня" → active=subject_1, data preserved ──────────────────────
 
 describe("blocker 3: self-switch signal", () => {
-  it("D: 'тогда меня' switches active from s2 to s1", () => {
+  it("D: 'тогда меня' switches active from subject_2 to subject_1", () => {
     const current = makeS2State();
     const result = preUpdateBookingSubjects({
       current,
@@ -97,10 +147,10 @@ describe("blocker 3: self-switch signal", () => {
       providedPhone: null,
     });
     assert.ok(result !== null);
-    assert.equal(result.active_subject_id, "s1");
+    assert.equal(result.active_subject_id, "subject_1");
   });
 
-  it("E: s1 data (name, service, slot) preserved after self-switch", () => {
+  it("E: subject_1 data (patient_name, service, slot) preserved after self-switch", () => {
     const current = makeS2State();
     const result = preUpdateBookingSubjects({
       current,
@@ -109,26 +159,22 @@ describe("blocker 3: self-switch signal", () => {
       providedPhone: null,
     });
     assert.ok(result !== null);
-    const s1 = result.subjects.find((s) => s.id === "s1");
-    assert.ok(s1, "s1 must exist");
-    assert.equal(s1.name, "Рима");
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
+    assert.ok(s1, "subject_1 must exist");
+    assert.equal(s1.patient_name, "Рима");
     assert.equal(s1.service, "Чистка");
     assert.equal(s1.slot, "2026-07-10T10:00");
   });
 });
 
-// ── C. "Ивана тоже" → active=s2 (switch to existing s2) ─────────────────
+// ── C. "Ивана тоже" → active=subject_2 (switch to existing) ─────────────────
 
-describe("blocker 3: third-party switch to existing s2", () => {
-  it("F: pronoun reference switches to existing s2", () => {
-    const current: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+describe("blocker 3: third-party switch to existing subject_2", () => {
+  it("F: pronoun reference switches to existing subject_2", () => {
+    const current = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима", service: "Чистка", slot: "2026-07-10T10:00" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+    ]);
     const result = preUpdateBookingSubjects({
       current,
       userMessage: "а Ивана когда можно?",
@@ -136,38 +182,27 @@ describe("blocker 3: third-party switch to existing s2", () => {
       providedPhone: null,
     });
     assert.ok(result !== null);
-    assert.equal(result.active_subject_id, "s2");
+    assert.equal(result.active_subject_id, "subject_2");
   });
 
-  it("G: third-party pronoun alone does NOT create s2 (only switches existing)", () => {
+  it("G: third-party pronoun alone does NOT create subject_2 (only switches existing)", () => {
     const result = preUpdateBookingSubjects({
       current: null,
       userMessage: "его тоже нужно",
       channelContact: trustedContact,
       providedPhone: null,
     });
-    // "его тоже нужно" — no explicit booking intent
-    // "его тоже нужно" doesn't match THIRD_PARTY_CREATE_REGEXPS which require "запишите" or strong booking intent
-    // So result is null OR subjects may exist depending on regex — let's just check no crash
-    // The THIRD_PARTY_SWITCH regexp includes /\b(его|её|...)\b/ so it would match third_party_switch
-    // BUT no existing s2 → switch is ignored → should return null
-    // Actually looking at the code: hasSecondPersonSignal checks providedPhone || third_party_create || third_party_switch || existing s2
-    // "его тоже нужно" → signal=third_party_switch (if it matches one of THIRD_PARTY_SWITCH_REGEXPS)
-    // hasSecondPersonSignal is true → state is created but activeId stays s1 (since signal=third_party_switch and no s2)
-    // Let's verify behavior: if s2 doesn't exist, switch doesn't change active
     if (result !== null) {
-      // If state was created, s2 should NOT exist (no create signal)
-      const s2 = result.subjects.find((s) => s.id === "s2");
-      assert.equal(s2, undefined, "s2 should not be created from switch-only signal");
+      const s2 = result.subjects.find((s) => s.id === "subject_2");
+      assert.equal(s2, undefined, "subject_2 should not be created from switch-only signal");
     }
-    // Either null (no hasSecondPersonSignal) or only s1 (switch signal but no s2)
   });
 });
 
-// ── D. s1 seeded from booking_process_state on lazy expansion ─────────────
+// ── D. subject_1 seeded from booking_process_state on lazy expansion ──────────
 
-describe("blocker 4: s1 seeded from existing booking data", () => {
-  it("H: s1 gets name/service/slot from s1Seed when lazily created", () => {
+describe("blocker 4: subject_1 seeded from existing booking data", () => {
+  it("H: subject_1 gets patient_name/service/slot from s1Seed when lazily created", () => {
     const seed: S1Seed = {
       name: "Рима Валенко",
       service: "Отбеливание",
@@ -181,14 +216,14 @@ describe("blocker 4: s1 seeded from existing booking data", () => {
       s1Seed: seed,
     });
     assert.ok(result !== null);
-    const s1 = result.subjects.find((s) => s.id === "s1");
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
     assert.ok(s1);
-    assert.equal(s1.name, "Рима Валенко");
+    assert.equal(s1.patient_name, "Рима Валенко");
     assert.equal(s1.service, "Отбеливание");
     assert.equal(s1.slot, "2026-07-12T14:00");
   });
 
-  it("I: s1 name null when no seed and no prior state", () => {
+  it("I: subject_1 patient_name null when no seed and no prior state", () => {
     const result = preUpdateBookingSubjects({
       current: null,
       userMessage: "Запишите Ивана",
@@ -196,18 +231,20 @@ describe("blocker 4: s1 seeded from existing booking data", () => {
       providedPhone: providedPhone,
     });
     assert.ok(result !== null);
-    const s1 = result.subjects.find((s) => s.id === "s1");
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
     assert.ok(s1);
-    assert.equal(s1.name, null);
+    assert.equal(s1.patient_name, null);
   });
 
-  it("J: s1 already populated when expanding to s2 with existing prior state", () => {
-    const existing: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_status: "trusted", status: "collecting" },
-      ],
-    };
+  it("J: subject_1 already populated when expanding to subject_2 with existing prior state", () => {
+    const existing = makeState("subject_1", [
+      makeSubject("subject_1", "sender", {
+        patient_name: "Рима",
+        service: "Чистка",
+        slot: "2026-07-10T10:00",
+        booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+      }),
+    ]);
     const result = preUpdateBookingSubjects({
       current: existing,
       userMessage: "Запишите Ивана тоже",
@@ -215,25 +252,24 @@ describe("blocker 4: s1 seeded from existing booking data", () => {
       providedPhone: null,
     });
     assert.ok(result !== null);
-    const s1 = result.subjects.find((s) => s.id === "s1");
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
     assert.ok(s1);
-    assert.equal(s1.name, "Рима");
+    assert.equal(s1.patient_name, "Рима");
     assert.equal(s1.service, "Чистка");
   });
 });
 
-// ── E. active=s1 + provided_phone + no channel_contact → mismatch ─────────
+// ── E. active=subject_1 + provided_phone + no channel_contact → mismatch ─────
 
 describe("blocker 5: mismatch detection", () => {
-  it("K: mismatch when active=s1, model tries booking with provided_phone, no channel_contact", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("K: mismatch when active=subject_1, model tries booking with provided_phone, no channel_contact", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима", service: "Чистка", slot: "2026-07-10T10:00" }),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+      }),
+    ]);
     const mismatch = detectSubjectMismatch({
       state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима", last_name: "Валенко" } }],
@@ -242,17 +278,18 @@ describe("blocker 5: mismatch detection", () => {
     });
     assert.ok(mismatch !== null);
     assert.equal(mismatch.mismatch, true);
-    assert.equal(mismatch.active_subject_id, "s1");
+    assert.equal(mismatch.active_subject_id, "subject_1");
   });
 
-  it("L: no mismatch when active=s1 and channel_contact present (correct flow)", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("L: no mismatch when active=subject_1 and channel_contact present (correct flow)", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", {
+        patient_name: "Рима",
+        service: "Чистка",
+        slot: "2026-07-10T10:00",
+        booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+      }),
+    ]);
     const mismatch = detectSubjectMismatch({
       state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима" } }],
@@ -263,7 +300,7 @@ describe("blocker 5: mismatch detection", () => {
     assert.equal(mismatch.mismatch, false);
   });
 
-  it("M: no mismatch when active=s2 (typed phone is correct for s2)", () => {
+  it("M: no mismatch when active=subject_2 (typed phone is correct for subject_2)", () => {
     const state = makeS2State();
     const mismatch = detectSubjectMismatch({
       state,
@@ -275,7 +312,7 @@ describe("blocker 5: mismatch detection", () => {
     assert.equal(mismatch.mismatch, false);
   });
 
-  it("N: no mismatch returned when no booking.apply in tool requests", () => {
+  it("N: null returned when no booking.apply in tool requests", () => {
     const state = makeS2State();
     const mismatch = detectSubjectMismatch({
       state,
@@ -287,126 +324,152 @@ describe("blocker 5: mismatch detection", () => {
   });
 });
 
-// ── F. postUpdateBookingSubjects — booking.apply data applied to active subject ──
+// ── F. postUpdateBookingSubjects ──────────────────────────────────────────────
 
 describe("postUpdateBookingSubjects", () => {
   it("O: visit_created=true sets active subject status to booked", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима", service: "Чистка", slot: "2026-07-10T10:00" }),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        service: "Чистка",
+        slot: "2026-07-11T11:00",
+        booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+      }),
+    ]);
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
     });
-    const s2 = updated.subjects.find((s) => s.id === "s2");
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.ok(s2);
     assert.equal(s2.status, "booked");
-    // s1 should be untouched
-    const s1 = updated.subjects.find((s) => s.id === "s1");
+    const s1 = updated.subjects.find((s) => s.id === "subject_1");
     assert.ok(s1);
     assert.equal(s1.status, "collecting");
   });
 
-  it("P: booking.apply name/slot/service written to active subject", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: null, service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("P: booking.apply patient_name/slot/service written to active subject", () => {
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима" }),
+      makeSubject("subject_2", "mentioned_person"),
+    ]);
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-15", requested_time: "09:00", service: "Чистка" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: false } }],
     });
-    const s2 = updated.subjects.find((s) => s.id === "s2");
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.ok(s2);
-    assert.equal(s2.name, "Иван Петров");
+    assert.equal(s2.patient_name, "Иван Петров");
     assert.equal(s2.service, "Чистка");
     assert.equal(s2.slot, "2026-07-15T09:00");
     assert.equal(s2.status, "collecting");
   });
 });
 
-// ── G. computeMissing / computeReadyForBooking ─────────────────────────────
+// ── G. computeMissing / computeReadyForBooking ────────────────────────────────
 
 describe("computeMissing / computeReadyForBooking", () => {
   it("Q: empty subject missing all 4 fields", () => {
-    const s: BookingSubject = { id: "s2", label: "mentioned_person", name: null, service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" };
-    assert.deepEqual(computeMissing(s), ["name", "slot", "service", "phone"]);
+    const s = makeSubject("subject_2" as SubjectId, "mentioned_person");
+    assert.deepEqual(computeMissing(s), ["patient_name", "slot", "service", "booking_contact"]);
     assert.equal(computeReadyForBooking(s), false);
   });
 
   it("R: fully populated subject is ready", () => {
-    const s: BookingSubject = { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" };
+    const s = makeSubject("subject_2" as SubjectId, "mentioned_person", {
+      patient_name: "Иван",
+      service: "Чистка",
+      slot: "2026-07-10T10:00",
+      booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+    });
     assert.deepEqual(computeMissing(s), []);
     assert.equal(computeReadyForBooking(s), true);
   });
 
   it("S: booked subject is not ready_for_booking (already done)", () => {
-    const s: BookingSubject = { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "booked" };
+    const s = makeSubject("subject_1" as SubjectId, "sender", {
+      patient_name: "Рима",
+      service: "Чистка",
+      slot: "2026-07-10T10:00",
+      booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+      status: "booked",
+    });
     assert.equal(computeReadyForBooking(s), false);
   });
 });
 
-// ── H. deserializeBookingSubjects round-trip ───────────────────────────────
+// ── H. deserializeBookingSubjects round-trip + v1 migration ──────────────────
 
 describe("deserializeBookingSubjects", () => {
-  it("T: valid state round-trips through JSON", () => {
+  it("T: v2 state round-trips through JSON", () => {
     const state = makeS2State("Иван");
     const serialized = JSON.parse(JSON.stringify(state));
     const restored = deserializeBookingSubjects(serialized);
     assert.ok(restored !== null);
-    assert.equal(restored.active_subject_id, "s2");
+    assert.equal(restored.active_subject_id, "subject_2");
     assert.equal(restored.subjects.length, 2);
-    const s1 = restored.subjects.find((s) => s.id === "s1");
-    assert.equal(s1?.name, "Рима");
+    assert.equal(restored.version, 2);
+    const s1 = restored.subjects.find((s) => s.id === "subject_1");
+    assert.equal(s1?.patient_name, "Рима");
   });
 
-  it("U: null input returns null", () => {
+  it("U: null/empty input returns null", () => {
     assert.equal(deserializeBookingSubjects(null), null);
     assert.equal(deserializeBookingSubjects(undefined), null);
     assert.equal(deserializeBookingSubjects({}), null);
   });
-});
 
-// ── I. Execution guard: detectSubjectMismatch with unfiltered phone ───────────
-// The orchestrator passes providedPhoneForTurnOuter (pre-guard) to detectSubjectMismatch
-// so that debug accurately reflects when the guard had to suppress the phone.
-
-describe("execution guard: mismatch visible even when guard suppresses phone", () => {
-  it("X: mismatch=true when active=s1, unfiltered provided_phone passed, no channel_contact", () => {
-    // Simulate what the orchestrator does: pass providedPhoneForTurnOuter (unfiltered) to
-    // detectSubjectMismatch even though runtimeTurnInput.provided_phone was cleared (active=s1).
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
+  it("T2: v1 state (s1/s2) migrates to v2 correctly", () => {
+    const v1State = {
+      active_subject_id: "s2",
       subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
         { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
       ],
-      pending_typed_phone: null,
+      pending_typed_phone: "+420728111222",
     };
+    const result = normalizeBookingSubjectsState(v1State);
+    assert.ok(result !== null);
+    assert.equal(result.version, 2);
+    assert.equal(result.active_subject_id, "subject_2");
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
+    assert.ok(s1);
+    assert.equal(s1.patient_name, "Рима");
+    assert.equal(s1.booking_contact?.phone_number, "+420724334616");
+    assert.equal(s1.booking_contact?.trust, "trusted");
+    const s2 = result.subjects.find((s) => s.id === "subject_2");
+    assert.ok(s2);
+    assert.equal(s2.booking_contact?.source, "typed");
+    assert.equal(s2.booking_contact?.trust, "unverified");
+    assert.equal(result.pending_typed_phone, "+420728111222");
+  });
+});
+
+// ── I. Execution guard: detectSubjectMismatch with unfiltered phone ────────────
+
+describe("execution guard: mismatch visible even when guard suppresses phone", () => {
+  it("X: mismatch=true when active=subject_1, unfiltered provided_phone passed, no channel_contact", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима", service: "Чистка", slot: "2026-07-10T10:00" }),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+      }),
+    ]);
     const mismatch = detectSubjectMismatch({
       state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима" } }],
       channelContact: null,
-      // This is the UNFILTERED providedPhone — the guard suppressed it from tool execution,
-      // but we still pass it here so mismatch detection shows the corrected case.
       providedPhone: providedPhone,
     });
     assert.ok(mismatch !== null);
     assert.equal(mismatch.mismatch, true, "debug must still flag that guard had to act");
   });
 
-  it("Y: mismatch=false when active=s2 and provided_phone present (correct s2 booking)", () => {
+  it("Y: mismatch=false when active=subject_2 and provided_phone present (correct booking)", () => {
     const state = makeS2State("Иван");
     const mismatch = detectSubjectMismatch({
       state,
@@ -415,14 +478,14 @@ describe("execution guard: mismatch visible even when guard suppresses phone", (
       providedPhone: providedPhone,
     });
     assert.ok(mismatch !== null);
-    assert.equal(mismatch.mismatch, false, "s2 booking with provided_phone is correct — no mismatch");
+    assert.equal(mismatch.mismatch, false, "subject_2 booking with provided_phone is correct");
   });
 });
 
-// ── J. Single-subject flow untouched ──────────────────────────────────────
+// ── J. Single-subject flow untouched ──────────────────────────────────────────
 
 describe("single-subject flow (no second person)", () => {
-  it("V: ordinary message with no third-party signals returns null (no subjects state)", () => {
+  it("V: ordinary message with no third-party signals returns null", () => {
     const result = preUpdateBookingSubjects({
       current: null,
       userMessage: "хочу записаться на чистку зубов",
@@ -443,19 +506,14 @@ describe("single-subject flow (no second person)", () => {
   });
 });
 
-// ── K. PR #173 phone source tests (Misha's A-I spec) ─────────────────────
+// ── K. PR#173 phone source tests (updated to v2) ──────────────────────────────
 
 describe("PR#173: subject-aware phone assignment", () => {
-  // A: multi-subject state active=s1, typed phone → s1 gets typed_unverified
-  it("A173: active=s1 receives typed phone when no trusted contact", () => {
-    const current: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("A173: active=subject_1 receives typed phone when no trusted contact", () => {
+    const current = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима", service: "Чистка" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+    ]);
     const result = preUpdateBookingSubjects({
       current,
       userMessage: "это мой номер",
@@ -463,49 +521,41 @@ describe("PR#173: subject-aware phone assignment", () => {
       providedPhone,
     });
     assert.ok(result !== null);
-    assert.equal(result.active_subject_id, "s1");
-    const s1 = result.subjects.find((s) => s.id === "s1");
-    assert.equal(s1?.phone_number, providedPhone.phone_number);
-    assert.equal(s1?.phone_status, "typed_unverified");
-    assert.equal(s1?.phone_source, "typed");
-    // pending_typed_phone set so model can re-classify if needed
+    assert.equal(result.active_subject_id, "subject_1");
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
+    assert.equal(s1?.booking_contact?.phone_number, providedPhone.phone_number);
+    assert.equal(s1?.booking_contact?.trust, "unverified");
+    assert.equal(s1?.booking_contact?.source, "typed");
     assert.equal(result.pending_typed_phone, providedPhone.phone_number);
   });
 
-  // B: Telegram button (trusted) wins over typed for s1
-  it("B173: s1 trusted channel_contact wins over co-present typed phone", () => {
-    const current: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("B173: subject_1 trusted channel_contact wins over co-present typed phone", () => {
+    const current = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима", service: "Чистка" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+    ]);
     const result = preUpdateBookingSubjects({
       current,
       userMessage: "вот мой номер",
       channelContact: trustedContact,
-      providedPhone, // typed phone also present — trusted should win for s1
+      providedPhone,
     });
     assert.ok(result !== null);
-    const s1 = result.subjects.find((s) => s.id === "s1");
-    assert.equal(s1?.phone_number, trustedContact.phone_number);
-    assert.equal(s1?.phone_status, "trusted");
-    assert.equal(s1?.phone_source, trustedContact.phone_source);
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
+    assert.equal(s1?.booking_contact?.phone_number, trustedContact.phone_number);
+    assert.equal(s1?.booking_contact?.trust, "trusted");
+    assert.equal(s1?.booking_contact?.source, "telegram_contact_button");
   });
 
-  // C: "а вот номер Ивана" → switches to s2, typed phone goes to s2
-  it("C173: switch to Ivan + typed phone → s2 gets typed_unverified, s1 trusted untouched", () => {
-    const current: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
-    // "а Ивана" → third_party_switch to s2 (stem "Иван")
+  it("C173: switch to Ivan + typed phone → subject_2 gets unverified, subject_1 trusted untouched", () => {
+    const current = makeState("subject_1", [
+      makeSubject("subject_1", "sender", {
+        patient_name: "Рима",
+        service: "Чистка",
+        booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+      }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+    ]);
     const result = preUpdateBookingSubjects({
       current,
       userMessage: "а Ивана +420728945521",
@@ -513,153 +563,154 @@ describe("PR#173: subject-aware phone assignment", () => {
       providedPhone,
     });
     assert.ok(result !== null);
-    assert.equal(result.active_subject_id, "s2");
-    const s2 = result.subjects.find((s) => s.id === "s2");
-    assert.equal(s2?.phone_number, providedPhone.phone_number);
-    assert.equal(s2?.phone_status, "typed_unverified");
-    const s1 = result.subjects.find((s) => s.id === "s1");
-    assert.equal(s1?.phone_status, "trusted"); // s1 trusted phone unchanged
+    assert.equal(result.active_subject_id, "subject_2");
+    const s2 = result.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.booking_contact?.phone_number, providedPhone.phone_number);
+    assert.equal(s2?.booking_contact?.trust, "unverified");
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
+    assert.equal(s1?.booking_contact?.trust, "trusted");
   });
 
-  // D: after switch to self (s1), booking.apply marks s1 as booked
-  it("D173: switch to self → postUpdate marks s1 booked on visit_created=true", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("D173: switch to self → postUpdate marks subject_1 booked on visit_created=true", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", {
+        patient_name: "Рима",
+        service: "Чистка",
+        slot: "2026-07-10T10:00",
+        booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+      }),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        service: "Чистка",
+        slot: "2026-07-11T11:00",
+        booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+      }),
+    ]);
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима", requested_date: "2026-07-10", requested_time: "10:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
     });
-    const s1 = updated.subjects.find((s) => s.id === "s1");
+    const s1 = updated.subjects.find((s) => s.id === "subject_1");
     assert.equal(s1?.status, "booked");
-    const s2 = updated.subjects.find((s) => s.id === "s2");
-    assert.equal(s2?.status, "collecting"); // s2 untouched
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.status, "collecting");
   });
 
-  // E: active=s2 → booking.apply marks s2 booked
-  it("E173: active=s2 → postUpdate marks s2 booked on visit_created=true, s1 untouched", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "booked" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("E173: active=subject_2 → postUpdate marks subject_2 booked, subject_1 untouched", () => {
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender", {
+        patient_name: "Рима",
+        service: "Чистка",
+        slot: "2026-07-10T10:00",
+        booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+        status: "booked",
+      }),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        service: "Чистка",
+        slot: "2026-07-11T11:00",
+        booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+      }),
+    ]);
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
     });
-    const s2 = updated.subjects.find((s) => s.id === "s2");
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.equal(s2?.status, "booked");
-    const s1 = updated.subjects.find((s) => s.id === "s1");
-    assert.equal(s1?.status, "booked"); // already booked, unchanged
+    const s1 = updated.subjects.find((s) => s.id === "subject_1");
+    assert.equal(s1?.status, "booked");
   });
 
-  // F: ambiguous typed phone (no switch signal) → goes to active subject
   it("F173: ambiguous typed phone assigned to active subject, stored as pending_typed_phone", () => {
-    const current: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+    const current = makeState("subject_2", [
+      makeSubject("subject_1", "sender", {
+        patient_name: "Рима",
+        service: "Чистка",
+        booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+      }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+    ]);
     const result = preUpdateBookingSubjects({
       current,
-      userMessage: "вот номер", // no switch signal — active stays s2
+      userMessage: "вот номер",
       channelContact: null,
       providedPhone,
     });
     assert.ok(result !== null);
-    assert.equal(result.active_subject_id, "s2");
-    const s2 = result.subjects.find((s) => s.id === "s2");
-    assert.equal(s2?.phone_number, providedPhone.phone_number);
-    assert.equal(s2?.phone_status, "typed_unverified");
+    assert.equal(result.active_subject_id, "subject_2");
+    const s2 = result.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.booking_contact?.phone_number, providedPhone.phone_number);
+    assert.equal(s2?.booking_contact?.trust, "unverified");
     assert.equal(result.pending_typed_phone, providedPhone.phone_number);
   });
 
-  // G: multi-language subject intent via model subject_intent (not regex)
-  it("G173: applySubjectIntent switches to s2 from English/Czech model output (high confidence)", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Anna", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Ivan", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("G173: applySubjectIntent switches to subject_2 from English/Czech model output (high confidence)", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Anna" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Ivan" }),
+    ]);
     const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
     const updated = applySubjectIntent(state, intent);
-    assert.equal(updated.active_subject_id, "s2");
+    assert.equal(updated.active_subject_id, "subject_2");
   });
 
   it("G173b: applySubjectIntent switches back to self from Czech 'pro mě'", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: "Anna", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Ivan", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender", { patient_name: "Anna" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Ivan" }),
+    ]);
     const intent: SubjectIntent = { action: "switch_subject", target: "self", confidence: "high" };
     const updated = applySubjectIntent(state, intent);
-    assert.equal(updated.active_subject_id, "s1");
+    assert.equal(updated.active_subject_id, "subject_1");
   });
 
   it("G173c: low confidence subject_intent is ignored", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Anna", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Ivan", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Anna" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Ivan" }),
+    ]);
     const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "low" };
     const updated = applySubjectIntent(state, intent);
-    assert.equal(updated.active_subject_id, "s1"); // unchanged — low confidence ignored
+    assert.equal(updated.active_subject_id, "subject_1");
   });
 
-  // H: no unsafe booked claim when visit_created=false
   it("H173: visit_created=false does NOT mark subject as booked", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима", service: "Чистка" }),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        service: "Чистка",
+        slot: "2026-07-11T11:00",
+        booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+      }),
+    ]);
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: false } }],
     });
-    const s2 = updated.subjects.find((s) => s.id === "s2");
-    assert.equal(s2?.status, "collecting"); // NOT booked when visit_created=false
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.status, "collecting");
   });
 
-  // I: wrong-subject regression — active_subject_id determines which phone is used
-  it("I173: mismatch flag reflects active_subject mismatch; s2 active has no mismatch", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-11T11:00", phone_number: "+420728945521", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
-    // s1 active + s2's typed phone passed = mismatch
+  it("I173: mismatch flag reflects active_subject mismatch; subject_2 active has no mismatch", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", {
+        patient_name: "Рима",
+        service: "Чистка",
+        slot: "2026-07-10T10:00",
+        booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1"),
+      }),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        service: "Чистка",
+        slot: "2026-07-11T11:00",
+        booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+      }),
+    ]);
     const s1Mismatch = detectSubjectMismatch({
       state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима" } }],
@@ -667,32 +718,27 @@ describe("PR#173: subject-aware phone assignment", () => {
       providedPhone,
     });
     assert.ok(s1Mismatch !== null);
-    assert.equal(s1Mismatch.mismatch, true, "s1 active + no channel_contact + typed phone = mismatch");
+    assert.equal(s1Mismatch.mismatch, true);
 
-    // s2 active + typed phone = no mismatch (correct subject's phone)
     const s2Mismatch = detectSubjectMismatch({
-      state: { ...state, active_subject_id: "s2" },
+      state: { ...state, active_subject_id: "subject_2" as SubjectId },
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван" } }],
       channelContact: null,
       providedPhone,
     });
     assert.ok(s2Mismatch !== null);
-    assert.equal(s2Mismatch.mismatch, false, "s2 active + typed phone = no mismatch");
+    assert.equal(s2Mismatch.mismatch, false);
   });
 });
 
-// ── PR #174: subject_intent formal contract tests ──────────────────────────────
+// ── PR#174: subject_intent formal contract tests (updated to v2) ──────────────
 
 describe("PR#174: postUpdateBookingSubjects uses typed subjectIntent", () => {
-  it("J174a: subjectIntent switch_subject/self switches active from s2→s1", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+  it("J174a: subjectIntent switch_subject/self switches active from subject_2→subject_1", () => {
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+    ]);
     const intent: SubjectIntent = { action: "switch_subject", target: "self", confidence: "high" };
     const updated = postUpdateBookingSubjects({
       current: state,
@@ -700,19 +746,14 @@ describe("PR#174: postUpdateBookingSubjects uses typed subjectIntent", () => {
       toolResults: [],
       subjectIntent: intent,
     });
-    assert.equal(updated.active_subject_id, "s1");
+    assert.equal(updated.active_subject_id, "subject_1");
   });
 
-  it("J174b: subjectIntent switch clears pending_typed_phone and reassigns to new active subject", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: "+420728123456",
-    };
-    // Model says: switch to s2 (mentioned_person) — the pending phone belongs to Ivan
+  it("J174b: subjectIntent switch clears pending_typed_phone and assigns to new active subject", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+    ], "+420728123456");
     const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
     const updated = postUpdateBookingSubjects({
       current: state,
@@ -720,30 +761,26 @@ describe("PR#174: postUpdateBookingSubjects uses typed subjectIntent", () => {
       toolResults: [],
       subjectIntent: intent,
     });
-    assert.equal(updated.active_subject_id, "s2");
+    assert.equal(updated.active_subject_id, "subject_2");
     assert.equal(updated.pending_typed_phone, null, "pending_typed_phone must be consumed");
-    const s2 = updated.subjects.find((s) => s.id === "s2");
-    assert.equal(s2?.phone_number, "+420728123456", "phone reassigned to s2");
-    assert.equal(s2?.phone_status, "typed_unverified");
-    const s1 = updated.subjects.find((s) => s.id === "s1");
-    assert.equal(s1?.phone_number, null, "s1 phone unchanged");
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.booking_contact?.phone_number, "+420728123456", "phone assigned to subject_2");
+    assert.equal(s2?.booking_contact?.trust, "unverified");
+    const s1 = updated.subjects.find((s) => s.id === "subject_1");
+    assert.equal(s1?.booking_contact, null, "subject_1 contact unchanged");
   });
 
   it("J174c: null subjectIntent leaves state unchanged", () => {
-    const state: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима" }),
+    ]);
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [],
       toolResults: [],
       subjectIntent: null,
     });
-    assert.equal(updated.active_subject_id, "s1");
+    assert.equal(updated.active_subject_id, "subject_1");
   });
 });
 
@@ -773,25 +810,22 @@ describe("PR#174: parseSubjectIntent validates model output", () => {
     assert.equal(parseSubjectIntent(raw), null);
   });
 
-  it("K174e: display_name is preserved when present", () => {
+  it("K174e: display_name is preserved when present (v1 create_subject → create_subjects)", () => {
     const raw = { action: "create_subject", target: "mentioned_person", confidence: "high", display_name: "Анна" };
     const result = parseSubjectIntent(raw);
     assert.ok(result !== null);
+    assert.equal(result!.action, "create_subjects");
     assert.equal(result!.display_name, "Анна");
   });
 });
 
-// ── PR#174 fix: pending_typed_phone preservation tests ────────────────────────
+// ── PR#174-fix: pending_typed_phone preservation ──────────────────────────────
 
 describe("PR#174-fix: pending_typed_phone not cleared until classified", () => {
-  const BASE_STATE: BookingSubjectsState = {
-    active_subject_id: "s2",
-    subjects: [
-      { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-    ],
-    pending_typed_phone: "+420728123456",
-  };
+  const BASE_STATE = makeState("subject_2", [
+    makeSubject("subject_1", "sender", { patient_name: "Рима" }),
+    makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+  ], "+420728123456");
 
   it("A174-fix: pending_typed_phone preserved when booking blocked for classification (no subjectIntent)", () => {
     const updated = postUpdateBookingSubjects({
@@ -800,21 +834,16 @@ describe("PR#174-fix: pending_typed_phone not cleared until classified", () => {
       toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "pending_phone_classification", created_visit: false, may_claim_booked: false, required_next_action: "none", reason: "typed_phone_subject_unclear" } }],
       subjectIntent: null,
     });
-    assert.equal(updated.pending_typed_phone, "+420728123456", "phone must be preserved when classification is pending");
-    // subject must NOT be marked booked
-    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(updated.pending_typed_phone, "+420728123456", "phone must be preserved");
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.equal(s2?.status, "collecting");
   });
 
-  it("B174-fix: pending_typed_phone consumed and assigned to s2 when subjectIntent switches to mentioned_person", () => {
-    const stateFromS1: BookingSubjectsState = {
-      active_subject_id: "s1",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      ],
-      pending_typed_phone: "+420728123456",
-    };
+  it("B174-fix: pending_typed_phone consumed and assigned to subject_2 when subjectIntent switches", () => {
+    const stateFromS1 = makeState("subject_1", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима" }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
+    ], "+420728123456");
     const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
     const updated = postUpdateBookingSubjects({
       current: stateFromS1,
@@ -822,110 +851,397 @@ describe("PR#174-fix: pending_typed_phone not cleared until classified", () => {
       toolResults: [],
       subjectIntent: intent,
     });
-    assert.equal(updated.pending_typed_phone, null, "phone must be consumed after subjectIntent assigns it");
-    assert.equal(updated.active_subject_id, "s2");
-    const s2 = updated.subjects.find((s) => s.id === "s2");
-    assert.equal(s2?.phone_number, "+420728123456", "phone assigned to s2");
-    assert.equal(s2?.phone_source, "typed");
-    assert.equal(s2?.phone_status, "typed_unverified");
-    const s1 = updated.subjects.find((s) => s.id === "s1");
-    assert.equal(s1?.phone_number, null, "s1 phone unchanged");
+    assert.equal(updated.pending_typed_phone, null, "phone must be consumed");
+    assert.equal(updated.active_subject_id, "subject_2");
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.booking_contact?.phone_number, "+420728123456");
+    assert.equal(s2?.booking_contact?.source, "typed");
+    const s1 = updated.subjects.find((s) => s.id === "subject_1");
+    assert.equal(s1?.booking_contact, null);
   });
 
   it("A174-fix-b: normal booking without pending phone → pending_typed_phone stays null", () => {
-    const stateNoPending: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-      ],
-      pending_typed_phone: null,
-    };
+    const stateNoPending = makeState("subject_2", [
+      makeSubject("subject_1", "sender", { patient_name: "Рима" }),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        service: "Чистка",
+        slot: "2026-07-09T12:00",
+        booking_contact: makeBC("+420728123456", "typed", "unverified", "subject_2"),
+      }),
+    ]);
     const updated = postUpdateBookingSubjects({
       current: stateNoPending,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-09", requested_time: "12:00", service: "Чистка" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
       subjectIntent: null,
     });
-    assert.equal(updated.pending_typed_phone, null, "no pending phone to preserve");
-    const s2 = updated.subjects.find((s) => s.id === "s2");
+    assert.equal(updated.pending_typed_phone, null);
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.equal(s2?.status, "booked");
   });
 });
 
-// ── PR#175: classified s2 phone must not be reinjected as pending on next turn ──
+// ── PR#175: existingProvidedPhone must not recreate pending_typed_phone ────────
 
 describe("PR#175: existingProvidedPhone must not recreate pending_typed_phone", () => {
-  // State after Turn 3: s2 has classified typed_unverified phone, pending_typed_phone = null.
-  // existingProvidedPhone still exists in control_flags.provided_phone from Turn 2.
-  // On Turn 4 ("да, всё верно"), no new typed phone → preUpdateBookingSubjects must
-  // NOT set pending_typed_phone from existingProvidedPhone.
+  const stateAfterClassification = makeState("subject_2", [
+    makeSubject("subject_1", "sender", { patient_name: "Миша Бондаренко", service: "Чистка" }),
+    makeSubject("subject_2", "mentioned_person", {
+      patient_name: "Анна Бондаренко",
+      service: "Чистка",
+      booking_contact: makeBC("+420728123456", "typed", "unverified", "subject_2"),
+    }),
+  ]);
 
-  const stateAfterClassification: BookingSubjectsState = {
-    active_subject_id: "s2",
-    subjects: [
-      { id: "s1", label: "sender", name: "Миша Бондаренко", service: "Чистка", slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      { id: "s2", label: "mentioned_person", name: "Анна Бондаренко", service: "Чистка", slot: null, phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-    ],
-    pending_typed_phone: null,
-  };
-
-  it("A175: no current-turn typed phone → pending_typed_phone stays null (existingProvidedPhone not injected)", () => {
-    // Orchestrator now passes typedContactToStore (null here) — not existingProvidedPhone
+  it("A175: no current-turn typed phone → pending_typed_phone stays null", () => {
     const result = preUpdateBookingSubjects({
       current: stateAfterClassification,
       userMessage: "да, всё верно",
       channelContact: null,
-      providedPhone: null,  // typedContactToStore = null (no phone in current message)
+      providedPhone: null,
     });
-    assert.ok(result !== null, "booking_subjects state preserved");
-    assert.equal(result.pending_typed_phone, null, "pending_typed_phone must remain null — s2 phone already classified");
-    const s2 = result.subjects.find((s) => s.id === "s2");
-    assert.equal(s2?.phone_number, "+420728123456", "s2 phone preserved");
-    assert.equal(s2?.phone_status, "typed_unverified", "s2 phone_status preserved");
+    assert.ok(result !== null);
+    assert.equal(result.pending_typed_phone, null);
+    const s2 = result.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.booking_contact?.phone_number, "+420728123456");
+    assert.equal(s2?.booking_contact?.trust, "unverified");
   });
 
-  it("B175: pending carried from previous turn (not yet consumed) when no new phone typed", () => {
-    // Turn 2 state: phone typed, Guard I blocked → pending preserved
-    const stateWithPending: BookingSubjectsState = {
-      active_subject_id: "s2",
-      subjects: [
-        { id: "s1", label: "sender", name: null, service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-        { id: "s2", label: "mentioned_person", name: "Анна", service: null, slot: null, phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
-      ],
-      pending_typed_phone: "+420728123456",
-    };
-    // Turn 3: "это номер мамы" — no new typed phone, but pending must carry forward
+  it("B175: pending carried from current state when no new phone typed", () => {
+    const stateWithPending = makeState("subject_2", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Анна",
+        booking_contact: makeBC("+420728123456", "typed", "unverified", "subject_2"),
+      }),
+    ], "+420728123456");
     const result = preUpdateBookingSubjects({
       current: stateWithPending,
       userMessage: "это номер мамы",
       channelContact: null,
-      providedPhone: null,  // no new phone typed
+      providedPhone: null,
     });
     assert.ok(result !== null);
-    assert.equal(result.pending_typed_phone, "+420728123456", "pending preserved from current state so model can classify it");
+    assert.equal(result.pending_typed_phone, "+420728123456");
   });
 
   it("C175: new typed phone on a later turn overrides previous pending", () => {
-    // User types a completely different phone after classification
+    const pp: ProvidedPhone = {
+      phone_number: "+380991234567",
+      phone_source: "typed",
+      phone_trust: "unverified",
+      phone_consent: false,
+      phone_collected_at: new Date().toISOString(),
+    };
     const result = preUpdateBookingSubjects({
       current: stateAfterClassification,
       userMessage: "мой номер +380991234567",
       channelContact: null,
-      providedPhone: { phone_number: "+380991234567", phone_source: "typed", phone_trust: "unverified", phone_consent: false, phone_collected_at: new Date().toISOString() },
+      providedPhone: pp,
     });
     assert.ok(result !== null);
-    assert.equal(result.pending_typed_phone, "+380991234567", "new phone takes priority over null current pending");
+    assert.equal(result.pending_typed_phone, "+380991234567");
   });
 
-  it("D175: single-subject mode unaffected — null preUpdate result when no second-person signal", () => {
-    // No booking_subjects active, user confirms booking — no subject expansion
+  it("D175: single-subject mode unaffected — null preUpdate result for confirmation message", () => {
     const result = preUpdateBookingSubjects({
       current: null,
       userMessage: "да, всё верно",
       channelContact: null,
       providedPhone: null,
     });
-    assert.equal(result, null, "single-subject mode: no booking_subjects created for confirmation message");
+    assert.equal(result, null);
+  });
+});
+
+// ── PR#176: Subject Registry v2 ──────────────────────────────────────────────
+
+describe("PR#176: Subject Registry v2", () => {
+  // A. Single subject
+  it("A176: single-subject message returns null (no multi-subject overhead)", () => {
+    const result = preUpdateBookingSubjects({
+      current: null,
+      userMessage: "Хочу записаться на чистку",
+      channelContact: null,
+      providedPhone: null,
+    });
+    assert.equal(result, null, "single-subject mode: no booking_subjects created");
+  });
+
+  // B. Sender + mom
+  it("B176: 'Запишите меня и маму' creates subject_1 (sender) + subject_2 (mentioned), active=subject_2", () => {
+    const result = preUpdateBookingSubjects({
+      current: null,
+      userMessage: "Запишите меня и маму",
+      channelContact: null,
+      providedPhone: null,
+    });
+    assert.ok(result !== null);
+    assert.equal(result.version, 2);
+    assert.equal(result.max_subjects, 4);
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
+    assert.ok(s1);
+    assert.equal(s1.role, "sender");
+    const s2 = result.subjects.find((s) => s.id === "subject_2");
+    assert.ok(s2);
+    assert.equal(s2.role, "mentioned_person");
+    assert.equal(result.active_subject_id, "subject_2");
+  });
+
+  // C. Three subjects via create_subjects intent
+  it("C176: create_subjects count=2 with labels fills existing subject_2 label and creates subject_3", () => {
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender", { patient_name: "Мама" }),
+      makeSubject("subject_2", "mentioned_person"), // no label yet
+    ]);
+    const intent: SubjectIntent = {
+      action: "create_subjects",
+      target: "mentioned_person",
+      count: 2,
+      labels: ["дочь 1", "дочь 2"],
+      confidence: "high",
+    };
+    const updated = applySubjectIntent(state, intent);
+    assert.equal(updated.subjects.length, 3);
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.label, "дочь 1", "existing subject_2 gets first label");
+    const s3 = updated.subjects.find((s) => s.id === "subject_3");
+    assert.ok(s3, "subject_3 created");
+    assert.equal(s3?.label, "дочь 2");
+    assert.equal(s3?.role, "mentioned_person");
+  });
+
+  // D. Max subjects exceeded
+  it("D176: create_subjects respects max_subjects=4 — does not exceed 4", () => {
+    const state = makeState("subject_3", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person"),
+      makeSubject("subject_3", "mentioned_person"),
+    ]);
+    const intent: SubjectIntent = {
+      action: "create_subjects",
+      target: "mentioned_person",
+      count: 4,
+      confidence: "high",
+    };
+    const updated = applySubjectIntent(state, intent);
+    assert.ok(updated.subjects.length <= 4, `must not exceed 4 subjects, got ${updated.subjects.length}`);
+  });
+
+  it("D176b: at max already — create_subjects creates nothing", () => {
+    const state = makeState("subject_4", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person"),
+      makeSubject("subject_3", "mentioned_person"),
+      makeSubject("subject_4", "mentioned_person"),
+    ]);
+    const intent: SubjectIntent = { action: "create_subjects", target: "mentioned_person", count: 1, confidence: "high" };
+    const updated = applySubjectIntent(state, intent);
+    assert.equal(updated.subjects.length, 4, "at max: no new subjects created");
+  });
+
+  // E. Shared contact (trusted_contact_owner)
+  it("E176: BookingContact with shared_from_subject / trusted_contact_owner validates and survives normalize", () => {
+    const sharedBC: BookingContact = {
+      phone_number: "+420724334616",
+      source: "shared_from_subject",
+      trust: "trusted_contact_owner",
+      owner_subject_id: "subject_1" as SubjectId,
+      collected_at: null,
+    };
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender", { booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1") }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Дочь 1", booking_contact: sharedBC }),
+    ]);
+    const serialized = JSON.parse(JSON.stringify(state));
+    const restored = normalizeBookingSubjectsState(serialized);
+    assert.ok(restored !== null);
+    const s2 = restored.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.booking_contact?.source, "shared_from_subject");
+    assert.equal(s2?.booking_contact?.trust, "trusted_contact_owner");
+    assert.equal(s2?.booking_contact?.owner_subject_id, "subject_1");
+  });
+
+  // F. Separate typed phone — no contact button needed
+  it("F176: active=subject_2, typed phone → booking_contact.trust=unverified (no button request)", () => {
+    const current = makeState("subject_2", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Парень" }),
+    ]);
+    const pp: ProvidedPhone = {
+      phone_number: "+420728111222",
+      phone_source: "typed",
+      phone_trust: "unverified",
+      phone_consent: false,
+      phone_collected_at: new Date().toISOString(),
+    };
+    const result = preUpdateBookingSubjects({ current, userMessage: "его номер 728111222", channelContact: null, providedPhone: pp });
+    assert.ok(result !== null);
+    const s2 = result.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.booking_contact?.source, "typed");
+    assert.equal(s2?.booking_contact?.trust, "unverified");
+    // The model-visible payload must not have phone_status requiring a button
+    const payload = buildSubjectsContextPayload(result);
+    const payloadS2 = (payload.subjects as Record<string, unknown>[]).find((s) => s.id === "subject_2");
+    assert.equal(payloadS2?.phone_status, "typed_unverified");
+  });
+
+  // G. Ambiguous typed phone — pending set, active contact NOT necessarily set
+  it("G176: multi-subject + ambiguous typed phone → pending_typed_phone set", () => {
+    const current = makeState("subject_1", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person"),
+    ]);
+    const pp: ProvidedPhone = { phone_number: "+420728999000", phone_source: "typed", phone_trust: "unverified", phone_consent: false, phone_collected_at: new Date().toISOString() };
+    // No switch signal in message — active stays subject_1
+    const result = preUpdateBookingSubjects({ current, userMessage: "728999000", channelContact: null, providedPhone: pp });
+    assert.ok(result !== null);
+    assert.equal(result.pending_typed_phone, "+420728999000");
+  });
+
+  // H. Pending phone classification
+  it("H176: applySubjectIntent assigns pending phone to subject_2 when switching to mentioned_person", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Мама" }),
+    ], "+420728999000");
+    const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", confidence: "high" };
+    const updated = applySubjectIntent(state, intent);
+    assert.equal(updated.pending_typed_phone, null, "pending consumed");
+    assert.equal(updated.active_subject_id, "subject_2");
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.booking_contact?.phone_number, "+420728999000");
+    assert.equal(s2?.booking_contact?.trust, "unverified");
+  });
+
+  // I. No reinjection regression (v2)
+  it("I176: after classification, preUpdate with no new phone keeps pending=null (no reinjection)", () => {
+    const classifiedState = makeState("subject_2", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Анна",
+        booking_contact: makeBC("+420728123456", "typed", "unverified", "subject_2"),
+      }),
+    ]); // pending_typed_phone = null (already consumed)
+    const result = preUpdateBookingSubjects({
+      current: classifiedState,
+      userMessage: "да, всё верно",
+      channelContact: null,
+      providedPhone: null,
+    });
+    assert.ok(result !== null);
+    assert.equal(result.pending_typed_phone, null, "no reinjection of old provided_phone");
+  });
+
+  // J. Active subject execution — buildSubjectsContextPayload
+  it("J176: buildSubjectsContextPayload shows correct active_subject_id and all subjects", () => {
+    const state = makeState("subject_3" as SubjectId, [
+      makeSubject("subject_1", "sender", { patient_name: "Мама", service: "Чистка", booking_contact: makeBC("+420724334616", "telegram_contact_button", "trusted", "subject_1") }),
+      makeSubject("subject_2", "mentioned_person", { patient_name: "Дочь 1", label: "дочь 1" }),
+      makeSubject("subject_3" as SubjectId, "mentioned_person", { patient_name: "Дочь 2", label: "дочь 2" }),
+    ]);
+    const payload = buildSubjectsContextPayload(state);
+    assert.equal(payload.active_subject_id, "subject_3");
+    assert.equal(payload.version, 2);
+    assert.equal(payload.max_subjects, 4);
+    const subjects = payload.subjects as Record<string, unknown>[];
+    assert.equal(subjects.length, 3);
+    const s3 = subjects.find((s) => s.id === "subject_3");
+    assert.ok(s3);
+    assert.equal(s3.label, "дочь 2");
+  });
+
+  // K. Booked status proof
+  it("K176: postUpdate with created_visit=true → active subject status=booked, missing recomputed", () => {
+    const state = makeState("subject_2", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person", {
+        patient_name: "Иван",
+        service: "Чистка",
+        slot: "2026-07-15T10:00",
+        booking_contact: makeBC("+420728945521", "typed", "unverified", "subject_2"),
+      }),
+    ]);
+    const updated = postUpdateBookingSubjects({
+      current: state,
+      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-15", requested_time: "10:00", service: "Чистка" } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+    });
+    const s2 = updated.subjects.find((s) => s.id === "subject_2");
+    assert.equal(s2?.status, "booked");
+    assert.deepEqual(s2?.missing, [], "all fields present + booked: missing should be empty");
+  });
+
+  // L. V1 migration
+  it("L176: v1 state (s1/s2) migrates cleanly to v2 preserving phone/service/slot", () => {
+    const v1 = {
+      active_subject_id: "s2",
+      subjects: [
+        { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", phone_number: "+420724334616", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
+        { id: "s2", label: "mentioned_person", name: "Анна", service: null, slot: null, phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      ],
+      pending_typed_phone: "+420728123456",
+    };
+    const result = normalizeBookingSubjectsState(v1);
+    assert.ok(result !== null);
+    assert.equal(result.version, 2);
+    assert.equal(result.max_subjects, 4);
+    assert.equal(result.active_subject_id, "subject_2");
+    const s1 = result.subjects.find((s) => s.id === "subject_1");
+    assert.ok(s1);
+    assert.equal(s1.patient_name, "Рима");
+    assert.equal(s1.role, "sender");
+    assert.equal(s1.booking_contact?.trust, "trusted");
+    assert.equal(s1.booking_contact?.source, "telegram_contact_button");
+    const s2 = result.subjects.find((s) => s.id === "subject_2");
+    assert.ok(s2);
+    assert.equal(s2.patient_name, "Анна");
+    assert.equal(s2.role, "mentioned_person");
+    assert.equal(s2.booking_contact?.source, "typed");
+    assert.equal(s2.booking_contact?.trust, "unverified");
+    assert.equal(result.pending_typed_phone, "+420728123456");
+  });
+
+  // M. parseSubjectIntent v2 fields
+  it("M176: parseSubjectIntent handles v2 create_subjects with count/labels/subject_id", () => {
+    const raw = { action: "create_subjects", target: "mentioned_person", count: 2, labels: ["дочь 1", "дочь 2"], confidence: "high" };
+    const result = parseSubjectIntent(raw);
+    assert.ok(result !== null);
+    assert.equal(result!.action, "create_subjects");
+    assert.equal(result!.count, 2);
+    assert.deepEqual(result!.labels, ["дочь 1", "дочь 2"]);
+  });
+
+  it("M176b: old create_subject (singular) is remapped to create_subjects", () => {
+    const raw = { action: "create_subject", target: "mentioned_person", confidence: "medium" };
+    const result = parseSubjectIntent(raw);
+    assert.ok(result !== null);
+    assert.equal(result!.action, "create_subjects");
+  });
+
+  it("M176c: subject_id field validated — invalid format rejected", () => {
+    const raw = { action: "switch_subject", target: "mentioned_person", subject_id: "not_valid", confidence: "high" };
+    const result = parseSubjectIntent(raw);
+    assert.ok(result !== null);
+    assert.equal(result!.subject_id, null, "invalid subject_id falls back to null");
+  });
+
+  it("M176d: subject_id field validated — valid format accepted", () => {
+    const raw = { action: "switch_subject", target: "mentioned_person", subject_id: "subject_3", confidence: "high" };
+    const result = parseSubjectIntent(raw);
+    assert.ok(result !== null);
+    assert.equal(result!.subject_id, "subject_3");
+  });
+
+  it("M176e: applySubjectIntent with explicit subject_id switches to correct subject", () => {
+    const state = makeState("subject_1", [
+      makeSubject("subject_1", "sender"),
+      makeSubject("subject_2", "mentioned_person"),
+      makeSubject("subject_3" as SubjectId, "mentioned_person"),
+    ]);
+    const intent: SubjectIntent = { action: "switch_subject", target: "mentioned_person", subject_id: "subject_3" as SubjectId, confidence: "high" };
+    const updated = applySubjectIntent(state, intent);
+    assert.equal(updated.active_subject_id, "subject_3");
   });
 });

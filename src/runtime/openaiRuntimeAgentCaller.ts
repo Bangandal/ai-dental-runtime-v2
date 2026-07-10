@@ -255,6 +255,7 @@ function tryParseJsonEnvelope(text: string): Record<string, unknown> | null {
 
 const KNOWN_SUBJECT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject"]);
 const VALID_TARGETS = new Set(["self", "mentioned_person", "active"]);
+const SUBJECT_ID_RE = /^subject_\d+$/;
 
 /**
  * Apply bounded defaults for known subject-intent actions before parseSubjectIntent.
@@ -268,9 +269,19 @@ function normalizeSubjectIntentEnvelope(obj: Record<string, unknown>): Record<st
   if (action === "switch_subject") {
     const target = readString(obj.target);
     const subjectId = readString(obj.subject_id);
-    // Cannot determine switch target without either a valid target or a subject_id
-    if (!VALID_TARGETS.has(target ?? "") && !subjectId) return null;
-    return { ...obj, confidence: readString(obj.confidence) ?? "medium" };
+    const hasValidTarget = VALID_TARGETS.has(target ?? "");
+    const hasValidSubjectId = subjectId !== null && SUBJECT_ID_RE.test(subjectId);
+
+    // An explicit canonical subject_id is sufficient to identify the subject.
+    // Normalize target to mentioned_person because applySubjectIntent prioritizes
+    // intent.subject_id inside that deterministic branch.
+    if (!hasValidTarget && !hasValidSubjectId) return null;
+    return {
+      ...obj,
+      target: hasValidTarget ? target : "mentioned_person",
+      ...(hasValidSubjectId ? { subject_id: subjectId } : {}),
+      confidence: readString(obj.confidence) ?? "medium",
+    };
   }
 
   if (action === "create_subjects") {

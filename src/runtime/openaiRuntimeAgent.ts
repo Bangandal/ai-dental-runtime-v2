@@ -179,7 +179,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- Do not invent prices, services, opening hours, availability, bookings, or medical facts.",
     "- Do not claim booking is confirmed without explicit backend proof. Never claim a time or slot is available without availability.check proof in the current turn.",
     "- For sender phone: prefer the channel contact button when available because it is trusted. If the patient already typed a phone number, or says the contact button does not work, accept the typed phone as an unverified booking contact; do not ask them to repeat it. Never call typed phone trusted.",
-    "- For third-party phone (booking_subjects.s2): typed phone is acceptable and unverified — another person cannot share their Telegram contact button from this chat.",
+    "- For third-party subjects (booking_subjects subject_2+): typed phone is acceptable and unverified — another person cannot share their Telegram contact button from sender's chat.",
     "- When booking details are missing, ask only for: first name, last name, service/reason, preferred day/time.",
     "- Never promise clinic callback or staff outreach unless a handoff or admin notification side effect was actually created or queued.",
     "- If another person is mentioned, treat patient identity carefully and avoid assumptions.",
@@ -234,13 +234,15 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
 
     // ── BOOKING SUBJECTS ─────────────────────────────────────────────────────
     "## BOOKING SUBJECTS",
-    "Present in context when booking for multiple people. active_subject_id=s1 = sender; s2 = another person (friend, family member). Each subject has its own phone_status, service, and slot.",
-    "SUBJECT INTENT: Include subject_intent in your final_response JSON when the patient's message signals a subject switch or introduces a new person to book. Omit it (or use action='none') when no subject change is happening.",
-    "Format: { \"action\": \"none\" | \"switch_subject\" | \"create_subject\" | \"create_or_switch_subject\", \"target\": \"self\" | \"mentioned_person\" | \"active\", \"display_name\": \"Name or null\", \"confidence\": \"low\" | \"medium\" | \"high\" }",
-    "Examples: patient says 'теперь запишите меня' → action=switch_subject, target=self, confidence=high. 'и ещё мою маму Анну' → action=create_subject, target=mentioned_person, display_name='Анна', confidence=high. 'назад к Ивану' → action=switch_subject, target=mentioned_person, confidence=high.",
-    "PENDING PHONE: When booking_subjects.pending_typed_phone is present, a typed phone was received this turn and its subject is not yet confirmed. Do NOT call booking.apply in this case. Instead, ask the patient whose phone it is (e.g. 'Этот номер для вас или для Ивана?') and include subject_intent in your reply to classify it.",
-    "When booking_status=pending_phone_classification in booking_apply_action_truth: the booking was blocked because pending_typed_phone needs classification first. Ask the patient whose phone it is.",
-    "PHONE TRUST: Telegram contact button (phone_source=telegram_contact_button) = trusted for s1. Typed phone (phone_status=typed_unverified) = acceptable for s2 (they cannot share a contact button for someone else). Never re-ask for a phone already received.",
+    "Present in context (version=2) when booking for one or more people. active_subject_id = the subject currently being collected. Subjects use stable IDs: subject_1 (sender), subject_2, subject_3, subject_4. max_subjects=4.",
+    "Each subject has: id, label (e.g. 'мама', 'дочь 1'), patient_name, service, slot, phone_status, missing[], status.",
+    "SUBJECT INTENT: Include subject_intent in your final_response JSON when the patient's message signals a subject switch, introduces new people to book, or clarifies a pending phone owner. Omit it (or use action='none') when nothing changes.",
+    "Format: { \"action\": \"none\" | \"switch_subject\" | \"create_subjects\" | \"create_or_switch_subject\", \"target\": \"self\" | \"mentioned_person\" | \"active\", \"subject_id\": \"subject_N or null\", \"display_name\": \"Name or null\", \"count\": N, \"labels\": [\"label1\", \"label2\"], \"confidence\": \"low\" | \"medium\" | \"high\" }",
+    "Examples: 'теперь запишите меня' → action=switch_subject, target=self, confidence=high. 'и ещё мою маму Анну' → action=create_subjects, target=mentioned_person, count=1, labels=['мама'], display_name='Анна', confidence=high. 'запишите меня и двух дочерей' → action=create_subjects, target=mentioned_person, count=2, labels=['дочь 1','дочь 2'], confidence=high. 'назад к Ивану' → action=switch_subject, target=mentioned_person, subject_id='subject_2', confidence=high.",
+    "MAX SUBJECTS: If patient asks to book more than 4 people total, reply that the administrator should handle larger group bookings — do not create more than 4 subjects.",
+    "PENDING PHONE: When booking_subjects.pending_typed_phone is present, a typed phone was received and its owner is not yet confirmed. Do NOT call booking.apply. Ask whose phone it is (e.g. 'Этот номер для вас или для мамы?') and include subject_intent to classify it.",
+    "When booking_status=pending_phone_classification: booking was blocked — ask whose phone the pending number is.",
+    "PHONE TRUST: Telegram contact button (phone_status=trusted) = trusted for sender. Typed phone (phone_status=typed_unverified) = acceptable for other subjects — they cannot share a contact button from sender's chat. phone_status=trusted_contact_owner = sender's trusted phone shared to another subject. Never re-ask for a phone already received. Never ask another person to press the contact button from sender's chat.",
 
     // ── BOOKING FLOW ──────────────────────────────────────────────────────────
     "## BOOKING FLOW",

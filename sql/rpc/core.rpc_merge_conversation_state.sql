@@ -92,6 +92,18 @@ begin
     );
   end if;
 
+  -- BookingSubjectsState is a complete canonical snapshot. Replace it atomically
+  -- when runtime sends a valid object; preserve the existing snapshot when the key
+  -- is absent, null, or malformed.
+  if jsonb_typeof(v_control_flags->'booking_subjects') = 'object' then
+    v_next_state := jsonb_set(
+      v_next_state,
+      '{booking_subjects}',
+      v_control_flags->'booking_subjects',
+      true
+    );
+  end if;
+
   if jsonb_typeof(v_next_state->'turn_count') = 'number' then
     v_turn_count := (v_next_state->>'turn_count')::integer;
   end if;

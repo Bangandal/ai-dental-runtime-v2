@@ -203,16 +203,22 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     readString(final?.final_patient_reply) ??
     "";
 
-  // Step 1: Try to parse any JSON envelope from model text output.
-  // Extracts reply/ui regardless of action — raw JSON must never reach the patient.
+  // Step 1: Parse the first balanced JSON object from model text output.
+  // The model may append its patient-facing reply after the JSON envelope.
   const envelope = tryParseJsonEnvelope(rawOutputText);
+  const envelopeValue = envelope?.value ?? null;
 
-  // Step 2: Extract patient reply from envelope; fall back to raw text for plain strings.
+  // Step 2: Prefer an explicit reply field; otherwise use trailing text after
+  // the balanced JSON object. Raw JSON must never reach the patient.
   const outputText = envelope !== null
-    ? (readString(envelope.reply) ?? readString(envelope.final_patient_reply) ?? "")
+    ? (
+        readString(envelope.value.reply) ??
+        readString(envelope.value.final_patient_reply) ??
+        envelope.trailingText
+      )
     : rawOutputText;
 
-  const uiRaw = asObject(final?.ui ?? envelope?.ui);
+  const uiRaw = asObject(final?.ui ?? envelopeValue?.ui);
   const uiTelegramRaw = asObject(uiRaw?.telegram);
   const ui: AgentUiActions | undefined = uiTelegramRaw
     ? {
@@ -225,7 +231,7 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
 
   // Step 3: Normalize envelope for known subject-intent actions, then parse.
   // subject_intent may also live in response.final_response.subject_intent (structured-output path).
-  const normalizedEnvelope = envelope !== null ? normalizeSubjectIntentEnvelope(envelope) : null;
+  const normalizedEnvelope = envelopeValue !== null ? normalizeSubjectIntentEnvelope(envelopeValue) : null;
   const subjectIntent =
     parseSubjectIntent(final?.subject_intent) ??
     (normalizedEnvelope !== null ? parseSubjectIntent(normalizedEnvelope) : null) ??
@@ -241,16 +247,75 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
   };
 }
 
-/** Parse any JSON object from model text output — used to extract reply/ui/subject_intent. */
-function tryParseJsonEnvelope(text: string): Record<string, unknown> | null {
-  if (!text.trim().startsWith("{")) return null;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text.trim());
-  } catch {
-    return null;
+interface ParsedJsonEnvelope {
+  value: Record<string, unknown>;
+  trailingText: string;
+}
+
+/**
+ * Parse the first complete JSON object at the start of model text.
+ * The scanner is string/escape aware, so braces inside JSON strings and nested
+ * objects do not terminate the envelope early. Any non-JSON suffix is returned
+ * as the patient-facing trailing reply.
+ */
+function tryParseJsonEnvelope(text: string): ParsedJsonEnvelope | null {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{")) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < trimmed.length; i += 1) {
+    const char = trimmed[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') inString = false;
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+
+    if (char !== "}") continue;
+
+    depth -= 1;
+    if (depth < 0) return null;
+    if (depth !== 0) continue;
+
+    const jsonText = trimmed.slice(0, i + 1);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(jsonText);
+    } catch {
+      return null;
+    }
+
+    const value = asObject(parsed);
+    if (!value) return null;
+
+    return {
+      value,
+      trailingText: trimmed.slice(i + 1).trim(),
+    };
   }
-  return asObject(parsed);
+
+  return null;
 }
 
 const KNOWN_SUBJECT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject"]);

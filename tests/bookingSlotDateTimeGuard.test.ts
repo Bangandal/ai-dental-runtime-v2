@@ -134,6 +134,8 @@ test("BSDT-1: avail.check returns 2026-07-10T12:00, booking.apply requests 2026-
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    // Pin "now" to 11:00 Prague (09:00 UTC) so the 2026-07-10 12:00 slot is in the future.
+    now: new Date("2026-07-10T09:00:00.000Z"),
     caller: makeCallerSequence([
       {
         type: "tool_requests",

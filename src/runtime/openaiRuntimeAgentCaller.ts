@@ -203,13 +203,17 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     readString(final?.final_patient_reply) ??
     "";
 
-  // Step 1: Try to parse any JSON envelope from model text output.
-  // Extracts reply/ui regardless of action — raw JSON must never reach the patient.
-  const envelope = tryParseJsonEnvelope(rawOutputText);
+  // Step 1: Parse the first complete JSON object from model text output.
+  // The model may append a patient-facing sentence after the JSON envelope.
+  const parsedEnvelope = tryParseJsonEnvelope(rawOutputText);
+  const envelope = parsedEnvelope?.envelope ?? null;
+  const trailingReply = parsedEnvelope?.trailingText ?? null;
 
-  // Step 2: Extract patient reply from envelope; fall back to raw text for plain strings.
+  // Step 2: Extract patient reply from the envelope. If the structured reply
+  // is absent, use text after the closing JSON brace. Raw JSON must never reach
+  // the patient merely because the model appended trailing text.
   const outputText = envelope !== null
-    ? (readString(envelope.reply) ?? readString(envelope.final_patient_reply) ?? "")
+    ? (readString(envelope.reply) ?? readString(envelope.final_patient_reply) ?? trailingReply ?? "")
     : rawOutputText;
 
   const uiRaw = asObject(final?.ui ?? envelope?.ui);
@@ -241,16 +245,75 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
   };
 }
 
-/** Parse any JSON object from model text output — used to extract reply/ui/subject_intent. */
-function tryParseJsonEnvelope(text: string): Record<string, unknown> | null {
-  if (!text.trim().startsWith("{")) return null;
+interface ParsedJsonEnvelope {
+  envelope: Record<string, unknown>;
+  trailingText: string | null;
+}
+
+/**
+ * Parse the first complete JSON object at the start of model text output.
+ * The boundary scanner understands nested objects, quoted braces, and escapes.
+ */
+function tryParseJsonEnvelope(text: string): ParsedJsonEnvelope | null {
+  const trimmedStart = text.trimStart();
+  if (!trimmedStart.startsWith("{")) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  let endIndex = -1;
+
+  for (let i = 0; i < trimmedStart.length; i += 1) {
+    const char = trimmedStart[i]!;
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (char === "{") {
+      depth += 1;
+      continue;
+    }
+
+    if (char === "}") {
+      depth -= 1;
+      if (depth < 0) return null;
+      if (depth === 0) {
+        endIndex = i + 1;
+        break;
+      }
+    }
+  }
+
+  if (endIndex < 0 || depth !== 0 || inString) return null;
+
   let parsed: unknown;
   try {
-    parsed = JSON.parse(text.trim());
+    parsed = JSON.parse(trimmedStart.slice(0, endIndex));
   } catch {
     return null;
   }
-  return asObject(parsed);
+
+  const envelope = asObject(parsed);
+  if (!envelope) return null;
+
+  const trailingText = trimmedStart.slice(endIndex).trim();
+  return {
+    envelope,
+    trailingText: trailingText.length > 0 ? trailingText : null,
+  };
 }
 
 const KNOWN_SUBJECT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject"]);

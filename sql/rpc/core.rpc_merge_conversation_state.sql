@@ -83,6 +83,15 @@ begin
     v_next_state := jsonb_set(v_next_state, '{topic_memory}', v_control_flags->'topic_memory', true);
   end if;
 
+  if jsonb_typeof(v_control_flags->'booking_subjects') = 'object' then
+    v_next_state := jsonb_set(
+      v_next_state,
+      '{booking_subjects}',
+      v_control_flags->'booking_subjects',
+      true
+    );
+  end if;
+
   if jsonb_typeof(v_control_flags->'channel_contact') = 'object' then
     v_next_state := jsonb_set(
       v_next_state,

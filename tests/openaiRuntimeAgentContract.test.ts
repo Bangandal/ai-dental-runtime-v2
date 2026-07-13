@@ -707,3 +707,65 @@ test("RC4-C: exact time rule: if available, confirm only that time; list alterna
     "AVAILABILITY RULES must say alternatives only when exact time is not available",
   );
 });
+
+// ── PR #178 — greeting / wellbeing / one-field / phone button ────────────────
+
+test("PR178: PATH A covers social small-talk ('как дела') as low-signal", () => {
+  const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
+  assert.match(
+    instruction,
+    /как дела/i,
+    "PATH A must list social small-talk ('как дела') as a low-signal trigger",
+  );
+});
+
+test("PR178: PATH A forbids claiming feelings or emotional state", () => {
+  const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
+  assert.match(
+    instruction,
+    /Do NOT claim feelings or emotional state/i,
+    "PATH A must explicitly prohibit claiming emotional state (e.g. 'Всё хорошо, спасибо')",
+  );
+});
+
+test("PR178: NEVER section prohibits claiming human wellbeing", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /Never claim human feelings or wellbeing/i,
+    "NEVER section must prohibit claiming human feelings or wellbeing",
+  );
+  assert.match(
+    instruction,
+    /virtual AI assistant with no emotional state/i,
+    "NEVER section must state agent is a virtual AI assistant with no emotional state",
+  );
+});
+
+test("PR178: INTAKE FLOW instructs asking ONE missing field at a time", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /Ask for ONE missing field at a time/i,
+    "INTAKE FLOW must say 'Ask for ONE missing field at a time'",
+  );
+  assert.match(
+    instruction,
+    /do not combine name .* service .* time into a single question/i,
+    "INTAKE FLOW must prohibit combining multiple fields in one question",
+  );
+});
+
+test("PR178: ask_for_phone action allows typed phone when button absent or trusted phone already on file", () => {
+  const instruction = buildRuntimeAgentSystemInstruction();
+  assert.match(
+    instruction,
+    /trusted phone.*already on file|already on file.*trusted phone/i,
+    "ask_for_phone must handle case where trusted phone is already on file",
+  );
+  assert.match(
+    instruction,
+    /do not mention the button or ask again/i,
+    "ask_for_phone must say do not ask again when phone is already available",
+  );
+});

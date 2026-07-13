@@ -23,12 +23,13 @@ import { hasTrustedPhone } from "./bookingContactGuard.ts";
 import type { ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import { extractTypedPhone } from "./typedPhoneExtractor.ts";
 import {
-  preUpdateBookingSubjects,
+  initBookingSubjectsForTurn,
   postUpdateBookingSubjects,
   buildSubjectsContextPayload,
   detectSubjectMismatch,
+  bootstrapBookingSubjectsFromIntent,
 } from "./bookingSubjectsState.ts";
-import type { BookingSubjectsState, S1Seed } from "./bookingSubjectsState.ts";
+import type { BookingSubjectsState, S1Seed, SubjectId } from "./bookingSubjectsState.ts";
 import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
 import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
@@ -280,6 +281,7 @@ export async function runRuntimeTurnOrchestrated(
   let caseLiteCurrent: RuntimeCaseLite | null = null;
   let bookingSubjectsForTurn: BookingSubjectsState | null = null;
   let providedPhoneForTurnOuter: ProvidedPhone | null = null;
+  let s1SeedForBootstrap: S1Seed | null = null;
   if (!canonicalContactId) {
     runtimeContextDebug.skip_reason = "contact_unavailable";
   } else if (deps.runtimeContextRepository) {
@@ -324,17 +326,15 @@ export async function runRuntimeTurnOrchestrated(
           service: asString(collectedRaw.service) ?? asString(collectedRaw.service_reason),
           slot: runtimeContextResult.data.selected_slot_starts_at,
         };
+        s1SeedForBootstrap = s1Seed;
 
-        // Pre-turn booking subjects update: switch signals + phone status.
-        // Pass only the current-turn typed phone — existingProvidedPhone must not
-        // recreate pending_typed_phone on subsequent turns after it was already
-        // classified and assigned to a subject.
-        bookingSubjectsForTurn = preUpdateBookingSubjects({
+        // Pre-turn booking subjects init: carry forward existing state + apply channel contact.
+        // No regex-based bootstrap — registry activates only via model subject_intent.
+        // Typed phone goes to pending_typed_phone only (phone_ownership_intent resolves ownership).
+        bookingSubjectsForTurn = initBookingSubjectsForTurn({
           current: runtimeContextResult.data.booking_subjects ?? null,
-          userMessage: runtimeTurnInput.user_message,
           channelContact: channelContactForCase ?? null,
-          providedPhone: typedContactToStore,
-          s1Seed,
+          pendingTypedPhone: typedContactToStore?.phone_number ?? null,
         });
 
         const existingCaseLite: RuntimeCaseLite = runtimeContextResult.data.case_context_lite ?? buildDefaultRuntimeCaseLite({
@@ -504,12 +504,27 @@ export async function runRuntimeTurnOrchestrated(
       caseLiteCurrent = applyBookingStatusToCase(caseLiteCurrent, result.tool_results);
     }
 
-    const bookingSubjectsToStore: BookingSubjectsState | null = bookingSubjectsForTurn
+    // subject_id_at_execution: frozen before model ran (= active subject when booking.apply executed).
+    const subjectIdAtExecution: SubjectId | null = bookingSubjectsForTurn?.active_subject_id ?? null;
+
+    // When no prior state exists and model signals subject creation, bootstrap registry.
+    const preSubjects = bookingSubjectsForTurn
+      ?? (result.subject_intent
+        ? bootstrapBookingSubjectsFromIntent(
+            result.subject_intent,
+            s1SeedForBootstrap,
+            runtimeTurnInput.channel_contact ?? null,
+          )
+        : null);
+
+    const bookingSubjectsToStore: BookingSubjectsState | null = preSubjects
       ? postUpdateBookingSubjects({
-          current: bookingSubjectsForTurn,
+          current: preSubjects,
           toolRequests: result.tool_requests ?? [],
           toolResults: result.tool_results ?? [],
-          subjectIntent: result.subject_intent ?? null,
+          subjectIntent: bookingSubjectsForTurn ? (result.subject_intent ?? null) : null,
+          phoneOwnershipIntent: result.phone_ownership_intent ?? null,
+          subjectIdAtExecution: subjectIdAtExecution ?? undefined,
         })
       : null;
 

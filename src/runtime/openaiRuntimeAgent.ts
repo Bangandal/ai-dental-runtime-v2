@@ -93,6 +93,8 @@ export interface RuntimeAgentFinalResponse {
   ui?: AgentUiActions;
   /** Model-produced subject switch intent for multi-person booking flows. */
   subject_intent?: import("./bookingSubjectsState.ts").SubjectIntent | null;
+  /** Model-produced phone ownership resolution intent. */
+  phone_ownership_intent?: import("./bookingSubjectsState.ts").PhoneOwnershipIntent | null;
 }
 
 export interface RuntimeAgentTurnResult {
@@ -110,6 +112,8 @@ export interface RuntimeAgentTurnResult {
   /** Validated subject_intent from the model's final response — propagated for
    * postUpdateBookingSubjects to apply after the turn completes. */
   subject_intent?: import("./bookingSubjectsState.ts").SubjectIntent | null;
+  /** Validated phone_ownership_intent from the model's final response. */
+  phone_ownership_intent?: import("./bookingSubjectsState.ts").PhoneOwnershipIntent | null;
 }
 
 export interface OpenAIRuntimeAgent {

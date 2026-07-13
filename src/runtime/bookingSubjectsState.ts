@@ -1,8 +1,9 @@
+import { randomUUID } from "node:crypto";
 import type { ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import type { RuntimeAgentToolRequest, RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
 import { TRUSTED_PHONE_SOURCES } from "../integrations/cliniccard/bookingApplyExecutor.ts";
 
-// ── v2 types ──────────────────────────────────────────────────────────────────
+// ── v3 types ──────────────────────────────────────────────────────────────────
 
 export type SubjectId = `subject_${number}`;
 
@@ -37,11 +38,15 @@ export interface BookingSubject {
 }
 
 export interface BookingSubjectsState {
-  version: 2;
+  version: 3;
   active_subject_id: SubjectId;
   subjects: BookingSubject[];
   pending_typed_phone: string | null;
   max_subjects: 4;
+  episode_id: string;
+  episode_status: "active" | "completed";
+  episode_created_at: string;
+  episode_completed_at: string | null;
 }
 
 export interface S1Seed {
@@ -50,10 +55,10 @@ export interface S1Seed {
   slot: string | null;
 }
 
-// ── subject_intent v2 ─────────────────────────────────────────────────────────
+// ── subject_intent v3 ─────────────────────────────────────────────────────────
 
 export interface SubjectIntent {
-  action: "none" | "switch_subject" | "create_subjects" | "create_or_switch_subject";
+  action: "none" | "switch_subject" | "create_subjects" | "create_or_switch_subject" | "start_new_episode";
   target: "self" | "mentioned_person" | "active";
   subject_id?: SubjectId | null;
   display_name?: string | null;
@@ -74,7 +79,7 @@ export function parseSubjectIntent(raw: unknown): SubjectIntent | null {
   // Backward compat: old create_subject (singular) → create_subjects
   if (action === "create_subject") action = "create_subjects";
 
-  if (!["none", "switch_subject", "create_subjects", "create_or_switch_subject"].includes(action)) return null;
+  if (!["none", "switch_subject", "create_subjects", "create_or_switch_subject", "start_new_episode"].includes(action)) return null;
   if (!["self", "mentioned_person", "active"].includes(target as string)) return null;
   if (!["low", "medium", "high"].includes(confidence as string)) return null;
 
@@ -100,6 +105,34 @@ export function parseSubjectIntent(raw: unknown): SubjectIntent | null {
     count,
     labels: labels && labels.length > 0 ? labels : null,
     confidence: confidence as SubjectIntent["confidence"],
+  };
+}
+
+// ── phone_ownership_intent ────────────────────────────────────────────────────
+
+export interface PhoneOwnershipIntent {
+  action: "none" | "assign_pending_phone" | "share_sender_contact";
+  target_subject_id: SubjectId | null;
+  confidence: "low" | "medium" | "high";
+}
+
+export function parsePhoneOwnershipIntent(raw: unknown): PhoneOwnershipIntent | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const action = r.action;
+  const confidence = r.confidence;
+
+  if (!["none", "assign_pending_phone", "share_sender_contact"].includes(action as string)) return null;
+  if (!["low", "medium", "high"].includes(confidence as string)) return null;
+
+  const target = typeof r.target_subject_id === "string" && SUBJECT_ID_RE.test(r.target_subject_id)
+    ? (r.target_subject_id as SubjectId)
+    : null;
+
+  return {
+    action: action as PhoneOwnershipIntent["action"],
+    target_subject_id: target,
+    confidence: confidence as PhoneOwnershipIntent["confidence"],
   };
 }
 
@@ -144,16 +177,38 @@ function nextSubjectId(existing: BookingSubject[]): SubjectId | null {
   return null;
 }
 
+function newEpisodeId(): string {
+  return `ep_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+}
+
+function freshEpisode(): Pick<BookingSubjectsState, "episode_id" | "episode_status" | "episode_created_at" | "episode_completed_at"> {
+  return {
+    episode_id: newEpisodeId(),
+    episode_status: "active",
+    episode_created_at: new Date().toISOString(),
+    episode_completed_at: null,
+  };
+}
+
 // ── applySubjectIntent ────────────────────────────────────────────────────────
 
 export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectIntent): BookingSubjectsState {
   if (intent.confidence === "low") return state;
   if (intent.action === "none") return state;
 
+  // start_new_episode: reset episode metadata and clear booked status
+  if (intent.action === "start_new_episode") {
+    const subjects = state.subjects.map((s) => ({
+      ...s,
+      status: "collecting" as const,
+      missing: computeMissing({ ...s, status: "collecting" as const }),
+    }));
+    return { ...state, subjects, ...freshEpisode() };
+  }
+
   const MAX = state.max_subjects;
   let { active_subject_id, pending_typed_phone } = state;
   let subjects = [...state.subjects];
-  const prevActiveId = active_subject_id;
 
   if (intent.action === "switch_subject" || intent.action === "create_or_switch_subject") {
     if (intent.target === "self") {
@@ -161,7 +216,6 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
     } else if (intent.target === "mentioned_person") {
       if (intent.subject_id && subjects.some((s) => s.id === intent.subject_id)) {
         active_subject_id = intent.subject_id;
-        // Fill patient_name from display_name if missing (Blocker 2 fix)
         if (intent.display_name) {
           subjects = subjects.map((s) =>
             s.id === intent.subject_id && !s.patient_name
@@ -173,7 +227,6 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
         const mp = subjects.find((s) => s.role === "mentioned_person");
         if (mp) {
           active_subject_id = mp.id;
-          // Fill label and patient_name from display_name if missing (Blocker 2 fix)
           if (intent.display_name) {
             subjects = subjects.map((s) =>
               s.id === mp.id
@@ -190,7 +243,7 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
           if (newId && subjects.length < MAX) {
             const newSubject = {
               ...createSubject(newId, "mentioned_person", intent.display_name ?? null),
-              patient_name: intent.display_name ?? null,  // Blocker 2 fix: persist display_name
+              patient_name: intent.display_name ?? null,
             };
             newSubject.missing = computeMissing(newSubject);
             subjects = [...subjects, newSubject];
@@ -203,13 +256,11 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
     const intentLabels = intent.labels ?? [];
     let labelIdx = 0;
 
-    // Label existing unlabeled mentioned_person subjects first
     const requestedCount = intent.count ?? 1;
     const singleTarget = requestedCount === 1 && intentLabels.length <= 1;
     subjects = subjects.map((s) => {
       if (s.role === "mentioned_person" && !s.label && labelIdx < intentLabels.length) {
         const updated = { ...s, label: intentLabels[labelIdx++] };
-        // When a single existing subject is being labeled, propagate display_name → patient_name
         if (singleTarget && intent.display_name && !updated.patient_name) {
           updated.patient_name = intent.display_name;
         }
@@ -218,10 +269,7 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
       return s;
     });
 
-    // Create only remaining subjects after labeling existing ones
     const toCreate = Math.min(requestedCount - labelIdx, MAX - subjects.length);
-
-    // display_name applied to patient_name when creating a single subject (Blocker 2 fix)
     const singleDisplayName = toCreate === 1 ? (intent.display_name ?? null) : null;
 
     let firstCreatedId: SubjectId | null = null;
@@ -240,10 +288,7 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
     if (firstCreatedId) active_subject_id = firstCreatedId;
   }
 
-  // Resolve the phone target: intent.subject_id if valid, else derive from target/action.
-  // Consume pending_typed_phone whenever intent confirms an owner — even if active didn't change.
-  // (Bug fix: previous code required active_subject_id !== prevActiveId, which broke the case
-  //  where the user confirms "номер мамы" while subject_2 is already active.)
+  // Consume pending_typed_phone whenever intent confirms an owner.
   if (pending_typed_phone) {
     let phoneTargetId: SubjectId | null = null;
     if (intent.subject_id && subjects.some((s) => s.id === intent.subject_id)) {
@@ -274,69 +319,60 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
   return { ...state, active_subject_id, subjects, pending_typed_phone };
 }
 
-// ── switch signal detection (bounded regex fallback) ─────────────────────────
+// ── applyPhoneOwnershipIntent ─────────────────────────────────────────────────
 
-const SELF_SWITCH_PATTERNS = [
-  /пока\s+меня/i,
-  /тогда\s+меня/i,
-  /давайте\s+меня/i,
-  /запишите?\s+меня(?!\s+и\s+(маму|папу|брата|сестру|мужа|жену|друга|подругу|ребёнка|дочку|сына|его|её))/i,
-  /ладно\s+меня/i,
-  /лучше\s+меня/i,
-  /ну\s+меня/i,
-  /тогда\s+я\b/i,
-  /^меня$/i,
-];
+export function applyPhoneOwnershipIntent(
+  state: BookingSubjectsState,
+  intent: PhoneOwnershipIntent,
+): BookingSubjectsState {
+  if (intent.confidence === "low") return state;
+  if (intent.action === "none") return state;
 
-const THIRD_PARTY_CREATE_REGEXPS: RegExp[] = [
-  /запишите?\s+(?!меня\b|мне\b|я\b)(\S+)/i,
-  /ещё\s+(?:одного|одну|человека|пациент\w*)/i,
-  /(?:тоже|также)\s+запишите?/i,
-  /запишите?\s+(?:ещё|и\s+ещё)/i,
-  // \b doesn't fire on Cyrillic — keep original as dead code (doesn't match anything harmful)
-  /\b(его|её|парня|брата|сестру|маму|папу|друга|подругу|мужа|жену|ребёнка|дочку|сына)\b\s+тоже/i,
-  /запишите?\s+(его|её|парня|брата|сестру|маму|папу|друга|подругу|мужа|жену)(\s|$)/i,
-  /запишите?\s+меня\s+и\s+(маму|папу|брата|сестру|мужа|жену|друга|подругу)/i,
-  /тоже\s+(?:надо|нужно)?\s*запишите?/i,
-  // "и маму/папу/etc" — use space anchors since \b won't cross Cyrillic boundary
-  /(^|\s)и\s+(его|её|парня|брата|друга|сестру|маму|папу)(\s|$)/i,
-];
-
-const THIRD_PARTY_SWITCH_REGEXPS: RegExp[] = [
-  /(^|\s)(его|её|парня|брата|сестру|маму|папу|друга|подругу|мужа|жену)(\s|$|[?,.])/i,
-  /для\s+(?:него|неё)/i,
-];
-
-export type SwitchSignal = "self" | "third_party_create" | "third_party_switch" | null;
-
-export function detectSwitchSignal(text: string, existingMentionedName?: string | null): SwitchSignal {
-  for (const p of SELF_SWITCH_PATTERNS) {
-    if (p.test(text)) return "self";
+  if (intent.action === "assign_pending_phone") {
+    if (!state.pending_typed_phone) return state;
+    const targetId = intent.target_subject_id ?? state.active_subject_id;
+    let subjects = state.subjects.map((s) => {
+      if (s.id !== targetId) return s;
+      if (s.booking_contact?.trust === "trusted") return s;
+      const bc: BookingContact = {
+        phone_number: state.pending_typed_phone!,
+        source: "typed",
+        trust: "unverified",
+        owner_subject_id: targetId,
+        collected_at: new Date().toISOString(),
+      };
+      return { ...s, booking_contact: bc };
+    });
+    subjects = subjects.map((s) => ({ ...s, missing: computeMissing(s) }));
+    return { ...state, subjects, pending_typed_phone: null };
   }
-  for (const p of THIRD_PARTY_CREATE_REGEXPS) {
-    if (p.test(text)) return "third_party_create";
+
+  if (intent.action === "share_sender_contact") {
+    const targetId = intent.target_subject_id;
+    if (!targetId) return state;
+    const s1 = state.subjects.find((s) => s.id === "subject_1" as SubjectId);
+    const senderContact = s1?.booking_contact;
+    if (!senderContact || senderContact.trust !== "trusted") return state;
+    let subjects = state.subjects.map((s) => {
+      if (s.id !== targetId) return s;
+      if (s.booking_contact?.trust === "trusted") return s;
+      const bc: BookingContact = {
+        phone_number: senderContact.phone_number,
+        source: "shared_from_subject",
+        trust: "trusted_contact_owner",
+        owner_subject_id: "subject_1" as SubjectId,
+        collected_at: new Date().toISOString(),
+      };
+      return { ...s, booking_contact: bc };
+    });
+    subjects = subjects.map((s) => ({ ...s, missing: computeMissing(s) }));
+    return { ...state, subjects };
   }
-  if (existingMentionedName) {
-    const firstName = existingMentionedName.split(" ")[0];
-    if (firstName && firstName.length >= 3) {
-      const stem = firstName.slice(0, -1).toLowerCase();
-      const textLow = text.toLowerCase();
-      const idx = textLow.indexOf(stem);
-      if (idx !== -1) {
-        const isCyrillic = (c: string | undefined) => c !== undefined && /[а-яёА-ЯЁa-zA-Z0-9]/u.test(c);
-        if (!isCyrillic(textLow[idx - 1]) || !isCyrillic(textLow[idx + stem.length])) {
-          return "third_party_switch";
-        }
-      }
-    }
-  }
-  for (const p of THIRD_PARTY_SWITCH_REGEXPS) {
-    if (p.test(text)) return "third_party_switch";
-  }
-  return null;
+
+  return state;
 }
 
-// ── v1 → v2 migration ────────────────────────────────────────────────────────
+// ── v2→v3 migration helpers ───────────────────────────────────────────────────
 
 function migrateV1Subject(sub: Record<string, unknown>, newId: SubjectId): BookingSubject {
   const role = sub.label === "mentioned_person" ? "mentioned_person" : "sender" as const;
@@ -432,7 +468,29 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
 
-  // v2 path
+  // v3 path
+  if (r.version === 3) {
+    const activeId = r.active_subject_id;
+    if (typeof activeId !== "string" || !SUBJECT_ID_RE.test(activeId)) return null;
+    const subjects = Array.isArray(r.subjects)
+      ? r.subjects.map(validateV2Subject).filter((s): s is BookingSubject => s !== null)
+      : [];
+    if (subjects.length === 0) return null;
+    const episodeStatus: "active" | "completed" = r.episode_status === "completed" ? "completed" : "active";
+    return {
+      version: 3,
+      active_subject_id: activeId as SubjectId,
+      subjects,
+      pending_typed_phone: typeof r.pending_typed_phone === "string" ? r.pending_typed_phone : null,
+      max_subjects: 4,
+      episode_id: typeof r.episode_id === "string" ? r.episode_id : newEpisodeId(),
+      episode_status: episodeStatus,
+      episode_created_at: typeof r.episode_created_at === "string" ? r.episode_created_at : new Date().toISOString(),
+      episode_completed_at: typeof r.episode_completed_at === "string" ? r.episode_completed_at : null,
+    };
+  }
+
+  // v2 → v3 upgrade path
   if (r.version === 2) {
     const activeId = r.active_subject_id;
     if (typeof activeId !== "string" || !SUBJECT_ID_RE.test(activeId)) return null;
@@ -441,11 +499,12 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
       : [];
     if (subjects.length === 0) return null;
     return {
-      version: 2,
+      version: 3,
       active_subject_id: activeId as SubjectId,
       subjects,
       pending_typed_phone: typeof r.pending_typed_phone === "string" ? r.pending_typed_phone : null,
       max_subjects: 4,
+      ...freshEpisode(),
     };
   }
 
@@ -467,11 +526,12 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
   if (subjects.length === 0) return null;
 
   return {
-    version: 2,
+    version: 3,
     active_subject_id: ID_MAP[v1ActiveId],
     subjects,
     pending_typed_phone: typeof r.pending_typed_phone === "string" ? r.pending_typed_phone : null,
     max_subjects: 4,
+    ...freshEpisode(),
   };
 }
 
@@ -479,71 +539,29 @@ export function deserializeBookingSubjects(raw: unknown): BookingSubjectsState |
   return normalizeBookingSubjectsState(raw);
 }
 
-// ── pre-turn update ───────────────────────────────────────────────────────────
+// ── pre-turn init (no regex — structured intent only) ─────────────────────────
 
-export function preUpdateBookingSubjects(params: {
+/**
+ * Prepare booking subjects state for a new turn.
+ * - Returns null if no prior state exists (registry not yet active).
+ * - Applies channel_contact to subject_1 when available.
+ * - Typed phone goes to pending_typed_phone ONLY — never auto-assigned to active subject.
+ *   Phone ownership is resolved by phone_ownership_intent from the model response.
+ */
+export function initBookingSubjectsForTurn(params: {
   current: BookingSubjectsState | null;
-  userMessage: string;
   channelContact: ChannelContact | null;
-  providedPhone: ProvidedPhone | null;
-  s1Seed?: S1Seed | null;
+  pendingTypedPhone: string | null; // current-turn extracted typed phone only
 }): BookingSubjectsState | null {
-  const { current, userMessage, channelContact, providedPhone, s1Seed } = params;
+  const { current, channelContact, pendingTypedPhone } = params;
 
-  const currentV2 = current ? (normalizeBookingSubjectsState(current) ?? null) : null;
+  if (!current) return null;
 
-  const existingMentionedName = currentV2?.subjects.find((s) => s.role === "mentioned_person")?.patient_name ?? null;
-  const signal = detectSwitchSignal(userMessage, existingMentionedName);
-
-  const hasMentionedPerson = currentV2?.subjects.some((s) => s.role === "mentioned_person") ?? false;
-  const hasSecondPersonSignal =
-    signal === "third_party_create" ||
-    signal === "third_party_switch" ||
-    hasMentionedPerson;
-
-  if (!hasSecondPersonSignal) return null;
-
-  const state: BookingSubjectsState = currentV2 ?? {
-    version: 2,
-    active_subject_id: "subject_1" as SubjectId,
-    subjects: [
-      {
-        ...createSubject("subject_1" as SubjectId, "sender"),
-        patient_name: s1Seed?.name ?? null,
-        service: s1Seed?.service ?? null,
-        slot: s1Seed?.slot ?? null,
-        missing: [],
-      },
-    ],
-    pending_typed_phone: null,
-    max_subjects: 4,
-  };
-
-  let subjects = [...state.subjects];
-  let activeId: SubjectId = state.active_subject_id;
-
-  // Create subject_2 from text signal if no mentioned_person exists yet
-  if (signal === "third_party_create" && !subjects.some((s) => s.role === "mentioned_person")) {
-    const newId = nextSubjectId(subjects);
-    if (newId && subjects.length < state.max_subjects) {
-      subjects = [...subjects, createSubject(newId, "mentioned_person")];
-    }
-  }
-
-  // Determine active subject
-  if (signal === "self") {
-    activeId = "subject_1" as SubjectId;
-  } else if (signal === "third_party_create" || signal === "third_party_switch") {
-    const mp = subjects.find((s) => s.role === "mentioned_person");
-    if (mp) activeId = mp.id;
-  }
-
-  // Apply channel contact to subject_1
   const s1Trusted = channelContact != null && TRUSTED_PHONE_SOURCES.has(channelContact.phone_source);
-  subjects = subjects.map((s) => {
-    if (s.id !== "subject_1") return s;
+  let subjects = current.subjects.map((s) => {
+    if (s.id !== "subject_1" as SubjectId) return s;
     if (!channelContact?.phone_number) return s;
-    if (s.booking_contact?.trust === "trusted") return s; // don't downgrade
+    if (s.booking_contact?.trust === "trusted") return s;
     const bc: BookingContact = {
       phone_number: channelContact.phone_number,
       source: channelContact.phone_source as BookingContactSource,
@@ -553,28 +571,58 @@ export function preUpdateBookingSubjects(params: {
     };
     return { ...s, booking_contact: bc };
   });
-
-  // Assign current-turn typed phone to active subject if it has no contact
-  if (providedPhone) {
-    subjects = subjects.map((s) => {
-      if (s.id !== activeId) return s;
-      if (s.booking_contact?.trust === "trusted") return s;
-      const bc: BookingContact = {
-        phone_number: providedPhone.phone_number,
-        source: "typed",
-        trust: "unverified",
-        owner_subject_id: activeId,
-        collected_at: new Date().toISOString(),
-      };
-      return { ...s, booking_contact: bc };
-    });
-  }
-
   subjects = subjects.map((s) => ({ ...s, missing: computeMissing(s) }));
 
-  const pending_typed_phone = providedPhone?.phone_number ?? currentV2?.pending_typed_phone ?? null;
+  const pending_typed_phone = pendingTypedPhone ?? current.pending_typed_phone;
 
-  return { version: 2, active_subject_id: activeId, subjects, pending_typed_phone, max_subjects: 4 };
+  return { ...current, subjects, pending_typed_phone };
+}
+
+// ── Bootstrap state from intent (call when model emits create intent and no prior state) ──
+
+/**
+ * Create the initial booking subjects state from a subject_intent that signals subject creation.
+ * Only called when there is no prior state and the model emits create_subjects / create_or_switch_subject.
+ */
+export function bootstrapBookingSubjectsFromIntent(
+  intent: SubjectIntent,
+  s1Seed?: S1Seed | null,
+  channelContact?: ChannelContact | null,
+): BookingSubjectsState | null {
+  if (intent.action !== "create_subjects" && intent.action !== "create_or_switch_subject") return null;
+  if (intent.confidence === "low") return null;
+
+  const s1Trusted = channelContact != null && TRUSTED_PHONE_SOURCES.has(channelContact.phone_source);
+  const s1Contact: BookingContact | null = channelContact?.phone_number
+    ? {
+        phone_number: channelContact.phone_number,
+        source: channelContact.phone_source as BookingContactSource,
+        trust: s1Trusted ? "trusted" : "unverified",
+        owner_subject_id: "subject_1" as SubjectId,
+        collected_at: null,
+      }
+    : null;
+
+  const s1: BookingSubject = {
+    ...createSubject("subject_1" as SubjectId, "sender"),
+    patient_name: s1Seed?.name ?? null,
+    service: s1Seed?.service ?? null,
+    slot: s1Seed?.slot ?? null,
+    booking_contact: s1Contact,
+    missing: [],
+  };
+  s1.missing = computeMissing(s1);
+
+  const base: BookingSubjectsState = {
+    version: 3,
+    active_subject_id: "subject_1" as SubjectId,
+    subjects: [s1],
+    pending_typed_phone: null,
+    max_subjects: 4,
+    ...freshEpisode(),
+  };
+
+  return applySubjectIntent(base, intent);
 }
 
 // ── post-turn update ──────────────────────────────────────────────────────────
@@ -584,13 +632,24 @@ export function postUpdateBookingSubjects(params: {
   toolRequests: RuntimeAgentToolRequest[];
   toolResults: RuntimeAgentToolResult[];
   subjectIntent?: SubjectIntent | null;
+  phoneOwnershipIntent?: PhoneOwnershipIntent | null;
+  /** Active subject ID frozen at time of booking.apply execution (before intent application). */
+  subjectIdAtExecution?: SubjectId | null;
 }): BookingSubjectsState {
-  const { current, toolRequests, toolResults, subjectIntent } = params;
+  const { current, toolRequests, toolResults, subjectIntent, phoneOwnershipIntent, subjectIdAtExecution } = params;
 
   let state = current;
+
   if (subjectIntent) {
     state = applySubjectIntent(state, subjectIntent);
   }
+
+  if (phoneOwnershipIntent) {
+    state = applyPhoneOwnershipIntent(state, phoneOwnershipIntent);
+  }
+
+  // Apply booking.apply results to the subject that was active when booking.apply executed.
+  const effectiveSubjectId = subjectIdAtExecution ?? state.active_subject_id;
 
   const applyReq = toolRequests.find((r) => r.tool === "booking.apply");
   const applyResult = toolResults.find((r) => r.tool === "booking.apply");
@@ -609,9 +668,8 @@ export function postUpdateBookingSubjects(params: {
         ? applyReq.arguments.service_reason.trim()
         : null;
 
-  const activeId = state.active_subject_id;
   let subjects = state.subjects.map((s) => {
-    if (s.id !== activeId) return s;
+    if (s.id !== effectiveSubjectId) return s;
     let updated = { ...s };
     if (appliedName) updated = { ...updated, patient_name: appliedName };
     if (appliedSlot) updated = { ...updated, slot: appliedSlot };
@@ -619,6 +677,15 @@ export function postUpdateBookingSubjects(params: {
     if (visitCreated) updated = { ...updated, status: "booked" as const };
     return updated;
   });
+
+  // Auto-complete episode when all subjects are booked.
+  const allBooked = subjects.length > 0 && subjects.every((s) => s.status === "booked");
+  let episodeStatus = state.episode_status;
+  let episodeCompletedAt = state.episode_completed_at;
+  if (allBooked && episodeStatus === "active") {
+    episodeStatus = "completed";
+    episodeCompletedAt = new Date().toISOString();
+  }
 
   const bookingApplyData = applyResult?.data as Record<string, unknown> | undefined;
   const blockedForPendingClassification = bookingApplyData?.booking_status === "pending_phone_classification";
@@ -634,7 +701,13 @@ export function postUpdateBookingSubjects(params: {
 
   subjects = subjects.map((s) => ({ ...s, missing: computeMissing(s) }));
 
-  return { ...state, subjects, pending_typed_phone: nextPendingPhone };
+  return {
+    ...state,
+    subjects,
+    pending_typed_phone: nextPendingPhone,
+    episode_status: episodeStatus,
+    episode_completed_at: episodeCompletedAt,
+  };
 }
 
 // ── subject mismatch detection ────────────────────────────────────────────────
@@ -672,7 +745,7 @@ export function detectSubjectMismatch(params: {
 
 export function buildSubjectsContextPayload(state: BookingSubjectsState): Record<string, unknown> {
   return {
-    version: 2,
+    version: 3,
     active_subject_id: state.active_subject_id,
     subjects: state.subjects.map((s) => ({
       id: s.id,
@@ -698,5 +771,7 @@ export function buildSubjectsContextPayload(state: BookingSubjectsState): Record
     })),
     ...(state.pending_typed_phone ? { pending_typed_phone: state.pending_typed_phone } : {}),
     max_subjects: 4,
+    episode_id: state.episode_id,
+    episode_status: state.episode_status,
   };
 }

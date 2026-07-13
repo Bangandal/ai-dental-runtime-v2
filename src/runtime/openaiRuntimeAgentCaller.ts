@@ -4,7 +4,7 @@ import {
   type RuntimeAgentFinalResponse,
   type RuntimeAgentToolRequest,
 } from "./openaiRuntimeAgent.ts";
-import { parseSubjectIntent } from "./bookingSubjectsState.ts";
+import { parseSubjectIntent, parsePhoneOwnershipIntent } from "./bookingSubjectsState.ts";
 import type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeAgentLoop.ts";
 import { readResponseOutputTextDeduped } from "./openaiResponsesOutputText.ts";
 
@@ -235,6 +235,12 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     (normalizedEnvelope !== null ? parseSubjectIntent(normalizedEnvelope) : null) ??
     undefined;
 
+  // Step 4: Parse phone_ownership_intent from envelope or structured response.
+  const phoneOwnershipIntent =
+    parsePhoneOwnershipIntent(final?.phone_ownership_intent) ??
+    parsePhoneOwnershipIntent(envelope?.phone_ownership_intent) ??
+    undefined;
+
   return {
     final_patient_reply: outputText,
     language: readString(final?.language) ?? null,
@@ -242,6 +248,7 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     safety_notes: toStringArray(final?.safety_notes),
     ...(ui !== undefined ? { ui } : {}),
     ...(subjectIntent !== undefined ? { subject_intent: subjectIntent } : {}),
+    ...(phoneOwnershipIntent !== undefined ? { phone_ownership_intent: phoneOwnershipIntent } : {}),
   };
 }
 
@@ -316,7 +323,7 @@ function tryParseJsonEnvelope(text: string): ParsedJsonEnvelope | null {
   };
 }
 
-const KNOWN_SUBJECT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject"]);
+const KNOWN_SUBJECT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject", "start_new_episode"]);
 const VALID_TARGETS = new Set(["self", "mentioned_person", "active"]);
 const SUBJECT_ID_RE = /^subject_\d+$/;
 

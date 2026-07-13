@@ -134,7 +134,7 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
   "booking.apply": {
     description: "Create a visit in ClinicCard when the patient has provided all required details (first name, last name, service, date, time) and the channel has captured their phone number. Returns booking_status indicating whether the visit was created or why it could not be.",
     required_args: ["first_name", "last_name", "service", "requested_date", "requested_time"],
-    optional_args: [],
+    optional_args: ["subject_id"],
   },
 } as const;
 
@@ -238,13 +238,15 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
 
     // ── BOOKING SUBJECTS ─────────────────────────────────────────────────────
     "## BOOKING SUBJECTS",
-    "Present in context (version=2) when booking for one or more people. active_subject_id = the subject currently being collected. Subjects use stable IDs: subject_1 (sender), subject_2, subject_3, subject_4. max_subjects=4.",
+    "Present in context (version=3) when booking for one or more people. active_subject_id = the subject currently being collected. Subjects use stable IDs: subject_1 (sender), subject_2, subject_3, subject_4. max_subjects=4.",
     "Each subject has: id, label (e.g. 'мама', 'дочь 1'), patient_name, service, slot, phone_status, missing[], status.",
-    "SUBJECT INTENT: Include subject_intent in your final_response JSON when the patient's message signals a subject switch, introduces new people to book, or clarifies a pending phone owner. Omit it (or use action='none') when nothing changes.",
+    "BOOKING.APPLY WITH SUBJECTS: When booking_subjects is active, always pass subject_id in booking.apply arguments (e.g. subject_id='subject_1'). The runtime uses subject_id to determine which subject's phone and data to use. If subject_id is absent, runtime falls back to active_subject_id.",
+    "SUBJECT INTENT: Include subject_intent in your final_response JSON when the patient's message signals a subject switch, introduces new people to book. Omit it (or use action='none') when nothing changes.",
     "Format: { \"action\": \"none\" | \"switch_subject\" | \"create_subjects\" | \"create_or_switch_subject\", \"target\": \"self\" | \"mentioned_person\" | \"active\", \"subject_id\": \"subject_N or null\", \"display_name\": \"Name or null\", \"count\": N, \"labels\": [\"label1\", \"label2\"], \"confidence\": \"low\" | \"medium\" | \"high\" }",
     "Examples: 'теперь запишите меня' → action=switch_subject, target=self, confidence=high. 'и ещё мою маму Анну' → action=create_subjects, target=mentioned_person, count=1, labels=['мама'], display_name='Анна', confidence=high. 'запишите меня и двух дочерей' → action=create_subjects, target=mentioned_person, count=2, labels=['дочь 1','дочь 2'], confidence=high. 'назад к Ивану' → action=switch_subject, target=mentioned_person, subject_id='subject_2', confidence=high.",
     "MAX SUBJECTS: If patient asks to book more than 4 people total, reply that the administrator should handle larger group bookings — do not create more than 4 subjects.",
-    "PENDING PHONE: When booking_subjects.pending_typed_phone is present, a typed phone was received and its owner is not yet confirmed. Do NOT call booking.apply. Ask whose phone it is (e.g. 'Этот номер для вас или для мамы?') and include subject_intent to classify it.",
+    "PENDING PHONE: When booking_subjects.pending_typed_phone is present, a typed phone was received and its owner is not yet confirmed. Do NOT call booking.apply. Ask whose phone it is (e.g. 'Этот номер для вас или для мамы?') and include phone_ownership_intent in your final_response to classify it.",
+    "PHONE OWNERSHIP INTENT: Include phone_ownership_intent in your final_response JSON when resolving a pending typed phone. Format: { \"action\": \"assign_pending_phone\" | \"share_sender_contact\" | \"none\", \"target_subject_id\": \"subject_N or null\", \"confidence\": \"low\" | \"medium\" | \"high\" }. Use assign_pending_phone when the patient confirms the typed phone belongs to a subject. Use share_sender_contact when the patient says to use the sender's trusted contact for another subject.",
     "When booking_status=pending_phone_classification: booking was blocked — ask whose phone the pending number is.",
     "PHONE TRUST: Telegram contact button (phone_status=trusted) = trusted for sender. Typed phone (phone_status=typed_unverified) = acceptable for other subjects — they cannot share a contact button from sender's chat. phone_status=trusted_contact_owner = sender's trusted phone shared to another subject. Never re-ask for a phone already received. Never ask another person to press the contact button from sender's chat.",
 

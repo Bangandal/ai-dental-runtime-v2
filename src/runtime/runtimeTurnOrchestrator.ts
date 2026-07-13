@@ -504,8 +504,15 @@ export async function runRuntimeTurnOrchestrated(
       caseLiteCurrent = applyBookingStatusToCase(caseLiteCurrent, result.tool_results);
     }
 
-    // subject_id_at_execution: frozen before model ran (= active subject when booking.apply executed).
-    const subjectIdAtExecution: SubjectId | null = bookingSubjectsForTurn?.active_subject_id ?? null;
+    // subject_id_at_execution: use explicit subject_id from booking.apply args when present
+    // (model must pass subject_id when booking_subjects registry is active), falling back
+    // to active_subject_id as a safety net for older model responses without subject_id.
+    const bookingApplyReq = (result.tool_requests ?? []).find((r) => r.tool === "booking.apply");
+    const rawBookingSubjectId = bookingApplyReq?.arguments.subject_id;
+    const subjectIdFromArgs = typeof rawBookingSubjectId === "string" && /^subject_\d+$/.test(rawBookingSubjectId)
+      ? (rawBookingSubjectId as SubjectId)
+      : null;
+    const subjectIdAtExecution: SubjectId | null = subjectIdFromArgs ?? bookingSubjectsForTurn?.active_subject_id ?? null;
 
     // When no prior state exists and model signals subject creation, bootstrap registry.
     const preSubjects = bookingSubjectsForTurn
@@ -524,7 +531,7 @@ export async function runRuntimeTurnOrchestrated(
           toolResults: result.tool_results ?? [],
           subjectIntent: bookingSubjectsForTurn ? (result.subject_intent ?? null) : null,
           phoneOwnershipIntent: result.phone_ownership_intent ?? null,
-          subjectIdAtExecution: subjectIdAtExecution ?? undefined,
+          executionSubjectId: subjectIdAtExecution,
         })
       : null;
 

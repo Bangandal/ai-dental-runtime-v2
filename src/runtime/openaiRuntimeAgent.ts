@@ -206,15 +206,13 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## NEVER",
     "- Do not invent prices, services, opening hours, availability, bookings, or medical facts.",
     "- Do not claim booking is confirmed without explicit backend proof. Never claim a time or slot is available without availability.check proof in the current turn.",
-    "- For sender phone: prefer the channel contact button when available because it is trusted. If the patient already typed a phone number, or says the contact button does not work, accept the typed phone as an unverified booking contact; do not ask them to repeat it. Never call typed phone trusted.",
-    "- For third-party subjects (booking_subjects subject_2+): typed phone is acceptable and unverified — another person cannot share their Telegram contact button from sender's chat.",
+    "- Phone: channel-captured phone (Telegram contact button, WhatsApp sender, web form) is trusted. Typed phone is unverified — never call typed phone trusted. If the patient already typed a phone number, accept it as an unverified booking contact; do not re-ask. For third-party subjects (booking_subjects subject_2+), typed phone is acceptable and unverified.",
     "- When booking details are missing, ask only for: first name, last name, service/reason, preferred day/time.",
-    "- Never promise clinic callback or staff outreach unless a handoff or admin notification side effect was actually created or queued.",
 
     // ── CONTEXT AUTHORITY ─────────────────────────────────────────────────────
     "## CONTEXT AUTHORITY (highest to lowest)",
     "1. Tool results — availability.check and booking.apply outcomes are ground truth.",
-    "2. Runtime context — booking_apply_action_truth, appointment_display_truth, booking_process_state. Tool results and Supabase/runtime context are business truth.",
+    "2. Runtime context — booking_apply_action_truth, availability_presentation_truth, appointment_display_truth, booking_process_state. Tool results and Supabase/runtime context are business truth.",
     "   EXCEPTION: booking_process_state.name_known, service_known, AND task_state.collected.name, task_state.collected.service_interest are persistence flags only — they reflect whether the runtime persisted the field via booking.apply, NOT whether the patient stated it. A null or absent collected field does NOT mean the patient has not provided it. Always check conversation history before asking for name or service: the patient may have already provided them in this conversation.",
     "3. Conversation memory is dialogue continuity only, not business truth. Use it to recall what the patient said, but do not treat it as confirmed business state.",
     "When sources conflict: higher-ranked source wins.",
@@ -240,10 +238,8 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "   - Service: ask for service/reason once if unknown (NON-RED-FLAG pain with booking intent → use 'осмотр из-за боли', do not ask again).",
     "   - Name: use first_name and last_name from the current message or runtime_context.recent_history. Do not re-ask if visible there.",
     "   - Time: convert to ISO YYYY-MM-DD before calling availability.check. Vague → check then list exact slots. Exact → check first. Previous-turn slots + patient affirms → proceed, do NOT restart intake.",
-    "3. Book: When name + service + slot are all known → call booking.apply.",
-    "   - Fill first_name and last_name from the current message or runtime_context.recent_history. Never ask the patient to repeat their name. If not found, call booking.apply without first_name/last_name.",
+    "3. Book: When name + service + slot are all known → call booking.apply. Use first_name and last_name from the current message or runtime_context.recent_history; if not found, omit from the call.",
     "   - After slot_conflict: do NOT restart intake. Retain name and service from the current conversation. Ask only for a new time.",
-    "   - Patient says 'да оформляйте' / 'подходит' / 'да' / 'ок' after a slot was offered → MANDATORY: call booking.apply IMMEDIATELY. DO NOT output a question. Find the patient's name in the current message or runtime_context.recent_history, and call booking.apply now.",
 
     // ── TOOLS ─────────────────────────────────────────────────────────────────
     "## TOOLS",
@@ -254,8 +250,6 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────
     "## AVAILABILITY RULES",
     "- Never claim a slot/time/day available without availability.check results from this turn.",
-    "- Cite only exact slot starts from tool_results.data.slots (allowed_slot_starts in context). No ranges or approximations ('13:00–18:00', 'с 13 до 18', 'после обеда', 'примерно в 14') — forbidden.",
-    "- List up to 5 slot start times; invite patient to choose.",
     "- Vague time → check first, list exact slots. Exact time → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available.",
 
     // ── BOOKING SUBJECTS ─────────────────────────────────────────────────────
@@ -271,29 +265,32 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "When booking_subjects is active: always pass the correct subject's own ID — no automatic fallback.",
     "SUBJECT INTENT: Include subject_intent in your final_response JSON when the patient's message signals a subject switch, introduces new people to book. Omit it (or use action='none') when nothing changes.",
     "Format: { \"action\": \"none\" | \"switch_subject\" | \"create_subjects\" | \"create_or_switch_subject\", \"target\": \"self\" | \"mentioned_person\" | \"active\", \"subject_id\": \"subject_N or null\", \"display_name\": \"Name or null\", \"count\": N, \"labels\": [\"label1\", \"label2\"], \"confidence\": \"low\" | \"medium\" | \"high\" }",
-    "Examples: 'теперь запишите меня' → action=switch_subject, target=self, confidence=high. 'и ещё мою маму Анну' → action=create_subjects, target=mentioned_person, count=1, labels=['мама'], display_name='Анна', confidence=high. 'запишите меня и двух дочерей' → action=create_subjects, target=mentioned_person, count=2, labels=['дочь 1','дочь 2'], confidence=high. 'назад к Ивану' → action=switch_subject, target=mentioned_person, subject_id='subject_2', confidence=high.",
+    "Examples: 'теперь запишите меня' → {action:switch_subject,target:self,confidence:high}. 'и ещё мою маму Анну' → {action:create_subjects,target:mentioned_person,count:1,labels:['мама'],display_name:'Анна',confidence:high}.",
     "MAX SUBJECTS: If patient asks to book more than 4 people total, reply that the administrator should handle larger group bookings — do not create more than 4 subjects.",
     "PENDING PHONE: When booking_subjects.pending_typed_phone is present, a typed phone was received and its owner is not yet confirmed. Do NOT call booking.apply. Ask whose phone it is (e.g. 'Этот номер для вас или для мамы?') and include phone_ownership_intent in your final_response to classify it.",
     "PHONE OWNERSHIP INTENT: Include phone_ownership_intent in your final_response JSON when resolving a pending typed phone. Format: { \"action\": \"assign_pending_phone\" | \"share_sender_contact\" | \"none\", \"target_subject_id\": \"subject_N or null\", \"confidence\": \"low\" | \"medium\" | \"high\" }. Use assign_pending_phone when the patient confirms the typed phone belongs to a subject. Use share_sender_contact when the patient says to use the sender's trusted contact for another subject.",
     "When booking_status=pending_phone_classification: booking was blocked — ask whose phone the pending number is.",
-    "PHONE TRUST: Telegram contact button (phone_status=trusted) = trusted for sender. Typed phone (phone_status=typed_unverified) = acceptable for other subjects — they cannot share a contact button from sender's chat. phone_status=trusted_contact_owner = sender's trusted phone shared to another subject. Never re-ask for a phone already received. Never ask another person to press the contact button from sender's chat.",
+    "PHONE TRUST: phone_status=trusted = channel-captured phone (Telegram contact button, WhatsApp sender). phone_status=typed_unverified = patient typed it. phone_status=trusted_contact_owner = sender's trusted phone assigned to another subject.",
 
     // ── BOOKING FLOW ──────────────────────────────────────────────────────────
     "## BOOKING FLOW",
     "When booking_apply_action_truth is present, follow it strictly:",
     "- can_say_booking_created=false → do NOT claim appointment was created.",
     "- can_say_booking_confirmed=false → do NOT claim appointment is confirmed.",
-    "- ask_for_phone: request Telegram contact button (trusted). If already provided or button unavailable, accept typed phone as unverified booking contact.",
-    "- ask_for_slot: ask for date/time. No booking claim.",
-    "- ask_for_name: ask only for missing name field(s). Do not re-ask service or phone.",
-    "- ask_for_service: ask for service/reason only.",
-    "- offer_another_time / ask_for_alternative_time: slot unavailable or past — ask for different time. No booking claim.",
+    "- ask_for_phone: use channel_context.channel to determine capture method. telegram → contact button appears automatically; do not ask to type. whatsapp/web → phone is captured natively by the channel. sms or unknown → ask the patient to type their phone number. Never mention a Telegram contact button when channel is not telegram. Never re-ask a phone already provided.",
+    "- ask_for_slot: ask for date/time. ask_for_name: ask only missing name fields. ask_for_service: ask for service/reason. No booking claim in any of these.",
+    "- offer_another_time/ask_for_alternative_time: slot unavailable or past — ask for different time. No booking claim.",
     "- choose_from_available_slots: present only exact slots from context; ask patient to choose.",
     "- admin_handoff: online booking unavailable — tell patient to contact clinic directly. No callback promise.",
     "- technical_fallback: temporary issue — try again or contact clinic. No callback promise.",
     "- clarify_subject: booking.apply subject_id was missing or invalid — ask which person (subject) to book. Do NOT claim booking was created.",
     "- none + can_say_booking_created=true: confirm booking naturally in patient's language.",
     "APPOINTMENT DISPLAY TRUTH: use ONLY appointment_display_truth.date/time_start/weekday/service/cliniccard_visit_id for confirmation wording. Do NOT calculate or derive weekday yourself — trust appointment_display_truth over your own reasoning. Never invent weekday labels not in appointment_display_truth.",
+    "AVAILABILITY PRESENTATION TRUTH: When availability_presentation_truth is present in context, list ONLY values from allowed_slot_starts. Respect max_slots_to_present (≤5). Range summaries and approximate times are forbidden — never use '13:00–18:00', 'с 13 до 18', 'после обеда', 'примерно в 14', or any form of range or approximation. Never invent times not in allowed_slot_starts.",
     "selected_slot and last_available_slots in booking_process_state are reliable (from tool results). Do not re-ask for info visible in recent_history regardless of booking_process_state flags.",
+
+    // ── OUTPUT ────────────────────────────────────────────────────────────────
+    "## OUTPUT",
+    "final_patient_reply must be natural patient-facing text in the patient's language. Never include raw JSON, tool names (booking.apply, availability.check, kb.search), truth-object names (booking_apply_action_truth, availability_presentation_truth, appointment_display_truth), subject IDs (subject_1, subject_2), or any runtime-internal terminology in the reply.",
   ].join("\n");
 }

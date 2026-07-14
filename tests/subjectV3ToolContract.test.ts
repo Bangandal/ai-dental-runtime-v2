@@ -42,6 +42,7 @@ import type { RuntimeContextRepository } from "../src/runtime/supabaseRuntimeCon
 import type { ClinicIdentityResolver } from "../src/runtime/supabaseClinicIdentityResolver.ts";
 import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 import type { RuntimeTurnService, RuntimeTurnResult } from "../src/runtime/runtimeTurnService.ts";
+import { createRuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -165,7 +166,7 @@ test("TC-2: subject_id=subject_1, no registry → executor uses channel_contact 
   });
 
   assert.equal(capturedPhone, TRUSTED_CONTACT.phone_number, "executor receives channel_contact phone for self-booking");
-  assert.ok(!result.execution_subject_id, "no registry → execution_subject_id is null/undefined for single-subject");
+  assert.equal(result.execution_subject_id, "subject_1", "single-subject flow must freeze execution_subject_id to subject_1 per universal contract");
 });
 
 // ── TC-3: subject_id=subject_2, no registry → registry bootstrapped ──────────
@@ -574,16 +575,7 @@ test("TC-11: primitive booking_contact (string) → normalizeBookingSubjectsStat
   };
 
   const result = normalizeBookingSubjectsState(raw);
-  // Either the whole state is rejected (returns null) OR the booking_contact is nullified
-  if (result !== null) {
-    const s1 = result.subjects.find((s) => s.id === "subject_1");
-    assert.equal(
-      s1?.booking_contact,
-      null,
-      "primitive booking_contact must be nullified during normalization",
-    );
-  }
-  // result === null is also acceptable (strict rejection)
+  assert.equal(result, null, "primitive booking_contact (string) must make the whole state invalid → null");
 });
 
 // ── TC-12: shared phone must equal owner phone ────────────────────────────────
@@ -635,17 +627,7 @@ test("TC-12: shared_from_subject contact with phone ≠ owner phone → state no
   };
 
   const result = normalizeBookingSubjectsState(raw);
-  // The state itself may normalize with subject_2's booking_contact set to null
-  // because the shared phone doesn't match the owner's phone
-  if (result !== null) {
-    const s2 = result.subjects.find((s) => s.id === "subject_2");
-    assert.equal(
-      s2?.booking_contact,
-      null,
-      "subject_2's booking_contact must be null when shared phone ≠ owner phone",
-    );
-  }
-  // If normalizeBookingSubjectsState returns null entirely, that's also valid
+  assert.equal(result, null, "shared booking_contact with mismatched phone must make the whole state invalid → null");
 });
 
 // ── TC-13: isEffectiveTrustedContact prevents overwriting trusted contacts ────
@@ -910,4 +892,591 @@ test("OC-1: 2-turn orchestrator persistence — turn-1 bootstraps registry, turn
   );
 
   assert.equal(turnServiceCallCount, 2, "runtimeTurnService.runTurn must have been called exactly twice (once per turn)");
+});
+
+// ── Point 3: Multiple booking.apply guard ──────────────────────────────────────
+
+test("P3-1: two booking.apply in round-1 with subject_1 and subject_2 → executor called 0 times, multiple_booking_apply_requests", async () => {
+  let executorCallCount = 0;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [
+          {
+            tool: "booking.apply",
+            call_id: "ba_s1_p3",
+            arguments: {
+              subject_id: "subject_1",
+              first_name: "Рима",
+              last_name: "Шевченко",
+              service: "чистка",
+              requested_date: "2026-07-20",
+              requested_time: "11:00",
+            },
+          },
+          {
+            tool: "booking.apply",
+            call_id: "ba_s2_p3",
+            arguments: {
+              subject_id: "subject_2",
+              first_name: "Анна",
+              last_name: "Козлова",
+              service: "осмотр",
+              requested_date: "2026-07-20",
+              requested_time: "11:00",
+            },
+          },
+        ],
+      },
+      { type: "final_response", final_response: { final_patient_reply: "Уточните запись по одному." } },
+    ]),
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
+
+  assert.equal(executorCallCount, 0, "executor must never be called when multiple booking.apply in round-1");
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded result must appear");
+  assert.equal(
+    (bookingResult!.data as Record<string, unknown>).reason,
+    "multiple_booking_apply_requests",
+    "reason must be multiple_booking_apply_requests",
+  );
+  assert.equal((bookingResult!.data as Record<string, unknown>).created_visit, false);
+});
+
+test("P3-2: round-1 booking.apply subject_1 executed → round-2 model requests booking.apply subject_2 → second not called, first result preserved", async () => {
+  let executorCallCount = 0;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_r1_p3b",
+          arguments: {
+            subject_id: "subject_1",
+            first_name: "Рима",
+            last_name: "Шевченко",
+            service: "чистка",
+            requested_date: "2026-07-20",
+            requested_time: "11:00",
+          },
+        }],
+      },
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_r2_p3b",
+          arguments: {
+            subject_id: "subject_2",
+            first_name: "Анна",
+            last_name: "Козлова",
+            service: "осмотр",
+            requested_date: "2026-07-20",
+            requested_time: "11:00",
+          },
+        }],
+      },
+      { type: "final_response", final_response: { final_patient_reply: "Вы записаны. Вторую запись оформим следующим сообщением." } },
+    ]),
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_r1_p3b" } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
+
+  assert.equal(executorCallCount, 1, "executor must be called exactly once (round-1 only)");
+  const r1Result = result.tool_results.find((r) => r.call_id === "ba_r1_p3b");
+  assert.ok(r1Result, "round-1 booking result must be in tool_results");
+  assert.equal((r1Result!.data as Record<string, unknown>).created_visit, true, "round-1 booking must show created");
+  const r2Result = result.tool_results.find((r) => r.call_id === "ba_r2_p3b");
+  if (r2Result) {
+    assert.equal((r2Result.data as Record<string, unknown>).created_visit, false, "round-2 must not create a visit");
+    assert.equal((r2Result.data as Record<string, unknown>).reason, "multiple_booking_apply_requests");
+  }
+});
+
+test("P3-3: availability round-1, one booking.apply round-2 → booking executes, round-2 request in tool_requests", async () => {
+  let executorCallCount = 0;
+
+  const REGISTRY: BookingSubjectsState = {
+    version: 3,
+    status: "active",
+    active_subject_id: "subject_2" as SubjectId,
+    subjects: [
+      {
+        id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: "Рима", service: null,
+        slot: null, booking_contact: { phone_number: "+380991350135", source: "telegram_contact_button", trust: "trusted", owner_subject_id: "subject_1" as SubjectId, collected_at: null },
+        status: "collecting", missing: [],
+      },
+      {
+        id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна Козлова", service: "чистка",
+        slot: null, booking_contact: { phone_number: "+420111222333", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
+        status: "collecting", missing: ["slot"],
+      },
+    ],
+    pending_typed_phone: null,
+    max_subjects: 4,
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", call_id: "avail_p3c", arguments: { requested_date: "2026-07-20", service_interest: "чистка" } }],
+      },
+      {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_p3c",
+          arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" },
+        }],
+      },
+      { type: "final_response", final_response: { final_patient_reply: "Анна записана на 11:00!" } },
+    ]),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-20T11:00:00", service: "чистка" }] } }),
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_p3c" } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY, channel_contact: TRUSTED_CONTACT });
+
+  assert.equal(executorCallCount, 1, "booking executor must be called exactly once (round-2)");
+  const hasBaInRequests = result.tool_requests.some((r) => r.tool === "booking.apply" && r.call_id === "ba_p3c");
+  assert.ok(hasBaInRequests, "round-2 booking.apply must be in tool_requests (processedToolRequests fix)");
+  assert.equal(result.execution_subject_id, "subject_2", "execution_subject_id must be subject_2");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult);
+  assert.equal((baResult!.data as Record<string, unknown>).created_visit, true);
+});
+
+// ── Point 4: No-slots guard ordering ──────────────────────────────────────────
+
+test("P4-1: round-1 avail returns 0 slots + round-2 booking.apply subject_2 (no registry) → registry bootstrapped, execution_subject_id=subject_2, no_available_slots, executor=0", async () => {
+  let executorCalled = false;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_p4", arguments: { requested_date: "2026-07-20", service_interest: "чистка" } }] },
+      {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_p4", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+      },
+      { type: "final_response", final_response: { final_patient_reply: "К сожалению, нет свободного времени." } },
+    ]),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } }; },
+    },
+    bookingProcessStateRepository: { async loadState() { return null; }, async saveState() {} },
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
+
+  assert.equal(executorCalled, false, "executor must NOT be called when no slots");
+  assert.ok(result.booking_subjects_after_resolution, "registry must be bootstrapped even when no slots");
+  const s2 = result.booking_subjects_after_resolution!.subjects.find((s) => s.id === "subject_2");
+  assert.ok(s2, "registry must have subject_2");
+  assert.equal(result.execution_subject_id, "subject_2", "execution_subject_id must be subject_2");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult);
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "no_available_slots", "no-slots guard must fire");
+});
+
+test("P4-2: round-2 booking.apply missing subject_id + zero slots → subject_resolution_conflict (no-slots must NOT mask subject contract)", async () => {
+  let executorCalled = false;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_p4b", arguments: { requested_date: "2026-07-20" } }] },
+      {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_p4b", arguments: { first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+      },
+      { type: "final_response", final_response: { final_patient_reply: "Уточните." } },
+    ]),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    bookingProcessStateRepository: { async loadState() { return null; }, async saveState() {} },
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
+
+  assert.equal(executorCalled, false);
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult);
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "subject_resolution_conflict", "must be subject_resolution_conflict, NOT no_available_slots");
+  assert.equal((baResult!.data as Record<string, unknown>).reason, "subject_id_required");
+});
+
+// ── Point 5: Fresh vs stale typed phone ───────────────────────────────────────
+
+test("P5-2: prior registry + FRESH typed phone (current turn) + self booking → fresh phone used by executor", async () => {
+  const FRESH_PHONE = "+420777888999";
+  let capturedPhone: string | undefined;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_p5b", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "осмотр", requested_date: "2026-07-20", requested_time: "11:00" } }],
+      },
+      { type: "final_response", final_response: { final_patient_reply: "Рима записана!" } },
+    ]),
+    executors: {
+      "booking.apply": async (ctx) => {
+        capturedPhone = ctx.phone_number;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+
+  await loop.runTurn({
+    ...BASE_TURN,
+    provided_phone: { phone_number: FRESH_PHONE, phone_source: "typed", phone_trust: "unverified", phone_consent: false, phone_collected_at: new Date().toISOString() },
+    current_turn_typed_phone: FRESH_PHONE,
+    had_booking_subjects: true,
+  });
+
+  assert.equal(capturedPhone, FRESH_PHONE, "fresh typed phone from current turn must be used even when had_booking_subjects=true");
+});
+
+test("P5-3: prior registry + fresh typed phone + subject_2 → pending_typed_phone blocks booking (Guard I)", async () => {
+  let executorCalled = false;
+  const TYPED_PHONE = "+420555666777";
+
+  const REGISTRY: BookingSubjectsState = {
+    version: 3,
+    status: "active",
+    active_subject_id: "subject_2" as SubjectId,
+    subjects: [
+      { id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: null, service: null, slot: null, booking_contact: null, status: "collecting", missing: [] },
+      { id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна Козлова", service: "чистка", slot: null, booking_contact: null, status: "collecting", missing: ["slot", "booking_contact"] },
+    ],
+    pending_typed_phone: TYPED_PHONE,
+    max_subjects: 4,
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_p5c", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+      },
+      { type: "final_response", final_response: { final_patient_reply: "Уточните чей телефон." } },
+    ]),
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } }; },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+
+  const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY, channel_contact: TRUSTED_CONTACT, current_turn_typed_phone: TYPED_PHONE, had_booking_subjects: true });
+
+  assert.equal(executorCalled, false, "executor must not be called when pending_typed_phone present (Guard I)");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult);
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "pending_phone_classification");
+});
+
+// ── Point 8: Regression tests for invalid targets ─────────────────────────────
+
+async function runWithInvalidSubjectId(subjectId: unknown): Promise<void> {
+  let executorCalled = false;
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_inv", arguments: { subject_id: subjectId, first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+      },
+      { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
+    ]),
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } }; },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+  const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
+  assert.equal(executorCalled, false, `executor must NOT be called for invalid subject_id: ${JSON.stringify(subjectId)}`);
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult, `guarded result must appear for: ${JSON.stringify(subjectId)}`);
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "subject_resolution_conflict", `must be conflict for: ${JSON.stringify(subjectId)}`);
+}
+
+test("P8-1: no registry + subject_99 → subject_resolution_conflict, executor=0", () => runWithInvalidSubjectId("subject_99"));
+test("P8-2: no registry + subject_0 → subject_resolution_conflict, executor=0", () => runWithInvalidSubjectId("subject_0"));
+test("P8-3: no registry + numeric subject ID (5) → subject_resolution_conflict, executor=0", () => runWithInvalidSubjectId(5));
+test("P8-4: no registry + empty string subject ID → subject_resolution_conflict, executor=0", () => runWithInvalidSubjectId(""));
+
+test("P8-5: active registry + invalid subject ID → subject_resolution_conflict, executor=0", async () => {
+  const REGISTRY: BookingSubjectsState = {
+    version: 3,
+    status: "active",
+    active_subject_id: "subject_2" as SubjectId,
+    subjects: [
+      { id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: null, service: null, slot: null, booking_contact: { phone_number: "+380991350135", source: "telegram_contact_button", trust: "trusted", owner_subject_id: "subject_1" as SubjectId, collected_at: null }, status: "collecting", missing: [] },
+      { id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна", service: "чистка", slot: "2026-07-20T11:00", booking_contact: null, status: "collecting", missing: ["booking_contact"] },
+    ],
+    pending_typed_phone: null,
+    max_subjects: 4,
+  };
+  let executorCalled = false;
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8e", arguments: { subject_id: "subject_invalid", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
+    ]),
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+  const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY, channel_contact: TRUSTED_CONTACT });
+  assert.equal(executorCalled, false);
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult);
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "subject_resolution_conflict");
+  assert.equal((baResult!.data as Record<string, unknown>).reason, "invalid_subject_id_format");
+});
+
+test("P8-6: round-2 + invalid subject ID ('self') → subject_resolution_conflict, executor=0", async () => {
+  let executorCalled = false;
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8f", arguments: { requested_date: "2026-07-20" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8f", arguments: { subject_id: "self", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
+    ]),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-20T11:00:00" }] } }),
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+  const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
+  assert.equal(executorCalled, false);
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult);
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "subject_resolution_conflict");
+  assert.equal((baResult!.data as Record<string, unknown>).reason, "invalid_subject_id_format");
+});
+
+test("P8-7: zero slots + missing subject ID → subject_resolution_conflict (not no_available_slots)", async () => {
+  let executorCalled = false;
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8g", arguments: { requested_date: "2026-07-20" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8g", arguments: { first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
+    ]),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    bookingProcessStateRepository: { async loadState() { return null; }, async saveState() {} },
+  });
+  const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
+  assert.equal(executorCalled, false);
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult);
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "subject_resolution_conflict");
+});
+
+test("P8-8: zero slots + invalid subject ID → subject_resolution_conflict (not no_available_slots)", async () => {
+  let executorCalled = false;
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8h", arguments: { requested_date: "2026-07-20" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8h", arguments: { subject_id: "subject_99", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
+    ]),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    bookingProcessStateRepository: { async loadState() { return null; }, async saveState() {} },
+  });
+  const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
+  assert.equal(executorCalled, false);
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult);
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "subject_resolution_conflict");
+  assert.equal((baResult!.data as Record<string, unknown>).reason, "invalid_subject_id_format");
+});
+
+// ── OC-2: Real two-turn orchestrator test with actual runtime loop ─────────────
+
+test("OC-2: real two-turn orchestrator — turn-1 bootstraps registry via subject_intent, turn-2 runs real loop with round-2 booking.apply subject_2", async () => {
+  const CLINIC_CODE_OC2 = "clinic_oc2";
+  const CLINIC_UUID_OC2 = "22222222-3333-4444-8555-666666666666";
+  const CONTACT_UUID_OC2 = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+
+  let savedBookingSubjectsOC2: BookingSubjectsState | null = null;
+  let turn2ExecutorCallCount = 0;
+  let mergeCallsSeen = 0;
+
+  const stubClinicResolverOC2: ClinicIdentityResolver = {
+    async resolveClinicIdentity(input) {
+      if (input.clinic_identifier === CLINIC_CODE_OC2) {
+        return { ok: true, data: { clinic_id: CLINIC_UUID_OC2, clinic_code: CLINIC_CODE_OC2 } };
+      }
+      return { ok: false, error: { code: "clinic_not_found", message: "not found", retryable: false } };
+    },
+  };
+
+  const stubPersistenceOC2: TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_UUID_OC2, clinic_id: CLINIC_UUID_OC2 } };
+    },
+    async registerInboundEvent() {
+      return { ok: true, data: { inbound_event_id: `evt_oc2_${++mergeCallsSeen}` } };
+    },
+    async saveMessage() {
+      return { ok: true, data: { message_id: "msg_oc2" } };
+    },
+    async mergeConversationState(input) {
+      if (input.control_flags?.booking_subjects) {
+        savedBookingSubjectsOC2 = input.control_flags.booking_subjects as BookingSubjectsState;
+      }
+      return { ok: true, data: { ok: true } };
+    },
+  };
+
+  const ctxRepoOC2: RuntimeContextRepository = {
+    async loadRuntimeContext() {
+      let bookingSubjectsForLoad: BookingSubjectsState | null = null;
+      if (savedBookingSubjectsOC2) {
+        // Simulate phone ownership resolved between turns: add phone to subject_2
+        const subjects = savedBookingSubjectsOC2.subjects.map((s) => {
+          if (s.id === "subject_2") {
+            const bc: BookingContact = { phone_number: "+420111222333", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: new Date().toISOString() };
+            return { ...s, booking_contact: bc };
+          }
+          return s;
+        });
+        bookingSubjectsForLoad = { ...savedBookingSubjectsOC2, subjects, pending_typed_phone: null };
+      }
+      return {
+        ok: true,
+        data: {
+          known_contact: {},
+          conversation_state: {},
+          topic_memory: null,
+          channel_contact: { phone_number: "+380991350135", phone_source: "telegram_contact_button" as const, phone_consent: true, phone_collected_at: "2026-07-01T00:00:00.000Z" },
+          provided_phone: null,
+          booking_subjects: bookingSubjectsForLoad,
+          selected_slot_starts_at: "2026-07-20T11:00:00",
+          case_context_lite: null,
+          runtime_flags: { has_durable_context: true, context_source: "supabase" as const, context_loaded_at: new Date().toISOString() },
+          recent_history: [],
+        },
+      };
+    },
+  };
+
+  // Turn 1: model emits subject_intent in final_response → orchestrator bootstraps registry
+  const turn1Loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      {
+        type: "final_response",
+        final_response: {
+          final_patient_reply: "Хорошо, оформляю запись для мамы. Как её зовут?",
+          subject_intent: { action: "create_subjects" as const, target: "mentioned_person" as const, count: 1, labels: ["мама"], confidence: "high" as const },
+        },
+      },
+    ]),
+    executors: {},
+    bookingProcessStateRepository: { async loadState() { return null; }, async saveState() {} },
+  });
+  const turn1Service = createRuntimeTurnService({ agent: turn1Loop });
+
+  const result1OC2 = await runRuntimeTurnOrchestrated(
+    { clinic_code: CLINIC_CODE_OC2, channel: "telegram" as const, external_user_id: "user_oc2", chat_id: "888", text: "Запишите мою маму", meta: { update_id: 2001, message_id: 301, username: null, first_name: null, last_name: null, telegram_chat_type: "private" as const } },
+    { runtimeTurnService: turn1Service, clinicIdentityResolver: stubClinicResolverOC2, turnPersistenceRepository: stubPersistenceOC2, runtimeContextRepository: ctxRepoOC2 },
+  );
+  assert.ok(result1OC2.outcome === "success" || result1OC2.outcome === "error", `turn 1 OC2: ${result1OC2.outcome}`);
+  assert.ok(savedBookingSubjectsOC2 !== null, "turn 1 must persist booking_subjects");
+  assert.ok(savedBookingSubjectsOC2!.subjects.find((s) => s.id === "subject_2"), "registry must have subject_2 after turn 1");
+
+  // Turn 2: real loop — availability.check round-1 + booking.apply subject_2 round-2
+  const turn2Loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_oc2", arguments: { requested_date: "2026-07-20", service_interest: "чистка" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_oc2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "final_response", final_response: { final_patient_reply: "Анна Козлова записана на чистку 20 июля в 11:00!" } },
+    ]),
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-20T11:00:00", service: "чистка" }] } }),
+      "booking.apply": async () => {
+        turn2ExecutorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_oc2_real" } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+  });
+  const turn2Service = createRuntimeTurnService({ agent: turn2Loop });
+
+  const result2OC2 = await runRuntimeTurnOrchestrated(
+    { clinic_code: CLINIC_CODE_OC2, channel: "telegram" as const, external_user_id: "user_oc2", chat_id: "888", text: "Запишите маму Анну Козлову на 20 июля в 11:00 на чистку", meta: { update_id: 2002, message_id: 302, username: null, first_name: null, last_name: null, telegram_chat_type: "private" as const } },
+    { runtimeTurnService: turn2Service, clinicIdentityResolver: stubClinicResolverOC2, turnPersistenceRepository: stubPersistenceOC2, runtimeContextRepository: ctxRepoOC2 },
+  );
+  assert.ok(result2OC2.outcome === "success" || result2OC2.outcome === "error", `turn 2 OC2: ${result2OC2.outcome}`);
+
+  assert.equal(turn2ExecutorCallCount, 1, "booking executor must be called exactly once in turn 2");
+
+  // Final registry must show subject_2 as booked
+  assert.ok(savedBookingSubjectsOC2 !== null, "turn 2 must persist updated registry");
+  const finalS2 = savedBookingSubjectsOC2!.subjects.find((s) => s.id === "subject_2");
+  assert.ok(finalS2, "subject_2 must exist in final registry");
+  assert.equal(finalS2!.status, "booked", "subject_2 must be booked after turn 2");
+
+  // subject_1 must remain unchanged (not booked)
+  const finalS1 = savedBookingSubjectsOC2!.subjects.find((s) => s.id === "subject_1");
+  assert.ok(finalS1);
+  assert.notEqual(finalS1!.status, "booked", "subject_1 must NOT be booked");
+
+  // Reply must not contain raw JSON
+  if (result2OC2.outcome === "success") {
+    const reply = result2OC2.payload.final_patient_reply;
+    assert.ok(!reply.includes("{\""), "reply must not contain raw JSON");
+    assert.ok(!reply.includes("booking_status"), "reply must not contain booking_status field name");
+  }
 });

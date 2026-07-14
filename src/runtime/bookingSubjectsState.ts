@@ -459,6 +459,20 @@ const VALID_BOOKING_CONTACT_TRUST = new Set<string>(["trusted", "unverified", "t
 const VALID_SUBJECT_STATUS = new Set<string>(["collecting", "ready_for_booking", "booked"]);
 const VALID_SUBJECT_IDS = new Set<string>(["subject_1", "subject_2", "subject_3", "subject_4"]);
 
+export type ParsedSubjectTarget =
+  | { ok: true; subject_id: SubjectId }
+  | { ok: false; reason: "subject_id_required" | "invalid_subject_id_format" };
+
+const VALID_BOOKING_APPLY_SUBJECT_IDS = new Set<string>(["subject_1", "subject_2", "subject_3", "subject_4"]);
+
+export function parseSubjectTarget(raw: unknown): ParsedSubjectTarget {
+  if (raw == null) return { ok: false, reason: "subject_id_required" };
+  if (typeof raw !== "string" || !VALID_BOOKING_APPLY_SUBJECT_IDS.has(raw)) {
+    return { ok: false, reason: "invalid_subject_id_format" };
+  }
+  return { ok: true, subject_id: raw as SubjectId };
+}
+
 function validateFullBookingContact(raw: unknown, subjectId: SubjectId, allSubjects: Record<string, unknown>[]): BookingContact | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const bc = raw as Record<string, unknown>;
@@ -495,8 +509,8 @@ function validateFullBookingContact(raw: unknown, subjectId: SubjectId, allSubje
     if (bc.phone_number !== ownerBc.phone_number) return null;
   }
 
-  // For non-shared contacts: owner_subject_id must be the current subject (or null for legacy compat)
-  if (source !== "shared_from_subject" && ownerSubjectId != null && ownerSubjectId !== subjectId) return null;
+  // For non-shared contacts: owner_subject_id must equal the current subject (no null exemption)
+  if (source !== "shared_from_subject" && ownerSubjectId !== subjectId) return null;
 
   return {
     phone_number: bc.phone_number,
@@ -528,12 +542,14 @@ function validateFullSubject(raw: unknown, allSubjects: Record<string, unknown>[
     rawStatus === "booked" ? "booked" :
     rawStatus === "ready_for_booking" ? "ready_for_booking" : "collecting";
 
-  // If booking_contact is a non-null object, it must fully validate — no silent conversion to null.
-  const hasRawContact = s.booking_contact != null && typeof s.booking_contact === "object" && !Array.isArray(s.booking_contact);
-  const booking_contact = hasRawContact
-    ? validateFullBookingContact(s.booking_contact, id, allSubjects)
-    : null;
-  if (hasRawContact && booking_contact === null) return null;
+  // booking_contact: null/undefined → allowed (no contact). Primitive or array → whole subject invalid.
+  let booking_contact: BookingContact | null = null;
+  const bcRaw = s.booking_contact;
+  if (bcRaw !== null && bcRaw !== undefined) {
+    if (typeof bcRaw !== "object" || Array.isArray(bcRaw)) return null;
+    booking_contact = validateFullBookingContact(bcRaw as Record<string, unknown>, id, allSubjects);
+    if (booking_contact === null) return null;
+  }
 
   const subject: BookingSubject = {
     id,
@@ -609,7 +625,9 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
     const activeId = r.active_subject_id;
     if (typeof activeId !== "string" || !SUBJECT_ID_RE.test(activeId)) return null;
     const rawSubjects = Array.isArray(r.subjects) ? r.subjects as Record<string, unknown>[] : [];
-    const subjects = rawSubjects.map(validateV2Subject).filter((s): s is BookingSubject => s !== null);
+    const parsedV2Subjects = rawSubjects.map(validateV2Subject);
+    if (parsedV2Subjects.some((s) => s === null)) return null;
+    const subjects = parsedV2Subjects as BookingSubject[];
     if (subjects.length === 0 || subjects.length > 4) return null;
     if (!subjects.some((s) => s.id === activeId)) return null;
     return {
@@ -841,7 +859,9 @@ export function postUpdateBookingSubjects(params: {
   }
 
   const applyReq = toolRequests.find((r) => r.tool === "booking.apply");
-  const applyResult = toolResults.find((r) => r.tool === "booking.apply");
+  const applyResult = applyReq
+    ? toolResults.find((r) => r.tool === "booking.apply" && r.call_id === applyReq.call_id)
+    : undefined;
 
   // If booking.apply was executed but no frozen executionSubjectId was provided,
   // do NOT apply the result to any subject — better to leave state unchanged than

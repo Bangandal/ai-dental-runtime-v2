@@ -542,6 +542,7 @@ export async function runRuntimeTurnOrchestrated(
           toolResults: result.tool_results ?? [],
           subjectIntent: bookingSubjectsForTurn ? (result.subject_intent ?? null) : null,
           phoneOwnershipIntent: result.phone_ownership_intent ?? null,
+          bookingApplyResolution: result.booking_apply_resolution ?? null,
           executionSubjectId,
         })
       : null;

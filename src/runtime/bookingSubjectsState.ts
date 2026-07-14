@@ -1,4 +1,4 @@
-import type { ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
+import type { BookingApplyResolution, ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import type { RuntimeAgentToolRequest, RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
 import { TRUSTED_PHONE_SOURCES } from "../integrations/cliniccard/bookingApplyExecutor.ts";
 
@@ -410,24 +410,42 @@ function migrateV1Subject(sub: Record<string, unknown>, newId: SubjectId): Booki
 function validateV2Subject(raw: unknown): BookingSubject | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const s = raw as Record<string, unknown>;
-  if (typeof s.id !== "string" || !SUBJECT_ID_RE.test(s.id)) return null;
+
+  // Strict ID validation: only subject_1..subject_4 allowed
+  if (typeof s.id !== "string" || !VALID_SUBJECT_IDS.has(s.id)) return null;
   const id = s.id as SubjectId;
-  const role = s.role === "mentioned_person" ? "mentioned_person" : "sender" as const;
+
+  // Strict role: no silent coercion — unknown role → reject
+  const roleRaw = s.role;
+  if (roleRaw !== "sender" && roleRaw !== "mentioned_person") return null;
+  const role = roleRaw as "sender" | "mentioned_person";
 
   let booking_contact: BookingContact | null = null;
-  if (s.booking_contact && typeof s.booking_contact === "object" && !Array.isArray(s.booking_contact)) {
+  if (s.booking_contact !== null && s.booking_contact !== undefined) {
+    // Present but not an object → reject the whole subject
+    if (typeof s.booking_contact !== "object" || Array.isArray(s.booking_contact)) return null;
     const bc = s.booking_contact as Record<string, unknown>;
-    if (typeof bc.phone_number === "string" && typeof bc.source === "string" && typeof bc.trust === "string") {
-      booking_contact = {
-        phone_number: bc.phone_number,
-        source: bc.source as BookingContactSource,
-        trust: bc.trust as BookingContactTrust,
-        owner_subject_id: typeof bc.owner_subject_id === "string" && SUBJECT_ID_RE.test(bc.owner_subject_id)
-          ? (bc.owner_subject_id as SubjectId)
-          : null,
-        collected_at: typeof bc.collected_at === "string" ? bc.collected_at : null,
-      };
+    // Invalid phone/source/trust → reject (do not silently drop)
+    if (typeof bc.phone_number !== "string" || bc.phone_number.length === 0) return null;
+    if (!VALID_BOOKING_CONTACT_SOURCES.has(bc.source as string)) return null;
+    if (!VALID_BOOKING_CONTACT_TRUST.has(bc.trust as string)) return null;
+
+    // For non-shared contacts: owner_subject_id must be self (migrate null → self)
+    let ownerSubjectId: SubjectId | null = null;
+    if (typeof bc.owner_subject_id === "string" && VALID_SUBJECT_IDS.has(bc.owner_subject_id)) {
+      ownerSubjectId = bc.owner_subject_id as SubjectId;
+    } else if (bc.source !== "shared_from_subject") {
+      // v2 may have stored null for self-owned contacts — assign to current subject
+      ownerSubjectId = id;
     }
+
+    booking_contact = {
+      phone_number: bc.phone_number,
+      source: bc.source as BookingContactSource,
+      trust: bc.trust as BookingContactTrust,
+      owner_subject_id: ownerSubjectId,
+      collected_at: typeof bc.collected_at === "string" ? bc.collected_at : null,
+    };
   }
 
   const rawStatus = s.status;
@@ -623,21 +641,24 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
   // v2 → v3 upgrade path
   if (r.version === 2) {
     const activeId = r.active_subject_id;
-    if (typeof activeId !== "string" || !SUBJECT_ID_RE.test(activeId)) return null;
+    // Strict: active_subject_id must be one of the four valid IDs
+    if (typeof activeId !== "string" || !VALID_SUBJECT_IDS.has(activeId)) return null;
     const rawSubjects = Array.isArray(r.subjects) ? r.subjects as Record<string, unknown>[] : [];
     const parsedV2Subjects = rawSubjects.map(validateV2Subject);
     if (parsedV2Subjects.some((s) => s === null)) return null;
     const subjects = parsedV2Subjects as BookingSubject[];
     if (subjects.length === 0 || subjects.length > 4) return null;
     if (!subjects.some((s) => s.id === activeId)) return null;
-    return {
+    // Run through strict v3 validator to enforce all cross-subject invariants
+    // (unique IDs, exactly-one sender on subject_1, valid booking_contact combos, etc.)
+    return normalizeBookingSubjectsState({
       version: 3,
       status: "active",
-      active_subject_id: activeId as SubjectId,
+      active_subject_id: activeId,
       subjects,
       pending_typed_phone: typeof r.pending_typed_phone === "string" ? r.pending_typed_phone : null,
       max_subjects: 4,
-    };
+    });
   }
 
   // v1 migration path
@@ -840,11 +861,14 @@ export function postUpdateBookingSubjects(params: {
   toolResults: RuntimeAgentToolResult[];
   subjectIntent?: SubjectIntent | null;
   phoneOwnershipIntent?: PhoneOwnershipIntent | null;
-  /** Frozen execution subject from resolveBookingExecutionSubject(). Required when booking.apply was executed.
-   * When absent and booking.apply was present, tool result is NOT applied to any subject. */
+  /** Identifies the specific booking.apply request that was eligible for execution and its subject.
+   * When provided, used exclusively to match request/result — never falls back to find-first. */
+  bookingApplyResolution?: BookingApplyResolution | null;
+  /** Frozen execution subject (legacy). Ignored when bookingApplyResolution is present. */
   executionSubjectId?: SubjectId | null;
 }): BookingSubjectsState {
-  const { current, toolRequests, toolResults, subjectIntent, phoneOwnershipIntent, executionSubjectId } = params;
+  const { current, toolRequests, toolResults, subjectIntent, phoneOwnershipIntent } = params;
+  const resolution = params.bookingApplyResolution ?? null;
 
   let state = current;
 
@@ -858,19 +882,21 @@ export function postUpdateBookingSubjects(params: {
     state = applyPhoneOwnershipIntent(state, phoneOwnershipIntent);
   }
 
-  const applyReq = toolRequests.find((r) => r.tool === "booking.apply");
+  // Resolve applyReq via resolution.call_id when available — never fall back to find-first.
+  const applyReq = resolution
+    ? toolRequests.find((r) => r.tool === "booking.apply" && r.call_id === resolution.call_id)
+    : toolRequests.find((r) => r.tool === "booking.apply");
   const applyResult = applyReq
     ? toolResults.find((r) => r.tool === "booking.apply" && r.call_id === applyReq.call_id)
     : undefined;
 
-  // If booking.apply was executed but no frozen executionSubjectId was provided,
-  // do NOT apply the result to any subject — better to leave state unchanged than
-  // to apply booking to the wrong subject.
-  if (applyReq && !executionSubjectId) {
+  // Determine effective subject: prefer resolution, fall back to legacy executionSubjectId.
+  const effectiveSubjectId: SubjectId | null = resolution?.subject_id ?? params.executionSubjectId ?? null;
+
+  // If booking.apply was present but no subject resolved, leave state unchanged.
+  if (applyReq && !effectiveSubjectId) {
     return state;
   }
-
-  const effectiveSubjectId = executionSubjectId;
   const visitCreated = (applyResult?.data as Record<string, unknown> | undefined)?.created_visit === true;
 
   const firstName = typeof applyReq?.arguments.first_name === "string" ? applyReq.arguments.first_name.trim() : null;

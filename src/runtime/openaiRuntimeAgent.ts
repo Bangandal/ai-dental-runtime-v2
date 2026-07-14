@@ -129,6 +129,15 @@ export interface RuntimeAgentTurnResult {
   /** Booking subjects state after Guard J resolution (may include bootstrapped registry).
    * Orchestrator should use this as the base for postUpdateBookingSubjects when present. */
   booking_subjects_after_resolution?: import("./bookingSubjectsState.ts").BookingSubjectsState | null;
+  /** Identifies which booking.apply request was eligible for execution this turn and which
+   * subject it targeted. Orchestrator must use this call_id to match request/result in
+   * postUpdateBookingSubjects — never re-derive from toolRequests.find(). */
+  booking_apply_resolution?: BookingApplyResolution | null;
+}
+
+export interface BookingApplyResolution {
+  call_id: string;
+  subject_id: import("./bookingSubjectsState.ts").SubjectId;
 }
 
 export interface OpenAIRuntimeAgent {

@@ -1,5 +1,6 @@
 import type {
   AgentUiActions,
+  BookingApplyResolution,
   OpenAIRuntimeAgent,
   RuntimeAgentToolRequest,
   RuntimeAgentToolResult,
@@ -31,6 +32,7 @@ export interface RuntimeTurnResult {
   phone_ownership_intent?: PhoneOwnershipIntent | null;
   execution_subject_id?: SubjectId | null;
   booking_subjects_after_resolution?: BookingSubjectsState | null;
+  booking_apply_resolution?: BookingApplyResolution | null;
 }
 
 export interface RuntimeTurnService {
@@ -73,5 +75,6 @@ export function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): Runt
     ...(result.phone_ownership_intent !== undefined ? { phone_ownership_intent: result.phone_ownership_intent } : {}),
     ...(result.execution_subject_id !== undefined ? { execution_subject_id: result.execution_subject_id } : {}),
     ...(result.booking_subjects_after_resolution !== undefined ? { booking_subjects_after_resolution: result.booking_subjects_after_resolution } : {}),
+    ...(result.booking_apply_resolution !== undefined ? { booking_apply_resolution: result.booking_apply_resolution } : {}),
   };
 }

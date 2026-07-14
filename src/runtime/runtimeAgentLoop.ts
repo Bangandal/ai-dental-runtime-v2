@@ -3,6 +3,7 @@ import {
   RUNTIME_AGENT_TOOL_DEFINITIONS,
   buildRuntimeAgentSystemInstruction,
   type AgentUiActions,
+  type BookingApplyResolution,
   type OpenAIRuntimeAgent,
   type RuntimeAgentFinalResponse,
   type RuntimeAgentToolRequest,
@@ -233,13 +234,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const processedToolRequests: RuntimeAgentToolRequest[] = [...toolRequests];
       const toolResults: RuntimeAgentToolResult[] = [];
 
-      // One booking write per turn — block immediately if round-1 contains more than one.
-      const bookingApplyRound1Count = toolRequests.filter((r) => r.tool === "booking.apply").length;
-      if (bookingApplyRound1Count > 1) {
-        const firstApply = toolRequests.find((r) => r.tool === "booking.apply")!;
+      // One booking write per turn — block all immediately if round-1 contains more than one.
+      const allBookingApplyRound1 = toolRequests.filter((r) => r.tool === "booking.apply");
+      if (allBookingApplyRound1.length > 1) {
         debug.reason = "booking_apply_preflight_multiple_booking_apply_round1";
-        return await finalizeBlockedBookingApplyWithToolOutput({
-          pendingBookingApply: firstApply,
+        return await finalizeBlockedMultipleBookingApplies({
+          blockingRequests: allBookingApplyRound1,
           guardedData: {
             booking_status: "subject_resolution_conflict",
             created_visit: false,
@@ -658,6 +658,17 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         toolResults.push(convertToolExecutionResult(request, execResult));
       }
 
+      // Track which booking.apply was executed in round-1 and for which subject,
+      // so the orchestrator can apply the result to the correct subject even when
+      // round-2 requests (and gets blocked for) a second booking.apply.
+      let round1BookingApplyResolution: BookingApplyResolution | null = null;
+      if (bookingApplyRound1 && round1ExecutionSubjectId) {
+        round1BookingApplyResolution = {
+          call_id: bookingApplyRound1.call_id,
+          subject_id: round1ExecutionSubjectId,
+        };
+      }
+
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
       const availabilityPresentationTruth = buildAvailabilityPresentationTruth(toolResults);
       const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
@@ -747,6 +758,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           // Preserve execution metadata so orchestrator can persist booking result even on exception
           ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
           ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+          ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
         };
       }
 
@@ -773,6 +785,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           // Preserve execution metadata even on malformed response
           ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
           ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+          ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
         };
       }
 
@@ -806,12 +819,38 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // one-booking-per-turn check → Guard J (strict parse) → bootstrap → freeze subject →
         // no-slots → Guard I → past-time → slot guards → phone → name/service → execution.
 
-        // 1. Find pendingBookingApply FIRST — all subsequent guards reference it.
-        const pendingBookingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply");
-        if (pendingBookingApply) processedToolRequests.push(pendingBookingApply);
+        // 1. Find all round-2 booking.apply requests and push them to processedToolRequests.
+        const allRound2BookingRequests = secondOutput.tool_requests.filter((r) => r.tool === "booking.apply");
+        const pendingBookingApply = allRound2BookingRequests[0] ?? null;
+        for (const req of allRound2BookingRequests) processedToolRequests.push(req);
 
-        // 2. One booking write per turn: if round-1 already executed booking.apply,
-        //    block any round-2 booking.apply unconditionally.
+        // 2a. Round-2 multiple: more than one booking.apply — block ALL.
+        if (allRound2BookingRequests.length > 1) {
+          debug.reason = "booking_apply_preflight_multiple_booking_apply_round2_multi";
+          return await finalizeBlockedMultipleBookingApplies({
+            blockingRequests: allRound2BookingRequests,
+            guardedData: {
+              booking_status: "subject_resolution_conflict",
+              created_visit: false,
+              may_claim_booked: false,
+              required_next_action: "clarify_subject",
+              reason: "multiple_booking_apply_requests",
+            },
+            previousToolResults: toolResults,
+            toolRequests: processedToolRequests,
+            conversationId,
+            systemInstruction,
+            callerContext,
+            input,
+            debug,
+            deps,
+            booking_apply_resolution: round1BookingApplyResolution,
+            booking_subjects_after_resolution: bootstrappedRegistry,
+          });
+        }
+
+        // 2b. One booking write per turn: if round-1 already executed booking.apply,
+        //     block any round-2 booking.apply and preserve round-1 resolution.
         if (pendingBookingApply && toolResults.some((r) => r.tool === "booking.apply")) {
           debug.reason = "booking_apply_preflight_multiple_booking_apply_round2";
           return await finalizeBlockedBookingApplyWithToolOutput({
@@ -831,6 +870,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             input,
             debug,
             deps,
+            booking_apply_resolution: round1BookingApplyResolution,
             booking_subjects_after_resolution: bootstrappedRegistry,
           });
         }
@@ -1235,6 +1275,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             });
           }
 
+          const round2BookingApplyResolution: BookingApplyResolution | null =
+            pendingBookingApply && round2ExecutionSubjectId
+              ? { call_id: pendingBookingApply.call_id, subject_id: round2ExecutionSubjectId }
+              : null;
+
           if (bookingFinalOutput !== undefined && bookingFinalOutput.type === "final_response" && !isMalformedFinalResponse(bookingFinalOutput)) {
             return {
               final_patient_reply: bookingFinalOutput.final_response.final_patient_reply,
@@ -1248,6 +1293,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               ...(bookingFinalOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: bookingFinalOutput.final_response.phone_ownership_intent } : {}),
               ...(round2ExecutionSubjectId != null ? { execution_subject_id: round2ExecutionSubjectId } : {}),
               ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+              ...(round2BookingApplyResolution != null ? { booking_apply_resolution: round2BookingApplyResolution } : {}),
             };
           }
 
@@ -1263,6 +1309,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             debug,
             ...(round2ExecutionSubjectId != null ? { execution_subject_id: round2ExecutionSubjectId } : {}),
             ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+            ...(round2BookingApplyResolution != null ? { booking_apply_resolution: round2BookingApplyResolution } : {}),
           };
         }
 
@@ -1321,6 +1368,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               debug,
               ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
               ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+              ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
             };
           }
           if (forcedOutput !== undefined && forcedOutput.type === "final_response") {
@@ -1339,6 +1387,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               ...(forcedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: forcedOutput.final_response.phone_ownership_intent } : {}),
               ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
               ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+              ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
             };
           }
         }
@@ -1355,6 +1404,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           debug,
           ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
           ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+          ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
         };
       }
 
@@ -1371,8 +1421,128 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // Propagate frozen execution subject so orchestrator can apply booking result to correct subject
         ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
         ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+        ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
       };
     },
+  };
+}
+
+// ── Multiple-blocked booking.apply helper (Variant A) ────────────────────────
+
+/**
+ * When multiple booking.apply calls are present in the same round, create a
+ * synthetic "blocked" result for EACH call_id and submit them all at once to
+ * the model. This closes all pending function_calls cleanly so the conversation
+ * stays resumable, and prevents any single call_id from being left dangling.
+ */
+export async function finalizeBlockedMultipleBookingApplies(params: {
+  blockingRequests: RuntimeAgentToolRequest[];
+  guardedData: GuardedBookingApplyData;
+  previousToolResults: RuntimeAgentToolResult[];
+  toolRequests: RuntimeAgentToolRequest[];
+  conversationId: string | null;
+  systemInstruction: string;
+  callerContext: Record<string, unknown>;
+  input: RuntimeAgentTurnInput;
+  debug: Record<string, unknown>;
+  deps: CreateRuntimeAgentLoopDeps;
+  booking_apply_resolution?: BookingApplyResolution | null;
+  booking_subjects_after_resolution?: BookingSubjectsState | null;
+}): Promise<RuntimeAgentTurnResult> {
+  const {
+    blockingRequests, guardedData, previousToolResults, toolRequests,
+    conversationId, systemInstruction, callerContext, input, debug, deps,
+    booking_apply_resolution, booking_subjects_after_resolution,
+  } = params;
+
+  const guardedResults: RuntimeAgentToolResult[] = blockingRequests.map((req) => ({
+    tool: "booking.apply",
+    call_id: req.call_id,
+    status: "success" as const,
+    data: guardedData,
+  }));
+
+  const allResults = [...previousToolResults, ...guardedResults];
+  const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
+
+  let guardedOutput: RuntimeAgentCallerOutput;
+  try {
+    guardedOutput = await deps.caller({
+      model: deps.model,
+      conversation_id: conversationId,
+      system_instruction: systemInstruction,
+      input: {
+        message: input.user_message,
+        context: {
+          ...callerContext,
+          ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
+        },
+        tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
+        tool_results: guardedResults,
+      },
+    });
+  } catch (error) {
+    debug.runtime_error = {
+      code: "guarded_multiple_booking_caller_failed",
+      message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+    };
+    debug.finalization_reason = "guarded_multiple_booking_caller_exception";
+    debug.caller_exception = buildCallerExceptionDiagnostics(error, {
+      stage: "second_call",
+      locale: input.locale,
+      conversationId,
+      toolResults: allResults,
+      bookingApplyActionTruth: bookingApplyTruth,
+    });
+    markConversationDirty(debug);
+    await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+    return {
+      final_patient_reply: buildBookingApplyEmergencyFallback(allResults, input.locale),
+      conversation_id: null,
+      conversation_id_resumable: false,
+      tool_requests: toolRequests,
+      tool_results: allResults,
+      debug,
+      ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
+      ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
+    };
+  }
+
+  let updatedConversationId = conversationId;
+  if (guardedOutput.conversation_id !== undefined) {
+    updatedConversationId = guardedOutput.conversation_id;
+  }
+
+  if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
+    await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
+    return {
+      final_patient_reply: guardedOutput.final_response.final_patient_reply,
+      conversation_id: updatedConversationId,
+      tool_requests: toolRequests,
+      tool_results: allResults,
+      debug,
+      ui: sanitizePhoneCaptureUiForChannel(guardedOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
+      ...(guardedOutput.final_response.subject_intent != null ? { subject_intent: guardedOutput.final_response.subject_intent } : {}),
+      ...(guardedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: guardedOutput.final_response.phone_ownership_intent } : {}),
+      ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
+      ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
+    };
+  }
+
+  debug.finalization_reason = guardedOutput.type === "tool_requests"
+    ? "guarded_multiple_booking_second_call_still_tool_requests"
+    : "guarded_multiple_booking_second_call_malformed";
+  markConversationDirty(debug);
+  await clearConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
+  return {
+    final_patient_reply: buildBookingApplyEmergencyFallback(allResults, input.locale),
+    conversation_id: null,
+    conversation_id_resumable: false,
+    tool_requests: toolRequests,
+    tool_results: allResults,
+    debug,
+    ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
+    ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
   };
 }
 
@@ -1410,11 +1580,12 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
   deps: CreateRuntimeAgentLoopDeps;
   execution_subject_id?: SubjectId | null;
   booking_subjects_after_resolution?: BookingSubjectsState | null;
+  booking_apply_resolution?: BookingApplyResolution | null;
 }): Promise<RuntimeAgentTurnResult> {
   const {
     pendingBookingApply, guardedData, previousToolResults, toolRequests,
     conversationId, systemInstruction, callerContext, input, debug, deps,
-    execution_subject_id, booking_subjects_after_resolution,
+    execution_subject_id, booking_subjects_after_resolution, booking_apply_resolution,
   } = params;
 
   const guardedToolResult: RuntimeAgentToolResult = {
@@ -1467,6 +1638,7 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
       debug,
       ...(execution_subject_id != null ? { execution_subject_id } : {}),
       ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
+      ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
     };
   }
 
@@ -1501,6 +1673,7 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
       ...(guardedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: guardedOutput.final_response.phone_ownership_intent } : {}),
       ...(execution_subject_id != null ? { execution_subject_id } : {}),
       ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
+      ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
     };
   }
 
@@ -1520,6 +1693,7 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
     debug,
     ...(execution_subject_id != null ? { execution_subject_id } : {}),
     ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
+    ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
   };
 }
 

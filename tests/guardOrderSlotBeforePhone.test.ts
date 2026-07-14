@@ -65,6 +65,7 @@ const BOOKING_WRONG_TIME: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_bk_wrong",
   arguments: {
+    subject_id: "subject_1",
     first_name: "Іван",
     last_name: "Петренко",
     service: "чистка",
@@ -78,6 +79,7 @@ const BOOKING_CORRECT_TIME: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_bk_correct",
   arguments: {
+    subject_id: "subject_1",
     first_name: "Іван",
     last_name: "Петренко",
     service: "чистка",
@@ -91,6 +93,7 @@ const BOOKING_CORRECT_TIME_NO_NAME: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_bk_noname",
   arguments: {
+    subject_id: "subject_1",
     service: "чистка",
     requested_date: "2026-07-15",
     requested_time: "11:00",
@@ -102,6 +105,7 @@ const BOOKING_ANY_TIME: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_bk_any",
   arguments: {
+    subject_id: "subject_1",
     first_name: "Іван",
     last_name: "Петренко",
     service: "чистка",
@@ -115,6 +119,7 @@ const BOOKING_ROUND1_FULL: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_bk_r1",
   arguments: {
+    subject_id: "subject_1",
     first_name: "Іван",
     last_name: "Петренко",
     service: "чистка",

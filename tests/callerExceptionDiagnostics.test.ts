@@ -143,7 +143,7 @@ test("second-call exception with booking_apply_action_truth: booking fallback st
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
       };
     }
     throw Object.assign(new Error("openai_internal_error"), { code: "internal_error", request_id: "req_xyz" });
@@ -200,7 +200,7 @@ test("sanitizeErrorMessage redacts phone numbers and multiple secret shapes (API
   const caller: RuntimeAgentCaller = async () => {
     round += 1;
     if (round === 1) {
-      return { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }] };
+      return { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }] };
     }
     throw new Error(
       `upstream 500: phone=${patientPhone} apikey=sk-verysecretkey1234567890 auth=Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFPM`,

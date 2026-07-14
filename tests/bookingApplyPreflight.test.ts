@@ -92,6 +92,7 @@ const BOOKING_APPLY_REQUEST: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_book_1",
   arguments: {
+    subject_id: "subject_1",
     service: "chistka",
     requested_date: "2026-07-09",
     requested_time: "12:00",
@@ -518,7 +519,7 @@ test("Test 3: Guard D (round 1) — trusted phone + no date/time → submits gua
           tool: "booking.apply",
           call_id: "call_t3",
           // No requested_date or requested_time — slot not selected
-          arguments: { first_name: "Роман", last_name: "Анбасадоров", service: "осмотр" },
+          arguments: { subject_id: "subject_1", first_name: "Роман", last_name: "Анбасадоров", service: "осмотр" },
         }],
       },
       // Guarded finalization: model asks for slot after seeing missing_slot guarded result
@@ -574,6 +575,7 @@ test("Test 4a: Guard E (round 1) — first_name missing → submits guarded resu
           tool: "booking.apply",
           call_id: "call_t4a",
           arguments: {
+            subject_id: "subject_1",
             // first_name absent, last_name present, date+time present
             last_name: "Анбасадоров",
             requested_date: "2026-07-15",
@@ -637,6 +639,7 @@ test("Test 4b: Guard E (round 1) — last_name missing → submits guarded resul
           tool: "booking.apply",
           call_id: "call_t4b",
           arguments: {
+            subject_id: "subject_1",
             first_name: "Роман",
             // last_name absent
             requested_date: "2026-07-15",
@@ -718,6 +721,7 @@ test("Test 5: full proof + BOOKING_MODE=disabled → booking_write_disabled, no 
           tool: "booking.apply",
           call_id: "call_t5",
           arguments: {
+            subject_id: "subject_1",
             first_name: "Іван",
             last_name: "Петров",
             requested_date: "2026-07-20",
@@ -787,6 +791,7 @@ test("Test 6: golden flow regression — 0 slots → guarded tool result, execut
           tool: "booking.apply",
           call_id: "call_book_roman",
           arguments: {
+            subject_id: "subject_1",
             first_name: "Роман",
             last_name: "Анбасадоров",
             service: "осмотр из-за боли",
@@ -1064,6 +1069,7 @@ test("Integration: invalid slot time in round-2 → executor not called, asks to
     tool: "booking.apply",
     call_id: "call_wrong_time",
     arguments: {
+      subject_id: "subject_1",
       service: "chistka",
       requested_date: "2026-07-09",
       requested_time: "13:00", // NOT in availability results (slot is 12:00)
@@ -1135,6 +1141,7 @@ test("Integration: valid slot time (12:00 in [12:00]) — passes slot validity, 
     tool: "booking.apply",
     call_id: "call_correct_time",
     arguments: {
+      subject_id: "subject_1",
       service: "chistka",
       requested_date: "2026-07-09",
       requested_time: "12:00", // matches the available slot
@@ -1204,6 +1211,7 @@ test("Integration: missing service in round-1 args → executor not called, asks
           tool: "booking.apply",
           call_id: "call_no_svc",
           arguments: {
+            subject_id: "subject_1",
             requested_date: "2026-07-09",
             requested_time: "12:00",
             first_name: "Роман",
@@ -1249,18 +1257,29 @@ test("Integration: missing service in round-1 args → executor not called, asks
 
 // ── PR#174: Guard I — pending_typed_phone blocks booking.apply ────────────────
 
-import type { BookingSubjectsState } from "../src/runtime/bookingSubjectsState.ts";
+import type { BookingSubjectsState, SubjectId } from "../src/runtime/bookingSubjectsState.ts";
 
 test("PR#174 Guard I (round 1): booking.apply blocked when booking_subjects.pending_typed_phone present", async () => {
   let bookingApplyExecutorCalled = false;
 
   const SUBJECTS_WITH_PENDING_PHONE: BookingSubjectsState = {
-    active_subject_id: "s2",
+    version: 3,
+    status: "active",
+    active_subject_id: "subject_2" as SubjectId,
     subjects: [
-      { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: "+380991350135", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
-      { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      {
+        id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: "Рима", service: "Чистка",
+        slot: null, booking_contact: { phone_number: "+380991350135", source: "telegram_contact_button", trust: "trusted", owner_subject_id: "subject_1" as SubjectId, collected_at: null },
+        status: "collecting", missing: ["slot"],
+      },
+      {
+        id: "subject_2" as SubjectId, role: "mentioned_person", label: null, patient_name: "Иван", service: "Чистка",
+        slot: "2026-07-09T12:00", booking_contact: { phone_number: "+420728123456", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
+        status: "collecting", missing: [],
+      },
     ],
     pending_typed_phone: "+420728123456",  // not yet classified
+    max_subjects: 4,
   };
 
   const loop = createRuntimeAgentLoop({
@@ -1271,7 +1290,7 @@ test("PR#174 Guard I (round 1): booking.apply blocked when booking_subjects.pend
         tool_requests: [{
           tool: "booking.apply",
           call_id: "call_guard_i",
-          arguments: { service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
+          arguments: { subject_id: "subject_2", service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
         }],
       },
       {
@@ -1304,12 +1323,22 @@ test("PR#174 Guard I (round 2): booking.apply blocked when booking_subjects.pend
   let bookingApplyExecutorCalled = false;
 
   const SUBJECTS_WITH_PENDING_PHONE: BookingSubjectsState = {
-    active_subject_id: "s2",
+    version: 3,
+    status: "active",
+    active_subject_id: "subject_2" as SubjectId,
     subjects: [
-      { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      {
+        id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: "Рима", service: null,
+        slot: null, booking_contact: null, status: "collecting", missing: ["service", "slot", "booking_contact"],
+      },
+      {
+        id: "subject_2" as SubjectId, role: "mentioned_person", label: null, patient_name: "Иван", service: "Чистка",
+        slot: "2026-07-09T12:00", booking_contact: { phone_number: "+420728123456", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
+        status: "collecting", missing: [],
+      },
     ],
     pending_typed_phone: "+420728123456",
+    max_subjects: 4,
   };
 
   const loop = createRuntimeAgentLoop({
@@ -1324,7 +1353,7 @@ test("PR#174 Guard I (round 2): booking.apply blocked when booking_subjects.pend
         tool_requests: [{
           tool: "booking.apply",
           call_id: "call_book_gi",
-          arguments: { service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
+          arguments: { subject_id: "subject_2", service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
         }],
       },
       {

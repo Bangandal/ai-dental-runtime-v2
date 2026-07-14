@@ -176,7 +176,7 @@ describe("runtimeAgentLoop — booking.apply past-time preflight (round 1)", () 
           tool_requests: [{
             tool: "booking.apply",
             call_id: "call-1",
-            arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation", first_name: "Boris", last_name: "Test" },
+            arguments: { subject_id: "subject_1", requested_date: "2026-07-03", requested_time: "13:00", service: "consultation", first_name: "Boris", last_name: "Test" },
           }],
         } as RuntimeAgentCallerOutput;
       }
@@ -225,7 +225,7 @@ describe("runtimeAgentLoop — booking.apply past-time preflight (round 1)", () 
           tool_requests: [{
             tool: "booking.apply",
             call_id: "call-cs",
-            arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation", first_name: "Pavel", last_name: "Test" },
+            arguments: { subject_id: "subject_1", requested_date: "2026-07-03", requested_time: "13:00", service: "consultation", first_name: "Pavel", last_name: "Test" },
           }],
         } as RuntimeAgentCallerOutput;
       }
@@ -273,7 +273,7 @@ describe("runtimeAgentLoop — booking.apply phone preflight (round 1)", () => {
           tool_requests: [{
             tool: "booking.apply",
             call_id: "call-2",
-            arguments: { requested_date: "2026-07-04", requested_time: "13:00", service: "consultation", first_name: "Boris", last_name: "Test" },
+            arguments: { subject_id: "subject_1", requested_date: "2026-07-04", requested_time: "13:00", service: "consultation", first_name: "Boris", last_name: "Test" },
           }],
         } as RuntimeAgentCallerOutput;
       }
@@ -395,7 +395,7 @@ describe("runtimeAgentLoop — booking.apply past-time preflight (round 2 Guard 
           type: "tool_requests",
           conversation_id: "conv-r2-past",
           tool_requests: [
-            { tool: "booking.apply", call_id: "call-book", arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" } },
+            { tool: "booking.apply", call_id: "call-book", arguments: { subject_id: "subject_1", requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" } },
           ],
         } as RuntimeAgentCallerOutput;
       }
@@ -519,7 +519,7 @@ describe("runtimeAgentLoop — turnNow fallback when deps.now is not injected", 
           tool_requests: [{
             tool: "booking.apply",
             call_id: "c1",
-            arguments: { requested_date: today, requested_time: "00:00", service: "consultation" },
+            arguments: { subject_id: "subject_1", requested_date: today, requested_time: "00:00", service: "consultation" },
           }],
         } as RuntimeAgentCallerOutput;
       }
@@ -569,7 +569,7 @@ describe("runtimeAgentLoop — turnNow fallback when deps.now is not injected", 
       tool_requests: [{
         tool: "booking.apply",
         call_id: "c1",
-        arguments: { requested_date: todayInPrague2099, requested_time: "10:00", service: "consultation" },
+        arguments: { subject_id: "subject_1", requested_date: todayInPrague2099, requested_time: "10:00", service: "consultation" },
       }],
     } as RuntimeAgentCallerOutput);
 

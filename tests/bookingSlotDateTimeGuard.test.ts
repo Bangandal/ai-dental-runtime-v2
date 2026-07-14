@@ -49,6 +49,7 @@ const BOOKING_WRONG_DATE: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_bk_dt1",
   arguments: {
+    subject_id: "subject_1",
     first_name: "Роман",
     last_name: "Анбасадоров",
     service: "чистка",
@@ -62,6 +63,7 @@ const BOOKING_CORRECT_DATE: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_bk_dt2",
   arguments: {
+    subject_id: "subject_1",
     first_name: "Роман",
     last_name: "Анбасадоров",
     service: "чистка",

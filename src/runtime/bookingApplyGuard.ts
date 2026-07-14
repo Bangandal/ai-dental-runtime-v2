@@ -19,24 +19,33 @@ export interface BookingApplyActionTruth {
     | "offer_another_time"
     | "ask_for_alternative_time"
     | "choose_from_available_slots"
+    | "clarify_subject"
     | "admin_handoff"
     | "technical_fallback";
 }
 
-/** True only when booking.apply returned all four proof fields indicating visit_created. */
+/**
+ * True when a single booking.apply tool result carries the complete ClinicCard proof:
+ * status=success, booking_status=visit_created, created_visit=true, may_claim_booked=true,
+ * and a non-empty cliniccard_visit_id.  Used by postUpdateBookingSubjects to gate subject
+ * status transitions — partial results must never mark a subject as booked.
+ */
+export function hasCompleteBookingApplyProof(result: RuntimeAgentToolResult | undefined): boolean {
+  if (!result || result.tool !== "booking.apply" || result.status !== "success") return false;
+  const d = result.data as Record<string, unknown> | null | undefined;
+  if (!d || typeof d !== "object") return false;
+  return (
+    d.booking_status === "visit_created" &&
+    d.created_visit === true &&
+    d.may_claim_booked === true &&
+    typeof d.cliniccard_visit_id === "string" &&
+    d.cliniccard_visit_id.trim().length > 0
+  );
+}
+
+/** True only when booking.apply returned all proof fields indicating visit_created (array variant). */
 export function hasSuccessfulBookingApplyProof(results: RuntimeAgentToolResult[]): boolean {
-  return results.some((r) => {
-    if (r.tool !== "booking.apply" || r.status !== "success") return false;
-    const d = r.data as Record<string, unknown> | null | undefined;
-    if (!d || typeof d !== "object") return false;
-    return (
-      d.booking_status === "visit_created" &&
-      d.created_visit === true &&
-      d.may_claim_booked === true &&
-      typeof d.cliniccard_visit_id === "string" &&
-      d.cliniccard_visit_id.length > 0
-    );
-  });
+  return results.some((r) => hasCompleteBookingApplyProof(r));
 }
 
 /** Builds structured action truth from booking.apply tool results for the model's second call. */
@@ -81,6 +90,8 @@ function resolveRequiredNextAction(bookingStatus: string): BookingApplyActionTru
     case "no_available_slots":
     case "invalid_slot":
     case "past_time":               return "offer_another_time";
+    case "subject_resolution_conflict": return "clarify_subject";
+    case "pending_phone_classification": return "none";
     case "booking_write_disabled":  return "admin_handoff";
     default:                        return "technical_fallback";
   }
@@ -102,11 +113,16 @@ export function buildBookingApplyEmergencyFallback(
 
   const normalized = String(locale ?? "").toLowerCase();
 
-  // No handoff/admin-notification side effect is created anywhere in this path — do not
-  // promise clinic staff will follow up or reach out. Direct the patient to contact the
-  // clinic directly instead of claiming an outreach that never happens.
+  // Booking-created copy is only allowed when all 5 proof fields are present
+  // (hasCompleteBookingApplyProof). A partial visit_created result (e.g. missing
+  // cliniccard_visit_id or whitespace-only ID) falls through to the generic fallback —
+  // never tell the patient a booking was made without durable ClinicCard proof.
+  // No handoff/admin-notification side effect is created in this path — do not promise
+  // clinic staff will follow up or reach out.
+  const hasFullProof = hasCompleteBookingApplyProof(bookingResult);
+
   if (normalized.startsWith("en")) {
-    if (status === "visit_created") return "Your appointment has been saved in our system, but a technical error prevented the confirmation message from sending. Please contact the clinic to verify your booking details.";
+    if (hasFullProof) return "Your appointment has been saved in our system, but a technical error prevented the confirmation message from sending. Please contact the clinic to verify your booking details.";
     if (status === "missing_phone") return "I need your phone number to complete the booking. Please share your contact or type your number.";
     if (status === "slot_conflict") return "That time slot is no longer available. I can check other times.";
     if (status === "booking_write_disabled") return "Online booking is currently unavailable. Please contact the clinic directly to book your appointment.";
@@ -114,7 +130,7 @@ export function buildBookingApplyEmergencyFallback(
   }
 
   if (normalized.startsWith("cs")) {
-    if (status === "visit_created") return "Vaše rezervace byla uložena v systému, ale při odeslání potvrzení došlo k technické chybě. Kontaktujte prosím kliniku pro ověření podrobností.";
+    if (hasFullProof) return "Vaše rezervace byla uložena v systému, ale při odeslání potvrzení došlo k technické chybě. Kontaktujte prosím kliniku pro ověření podrobností.";
     if (status === "missing_phone") return "Pro rezervaci potřebuji váš telefon. Sdílejte kontakt nebo napište číslo.";
     if (status === "slot_conflict") return "Tento čas je obsazen. Mohu zkontrolovat jiný termín.";
     if (status === "booking_write_disabled") return "Online rezervace není momentálně dostupná. Kontaktujte prosím kliniku přímo pro rezervaci.";
@@ -122,8 +138,8 @@ export function buildBookingApplyEmergencyFallback(
   }
 
   // Default: Russian
-  // visit_created: booking IS in ClinicCard — never say "не могу подтвердить".
-  if (status === "visit_created") return "Запись создана в системе, но при отправке ответа произошла техническая ошибка. Пожалуйста, уточните детали у клиники.";
+  // Booking IS in ClinicCard only when full proof present — never say "не могу подтвердить" then.
+  if (hasFullProof) return "Запись создана в системе, но при отправке ответа произошла техническая ошибка. Пожалуйста, уточните детали у клиники.";
   if (status === "missing_phone") return "Для записи нужен номер телефона. Поделитесь контактом или напишите номер.";
   if (status === "slot_conflict") return "Это время уже недоступно. Могу проверить другое время.";
   if (status === "booking_write_disabled") return "Онлайн-запись временно недоступна. Пожалуйста, свяжитесь с клиникой напрямую для записи.";

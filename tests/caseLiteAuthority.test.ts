@@ -182,6 +182,7 @@ test("D: channel_contact is available in turn input and trusted phone works thro
     tool: "booking.apply",
     call_id: "call_book_d",
     arguments: {
+      subject_id: "subject_1",
       service: "chistka",
       requested_date: "2026-07-10",
       requested_time: "14:00",
@@ -248,6 +249,7 @@ test("E: booking_apply_action_truth is produced correctly in second-call context
     tool: "booking.apply",
     call_id: "call_book_e",
     arguments: {
+      subject_id: "subject_1",
       service: "chistka",
       requested_date: "2026-07-10",
       requested_time: "14:00",

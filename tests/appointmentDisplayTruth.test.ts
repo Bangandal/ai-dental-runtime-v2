@@ -245,6 +245,7 @@ describe("PR #136 — F: appointment_display_truth injected in second model call
               tool: "booking.apply",
               call_id: "call_f1",
               arguments: {
+                subject_id: "subject_1",
                 first_name: "Smoke",
                 last_name: "Test136",
                 service: "чистка зубов",
@@ -538,5 +539,52 @@ process.stdout.write(JSON.stringify(result));
       !result!.date_display.en.includes("8"),
       `date_display.en must not contain '8', got: ${result!.date_display.en}`,
     );
+  });
+});
+
+// ── PR #180 R4: Proof-gate regression tests for buildAppointmentDisplayTruth ──
+
+describe("buildAppointmentDisplayTruth — proof gate (R4)", () => {
+  test("ADT-R4-1: missing cliniccard_visit_id → returns null", () => {
+    const result = buildAppointmentDisplayTruth([makeBookingSuccessResult({ cliniccard_visit_id: undefined })]);
+    assert.strictEqual(result, null, "must return null when cliniccard_visit_id is absent");
+  });
+
+  test("ADT-R4-2: whitespace-only cliniccard_visit_id → returns null", () => {
+    const result = buildAppointmentDisplayTruth([makeBookingSuccessResult({ cliniccard_visit_id: "   " })]);
+    assert.strictEqual(result, null, "must return null when cliniccard_visit_id is whitespace only");
+  });
+
+  test("ADT-R4-3: may_claim_booked=false → returns null", () => {
+    const result = buildAppointmentDisplayTruth([makeBookingSuccessResult({ may_claim_booked: false })]);
+    assert.strictEqual(result, null, "must return null when may_claim_booked is false");
+  });
+
+  test("ADT-R4-4: failed tool result with visit data → returns null", () => {
+    const failedResult = {
+      tool: "booking.apply" as const,
+      call_id: "call_failed",
+      status: "denied" as const,
+      error: { code: "guard_block", message: "blocked" },
+      data: {
+        booking_status: "visit_created",
+        created_visit: true,
+        may_claim_booked: true,
+        cliniccard_visit_id: "99999999",
+        date: "2026-07-07",
+        time_start: "14:00",
+      },
+    };
+    const result = buildAppointmentDisplayTruth([failedResult]);
+    assert.strictEqual(result, null, "must return null when status is not success");
+  });
+
+  test("ADT-R4-5: complete proof → returns non-null display truth with date and time", () => {
+    const result = buildAppointmentDisplayTruth([makeBookingSuccessResult()]);
+    assert.notStrictEqual(result, null, "complete proof must return non-null display truth");
+    assert.strictEqual(result!.date, "2026-07-07");
+    assert.strictEqual(result!.time_start, "14:00");
+    assert.ok(result!.weekday.ru, "weekday.ru must be populated");
+    assert.ok(result!.date_display.en, "date_display.en must be populated");
   });
 });

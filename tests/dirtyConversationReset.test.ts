@@ -112,7 +112,7 @@ test("multi-round fallback with a prior booking.apply result still uses the book
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
         conversation_id: "conv_r1",
       };
     }

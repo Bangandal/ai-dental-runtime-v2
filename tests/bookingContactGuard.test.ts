@@ -58,6 +58,7 @@ const BOOKING_APPLY_REQUEST: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_book_1",
   arguments: {
+    subject_id: "subject_1",
     service: "chistka",
     requested_date: "2026-07-09",
     requested_time: "12:00",
@@ -520,7 +521,7 @@ test("runtimeAgentLoop: 'Роман, ансамблев' treated as name candida
       tool_requests: [{
         tool: "booking.apply",
         call_id: "c2",
-        arguments: { service: "chistka", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Роман", last_name: "Ансамблев" },
+        arguments: { subject_id: "subject_1", service: "chistka", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Роман", last_name: "Ансамблев" },
       }],
     },
     {

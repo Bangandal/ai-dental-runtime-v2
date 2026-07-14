@@ -39,6 +39,7 @@ const BOOKING_APPLY_FULL: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_bk_1",
   arguments: {
+    subject_id: "subject_1",
     first_name: "Роман",
     last_name: "Анбасадоров",
     service: "чистка",

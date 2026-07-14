@@ -131,7 +131,7 @@ test("E: booking.apply guard intercepts missing trusted phone — returns ask_fo
           tool: "booking.apply",
           call_id: "call_ba_e",
           // Use a future date/time well clear of turnNow
-          arguments: { first_name: "Иван", last_name: "Петров", service: "осмотр", requested_date: "2026-07-15", requested_time: "14:00" },
+          arguments: { subject_id: "subject_1", first_name: "Иван", last_name: "Петров", service: "осмотр", requested_date: "2026-07-15", requested_time: "14:00" },
         }],
       } satisfies RuntimeAgentCallerOutput;
     }
@@ -183,7 +183,7 @@ test("F: phone guard block does not produce booking confirmation in reply", asyn
         tool_requests: [{
           tool: "booking.apply",
           call_id: "call_ba_f",
-          arguments: { first_name: "Мария", last_name: "Иванова", service: "чистка", requested_date: "2026-07-15", requested_time: "14:00" },
+          arguments: { subject_id: "subject_1", first_name: "Мария", last_name: "Иванова", service: "чистка", requested_date: "2026-07-15", requested_time: "14:00" },
         }],
       } satisfies RuntimeAgentCallerOutput;
     }

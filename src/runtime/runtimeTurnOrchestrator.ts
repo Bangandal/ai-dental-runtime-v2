@@ -392,6 +392,11 @@ export async function runRuntimeTurnOrchestrated(
         if (bookingSubjectsForTurn) {
           runtimeTurnInput.booking_subjects = bookingSubjectsForTurn;
         }
+        // current_turn_typed_phone: only from the current turn's extracted phone, never from
+        // persisted existingProvidedPhone — prevents old typed phone from re-entering pending state.
+        if (typedContactToStore) {
+          runtimeTurnInput.current_turn_typed_phone = typedContactToStore.phone_number;
+        }
       } else {
         runtimeContextDebug.error = runtimeContextResult.error;
       }

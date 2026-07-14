@@ -458,21 +458,30 @@ function validateFullBookingContact(raw: unknown, subjectId: SubjectId, allSubje
   const trust = bc.trust as BookingContactTrust;
   const source = bc.source as BookingContactSource;
 
+  // Validate source/trust compatibility combinations
+  if (source === "typed" && trust !== "unverified") return null;
+  if (source === "shared_from_subject" && trust !== "trusted_contact_owner") return null;
+  if (trust === "trusted_contact_owner" && source !== "shared_from_subject") return null;
+  if ((source === "telegram_contact_button" || source === "whatsapp_sender" || source === "existing_cliniccard_patient") && trust !== "trusted") return null;
+
   let ownerSubjectId: SubjectId | null = null;
   if (typeof bc.owner_subject_id === "string") {
     if (!VALID_SUBJECT_IDS.has(bc.owner_subject_id)) return null;
     ownerSubjectId = bc.owner_subject_id as SubjectId;
   }
 
-  // shared_from_subject: owner must differ from subject, owner must exist in state
   if (source === "shared_from_subject") {
+    // Owner must differ from target subject and must exist in state
     if (!ownerSubjectId || ownerSubjectId === subjectId) return null;
-    const ownerExists = allSubjects.some((s) => (s as Record<string, unknown>).id === ownerSubjectId);
-    if (!ownerExists) return null;
+    const ownerRaw = allSubjects.find((s) => (s as Record<string, unknown>).id === ownerSubjectId) as Record<string, unknown> | undefined;
+    if (!ownerRaw) return null;
+    // Owner must have a real trusted non-shared contact (no chaining shared contacts)
+    const ownerBc = ownerRaw.booking_contact as Record<string, unknown> | null | undefined;
+    if (!ownerBc || typeof ownerBc !== "object" || Array.isArray(ownerBc)) return null;
+    if (!ownerBc.phone_number) return null;
+    if (ownerBc.source === "typed" || ownerBc.source === "shared_from_subject") return null;
+    if (ownerBc.trust !== "trusted") return null;
   }
-
-  // trust=trusted_contact_owner requires shared_from_subject
-  if (trust === "trusted_contact_owner" && source !== "shared_from_subject") return null;
 
   return {
     phone_number: bc.phone_number,
@@ -504,7 +513,12 @@ function validateFullSubject(raw: unknown, allSubjects: Record<string, unknown>[
     rawStatus === "booked" ? "booked" :
     rawStatus === "ready_for_booking" ? "ready_for_booking" : "collecting";
 
-  const booking_contact = validateFullBookingContact(s.booking_contact, id, allSubjects);
+  // If booking_contact is a non-null object, it must fully validate — no silent conversion to null.
+  const hasRawContact = s.booking_contact != null && typeof s.booking_contact === "object" && !Array.isArray(s.booking_contact);
+  const booking_contact = hasRawContact
+    ? validateFullBookingContact(s.booking_contact, id, allSubjects)
+    : null;
+  if (hasRawContact && booking_contact === null) return null;
 
   const subject: BookingSubject = {
     id,
@@ -531,9 +545,10 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
     if (typeof activeId !== "string" || !VALID_SUBJECT_IDS.has(activeId)) return null;
 
     const rawSubjects = Array.isArray(r.subjects) ? r.subjects as Record<string, unknown>[] : [];
-    const subjects = rawSubjects
-      .map((s) => validateFullSubject(s, rawSubjects))
-      .filter((s): s is BookingSubject => s !== null);
+    const parsedSubjects = rawSubjects.map((s) => validateFullSubject(s, rawSubjects));
+    // All-or-nothing: any invalid subject makes the whole state invalid (no silent dropping)
+    if (parsedSubjects.some((s) => s === null)) return null;
+    const subjects = parsedSubjects as BookingSubject[];
 
     // Must have 1–4 subjects
     if (subjects.length === 0 || subjects.length > 4) return null;
@@ -639,6 +654,9 @@ export function initBookingSubjectsForTurn(params: {
   const { current, channelContact, pendingTypedPhone } = params;
 
   if (!current) return null;
+  // Treat completed registry as historical — not passed to model as active booking_subjects.
+  // Fresh flow (self-booking or new multi-subject) will create a new registry via bootstrap.
+  if (current.status === "completed") return null;
 
   const s1Trusted = channelContact != null && TRUSTED_PHONE_SOURCES.has(channelContact.phone_source);
   let subjects = current.subjects.map((s) => {
@@ -727,6 +745,7 @@ const VALID_MULTI_SUBJECT_IDS = new Set<string>(["subject_2", "subject_3", "subj
 export function bootstrapRegistryFromBookingApplyArgs(
   args: Record<string, unknown>,
   channelContact: ChannelContact | null,
+  currentTurnTypedPhone?: string | null,
 ): BookingSubjectsState | null {
   const rawSubjectId = args.subject_id;
   if (typeof rawSubjectId !== "string" || !VALID_MULTI_SUBJECT_IDS.has(rawSubjectId)) return null;
@@ -771,7 +790,9 @@ export function bootstrapRegistryFromBookingApplyArgs(
     status: "active",
     active_subject_id: targetId,
     subjects,
-    pending_typed_phone: null,
+    // Preserve typed phone from current turn so Guard I fires and model classifies ownership
+    // before booking executes. Never assign the phone to a subject automatically here.
+    pending_typed_phone: currentTurnTypedPhone ?? null,
     max_subjects: 4,
   };
 }

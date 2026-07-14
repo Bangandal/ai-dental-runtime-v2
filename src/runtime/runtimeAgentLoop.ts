@@ -297,23 +297,25 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const bookingApplyRound1 = toolRequests.find((r) => r.tool === "booking.apply");
 
       // Bootstrap registry: when model targets subject_2+ but no registry exists yet,
-      // create a minimal 2-subject registry so subject-aware guards can resolve
+      // create a minimal multi-subject registry so subject-aware guards can resolve
       // execution subject. Returns null for subject_1 (single-subject flow — no registry).
       let effectiveBookingSubjects: BookingSubjectsState | null = input.booking_subjects ?? null;
       if (!effectiveBookingSubjects && bookingApplyRound1) {
         const bootstrapped = bootstrapRegistryFromBookingApplyArgs(
           bookingApplyRound1.arguments,
           input.channel_contact ?? null,
+          input.current_turn_typed_phone ?? null,
         );
         if (bootstrapped) {
           effectiveBookingSubjects = bootstrapped;
         }
       }
-      const effectiveInput: RuntimeAgentTurnInput = effectiveBookingSubjects !== (input.booking_subjects ?? null)
+      let effectiveInput: RuntimeAgentTurnInput = effectiveBookingSubjects !== (input.booking_subjects ?? null)
         ? { ...input, booking_subjects: effectiveBookingSubjects }
         : input;
       // Non-null when bootstrap created a new registry this turn; orchestrator persists it.
-      const bootstrappedRegistry: BookingSubjectsState | null =
+      // Updated again in round-2 if round-2 bootstrap creates a registry.
+      let bootstrappedRegistry: BookingSubjectsState | null =
         effectiveInput !== input ? effectiveBookingSubjects : null;
 
       if (bookingApplyRound1) {
@@ -469,6 +471,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           input,
           debug,
           deps,
+          execution_subject_id: round1ExecutionSubjectId,
           booking_subjects_after_resolution: bootstrappedRegistry,
         });
       }
@@ -494,6 +497,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           input,
           debug,
           deps,
+          execution_subject_id: round1ExecutionSubjectId,
           booking_subjects_after_resolution: bootstrappedRegistry,
         });
       }
@@ -523,6 +527,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             input,
             debug,
             deps,
+            execution_subject_id: round1ExecutionSubjectId,
             booking_subjects_after_resolution: bootstrappedRegistry,
           });
         }
@@ -549,6 +554,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           input,
           debug,
           deps,
+          execution_subject_id: round1ExecutionSubjectId,
           booking_subjects_after_resolution: bootstrappedRegistry,
         });
       }
@@ -687,6 +693,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_requests: toolRequests,
           tool_results: toolResults,
           debug,
+          // Preserve execution metadata so orchestrator can persist booking result even on exception
+          ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
+          ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
         };
       }
 
@@ -710,6 +719,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_requests: toolRequests,
           tool_results: toolResults,
           debug,
+          // Preserve execution metadata even on malformed response
+          ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
+          ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
         };
       }
 
@@ -771,6 +783,21 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // Hoist pendingBookingApply before phone gate so slot-validity guards can fire
         // regardless of phone status. Principle: verify slot before collecting phone.
         const pendingBookingApply = secondOutput.tool_requests.find((r) => r.tool === "booking.apply");
+
+        // Round-2 bootstrap: same logic as round-1 — when registry absent (e.g. round-1 was
+        // availability.check only) and booking.apply targets subject_2+, create the registry now.
+        if (!effectiveBookingSubjects && pendingBookingApply) {
+          const r2Bootstrapped = bootstrapRegistryFromBookingApplyArgs(
+            pendingBookingApply.arguments,
+            input.channel_contact ?? null,
+            input.current_turn_typed_phone ?? null,
+          );
+          if (r2Bootstrapped) {
+            effectiveBookingSubjects = r2Bootstrapped;
+            effectiveInput = { ...input, booking_subjects: effectiveBookingSubjects };
+            bootstrappedRegistry = r2Bootstrapped;
+          }
+        }
 
         // Guard J (round 2): resolve execution subject from booking.apply.subject_id.
         let round2ExecutionSubjectId: SubjectId | null = null;
@@ -949,6 +976,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               debug,
               deps,
               booking_subjects_after_resolution: bootstrappedRegistry,
+              execution_subject_id: round2ExecutionSubjectId,
             });
           }
         }
@@ -978,6 +1006,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             input,
             debug,
             deps,
+            execution_subject_id: round2ExecutionSubjectId,
             booking_subjects_after_resolution: bootstrappedRegistry,
           });
         }
@@ -1013,6 +1042,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               input,
               debug,
               deps,
+              execution_subject_id: round2ExecutionSubjectId,
               booking_subjects_after_resolution: bootstrappedRegistry,
             });
           }
@@ -1037,6 +1067,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               input,
               debug,
               deps,
+              execution_subject_id: round2ExecutionSubjectId,
               booking_subjects_after_resolution: bootstrappedRegistry,
             });
           }
@@ -1128,6 +1159,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             tool_requests: toolRequests,
             tool_results: allResults,
             debug,
+            ...(round2ExecutionSubjectId != null ? { execution_subject_id: round2ExecutionSubjectId } : {}),
             ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
           };
         }
@@ -1236,6 +1268,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         ui: maybeAttachPhoneRequestUI(secondCallVisibleState, secondOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
         ...(secondOutput.final_response.subject_intent != null ? { subject_intent: secondOutput.final_response.subject_intent } : {}),
         ...(secondOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: secondOutput.final_response.phone_ownership_intent } : {}),
+        // Propagate frozen execution subject so orchestrator can apply booking result to correct subject
+        ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
         ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
       };
     },
@@ -1624,14 +1658,15 @@ function buildSubjectAwarePhoneFields(
   phone_trust: string | undefined;
 } {
   if (input.booking_subjects) {
+    // Registry active: execution subject must be explicit — no fallback to active_subject_id.
+    if (!executionSubjectId) return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
     const subjects = input.booking_subjects.subjects as SubjectLike[];
-    const targetId = executionSubjectId ?? input.booking_subjects.active_subject_id;
-    const target = subjects.find((s) => s.id === targetId);
+    const target = subjects.find((s) => s.id === executionSubjectId);
     const bc = (target?.booking_contact ?? null) as Record<string, unknown> | null;
     if (bc?.phone_number) return resolveBookingContactFields(bc, subjects);
     return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
   }
-  // Single-subject fallback
+  // Single-subject (no registry): use global provided_phone / channel_contact
   return {
     phone_number: input.provided_phone?.phone_number ?? input.channel_contact?.phone_number,
     phone_source: input.provided_phone?.phone_source ?? input.channel_contact?.phone_source,
@@ -1640,14 +1675,16 @@ function buildSubjectAwarePhoneFields(
 }
 
 /**
- * True when the resolved execution subject (or global contact) has a phone suitable for booking.
- * Uses executionSubjectId when provided; falls back to active_subject_id for registry flows.
+ * True when the resolved execution subject has a phone suitable for booking.
+ * With an active registry, executionSubjectId must be explicit — no fallback to active_subject_id.
+ * Without a registry, falls back to global channel_contact / provided_phone.
  */
 function hasSubjectOrContactPhone(input: RuntimeAgentTurnInput, executionSubjectId: SubjectId | null): boolean {
   if (input.booking_subjects) {
+    // Registry active but no resolved execution subject → no phone (prevents active-subject bypass)
+    if (!executionSubjectId) return false;
     const subjects = input.booking_subjects.subjects as SubjectLike[];
-    const targetId = executionSubjectId ?? input.booking_subjects.active_subject_id;
-    const target = subjects.find((s) => s.id === targetId);
+    const target = subjects.find((s) => s.id === executionSubjectId);
     const bc = (target?.booking_contact ?? null) as Record<string, unknown> | null;
     if (!bc?.phone_number) return false;
     if (bc.source === "shared_from_subject") {

@@ -47,6 +47,10 @@ export interface RuntimeAgentTurnInput {
   provided_phone?: ProvidedPhone | null;
   /** Booking subjects state — when present, execution context uses active subject's phone instead of global provided_phone/channel_contact. */
   booking_subjects?: import("./bookingSubjectsState.ts").BookingSubjectsState | null;
+  /** Typed phone extracted from the current turn's message only. Set by orchestrator from
+   * typedContactToStore — never from persisted existingProvidedPhone. Used to populate
+   * pending_typed_phone when bootstrap creates a new multi-subject registry this turn. */
+  current_turn_typed_phone?: string | null;
 }
 
 export type RuntimeAgentToolName =

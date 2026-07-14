@@ -531,10 +531,12 @@ describe("v3: status lifecycle (simplified — no episode_id/dates)", () => {
     assert.equal(state.status, "completed");
   });
 
-  it("V3-E5: completed status persists across turns (not reset by initBookingSubjectsForTurn)", () => {
-    const state = makeState("subject_1", [makeSubject("subject_1", "sender")], null, "completed");
+  it("V3-E5: completed registry treated as historical — initBookingSubjectsForTurn returns null", () => {
+    // Completed registries are not carried forward as active state.
+    // Fresh flow creates a new registry via bootstrap on the next booking turn.
+    const state = makeState("subject_1", [makeSubject("subject_1", "sender", { status: "booked" })], null, "completed");
     const carried = initBookingSubjectsForTurn({ current: state, channelContact: null, pendingTypedPhone: null });
-    assert.equal(carried?.status, "completed");
+    assert.equal(carried, null, "completed registry must not be passed as active booking_subjects");
   });
 
   it("V3-E6: parseSubjectIntent rejects start_new_episode (removed action)", () => {

@@ -514,3 +514,92 @@ test("proof: runtimeAgentLoop.ts injects booking_apply_action_truth into second 
   assert.match(loopSrc, /booking_apply_action_truth/, "runtimeAgentLoop must inject booking_apply_action_truth into model context");
   assert.match(loopSrc, /buildBookingApplyActionTruth/, "runtimeAgentLoop must call buildBookingApplyActionTruth");
 });
+
+// ── PR #180 R4: Emergency fallback gated by complete ClinicCard proof ──────────
+
+const SLOT_REPO_EF = { async loadState() { return { selected_slot: { starts_at: "2026-07-20T11:00:00" } }; }, async saveState() {} };
+const BASE_TURN_EF = { clinic_id: "clinic_1", contact_id: "contact_1", case_id: null, user_message: "запишите", trace_id: "trace_ef", channel_contact: { phone_number: "+380991350135", phone_source: "telegram_contact_button" as const } };
+
+function makeExceptionLoop(executorData: Record<string, unknown>) {
+  let calls = 0;
+  return createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => {
+      calls++;
+      if (calls === 1) return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply" as const, call_id: "ba_ef", arguments: { subject_id: "subject_1", first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] };
+      throw new Error("Second caller exception");
+    },
+    executors: { "booking.apply": async () => ({ status: "success" as const, data: executorData }) },
+    bookingProcessStateRepository: SLOT_REPO_EF,
+  });
+}
+
+function makeMalformedLoop(executorData: Record<string, unknown>) {
+  let calls = 0;
+  return createRuntimeAgentLoop({
+    model: "test-model",
+    caller: async () => {
+      calls++;
+      if (calls === 1) return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply" as const, call_id: "ba_ef_m", arguments: { subject_id: "subject_1", first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] };
+      return { type: "final_response" as const, final_response: { final_patient_reply: "ok", safety_notes: ["malformed_openai_response"] } };
+    },
+    executors: { "booking.apply": async () => ({ status: "success" as const, data: executorData }) },
+    bookingProcessStateRepository: SLOT_REPO_EF,
+  });
+}
+
+// Test 1: partial visit_created (no cliniccard_visit_id) + second caller exception → no booking claim (RU/CS/EN)
+test("EF-partial-no-visit-id: visit_created without cliniccard_visit_id + caller exception → no booking-created claim in RU/CS/EN", async () => {
+  const partialData = { booking_status: "visit_created", created_visit: true, may_claim_booked: true };
+  for (const locale of ["ru", "cs", "en"] as const) {
+    const result = await makeExceptionLoop(partialData).runTurn({ ...BASE_TURN_EF, locale });
+    const reply = result.final_patient_reply;
+    assert.doesNotMatch(reply, /создана в системе|saved in our system|uložena v systému/i,
+      `locale=${locale}: partial proof (no visit_id) must not claim booking created, reply: ${reply}`);
+    assert.match(reply, /клиник|clinic|kliniku/i,
+      `locale=${locale}: must direct patient to contact clinic, reply: ${reply}`);
+  }
+});
+
+// Test 2: whitespace-only cliniccard_visit_id + caller exception → no booking claim
+test("EF-whitespace-visit-id: cliniccard_visit_id='   ' (whitespace only) + caller exception → no booking-created claim", async () => {
+  const whitespaceData = { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "   " };
+  for (const locale of ["ru", "cs", "en"] as const) {
+    const result = await makeExceptionLoop(whitespaceData).runTurn({ ...BASE_TURN_EF, locale });
+    const reply = result.final_patient_reply;
+    assert.doesNotMatch(reply, /создана в системе|saved in our system|uložena v systému/i,
+      `locale=${locale}: whitespace visit_id must not claim booking created, reply: ${reply}`);
+  }
+});
+
+// Test 3 (unit): denied tool result with booking_status=visit_created in data → no booking claim
+test("EF-denied-status: denied tool result containing booking_status=visit_created → no booking-created claim", () => {
+  const deniedResult = [{ tool: "booking.apply" as const, call_id: "ba_denied", status: "denied" as const, error: { code: "guard_block", message: "blocked" } }];
+  for (const locale of ["ru", "cs", "en"] as const) {
+    const reply = buildBookingApplyEmergencyFallback(deniedResult, locale);
+    assert.doesNotMatch(reply, /создана в системе|saved in our system|uložena v systému/i,
+      `locale=${locale}: denied status must not claim booking created, reply: ${reply}`);
+  }
+});
+
+// Test 4: full proof + caller exception → booking-saved wording IS allowed
+test("EF-full-proof: complete proof + caller exception → booking-saved emergency wording (RU/CS/EN)", async () => {
+  const fullData = { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "real-visit-99" };
+  for (const locale of ["ru", "cs", "en"] as const) {
+    const result = await makeExceptionLoop(fullData).runTurn({ ...BASE_TURN_EF, locale });
+    const reply = result.final_patient_reply;
+    assert.match(reply, /создана в системе|saved in our system|uložena v systému/i,
+      `locale=${locale}: full proof must produce booking-saved wording, reply: ${reply}`);
+  }
+});
+
+// Test 5: partial proof + malformed second model response → no booking claim
+test("EF-partial-malformed: visit_created without cliniccard_visit_id + malformed model response → no booking-created claim", async () => {
+  const partialData = { booking_status: "visit_created", created_visit: true, may_claim_booked: true };
+  for (const locale of ["ru", "cs", "en"] as const) {
+    const result = await makeMalformedLoop(partialData).runTurn({ ...BASE_TURN_EF, locale });
+    const reply = result.final_patient_reply;
+    assert.doesNotMatch(reply, /создана в системе|saved in our system|uložena v systému/i,
+      `locale=${locale}: partial proof + malformed response must not claim booking created, reply: ${reply}`);
+  }
+});

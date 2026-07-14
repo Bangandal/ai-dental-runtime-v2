@@ -1,4 +1,5 @@
 import type { RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
+import { hasCompleteBookingApplyProof } from "./bookingApplyGuard.ts";
 
 export interface AppointmentDisplayTruth {
   source: "booking.apply";
@@ -110,6 +111,11 @@ export function buildAppointmentDisplayTruth(
     (r) => r.tool === "booking.apply" && r.status === "success" && r.data !== null && r.data !== undefined,
   );
   if (!bookingSuccess) return null;
+
+  // Require complete ClinicCard proof — partial results (missing cliniccard_visit_id,
+  // may_claim_booked=false, status≠success, etc.) must not produce appointment display
+  // truth that could mislead the model into confirming an unverified booking.
+  if (!hasCompleteBookingApplyProof(bookingSuccess)) return null;
 
   const data = bookingSuccess.data as Record<string, unknown>;
   if (typeof data !== "object" || Array.isArray(data)) return null;

@@ -39,7 +39,7 @@ export function hasCompleteBookingApplyProof(result: RuntimeAgentToolResult | un
     d.created_visit === true &&
     d.may_claim_booked === true &&
     typeof d.cliniccard_visit_id === "string" &&
-    d.cliniccard_visit_id.length > 0
+    d.cliniccard_visit_id.trim().length > 0
   );
 }
 
@@ -113,11 +113,16 @@ export function buildBookingApplyEmergencyFallback(
 
   const normalized = String(locale ?? "").toLowerCase();
 
-  // No handoff/admin-notification side effect is created anywhere in this path — do not
-  // promise clinic staff will follow up or reach out. Direct the patient to contact the
-  // clinic directly instead of claiming an outreach that never happens.
+  // Booking-created copy is only allowed when all 5 proof fields are present
+  // (hasCompleteBookingApplyProof). A partial visit_created result (e.g. missing
+  // cliniccard_visit_id or whitespace-only ID) falls through to the generic fallback —
+  // never tell the patient a booking was made without durable ClinicCard proof.
+  // No handoff/admin-notification side effect is created in this path — do not promise
+  // clinic staff will follow up or reach out.
+  const hasFullProof = hasCompleteBookingApplyProof(bookingResult);
+
   if (normalized.startsWith("en")) {
-    if (status === "visit_created") return "Your appointment has been saved in our system, but a technical error prevented the confirmation message from sending. Please contact the clinic to verify your booking details.";
+    if (hasFullProof) return "Your appointment has been saved in our system, but a technical error prevented the confirmation message from sending. Please contact the clinic to verify your booking details.";
     if (status === "missing_phone") return "I need your phone number to complete the booking. Please share your contact or type your number.";
     if (status === "slot_conflict") return "That time slot is no longer available. I can check other times.";
     if (status === "booking_write_disabled") return "Online booking is currently unavailable. Please contact the clinic directly to book your appointment.";
@@ -125,7 +130,7 @@ export function buildBookingApplyEmergencyFallback(
   }
 
   if (normalized.startsWith("cs")) {
-    if (status === "visit_created") return "Vaše rezervace byla uložena v systému, ale při odeslání potvrzení došlo k technické chybě. Kontaktujte prosím kliniku pro ověření podrobností.";
+    if (hasFullProof) return "Vaše rezervace byla uložena v systému, ale při odeslání potvrzení došlo k technické chybě. Kontaktujte prosím kliniku pro ověření podrobností.";
     if (status === "missing_phone") return "Pro rezervaci potřebuji váš telefon. Sdílejte kontakt nebo napište číslo.";
     if (status === "slot_conflict") return "Tento čas je obsazen. Mohu zkontrolovat jiný termín.";
     if (status === "booking_write_disabled") return "Online rezervace není momentálně dostupná. Kontaktujte prosím kliniku přímo pro rezervaci.";
@@ -133,8 +138,8 @@ export function buildBookingApplyEmergencyFallback(
   }
 
   // Default: Russian
-  // visit_created: booking IS in ClinicCard — never say "не могу подтвердить".
-  if (status === "visit_created") return "Запись создана в системе, но при отправке ответа произошла техническая ошибка. Пожалуйста, уточните детали у клиники.";
+  // Booking IS in ClinicCard only when full proof present — never say "не могу подтвердить" then.
+  if (hasFullProof) return "Запись создана в системе, но при отправке ответа произошла техническая ошибка. Пожалуйста, уточните детали у клиники.";
   if (status === "missing_phone") return "Для записи нужен номер телефона. Поделитесь контактом или напишите номер.";
   if (status === "slot_conflict") return "Это время уже недоступно. Могу проверить другое время.";
   if (status === "booking_write_disabled") return "Онлайн-запись временно недоступна. Пожалуйста, свяжитесь с клиникой напрямую для записи.";

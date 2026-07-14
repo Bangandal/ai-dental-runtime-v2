@@ -114,6 +114,12 @@ export interface RuntimeAgentTurnResult {
   subject_intent?: import("./bookingSubjectsState.ts").SubjectIntent | null;
   /** Validated phone_ownership_intent from the model's final response. */
   phone_ownership_intent?: import("./bookingSubjectsState.ts").PhoneOwnershipIntent | null;
+  /** Frozen execution subject resolved by Guard J before tool execution. Propagated for
+   * orchestrator to use in postUpdateBookingSubjects — never re-derived from tool arguments. */
+  execution_subject_id?: import("./bookingSubjectsState.ts").SubjectId | null;
+  /** Booking subjects state after Guard J resolution (may include bootstrapped registry).
+   * Orchestrator should use this as the base for postUpdateBookingSubjects when present. */
+  booking_subjects_after_resolution?: import("./bookingSubjectsState.ts").BookingSubjectsState | null;
 }
 
 export interface OpenAIRuntimeAgent {
@@ -240,7 +246,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## BOOKING SUBJECTS",
     "Present in context (version=3) when booking for one or more people. active_subject_id = the subject currently being collected. Subjects use stable IDs: subject_1 (sender), subject_2, subject_3, subject_4. max_subjects=4.",
     "Each subject has: id, label (e.g. 'мама', 'дочь 1'), patient_name, service, slot, phone_status, missing[], status.",
-    "BOOKING.APPLY WITH SUBJECTS: When booking_subjects is active, always pass subject_id in booking.apply arguments (e.g. subject_id='subject_1'). The runtime uses subject_id to determine which subject's phone and data to use. If subject_id is absent, runtime falls back to active_subject_id.",
+    "BOOKING.APPLY WITH SUBJECTS: When booking_subjects is active (status=active), subject_id is REQUIRED in every booking.apply call (e.g. subject_id='subject_1'). Omitting subject_id returns subject_resolution_conflict — the runtime never falls back to active_subject_id. Pass the correct subject's ID for each booking.",
     "SUBJECT INTENT: Include subject_intent in your final_response JSON when the patient's message signals a subject switch, introduces new people to book. Omit it (or use action='none') when nothing changes.",
     "Format: { \"action\": \"none\" | \"switch_subject\" | \"create_subjects\" | \"create_or_switch_subject\", \"target\": \"self\" | \"mentioned_person\" | \"active\", \"subject_id\": \"subject_N or null\", \"display_name\": \"Name or null\", \"count\": N, \"labels\": [\"label1\", \"label2\"], \"confidence\": \"low\" | \"medium\" | \"high\" }",
     "Examples: 'теперь запишите меня' → action=switch_subject, target=self, confidence=high. 'и ещё мою маму Анну' → action=create_subjects, target=mentioned_person, count=1, labels=['мама'], display_name='Анна', confidence=high. 'запишите меня и двух дочерей' → action=create_subjects, target=mentioned_person, count=2, labels=['дочь 1','дочь 2'], confidence=high. 'назад к Ивану' → action=switch_subject, target=mentioned_person, subject_id='subject_2', confidence=high.",
@@ -263,6 +269,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- choose_from_available_slots: present only exact slots from context; ask patient to choose.",
     "- admin_handoff: online booking unavailable — tell patient to contact clinic directly. No callback promise.",
     "- technical_fallback: temporary issue — try again or contact clinic. No callback promise.",
+    "- clarify_subject: booking.apply subject_id was missing or invalid — ask which person (subject) to book. Do NOT claim booking was created.",
     "- none + can_say_booking_created=true: confirm booking naturally in patient's language.",
     "APPOINTMENT DISPLAY TRUTH: use ONLY appointment_display_truth.date/time_start/weekday/service/cliniccard_visit_id for confirmation wording. Do NOT calculate or derive weekday yourself — trust appointment_display_truth over your own reasoning. Never invent weekday labels not in appointment_display_truth.",
     "BOOKING PROCESS STATE: hint only — not an override of conversation memory.",

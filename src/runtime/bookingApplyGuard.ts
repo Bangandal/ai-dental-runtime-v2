@@ -19,6 +19,7 @@ export interface BookingApplyActionTruth {
     | "offer_another_time"
     | "ask_for_alternative_time"
     | "choose_from_available_slots"
+    | "clarify_subject"
     | "admin_handoff"
     | "technical_fallback";
 }
@@ -81,6 +82,8 @@ function resolveRequiredNextAction(bookingStatus: string): BookingApplyActionTru
     case "no_available_slots":
     case "invalid_slot":
     case "past_time":               return "offer_another_time";
+    case "subject_resolution_conflict": return "clarify_subject";
+    case "pending_phone_classification": return "none";
     case "booking_write_disabled":  return "admin_handoff";
     default:                        return "technical_fallback";
   }

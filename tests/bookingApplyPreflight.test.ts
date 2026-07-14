@@ -1249,18 +1249,29 @@ test("Integration: missing service in round-1 args → executor not called, asks
 
 // ── PR#174: Guard I — pending_typed_phone blocks booking.apply ────────────────
 
-import type { BookingSubjectsState } from "../src/runtime/bookingSubjectsState.ts";
+import type { BookingSubjectsState, SubjectId } from "../src/runtime/bookingSubjectsState.ts";
 
 test("PR#174 Guard I (round 1): booking.apply blocked when booking_subjects.pending_typed_phone present", async () => {
   let bookingApplyExecutorCalled = false;
 
   const SUBJECTS_WITH_PENDING_PHONE: BookingSubjectsState = {
-    active_subject_id: "s2",
+    version: 3,
+    status: "active",
+    active_subject_id: "subject_2" as SubjectId,
     subjects: [
-      { id: "s1", label: "sender", name: "Рима", service: "Чистка", slot: null, phone_number: "+380991350135", phone_source: "telegram_contact_button", phone_status: "trusted", status: "collecting" },
-      { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      {
+        id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: "Рима", service: "Чистка",
+        slot: null, booking_contact: { phone_number: "+380991350135", source: "telegram_contact_button", trust: "trusted", owner_subject_id: "subject_1" as SubjectId, collected_at: null },
+        status: "collecting", missing: ["slot"],
+      },
+      {
+        id: "subject_2" as SubjectId, role: "mentioned_person", label: null, patient_name: "Иван", service: "Чистка",
+        slot: "2026-07-09T12:00", booking_contact: { phone_number: "+420728123456", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
+        status: "collecting", missing: [],
+      },
     ],
     pending_typed_phone: "+420728123456",  // not yet classified
+    max_subjects: 4,
   };
 
   const loop = createRuntimeAgentLoop({
@@ -1271,7 +1282,7 @@ test("PR#174 Guard I (round 1): booking.apply blocked when booking_subjects.pend
         tool_requests: [{
           tool: "booking.apply",
           call_id: "call_guard_i",
-          arguments: { service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
+          arguments: { subject_id: "subject_2", service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
         }],
       },
       {
@@ -1304,12 +1315,22 @@ test("PR#174 Guard I (round 2): booking.apply blocked when booking_subjects.pend
   let bookingApplyExecutorCalled = false;
 
   const SUBJECTS_WITH_PENDING_PHONE: BookingSubjectsState = {
-    active_subject_id: "s2",
+    version: 3,
+    status: "active",
+    active_subject_id: "subject_2" as SubjectId,
     subjects: [
-      { id: "s1", label: "sender", name: "Рима", service: null, slot: null, phone_number: null, phone_source: null, phone_status: null, status: "collecting" },
-      { id: "s2", label: "mentioned_person", name: "Иван", service: "Чистка", slot: "2026-07-09T12:00", phone_number: "+420728123456", phone_source: "typed", phone_status: "typed_unverified", status: "collecting" },
+      {
+        id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: "Рима", service: null,
+        slot: null, booking_contact: null, status: "collecting", missing: ["service", "slot", "booking_contact"],
+      },
+      {
+        id: "subject_2" as SubjectId, role: "mentioned_person", label: null, patient_name: "Иван", service: "Чистка",
+        slot: "2026-07-09T12:00", booking_contact: { phone_number: "+420728123456", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
+        status: "collecting", missing: [],
+      },
     ],
     pending_typed_phone: "+420728123456",
+    max_subjects: 4,
   };
 
   const loop = createRuntimeAgentLoop({
@@ -1324,7 +1345,7 @@ test("PR#174 Guard I (round 2): booking.apply blocked when booking_subjects.pend
         tool_requests: [{
           tool: "booking.apply",
           call_id: "call_book_gi",
-          arguments: { service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
+          arguments: { subject_id: "subject_2", service: "Чистка", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Иван", last_name: "Петров" },
         }],
       },
       {

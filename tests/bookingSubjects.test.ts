@@ -355,16 +355,17 @@ describe("v3: applyPhoneOwnershipIntent", () => {
     assert.equal(s2?.booking_contact?.owner_subject_id, "subject_2");
   });
 
-  it("V3-D2: assign_pending_phone uses active_subject_id when target_subject_id is null", () => {
+  it("V3-D2: assign_pending_phone with null target_subject_id → no assignment (explicit target required)", () => {
     const state = makeState("subject_2", [
       makeSubject("subject_1", "sender"),
       makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
     ], "+420728999000");
+    // target_subject_id null is invalid — must be explicit. No active_subject_id fallback.
     const intent: PhoneOwnershipIntent = { action: "assign_pending_phone", target_subject_id: null, confidence: "high" };
     const updated = applyPhoneOwnershipIntent(state, intent);
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
-    assert.equal(s2?.booking_contact?.phone_number, "+420728999000");
-    assert.equal(updated.pending_typed_phone, null);
+    assert.equal(s2?.booking_contact, null, "no assignment when target_subject_id is null");
+    assert.equal(updated.pending_typed_phone, "+420728999000", "pending preserved when no assignment");
   });
 
   it("V3-D3: assign_pending_phone does nothing when no pending phone", () => {
@@ -506,7 +507,7 @@ describe("v3: status lifecycle (simplified — no episode_id/dates)", () => {
     assert.equal(updated.status, "active", "status stays active while subject_1 not yet booked");
   });
 
-  it("V3-E4: start_new_episode action resets all subjects to collecting and status to active", () => {
+  it("V3-E4: start_new_episode is no longer a valid action — applySubjectIntent ignores it", () => {
     const state = makeState("subject_1", [
       makeSubject("subject_1", "sender", {
         patient_name: "Рима",
@@ -523,13 +524,11 @@ describe("v3: status lifecycle (simplified — no episode_id/dates)", () => {
         status: "booked",
       }),
     ], null, "completed");
-    const intent: SubjectIntent = { action: "start_new_episode", target: "active", confidence: "high" };
-    const updated = applySubjectIntent(state, intent);
-    assert.equal(updated.status, "active", "status must be active after start_new_episode");
-    const s1 = updated.subjects.find((s) => s.id === "subject_1");
-    assert.equal(s1?.status, "collecting", "subject_1 reset to collecting");
-    const s2 = updated.subjects.find((s) => s.id === "subject_2");
-    assert.equal(s2?.status, "collecting", "subject_2 reset to collecting");
+    // start_new_episode was removed — parseSubjectIntent returns null for it.
+    const parsed = parseSubjectIntent({ action: "start_new_episode", target: "active", confidence: "high" });
+    assert.equal(parsed, null, "start_new_episode must no longer parse (removed from valid actions)");
+    // State must be unchanged (status stays completed)
+    assert.equal(state.status, "completed");
   });
 
   it("V3-E5: completed status persists across turns (not reset by initBookingSubjectsForTurn)", () => {
@@ -538,11 +537,10 @@ describe("v3: status lifecycle (simplified — no episode_id/dates)", () => {
     assert.equal(carried?.status, "completed");
   });
 
-  it("V3-E6: parseSubjectIntent accepts start_new_episode action", () => {
+  it("V3-E6: parseSubjectIntent rejects start_new_episode (removed action)", () => {
     const raw = { action: "start_new_episode", target: "active", confidence: "high" };
     const result = parseSubjectIntent(raw);
-    assert.ok(result !== null);
-    assert.equal(result!.action, "start_new_episode");
+    assert.equal(result, null, "start_new_episode must no longer be accepted by parseSubjectIntent");
   });
 });
 
@@ -578,7 +576,7 @@ describe("v3: subject_id_at_execution (atomic booking execution)", () => {
     assert.equal(s1?.status, "collecting", "subject_1 must not be affected by booking");
   });
 
-  it("V3-F2: without executionSubjectId, result applies to current active (backward compat)", () => {
+  it("V3-F2: without executionSubjectId, booking result is NOT applied — state returned unchanged", () => {
     const state = makeState("subject_2", [
       makeSubject("subject_1", "sender"),
       makeSubject("subject_2", "mentioned_person", {
@@ -592,9 +590,10 @@ describe("v3: subject_id_at_execution (atomic booking execution)", () => {
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      // No executionSubjectId → booking result must NOT be applied (no active_subject_id fallback)
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
-    assert.equal(s2?.status, "booked");
+    assert.equal(s2?.status, "collecting", "without executionSubjectId, status must not change to booked");
   });
 
   it("V3-F3: phoneOwnershipIntent applied in postUpdate before booking result", () => {
@@ -614,23 +613,20 @@ describe("v3: subject_id_at_execution (atomic booking execution)", () => {
     assert.equal(s2?.booking_contact?.phone_number, "+420728999000");
   });
 
-  it("V3-F4: executionSubjectId null (no prior state) — no booking result applied to state", () => {
-    // When booking happened outside multi-subject flow (state was null pre-turn),
-    // executionSubjectId is null and subjects exist only from bootstrap.
+  it("V3-F4: executionSubjectId null — booking result NOT applied (no fallback to active_subject_id)", () => {
     const bootstrappedState = makeState("subject_2", [
       makeSubject("subject_1", "sender", { patient_name: "Рима" }),
       makeSubject("subject_2", "mentioned_person", { patient_name: "Иван" }),
     ]);
-    // executionSubjectId = null means we fall back to current active
+    // executionSubjectId=null with booking.apply present → state returned unchanged
     const updated = postUpdateBookingSubjects({
       current: bootstrappedState,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
       executionSubjectId: null,
     });
-    // null falls back to state.active_subject_id = "subject_2"
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
-    assert.equal(s2?.status, "booked");
+    assert.equal(s2?.status, "collecting", "null executionSubjectId must not update any subject");
   });
 });
 
@@ -657,12 +653,13 @@ describe("v3: state type and normalization", () => {
 
   it("V3-G1b: normalizeBookingSubjectsState coerces old episode_status field to status", () => {
     // Old persisted data may have episode_status instead of status — must coerce
+    // completed state requires all subjects to be booked
     const rawOld = {
       version: 3,
       episode_status: "completed",
       active_subject_id: "subject_1",
       subjects: [
-        { id: "subject_1", role: "sender", patient_name: "Рима", service: null, slot: null, booking_contact: null, status: "collecting", label: null },
+        { id: "subject_1", role: "sender", patient_name: "Рима", service: "Чистка", slot: "2026-07-10T10:00", booking_contact: null, status: "booked", label: null },
       ],
       pending_typed_phone: null,
     };
@@ -688,7 +685,7 @@ describe("v3: state type and normalization", () => {
   });
 
   it("V3-G3: v3 completed status preserved across serialize/deserialize", () => {
-    const state = makeState("subject_1", [makeSubject("subject_1", "sender")], null, "completed");
+    const state = makeState("subject_1", [makeSubject("subject_1", "sender", { status: "booked" })], null, "completed");
     const serialized = JSON.parse(JSON.stringify(state));
     const restored = deserializeBookingSubjects(serialized);
     assert.ok(restored !== null);
@@ -866,6 +863,7 @@ describe("postUpdateBookingSubjects", () => {
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      executionSubjectId: "subject_2" as SubjectId,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.ok(s2);
@@ -884,6 +882,7 @@ describe("postUpdateBookingSubjects", () => {
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-15", requested_time: "09:00", service: "Чистка" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: false } }],
+      executionSubjectId: "subject_2" as SubjectId,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.ok(s2);
@@ -1005,6 +1004,7 @@ describe("PR#173: subject-aware phone assignment (v3 behavior)", () => {
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима", requested_date: "2026-07-10", requested_time: "10:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      executionSubjectId: "subject_1" as SubjectId,
     });
     const s1 = updated.subjects.find((s) => s.id === "subject_1");
     assert.equal(s1?.status, "booked");
@@ -1032,6 +1032,7 @@ describe("PR#173: subject-aware phone assignment (v3 behavior)", () => {
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      executionSubjectId: "subject_2" as SubjectId,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.equal(s2?.status, "booked");
@@ -1288,6 +1289,7 @@ describe("PR#174-fix: pending_typed_phone not cleared until classified", () => {
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-09", requested_time: "12:00", service: "Чистка" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
       subjectIntent: null,
+      executionSubjectId: "subject_2" as SubjectId,
     });
     assert.equal(updated.pending_typed_phone, null);
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
@@ -1547,6 +1549,7 @@ describe("PR#176: Subject Registry v3", () => {
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-15", requested_time: "10:00", service: "Чистка" } }],
       toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      executionSubjectId: "subject_2" as SubjectId,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
     assert.equal(s2?.status, "booked");

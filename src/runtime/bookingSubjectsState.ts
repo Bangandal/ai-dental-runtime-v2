@@ -54,7 +54,7 @@ export interface S1Seed {
 // ── subject_intent v3 ─────────────────────────────────────────────────────────
 
 export interface SubjectIntent {
-  action: "none" | "switch_subject" | "create_subjects" | "create_or_switch_subject" | "start_new_episode";
+  action: "none" | "switch_subject" | "create_subjects" | "create_or_switch_subject";
   target: "self" | "mentioned_person" | "active";
   subject_id?: SubjectId | null;
   display_name?: string | null;
@@ -74,8 +74,10 @@ export function parseSubjectIntent(raw: unknown): SubjectIntent | null {
 
   // Backward compat: old create_subject (singular) → create_subjects
   if (action === "create_subject") action = "create_subjects";
+  // start_new_episode removed — ignore old model outputs that still emit it
+  if (action === "start_new_episode") return null;
 
-  if (!["none", "switch_subject", "create_subjects", "create_or_switch_subject", "start_new_episode"].includes(action)) return null;
+  if (!["none", "switch_subject", "create_subjects", "create_or_switch_subject"].includes(action)) return null;
   if (!["self", "mentioned_person", "active"].includes(target as string)) return null;
   if (!["low", "medium", "high"].includes(confidence as string)) return null;
 
@@ -179,16 +181,6 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
   if (intent.confidence === "low") return state;
   if (intent.action === "none") return state;
 
-  // start_new_episode: reset status and clear booked status on all subjects
-  if (intent.action === "start_new_episode") {
-    const subjects = state.subjects.map((s) => ({
-      ...s,
-      status: "collecting" as const,
-      missing: computeMissing({ ...s, status: "collecting" as const }),
-    }));
-    return { ...state, status: "active", subjects };
-  }
-
   const MAX = state.max_subjects;
   let { active_subject_id } = state;
   let subjects = [...state.subjects];
@@ -288,13 +280,24 @@ export function applyPhoneOwnershipIntent(
   if (intent.action === "none") return state;
 
   if (intent.action === "assign_pending_phone") {
+    // pending_typed_phone must exist
     if (!state.pending_typed_phone) return state;
-    const targetId = intent.target_subject_id ?? state.active_subject_id;
+    // target_subject_id required — no fallback to active_subject_id
+    const targetId = intent.target_subject_id;
+    if (!targetId) return state;
+    // target subject must exist
+    const target = state.subjects.find((s) => s.id === targetId);
+    if (!target) return state;
+    // target must not already have a trusted contact — don't overwrite
+    if (target.booking_contact?.trust === "trusted") return state;
+    // target must not be already booked
+    if (target.status === "booked") return state;
+    // Assign and clear pending phone only after successful assignment
+    const phone = state.pending_typed_phone;
     let subjects = state.subjects.map((s) => {
       if (s.id !== targetId) return s;
-      if (s.booking_contact?.trust === "trusted") return s;
       const bc: BookingContact = {
-        phone_number: state.pending_typed_phone!,
+        phone_number: phone,
         source: "typed",
         trust: "unverified",
         owner_subject_id: targetId,
@@ -307,14 +310,28 @@ export function applyPhoneOwnershipIntent(
   }
 
   if (intent.action === "share_sender_contact") {
+    // target_subject_id required
     const targetId = intent.target_subject_id;
     if (!targetId) return state;
+    // Target cannot be sender (subject_1)
+    if (targetId === "subject_1" as SubjectId) return state;
+    // Target must exist
+    const target = state.subjects.find((s) => s.id === targetId);
+    if (!target) return state;
+    // Target must not be booked
+    if (target.status === "booked") return state;
+    // Target must not already have a trusted contact
+    if (target.booking_contact?.trust === "trusted") return state;
+    // Sender (subject_1) must exist and must have a TRULY trusted contact (not unverified or shared)
     const s1 = state.subjects.find((s) => s.id === "subject_1" as SubjectId);
-    const senderContact = s1?.booking_contact;
+    if (!s1) return state;
+    const senderContact = s1.booking_contact;
+    // Only telegram_contact_button / whatsapp_sender / existing_cliniccard_patient count as truly trusted.
+    // "typed" and "shared_from_subject" cannot be re-shared as trusted_contact_owner.
     if (!senderContact || senderContact.trust !== "trusted") return state;
+    if (senderContact.source === "typed" || senderContact.source === "shared_from_subject") return state;
     let subjects = state.subjects.map((s) => {
       if (s.id !== targetId) return s;
-      if (s.booking_contact?.trust === "trusted") return s;
       const bc: BookingContact = {
         phone_number: senderContact.phone_number,
         source: "shared_from_subject",
@@ -423,6 +440,87 @@ function validateV2Subject(raw: unknown): BookingSubject | null {
   return subject;
 }
 
+// ── validation helpers for normalize ─────────────────────────────────────────
+
+const VALID_BOOKING_CONTACT_SOURCES = new Set<string>([
+  "telegram_contact_button", "whatsapp_sender", "existing_cliniccard_patient", "typed", "shared_from_subject",
+]);
+const VALID_BOOKING_CONTACT_TRUST = new Set<string>(["trusted", "unverified", "trusted_contact_owner"]);
+const VALID_SUBJECT_STATUS = new Set<string>(["collecting", "ready_for_booking", "booked"]);
+const VALID_SUBJECT_IDS = new Set<string>(["subject_1", "subject_2", "subject_3", "subject_4"]);
+
+function validateFullBookingContact(raw: unknown, subjectId: SubjectId, allSubjects: Record<string, unknown>[]): BookingContact | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const bc = raw as Record<string, unknown>;
+  if (typeof bc.phone_number !== "string" || bc.phone_number.length === 0) return null;
+  if (!VALID_BOOKING_CONTACT_SOURCES.has(bc.source as string)) return null;
+  if (!VALID_BOOKING_CONTACT_TRUST.has(bc.trust as string)) return null;
+  const trust = bc.trust as BookingContactTrust;
+  const source = bc.source as BookingContactSource;
+
+  let ownerSubjectId: SubjectId | null = null;
+  if (typeof bc.owner_subject_id === "string") {
+    if (!VALID_SUBJECT_IDS.has(bc.owner_subject_id)) return null;
+    ownerSubjectId = bc.owner_subject_id as SubjectId;
+  }
+
+  // shared_from_subject: owner must differ from subject, owner must exist in state
+  if (source === "shared_from_subject") {
+    if (!ownerSubjectId || ownerSubjectId === subjectId) return null;
+    const ownerExists = allSubjects.some((s) => (s as Record<string, unknown>).id === ownerSubjectId);
+    if (!ownerExists) return null;
+  }
+
+  // trust=trusted_contact_owner requires shared_from_subject
+  if (trust === "trusted_contact_owner" && source !== "shared_from_subject") return null;
+
+  return {
+    phone_number: bc.phone_number,
+    source,
+    trust,
+    owner_subject_id: ownerSubjectId,
+    collected_at: typeof bc.collected_at === "string" ? bc.collected_at : null,
+  };
+}
+
+function validateFullSubject(raw: unknown, allSubjects: Record<string, unknown>[]): BookingSubject | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const s = raw as Record<string, unknown>;
+
+  if (typeof s.id !== "string" || !VALID_SUBJECT_IDS.has(s.id)) return null;
+  const id = s.id as SubjectId;
+
+  if (s.role !== "sender" && s.role !== "mentioned_person") return null;
+  const role = s.role as "sender" | "mentioned_person";
+
+  // sender must be subject_1
+  if (role === "sender" && id !== "subject_1") return null;
+  // mentioned_person must not be subject_1
+  if (role === "mentioned_person" && id === "subject_1") return null;
+
+  if (typeof s.status === "string" && !VALID_SUBJECT_STATUS.has(s.status)) return null;
+  const rawStatus = s.status;
+  const status: BookingSubject["status"] =
+    rawStatus === "booked" ? "booked" :
+    rawStatus === "ready_for_booking" ? "ready_for_booking" : "collecting";
+
+  const booking_contact = validateFullBookingContact(s.booking_contact, id, allSubjects);
+
+  const subject: BookingSubject = {
+    id,
+    role,
+    label: typeof s.label === "string" ? s.label : null,
+    patient_name: typeof s.patient_name === "string" ? s.patient_name : null,
+    service: typeof s.service === "string" ? s.service : null,
+    slot: typeof s.slot === "string" ? s.slot : null,
+    booking_contact,
+    status,
+    missing: [],
+  };
+  subject.missing = computeMissing(subject);
+  return subject;
+}
+
 export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsState | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;
@@ -430,16 +528,41 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
   // v3 path
   if (r.version === 3) {
     const activeId = r.active_subject_id;
-    if (typeof activeId !== "string" || !SUBJECT_ID_RE.test(activeId)) return null;
-    const subjects = Array.isArray(r.subjects)
-      ? r.subjects.map(validateV2Subject).filter((s): s is BookingSubject => s !== null)
-      : [];
-    if (subjects.length === 0) return null;
-    // Verify active_subject_id points to an existing subject
+    if (typeof activeId !== "string" || !VALID_SUBJECT_IDS.has(activeId)) return null;
+
+    const rawSubjects = Array.isArray(r.subjects) ? r.subjects as Record<string, unknown>[] : [];
+    const subjects = rawSubjects
+      .map((s) => validateFullSubject(s, rawSubjects))
+      .filter((s): s is BookingSubject => s !== null);
+
+    // Must have 1–4 subjects
+    if (subjects.length === 0 || subjects.length > 4) return null;
+
+    // IDs must be unique
+    const idSet = new Set(subjects.map((s) => s.id));
+    if (idSet.size !== subjects.length) return null;
+
+    // subject_1 must exist
+    if (!subjects.some((s) => s.id === "subject_1")) return null;
+
+    // Exactly one sender, and it must be subject_1
+    const senders = subjects.filter((s) => s.role === "sender");
+    if (senders.length !== 1 || senders[0].id !== "subject_1") return null;
+
+    // active_subject_id must reference an existing subject
     if (!subjects.some((s) => s.id === activeId)) return null;
-    // Coerce status: accept both episode_status (old) and status (new)
+
+    // Coerce status: accept both episode_status (old) and status (new); reject unknown values
     const rawStatus = r.status ?? r.episode_status;
+    if (rawStatus !== "active" && rawStatus !== "completed") {
+      // Unknown status — do not auto-accept as active; return null to discard
+      if (rawStatus != null) return null;
+    }
     const status: "active" | "completed" = rawStatus === "completed" ? "completed" : "active";
+
+    // Completed state must have all subjects booked
+    if (status === "completed" && !subjects.every((s) => s.status === "booked")) return null;
+
     return {
       version: 3,
       status,
@@ -454,10 +577,9 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
   if (r.version === 2) {
     const activeId = r.active_subject_id;
     if (typeof activeId !== "string" || !SUBJECT_ID_RE.test(activeId)) return null;
-    const subjects = Array.isArray(r.subjects)
-      ? r.subjects.map(validateV2Subject).filter((s): s is BookingSubject => s !== null)
-      : [];
-    if (subjects.length === 0) return null;
+    const rawSubjects = Array.isArray(r.subjects) ? r.subjects as Record<string, unknown>[] : [];
+    const subjects = rawSubjects.map(validateV2Subject).filter((s): s is BookingSubject => s !== null);
+    if (subjects.length === 0 || subjects.length > 4) return null;
     if (!subjects.some((s) => s.id === activeId)) return null;
     return {
       version: 3,
@@ -586,6 +708,74 @@ export function bootstrapBookingSubjectsFromIntent(
   return applySubjectIntent(base, intent);
 }
 
+// ── pre-execution registry bootstrap ─────────────────────────────────────────
+
+const VALID_MULTI_SUBJECT_IDS = new Set<string>(["subject_2", "subject_3", "subject_4"]);
+
+/**
+ * Bootstrap a minimal multi-subject registry when a booking.apply call targets
+ * a non-sender subject (subject_2/3/4) but no registry exists yet.
+ *
+ * Creates:
+ *   subject_1: sender with channel_contact (if available)
+ *   target: mentioned_person with name from booking.apply args, no phone
+ *
+ * Returns null when:
+ *   - subject_id is absent, invalid, or subject_1 (single-subject flow — no bootstrap)
+ *   - Cannot safely create a clean registry
+ */
+export function bootstrapRegistryFromBookingApplyArgs(
+  args: Record<string, unknown>,
+  channelContact: ChannelContact | null,
+): BookingSubjectsState | null {
+  const rawSubjectId = args.subject_id;
+  if (typeof rawSubjectId !== "string" || !VALID_MULTI_SUBJECT_IDS.has(rawSubjectId)) return null;
+
+  const targetId = rawSubjectId as SubjectId;
+
+  const s1Trusted = channelContact != null && TRUSTED_PHONE_SOURCES.has(channelContact.phone_source);
+  const s1Contact: BookingContact | null = channelContact?.phone_number
+    ? {
+        phone_number: channelContact.phone_number,
+        source: channelContact.phone_source as BookingContactSource,
+        trust: s1Trusted ? "trusted" : "unverified",
+        owner_subject_id: "subject_1" as SubjectId,
+        collected_at: null,
+      }
+    : null;
+
+  const s1 = createSubject("subject_1" as SubjectId, "sender");
+  const s1WithContact: BookingSubject = { ...s1, booking_contact: s1Contact, missing: [] };
+  s1WithContact.missing = computeMissing(s1WithContact);
+
+  const firstName = typeof args.first_name === "string" ? args.first_name.trim() : null;
+  const lastName = typeof args.last_name === "string" ? args.last_name.trim() : null;
+  const patientName = firstName && lastName ? `${firstName} ${lastName}` : (firstName ?? lastName ?? null);
+
+  const target = createSubject(targetId, "mentioned_person");
+  const targetWithName: BookingSubject = { ...target, patient_name: patientName, missing: [] };
+  targetWithName.missing = computeMissing(targetWithName);
+
+  // For subject_3/4, also create intermediate subjects so IDs are contiguous.
+  const subjects: BookingSubject[] = [s1WithContact];
+  for (let i = 2; i < parseInt(targetId.replace("subject_", ""), 10); i++) {
+    const intermediateId = `subject_${i}` as SubjectId;
+    const inter = createSubject(intermediateId, "mentioned_person");
+    inter.missing = computeMissing(inter);
+    subjects.push(inter);
+  }
+  subjects.push(targetWithName);
+
+  return {
+    version: 3,
+    status: "active",
+    active_subject_id: targetId,
+    subjects,
+    pending_typed_phone: null,
+    max_subjects: 4,
+  };
+}
+
 // ── post-turn update ──────────────────────────────────────────────────────────
 
 export function postUpdateBookingSubjects(params: {
@@ -594,7 +784,8 @@ export function postUpdateBookingSubjects(params: {
   toolResults: RuntimeAgentToolResult[];
   subjectIntent?: SubjectIntent | null;
   phoneOwnershipIntent?: PhoneOwnershipIntent | null;
-  /** Frozen execution subject from resolveBookingExecutionSubject() — always provide in production. Falls back to active_subject_id when null/undefined. */
+  /** Frozen execution subject from resolveBookingExecutionSubject(). Required when booking.apply was executed.
+   * When absent and booking.apply was present, tool result is NOT applied to any subject. */
   executionSubjectId?: SubjectId | null;
 }): BookingSubjectsState {
   const { current, toolRequests, toolResults, subjectIntent, phoneOwnershipIntent, executionSubjectId } = params;
@@ -611,12 +802,17 @@ export function postUpdateBookingSubjects(params: {
     state = applyPhoneOwnershipIntent(state, phoneOwnershipIntent);
   }
 
-  // Apply booking.apply results to the subject that was frozen at execution time.
-  // Falls back to current active_subject_id if no explicit freeze was provided.
-  const effectiveSubjectId = executionSubjectId ?? state.active_subject_id;
-
   const applyReq = toolRequests.find((r) => r.tool === "booking.apply");
   const applyResult = toolResults.find((r) => r.tool === "booking.apply");
+
+  // If booking.apply was executed but no frozen executionSubjectId was provided,
+  // do NOT apply the result to any subject — better to leave state unchanged than
+  // to apply booking to the wrong subject.
+  if (applyReq && !executionSubjectId) {
+    return state;
+  }
+
+  const effectiveSubjectId = executionSubjectId;
   const visitCreated = (applyResult?.data as Record<string, unknown> | undefined)?.created_visit === true;
 
   const firstName = typeof applyReq?.arguments.first_name === "string" ? applyReq.arguments.first_name.trim() : null;
@@ -633,11 +829,12 @@ export function postUpdateBookingSubjects(params: {
         : null;
 
   let subjects = state.subjects.map((s) => {
-    if (s.id !== effectiveSubjectId) return s;
+    if (!effectiveSubjectId || s.id !== effectiveSubjectId) return s;
     let updated = { ...s };
     if (appliedName) updated = { ...updated, patient_name: appliedName };
     if (appliedSlot) updated = { ...updated, slot: appliedSlot };
     if (appliedService) updated = { ...updated, service: appliedService };
+    // status="booked" only when visit was actually created
     if (visitCreated) updated = { ...updated, status: "booked" as const };
     return updated;
   });

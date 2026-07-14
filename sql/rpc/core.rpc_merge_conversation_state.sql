@@ -92,10 +92,6 @@ begin
     );
   end if;
 
-  if (v_control_flags->>'booking_subjects_reset')::boolean = true then
-    v_next_state := jsonb_set(v_next_state, '{booking_subjects}', 'null'::jsonb, true);
-  end if;
-
   if jsonb_typeof(v_control_flags->'channel_contact') = 'object' then
     v_next_state := jsonb_set(
       v_next_state,

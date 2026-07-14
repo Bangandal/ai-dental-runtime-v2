@@ -504,18 +504,16 @@ export async function runRuntimeTurnOrchestrated(
       caseLiteCurrent = applyBookingStatusToCase(caseLiteCurrent, result.tool_results);
     }
 
-    // subject_id_at_execution: use explicit subject_id from booking.apply args when present
-    // (model must pass subject_id when booking_subjects registry is active), falling back
-    // to active_subject_id as a safety net for older model responses without subject_id.
-    const bookingApplyReq = (result.tool_requests ?? []).find((r) => r.tool === "booking.apply");
-    const rawBookingSubjectId = bookingApplyReq?.arguments.subject_id;
-    const subjectIdFromArgs = typeof rawBookingSubjectId === "string" && /^subject_\d+$/.test(rawBookingSubjectId)
-      ? (rawBookingSubjectId as SubjectId)
-      : null;
-    const subjectIdAtExecution: SubjectId | null = subjectIdFromArgs ?? bookingSubjectsForTurn?.active_subject_id ?? null;
+    // executionSubjectId: read directly from the loop result — the loop resolves
+    // subject_id via Guard J (bookingSubjectExecutionResolver) and passes it back.
+    // No fallback to active_subject_id: if missing, no booking executed this turn.
+    const executionSubjectId: SubjectId | null = result.execution_subject_id ?? null;
 
-    // When no prior state exists and model signals subject creation, bootstrap registry.
-    const preSubjects = bookingSubjectsForTurn
+    // Pre-subjects: prefer loop-bootstrapped registry (result.booking_subjects_after_resolution)
+    // which may be a new registry created this turn when model targeted subject_2+.
+    // Fall back to DB-loaded registry, then to intent-based bootstrap (subject_intent path).
+    const preSubjects = result.booking_subjects_after_resolution
+      ?? bookingSubjectsForTurn
       ?? (result.subject_intent
         ? bootstrapBookingSubjectsFromIntent(
             result.subject_intent,
@@ -531,7 +529,7 @@ export async function runRuntimeTurnOrchestrated(
           toolResults: result.tool_results ?? [],
           subjectIntent: bookingSubjectsForTurn ? (result.subject_intent ?? null) : null,
           phoneOwnershipIntent: result.phone_ownership_intent ?? null,
-          executionSubjectId: subjectIdAtExecution,
+          executionSubjectId,
         })
       : null;
 

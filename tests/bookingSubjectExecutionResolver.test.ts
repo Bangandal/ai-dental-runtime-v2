@@ -106,15 +106,18 @@ const TRUSTED_CONTACT: ChannelContact = {
 
 // ── 1-5. resolveBookingExecutionSubject unit ──────────────────────────────────
 
-describe("PR#180-1: resolveBookingExecutionSubject — subject_id absent → active_subject_id", () => {
-  test("EXEC-1: no subject_id in args → returns active_subject_id", () => {
+describe("PR#180-1: resolveBookingExecutionSubject — subject_id required when registry active", () => {
+  test("EXEC-1: no subject_id in args → subject_id_required conflict (no active_subject_id fallback)", () => {
     const state = makeState("subject_2" as SubjectId, [
       makeSubject("subject_1" as SubjectId, "sender"),
       makeSubject("subject_2" as SubjectId, "mentioned_person"),
     ]);
     const result = resolveBookingExecutionSubject(state, { first_name: "Иван" });
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.execution_subject_id, "subject_2");
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.booking_status, "subject_resolution_conflict");
+      assert.equal(result.reason, "subject_id_required");
+    }
   });
 
   test("EXEC-2: valid subject_id present → returns that subject_id", () => {
@@ -127,11 +130,12 @@ describe("PR#180-1: resolveBookingExecutionSubject — subject_id absent → act
     if (result.ok) assert.equal(result.execution_subject_id, "subject_2");
   });
 
-  test("EXEC-3: subject_id not in registry → subject_resolution_conflict", () => {
+  test("EXEC-3: subject_id valid format but not in registry → subject_not_in_registry conflict", () => {
     const state = makeState("subject_1" as SubjectId, [
       makeSubject("subject_1" as SubjectId, "sender"),
     ]);
-    const result = resolveBookingExecutionSubject(state, { subject_id: "subject_99" });
+    // subject_3 is valid format but not present in this 1-subject registry
+    const result = resolveBookingExecutionSubject(state, { subject_id: "subject_3" });
     assert.equal(result.ok, false);
     if (!result.ok) {
       assert.equal(result.booking_status, "subject_resolution_conflict");
@@ -151,14 +155,17 @@ describe("PR#180-1: resolveBookingExecutionSubject — subject_id absent → act
     }
   });
 
-  test("EXEC-5: subject_id=null treated as absent → active_subject_id", () => {
+  test("EXEC-5: subject_id=null treated as absent → subject_id_required conflict (no fallback)", () => {
     const state = makeState("subject_2" as SubjectId, [
       makeSubject("subject_1" as SubjectId, "sender"),
       makeSubject("subject_2" as SubjectId, "mentioned_person"),
     ]);
     const result = resolveBookingExecutionSubject(state, { subject_id: null });
-    assert.equal(result.ok, true);
-    if (result.ok) assert.equal(result.execution_subject_id, "subject_2");
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.booking_status, "subject_resolution_conflict");
+      assert.equal(result.reason, "subject_id_required");
+    }
   });
 });
 

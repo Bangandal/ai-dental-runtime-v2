@@ -24,20 +24,28 @@ export interface BookingApplyActionTruth {
     | "technical_fallback";
 }
 
-/** True only when booking.apply returned all four proof fields indicating visit_created. */
+/**
+ * True when a single booking.apply tool result carries the complete ClinicCard proof:
+ * status=success, booking_status=visit_created, created_visit=true, may_claim_booked=true,
+ * and a non-empty cliniccard_visit_id.  Used by postUpdateBookingSubjects to gate subject
+ * status transitions — partial results must never mark a subject as booked.
+ */
+export function hasCompleteBookingApplyProof(result: RuntimeAgentToolResult | undefined): boolean {
+  if (!result || result.tool !== "booking.apply" || result.status !== "success") return false;
+  const d = result.data as Record<string, unknown> | null | undefined;
+  if (!d || typeof d !== "object") return false;
+  return (
+    d.booking_status === "visit_created" &&
+    d.created_visit === true &&
+    d.may_claim_booked === true &&
+    typeof d.cliniccard_visit_id === "string" &&
+    d.cliniccard_visit_id.length > 0
+  );
+}
+
+/** True only when booking.apply returned all proof fields indicating visit_created (array variant). */
 export function hasSuccessfulBookingApplyProof(results: RuntimeAgentToolResult[]): boolean {
-  return results.some((r) => {
-    if (r.tool !== "booking.apply" || r.status !== "success") return false;
-    const d = r.data as Record<string, unknown> | null | undefined;
-    if (!d || typeof d !== "object") return false;
-    return (
-      d.booking_status === "visit_created" &&
-      d.created_visit === true &&
-      d.may_claim_booked === true &&
-      typeof d.cliniccard_visit_id === "string" &&
-      d.cliniccard_visit_id.length > 0
-    );
-  });
+  return results.some((r) => hasCompleteBookingApplyProof(r));
 }
 
 /** Builds structured action truth from booking.apply tool results for the model's second call. */

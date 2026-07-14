@@ -1,5 +1,6 @@
 import type { BookingApplyResolution, ChannelContact, ProvidedPhone } from "./openaiRuntimeAgent.ts";
 import type { RuntimeAgentToolRequest, RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
+import { hasCompleteBookingApplyProof } from "./bookingApplyGuard.ts";
 import { TRUSTED_PHONE_SOURCES } from "../integrations/cliniccard/bookingApplyExecutor.ts";
 
 // ── v3 types ──────────────────────────────────────────────────────────────────
@@ -430,13 +431,21 @@ function validateV2Subject(raw: unknown): BookingSubject | null {
     if (!VALID_BOOKING_CONTACT_SOURCES.has(bc.source as string)) return null;
     if (!VALID_BOOKING_CONTACT_TRUST.has(bc.trust as string)) return null;
 
-    // For non-shared contacts: owner_subject_id must be self (migrate null → self)
+    // owner_subject_id strict handling:
+    // null/undefined: legacy v2 "self-owned" — canonical to current subject for non-shared
+    // valid SubjectId string: keep (v3 validator checks equality/existence)
+    // any other string (e.g. "subject_99"), number, object, array: reject entire state
     let ownerSubjectId: SubjectId | null = null;
-    if (typeof bc.owner_subject_id === "string" && VALID_SUBJECT_IDS.has(bc.owner_subject_id)) {
+    if (bc.owner_subject_id === null || bc.owner_subject_id === undefined) {
+      if (bc.source !== "shared_from_subject") {
+        ownerSubjectId = id; // v2 legacy null → self
+      }
+      // for shared: ownerSubjectId stays null → v3 validator rejects
+    } else if (typeof bc.owner_subject_id === "string" && VALID_SUBJECT_IDS.has(bc.owner_subject_id)) {
       ownerSubjectId = bc.owner_subject_id as SubjectId;
-    } else if (bc.source !== "shared_from_subject") {
-      // v2 may have stored null for self-owned contacts — assign to current subject
-      ownerSubjectId = id;
+    } else {
+      // Invalid string, number, object, array → reject entire subject
+      return null;
     }
 
     booking_contact = {
@@ -448,10 +457,13 @@ function validateV2Subject(raw: unknown): BookingSubject | null {
     };
   }
 
+  // Strict status: unknown/numeric/object status → reject (no silent coercion to "collecting")
   const rawStatus = s.status;
-  const status: BookingSubject["status"] =
+  const status: BookingSubject["status"] | null =
     rawStatus === "booked" ? "booked" :
-    rawStatus === "ready_for_booking" ? "ready_for_booking" : "collecting";
+    rawStatus === "ready_for_booking" ? "ready_for_booking" :
+    rawStatus === "collecting" ? "collecting" : null;
+  if (status === null) return null;
 
   const subject: BookingSubject = {
     id,
@@ -897,7 +909,10 @@ export function postUpdateBookingSubjects(params: {
   if (applyReq && !effectiveSubjectId) {
     return state;
   }
-  const visitCreated = (applyResult?.data as Record<string, unknown> | undefined)?.created_visit === true;
+  // Full ClinicCard proof required to mark subject as booked — partial results must not promote
+  // status. hasCompleteBookingApplyProof checks: status=success, booking_status=visit_created,
+  // created_visit=true, may_claim_booked=true, and non-empty cliniccard_visit_id.
+  const fullProofVerified = hasCompleteBookingApplyProof(applyResult);
 
   const firstName = typeof applyReq?.arguments.first_name === "string" ? applyReq.arguments.first_name.trim() : null;
   const lastName = typeof applyReq?.arguments.last_name === "string" ? applyReq.arguments.last_name.trim() : null;
@@ -915,11 +930,12 @@ export function postUpdateBookingSubjects(params: {
   let subjects = state.subjects.map((s) => {
     if (!effectiveSubjectId || s.id !== effectiveSubjectId) return s;
     let updated = { ...s };
+    // Name, slot, service always saved when present in request (even on partial result)
     if (appliedName) updated = { ...updated, patient_name: appliedName };
     if (appliedSlot) updated = { ...updated, slot: appliedSlot };
     if (appliedService) updated = { ...updated, service: appliedService };
-    // status="booked" only when visit was actually created
-    if (visitCreated) updated = { ...updated, status: "booked" as const };
+    // status="booked" only when ALL proof fields are present — no split-brain with patient reply
+    if (fullProofVerified) updated = { ...updated, status: "booked" as const };
     return updated;
   });
 

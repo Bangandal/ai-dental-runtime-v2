@@ -477,7 +477,7 @@ describe("v3: status lifecycle (simplified — no episode_id/dates)", () => {
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима", last_name: "Петрова", requested_date: "2026-07-10", requested_time: "10:00", service: "Чистка" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: "subject_1" as SubjectId,
     });
     assert.equal(updated.status, "completed");
@@ -501,7 +501,7 @@ describe("v3: status lifecycle (simplified — no episode_id/dates)", () => {
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: "subject_2" as SubjectId,
     });
     assert.equal(updated.status, "active", "status stays active while subject_1 not yet booked");
@@ -565,7 +565,7 @@ describe("v3: subject_id_at_execution (atomic booking execution)", () => {
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       subjectIntent: intent,
       executionSubjectId: "subject_2" as SubjectId,
     });
@@ -591,7 +591,7 @@ describe("v3: subject_id_at_execution (atomic booking execution)", () => {
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       // No executionSubjectId → booking result must NOT be applied (no active_subject_id fallback)
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
@@ -624,7 +624,7 @@ describe("v3: subject_id_at_execution (atomic booking execution)", () => {
     const updated = postUpdateBookingSubjects({
       current: bootstrappedState,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: null,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
@@ -864,7 +864,7 @@ describe("postUpdateBookingSubjects", () => {
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: "subject_2" as SubjectId,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
@@ -1005,7 +1005,7 @@ describe("PR#173: subject-aware phone assignment (v3 behavior)", () => {
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Рима", requested_date: "2026-07-10", requested_time: "10:00" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: "subject_1" as SubjectId,
     });
     const s1 = updated.subjects.find((s) => s.id === "subject_1");
@@ -1033,7 +1033,7 @@ describe("PR#173: subject-aware phone assignment (v3 behavior)", () => {
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", requested_date: "2026-07-11", requested_time: "11:00" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: "subject_2" as SubjectId,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
@@ -1289,7 +1289,7 @@ describe("PR#174-fix: pending_typed_phone not cleared until classified", () => {
     const updated = postUpdateBookingSubjects({
       current: stateNoPending,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-09", requested_time: "12:00", service: "Чистка" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       subjectIntent: null,
       executionSubjectId: "subject_2" as SubjectId,
     });
@@ -1550,7 +1550,7 @@ describe("PR#176: Subject Registry v3", () => {
     const updated = postUpdateBookingSubjects({
       current: state,
       toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-15", requested_time: "10:00", service: "Чистка" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolResults: [{ tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: "subject_2" as SubjectId,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");

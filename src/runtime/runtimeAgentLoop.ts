@@ -239,7 +239,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       if (allBookingApplyRound1.length > 1) {
         debug.reason = "booking_apply_preflight_multiple_booking_apply_round1";
         return await finalizeBlockedMultipleBookingApplies({
-          blockingRequests: allBookingApplyRound1,
+          pendingRequestsForRound: toolRequests,  // ALL round-1 requests must get results
           guardedData: {
             booking_status: "subject_resolution_conflict",
             created_visit: false,
@@ -819,16 +819,17 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // one-booking-per-turn check → Guard J (strict parse) → bootstrap → freeze subject →
         // no-slots → Guard I → past-time → slot guards → phone → name/service → execution.
 
-        // 1. Find all round-2 booking.apply requests and push them to processedToolRequests.
+        // 1. Add ALL round-2 requests to processedToolRequests (not just booking.apply).
+        for (const req of secondOutput.tool_requests) processedToolRequests.push(req);
+
         const allRound2BookingRequests = secondOutput.tool_requests.filter((r) => r.tool === "booking.apply");
         const pendingBookingApply = allRound2BookingRequests[0] ?? null;
-        for (const req of allRound2BookingRequests) processedToolRequests.push(req);
 
-        // 2a. Round-2 multiple: more than one booking.apply — block ALL.
+        // 2a. Round-2 multiple: more than one booking.apply — block ALL calls from this round.
         if (allRound2BookingRequests.length > 1) {
           debug.reason = "booking_apply_preflight_multiple_booking_apply_round2_multi";
           return await finalizeBlockedMultipleBookingApplies({
-            blockingRequests: allRound2BookingRequests,
+            pendingRequestsForRound: secondOutput.tool_requests,  // ALL requests get results
             guardedData: {
               booking_status: "subject_resolution_conflict",
               created_visit: false,
@@ -1436,7 +1437,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
  * stays resumable, and prevents any single call_id from being left dangling.
  */
 export async function finalizeBlockedMultipleBookingApplies(params: {
-  blockingRequests: RuntimeAgentToolRequest[];
+  /** All pending requests from the current model response — every call_id must get a result. */
+  pendingRequestsForRound: RuntimeAgentToolRequest[];
   guardedData: GuardedBookingApplyData;
   previousToolResults: RuntimeAgentToolResult[];
   toolRequests: RuntimeAgentToolRequest[];
@@ -1450,17 +1452,32 @@ export async function finalizeBlockedMultipleBookingApplies(params: {
   booking_subjects_after_resolution?: BookingSubjectsState | null;
 }): Promise<RuntimeAgentTurnResult> {
   const {
-    blockingRequests, guardedData, previousToolResults, toolRequests,
+    pendingRequestsForRound, guardedData, previousToolResults, toolRequests,
     conversationId, systemInstruction, callerContext, input, debug, deps,
     booking_apply_resolution, booking_subjects_after_resolution,
   } = params;
 
-  const guardedResults: RuntimeAgentToolResult[] = blockingRequests.map((req) => ({
-    tool: "booking.apply",
-    call_id: req.call_id,
-    status: "success" as const,
-    data: guardedData,
-  }));
+  // Create a result for each call_id — booking.apply gets the blocked data,
+  // other tools get a denial explaining why they were not executed.
+  const guardedResults: RuntimeAgentToolResult[] = pendingRequestsForRound.map((req) => {
+    if (req.tool === "booking.apply") {
+      return {
+        tool: "booking.apply",
+        call_id: req.call_id,
+        status: "success" as const,
+        data: guardedData,
+      };
+    }
+    return {
+      tool: req.tool,
+      call_id: req.call_id,
+      status: "denied" as const,
+      error: {
+        code: "turn_aborted_due_to_multiple_booking_requests",
+        message: "Tool was not executed because multiple booking.apply requests were emitted.",
+      },
+    };
+  });
 
   const allResults = [...previousToolResults, ...guardedResults];
   const bookingApplyTruth = buildBookingApplyActionTruth(allResults);

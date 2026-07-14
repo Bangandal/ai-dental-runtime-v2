@@ -127,7 +127,7 @@ test("BSEP-1: round-1 booking result contains execution_subject_id=subject_2", a
     executors: {
       "booking.apply": async (ctx) => {
         capturedPhone = ctx.phone_number;
-        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -173,7 +173,7 @@ test("BSEP-2: round-1 successful booking persists subject_2.status=booked via po
     executors: {
       "booking.apply": async () => ({
         status: "success" as const,
-        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true },
+        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -234,7 +234,7 @@ test("BSEP-3: executor receives phone of subject_2, not subject_1 (sender)", asy
     executors: {
       "booking.apply": async (ctx) => {
         capturedPhone = ctx.phone_number;
-        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -288,7 +288,7 @@ test("BSEP-4: round-2 bootstrap creates registry when availability.check in roun
       }),
       "booking.apply": async (ctx) => {
         resolvedSubject = ctx.phone_number; // capture what phone was used (no phone → undefined)
-        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -345,7 +345,7 @@ test("BSEP-5: round-2 bootstrap — booking.apply blocked (no subject_2 phone), 
       }),
       "booking.apply": async () => {
         executorCalled = true;
-        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -396,7 +396,7 @@ test("BSEP-6: current_turn_typed_phone becomes pending_typed_phone in bootstrapp
     executors: {
       "booking.apply": async () => {
         executorCalled = true;
-        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -461,7 +461,7 @@ test("BSEP-7: existing provided_phone (not current-turn) does not create new pen
     executors: {
       "booking.apply": async () => ({
         status: "success" as const,
-        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true },
+        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -555,7 +555,7 @@ test("BSEP-8: completed registry treated as null — self-booking continues as s
     executors: {
       "booking.apply": async () => {
         executorCalled = true;
-        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -601,7 +601,7 @@ test("BSEP-9: completed registry replaced by fresh registry when new booking tar
     executors: {
       "booking.apply": async () => ({
         status: "success" as const,
-        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true },
+        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-15T10:00:00"),
@@ -702,7 +702,7 @@ test("BSEP-12: registry present + executionSubjectId=null → hasSubjectOrContac
     executors: {
       "booking.apply": async () => {
         executorCalled = true;
-        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -793,7 +793,7 @@ test("BSEP-14: successful booking updates only frozen execution subject, not act
     tool: "booking.apply" as const,
     call_id: "c2",
     status: "success" as const,
-    data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true },
+    data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
   }];
 
   const persisted = postUpdateBookingSubjects({
@@ -849,7 +849,7 @@ test("BSEP-15: round-2 bootstrap: registry created, Guard J resolves subject_2, 
       }),
       "booking.apply": async () => {
         executorCalled = true;
-        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -906,7 +906,7 @@ test("BSEP-16: round-1 malformed second response still returns execution_subject
     executors: {
       "booking.apply": async () => ({
         status: "success" as const,
-        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true },
+        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
@@ -985,7 +985,7 @@ test("BSEP-18: booking_subjects_after_resolution from loop round-trips through p
     executors: {
       "booking.apply": async () => ({
         status: "success" as const,
-        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true },
+        data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),

@@ -280,7 +280,7 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
       executors: {
         "booking.apply": async () => {
           bookingApplyCallCount++;
-          return { status: "success" as const, data: { created_visit: true, booking_status: "visit_created", may_claim_booked: true } };
+          return { status: "success" as const, data: { created_visit: true, booking_status: "visit_created", may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
         },
       },
       bookingProcessStateRepository: SLOT_REPO,
@@ -329,7 +329,7 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
         }),
         "booking.apply": async (ctx) => {
           executedPhone = ctx.phone_number;
-          return { status: "success" as const, data: { created_visit: true, booking_status: "visit_created", may_claim_booked: true } };
+          return { status: "success" as const, data: { created_visit: true, booking_status: "visit_created", may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
         },
       },
     });
@@ -423,8 +423,8 @@ describe("PR#180-13: postUpdateBookingSubjects uses explicit executionSubjectId"
     ]);
     const updated = postUpdateBookingSubjects({
       current: state,
-      toolRequests: [{ tool: "booking.apply", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-15", requested_time: "10:00", service: "Чистка" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolRequests: [{ tool: "booking.apply", call_id: "ba_e13", arguments: { first_name: "Иван", last_name: "Петров", requested_date: "2026-07-15", requested_time: "10:00", service: "Чистка" } }],
+      toolResults: [{ tool: "booking.apply", call_id: "ba_e13", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: "subject_2" as SubjectId,
     });
     const s2 = updated.subjects.find((s) => s.id === "subject_2");
@@ -452,8 +452,8 @@ describe("PR#180-13: postUpdateBookingSubjects uses explicit executionSubjectId"
     ]);
     const updated = postUpdateBookingSubjects({
       current: state,
-      toolRequests: [{ tool: "booking.apply", arguments: { requested_date: "2026-07-15", requested_time: "11:00" } }],
-      toolResults: [{ tool: "booking.apply", status: "success", data: { created_visit: true } }],
+      toolRequests: [{ tool: "booking.apply", call_id: "ba_e14", arguments: { requested_date: "2026-07-15", requested_time: "11:00" } }],
+      toolResults: [{ tool: "booking.apply", call_id: "ba_e14", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }],
       executionSubjectId: "subject_2" as SubjectId,
     });
     assert.equal(updated.status, "completed", "all booked → status=completed");

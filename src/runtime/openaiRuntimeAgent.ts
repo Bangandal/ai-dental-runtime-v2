@@ -51,6 +51,11 @@ export interface RuntimeAgentTurnInput {
    * typedContactToStore — never from persisted existingProvidedPhone. Used to populate
    * pending_typed_phone when bootstrap creates a new multi-subject registry this turn. */
   current_turn_typed_phone?: string | null;
+  /** True when this conversation ever had an active or completed booking_subjects registry.
+   * Set by orchestrator when persisted booking_subjects (including completed) is non-null.
+   * Causes any legacy typed provided_phone to be suppressed — old ownerless typed phones
+   * from a prior multi-subject flow must not leak into a new single-subject self-booking. */
+  had_booking_subjects?: boolean;
 }
 
 export type RuntimeAgentToolName =
@@ -142,9 +147,9 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     optional_args: ["requested_time", "service_interest", "limit"],
   },
   "booking.apply": {
-    description: "Create a visit in ClinicCard when the patient has provided all required details (first name, last name, service, date, time) and the channel has captured their phone number. Returns booking_status indicating whether the visit was created or why it could not be.",
-    required_args: ["first_name", "last_name", "service", "requested_date", "requested_time"],
-    optional_args: ["subject_id"],
+    description: "Create a visit in ClinicCard when the patient has provided all required details (first name, last name, service, date, time) and the channel has captured their phone number. Returns booking_status indicating whether the visit was created or why it could not be. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
+    required_args: ["subject_id", "first_name", "last_name", "service", "requested_date", "requested_time"],
+    optional_args: [],
   },
 } as const;
 
@@ -237,7 +242,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## TOOLS",
     "- kb.search: clinic FAQ, services, prices, location, insurance, opening hours.",
     "- availability.check: available slots. Always convert relative date expressions (\"tomorrow\", \"завтра\", \"в пятницу\", \"next week\", etc.) into ISO YYYY-MM-DD before passing to availability.check. Never pass natural-language date strings to availability.check.",
-    "- booking.apply: create a visit when patient confirmed slot + service. Fill first_name and last_name from the current message or runtime_context.recent_history. Not found → call without them.",
+    "- booking.apply: create a visit when patient confirmed slot + service. subject_id is ALWAYS required — see BOOKING SUBJECTS rules. Fill first_name and last_name from the current message or runtime_context.recent_history. Not found → call without them.",
 
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────
     "## AVAILABILITY RULES",
@@ -248,9 +253,17 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
 
     // ── BOOKING SUBJECTS ─────────────────────────────────────────────────────
     "## BOOKING SUBJECTS",
-    "Present in context (version=3) when booking for one or more people. active_subject_id = the subject currently being collected. Subjects use stable IDs: subject_1 (sender), subject_2, subject_3, subject_4. max_subjects=4.",
+    "Present in context (version=3) when booking for one or more people. active_subject_id = the subject currently being collected. Subjects use stable IDs: subject_1 (sender/self), subject_2 (first other person), subject_3, subject_4. max_subjects=4.",
     "Each subject has: id, label (e.g. 'мама', 'дочь 1'), patient_name, service, slot, phone_status, missing[], status.",
-    "BOOKING.APPLY WITH SUBJECTS: When booking_subjects is active (status=active), subject_id is REQUIRED in every booking.apply call (e.g. subject_id='subject_1'). Omitting subject_id returns subject_resolution_conflict — the runtime never falls back to active_subject_id. Pass the correct subject's ID for each booking.",
+    "UNIVERSAL SUBJECT_ID RULE: subject_id is ALWAYS required in every booking.apply call, regardless of context. Omitting it returns subject_resolution_conflict. Rules:",
+    "- Booking the sender/self: always use subject_id='subject_1'",
+    "- Booking another person (first): always use subject_id='subject_2'",
+    "- Booking a third person: always use subject_id='subject_3'",
+    "- Never call booking.apply without subject_id. The language of the message (Russian, Czech, English) does not affect subject IDs.",
+    "Examples (RU): 'Запишите меня' → subject_id='subject_1'. 'Запишите маму' (first other person) → subject_id='subject_2'. 'И сестру тоже' (third person) → subject_id='subject_3'.",
+    "Examples (CS): 'Chci se objednat' → subject_id='subject_1'. 'Chci objednat mámu' → subject_id='subject_2'.",
+    "Examples (EN): 'Book me' → subject_id='subject_1'. 'Book my mother' → subject_id='subject_2'.",
+    "When booking_subjects is active (status=active): pass the correct subject's ID for each booking — the runtime never falls back to active_subject_id.",
     "SUBJECT INTENT: Include subject_intent in your final_response JSON when the patient's message signals a subject switch, introduces new people to book. Omit it (or use action='none') when nothing changes.",
     "Format: { \"action\": \"none\" | \"switch_subject\" | \"create_subjects\" | \"create_or_switch_subject\", \"target\": \"self\" | \"mentioned_person\" | \"active\", \"subject_id\": \"subject_N or null\", \"display_name\": \"Name or null\", \"count\": N, \"labels\": [\"label1\", \"label2\"], \"confidence\": \"low\" | \"medium\" | \"high\" }",
     "Examples: 'теперь запишите меня' → action=switch_subject, target=self, confidence=high. 'и ещё мою маму Анну' → action=create_subjects, target=mentioned_person, count=1, labels=['мама'], display_name='Анна', confidence=high. 'запишите меня и двух дочерей' → action=create_subjects, target=mentioned_person, count=2, labels=['дочь 1','дочь 2'], confidence=high. 'назад к Ивану' → action=switch_subject, target=mentioned_person, subject_id='subject_2', confidence=high.",

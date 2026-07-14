@@ -135,7 +135,7 @@ test("D: second caller exception after booking.apply returns booking emergency f
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
       };
     }
     throw new Error("second call boom");
@@ -155,7 +155,7 @@ test("E: second caller exception after booking.apply preserves tool_results for 
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
       };
     }
     throw new Error("second call boom");
@@ -206,7 +206,7 @@ test("G: no booking-created/confirmed claim in any exception fallback", async ()
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
       };
     }
     throw new Error("boom");

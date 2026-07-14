@@ -165,7 +165,7 @@ describe("booking.apply past-time guard (PR #133 regression)", () => {
       if (callCount === 1) {
         return {
           type: "tool_requests",
-          tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" } }],
+          tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" } }],
         } as RuntimeAgentCallerOutput;
       }
       // Guarded finalization: model asks for another time after seeing past_time guarded result
@@ -253,7 +253,7 @@ describe("hasTrustedPhone — contact button audit (PR #134)", () => {
     // booking.apply for tomorrow → phone guard passes → executor runs (or fails due to no executor).
     const caller: RuntimeAgentCaller = async () => ({
       type: "tool_requests",
-      tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { requested_date: "2026-07-04", requested_time: "13:00", service: "consultation", first_name: "Test", last_name: "Patient" } }],
+      tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", requested_date: "2026-07-04", requested_time: "13:00", service: "consultation", first_name: "Test", last_name: "Patient" } }],
     } as RuntimeAgentCallerOutput);
 
     const loop = createRuntimeAgentLoop({

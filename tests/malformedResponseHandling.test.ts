@@ -136,7 +136,7 @@ test("Codex-P2-B: second-call malformed clears conversation memory and returns n
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
       };
     }
     return { ...malformedOutput(), conversation_id: "conv_from_second_call" };
@@ -179,7 +179,7 @@ test("Codex-P2-D: debug reasons unaffected by the memory-save fix", async () => 
   const bookingCaller: RuntimeAgentCaller = async () => {
     round += 1;
     if (round === 1) {
-      return { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }] };
+      return { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }] };
     }
     return malformedOutput();
   };
@@ -228,7 +228,7 @@ test("C: second call malformed after booking_write_disabled returns booking emer
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
       };
     }
     return malformedOutput();
@@ -249,7 +249,7 @@ test("D: second call malformed after booking.apply never claims booked/confirmed
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
       };
     }
     return malformedOutput();
@@ -332,7 +332,7 @@ test("H: malformed second-call path preserves tool_results so admin_notification
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
       };
     }
     return malformedOutput();
@@ -441,7 +441,7 @@ test("RC4-D: booking.apply tool args logged with date/time/service; name/phone r
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "b1", arguments: { first_name: "Иван", last_name: "Петров", service: "чистка", requested_date: "2026-07-08", requested_time: "12:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "b1", arguments: { subject_id: "subject_1", first_name: "Иван", last_name: "Петров", service: "чистка", requested_date: "2026-07-08", requested_time: "12:00" } }],
       };
     }
     return { type: "final_response", final_response: { final_patient_reply: "Записан." } };
@@ -475,7 +475,7 @@ test("RC2-E: second caller throws after tool execution → conversation_id_resum
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-20", requested_time: "10:00" } }],
       };
     }
     throw new Error("OpenAI second call timeout");
@@ -502,7 +502,7 @@ test("RC2-F: second caller malformed after tool execution → conversation_id_re
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-20", requested_time: "10:00" } }],
       };
     }
     return { ...malformedOutput(), conversation_id: "conv_dirty_456" };
@@ -535,7 +535,7 @@ test("RC4-E: round-1 availability.check + round-2 booking.apply both appear in d
     if (round === 2) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "b1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-15", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "b1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2099-01-15", requested_time: "10:00" } }],
       };
     }
     return { type: "final_response", final_response: { final_patient_reply: "Записан." } };

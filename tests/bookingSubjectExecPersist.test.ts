@@ -538,12 +538,12 @@ test("BSEP-8: completed registry treated as null — self-booking continues as s
           tool: "booking.apply",
           call_id: "call_self",
           arguments: {
+            subject_id: "subject_1", // universal subject_id required — subject_1 = sender/self
             service: "Чистка",
             requested_date: "2026-07-09",
             requested_time: "12:00",
             first_name: "Рима",
             last_name: "Иванова",
-            // No subject_id — single-subject flow
           },
         }],
       },

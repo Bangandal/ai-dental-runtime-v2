@@ -68,6 +68,7 @@ const BOOKING_APPLY_FULL: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_book_pr142",
   arguments: {
+    subject_id: "subject_1",
     service: "чистка зубов",
     requested_date: "2026-08-05",
     requested_time: "14:00",
@@ -80,6 +81,7 @@ const BOOKING_APPLY_NO_PHONE: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_book_no_phone",
   arguments: {
+    subject_id: "subject_1",
     service: "чистка зубов",
     requested_date: "2026-08-05",
     requested_time: "14:00",
@@ -191,7 +193,7 @@ test("B1: round 1 booking.apply — missing slot → guarded missing_slot, conve
         tool_requests: [{
           tool: "booking.apply",
           call_id: "call_b1",
-          arguments: { first_name: "Тест", last_name: "Пациент", service: "осмотр" },
+          arguments: { subject_id: "subject_1", first_name: "Тест", last_name: "Пациент", service: "осмотр" },
           // No requested_date / requested_time
         }],
       },
@@ -222,7 +224,7 @@ test("B2: round 1 booking.apply — missing first_name → guarded missing_patie
         tool_requests: [{
           tool: "booking.apply",
           call_id: "call_b2",
-          arguments: { last_name: "Пациент", requested_date: "2026-08-05", requested_time: "14:00", service: "осмотр" },
+          arguments: { subject_id: "subject_1", last_name: "Пациент", requested_date: "2026-08-05", requested_time: "14:00", service: "осмотр" },
         }],
       },
       { type: "final_response", conversation_id: "conv_b2", final_response: { final_patient_reply: "Укажите ваше имя." } },
@@ -254,7 +256,7 @@ test("B3: round 1 booking.apply — missing service → guarded missing_service,
         tool_requests: [{
           tool: "booking.apply",
           call_id: "call_b3",
-          arguments: { first_name: "Тест", last_name: "Пациент", requested_date: "2026-08-05", requested_time: "14:00" },
+          arguments: { subject_id: "subject_1", first_name: "Тест", last_name: "Пациент", requested_date: "2026-08-05", requested_time: "14:00" },
           // No service or service_reason
         }],
       },
@@ -349,6 +351,7 @@ test("E: round 2 booking.apply — requested_time not in available slots → gua
     tool: "booking.apply",
     call_id: "call_e_wrong",
     arguments: {
+      subject_id: "subject_1",
       service: "чистка",
       requested_date: "2026-08-05",
       requested_time: "15:00", // SLOT is at 14:00, not 15:00

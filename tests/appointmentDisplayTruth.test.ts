@@ -245,6 +245,7 @@ describe("PR #136 — F: appointment_display_truth injected in second model call
               tool: "booking.apply",
               call_id: "call_f1",
               arguments: {
+                subject_id: "subject_1",
                 first_name: "Smoke",
                 last_name: "Test136",
                 service: "чистка зубов",

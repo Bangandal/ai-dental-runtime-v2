@@ -120,7 +120,7 @@ test("B: CLINICCARD_BOOKING_MODE disabled → booking_write_disabled; action tru
   // Round 1: model requests booking.apply
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "booking.apply", call_id: "call_b", arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_b", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
   }));
 
   // Round 2: model receives tool result + booking_apply_action_truth in context
@@ -165,7 +165,7 @@ test("C: no channel_contact → global preflight fires; contact button returned;
 
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "booking.apply", call_id: "call_c", arguments: { first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2026-07-20", requested_time: "09:00" } }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_c", arguments: { subject_id: "subject_1", first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2026-07-20", requested_time: "09:00" } }],
   }));
   // Second caller: guarded finalization — model asks for phone after seeing guarded result
   pushCaller(async () => ({
@@ -227,7 +227,7 @@ test("E: visit_created → action truth can_say_booking_created=true; model repl
 
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "booking.apply", call_id: "call_e", arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_e", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
   }));
 
   const modelReply = "Отлично, вы записаны на 15 июля в 10:00! Ждём вас.";
@@ -271,7 +271,7 @@ test("F: forced finalization path receives booking_apply_action_truth in resolve
   // Round 1: model requests booking.apply
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "booking.apply", call_id: "call_f1", arguments: { first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_f1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
   }));
 
   // Round 2: model requests more tools (triggers forced finalization path)

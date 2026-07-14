@@ -318,6 +318,93 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       let bootstrappedRegistry: BookingSubjectsState | null =
         effectiveInput !== input ? effectiveBookingSubjects : null;
 
+      // Guard J (round 1) — FIRST: subject_id is required for ALL booking.apply calls.
+      // Resolve/freeze execution subject before ANY other booking guards fire.
+      let round1ExecutionSubjectId: SubjectId | null = null;
+      if (bookingApplyRound1) {
+        const rawSubjectId = bookingApplyRound1.arguments.subject_id;
+        if (rawSubjectId == null) {
+          // Missing subject_id → block unconditionally (no registry fallback ever)
+          debug.reason = "booking_apply_preflight_subject_id_required_round1";
+          return await finalizeBlockedBookingApplyWithToolOutput({
+            pendingBookingApply: bookingApplyRound1,
+            guardedData: {
+              booking_status: "subject_resolution_conflict",
+              created_visit: false,
+              may_claim_booked: false,
+              required_next_action: "clarify_subject",
+              reason: "subject_id_required",
+            },
+            previousToolResults: [],
+            toolRequests,
+            conversationId,
+            systemInstruction,
+            callerContext,
+            input,
+            debug,
+            deps,
+            booking_subjects_after_resolution: bootstrappedRegistry,
+          });
+        }
+        if (effectiveBookingSubjects) {
+          const round1Resolution = resolveBookingExecutionSubject(
+            effectiveBookingSubjects,
+            bookingApplyRound1.arguments,
+          );
+          if (!round1Resolution.ok) {
+            debug.reason = "booking_apply_preflight_subject_resolution_conflict_round1";
+            return await finalizeBlockedBookingApplyWithToolOutput({
+              pendingBookingApply: bookingApplyRound1,
+              guardedData: {
+                booking_status: "subject_resolution_conflict",
+                created_visit: false,
+                may_claim_booked: false,
+                required_next_action: "clarify_subject",
+                reason: round1Resolution.reason,
+              },
+              previousToolResults: [],
+              toolRequests,
+              conversationId,
+              systemInstruction,
+              callerContext,
+              input,
+              debug,
+              deps,
+              booking_subjects_after_resolution: bootstrappedRegistry,
+            });
+          }
+          round1ExecutionSubjectId = round1Resolution.execution_subject_id;
+        }
+        // No registry + subject_id=subject_1 → single-subject flow (executionSubjectId stays null)
+      }
+
+      // Guard I (round 1) — pending typed phone: fires right after subject resolution, before
+      // slot guards. Subject is frozen; phone ownership must be resolved before execution.
+      if (bookingApplyRound1 && effectiveBookingSubjects?.pending_typed_phone) {
+        debug.reason = "booking_apply_preflight_pending_typed_phone_round1";
+        return await finalizeBlockedBookingApplyWithToolOutput({
+          pendingBookingApply: bookingApplyRound1,
+          guardedData: {
+            booking_status: "pending_phone_classification",
+            created_visit: false,
+            may_claim_booked: false,
+            required_next_action: "none",
+            reason: "typed_phone_subject_unclear",
+          },
+          previousToolResults: [],
+          toolRequests,
+          conversationId,
+          systemInstruction,
+          callerContext,
+          input,
+          debug,
+          deps,
+          execution_subject_id: round1ExecutionSubjectId,
+          booking_subjects_after_resolution: bootstrappedRegistry,
+        });
+      }
+
+      // Global preflight A — past-time guard (round 1): fires after subject resolution.
       if (bookingApplyRound1) {
         if (isPastBookingTime({
           requestedDate: typeof bookingApplyRound1.arguments.requested_date === "string"
@@ -352,15 +439,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             input,
             debug,
             deps,
+            execution_subject_id: round1ExecutionSubjectId,
             booking_subjects_after_resolution: bootstrappedRegistry,
           });
         }
       }
 
-      // Global preflight D — no-slot guard (round 1): booking.apply args don't include
-      // a concrete date+time. Fires before phone so the model asks for a date/time
-      // before prompting the user for their contact. No phone prerequisite needed —
-      // we must know which slot to book before collecting phone.
+      // Global preflight D — no-slot guard (round 1): fires after subject resolution.
       if (bookingApplyRound1 && bookingApplyArgsMissingSlot(bookingApplyRound1.arguments)) {
         debug.reason = "booking_apply_preflight_missing_slot_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
@@ -380,14 +465,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           input,
           debug,
           deps,
+          execution_subject_id: round1ExecutionSubjectId,
           booking_subjects_after_resolution: bootstrappedRegistry,
         });
       }
 
-      // Global preflight G — slot proof guard (round 1): no availability.check was done
-      // in this turn and no selected_slot from prior state matches the requested date/time.
-      // Fires before phone so the slot is verified before the user is asked for their contact.
-      // No hasTrustedPhone prerequisite — slot validity must be confirmed regardless of phone.
+      // Global preflight G — slot proof guard (round 1): fires after subject resolution.
       if (bookingApplyRound1 && shouldInterceptMissingSlotProof({
         pendingToolRequests: toolRequests,
         completedToolResults: [],
@@ -412,72 +495,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           input,
           debug,
           deps,
-          booking_subjects_after_resolution: bootstrappedRegistry,
-        });
-      }
-
-      // Global preflight J — subject resolution (round 1): resolve execution subject from
-      // booking.apply.subject_id before any other booking guards fire. Conflict = synthetic error.
-      let round1ExecutionSubjectId: SubjectId | null = null;
-      if (bookingApplyRound1 && effectiveBookingSubjects) {
-        const round1Resolution = resolveBookingExecutionSubject(
-          effectiveBookingSubjects,
-          bookingApplyRound1.arguments,
-        );
-        if (!round1Resolution.ok) {
-          debug.reason = "booking_apply_preflight_subject_resolution_conflict_round1";
-          return await finalizeBlockedBookingApplyWithToolOutput({
-            pendingBookingApply: bookingApplyRound1,
-            guardedData: {
-              booking_status: "subject_resolution_conflict",
-              created_visit: false,
-              may_claim_booked: false,
-              required_next_action: "clarify_subject",
-              reason: round1Resolution.reason,
-            },
-            previousToolResults: [],
-            toolRequests,
-            conversationId,
-            systemInstruction,
-            callerContext,
-            input,
-            debug,
-            deps,
-            booking_subjects_after_resolution: bootstrappedRegistry,
-          });
-        }
-        round1ExecutionSubjectId = round1Resolution.execution_subject_id;
-      }
-
-      // Global preflight I — pending typed phone guard (round 1): booking_subjects has a
-      // pending_typed_phone that hasn't been classified by phone_ownership_intent yet. Block
-      // booking.apply so the model asks whose phone it is before the booking executes.
-      if (bookingApplyRound1 && effectiveBookingSubjects?.pending_typed_phone) {
-        debug.reason = "booking_apply_preflight_pending_typed_phone_round1";
-        return await finalizeBlockedBookingApplyWithToolOutput({
-          pendingBookingApply: bookingApplyRound1,
-          guardedData: {
-            booking_status: "pending_phone_classification",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "none",
-            reason: "typed_phone_subject_unclear",
-          },
-          previousToolResults: [],
-          toolRequests,
-          conversationId,
-          systemInstruction,
-          callerContext,
-          input,
-          debug,
-          deps,
           execution_subject_id: round1ExecutionSubjectId,
           booking_subjects_after_resolution: bootstrappedRegistry,
         });
       }
 
-      // Global preflight B — phone guard: fires only after slot validity is confirmed.
-      // Uses resolved execution subject (from subject_id arg) when registry is active.
+      // Global preflight B — phone guard (round 1): fires after slot guards.
       if (bookingApplyRound1 && !hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId)) {
         debug.reason = "booking_apply_preflight_missing_trusted_phone_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
@@ -502,8 +525,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         });
       }
 
-      // Global preflight E — name-missing guard (round 1): trusted phone and valid slot
-      // are present but first_name or last_name is absent from booking.apply args.
+      // Global preflight E — name-missing guard (round 1).
       if (bookingApplyRound1 && hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId)) {
         const missingNames = getMissingBookingApplyNameFields(bookingApplyRound1.arguments);
         if (missingNames.length > 0) {
@@ -533,8 +555,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
       }
 
-      // Global preflight F — service-missing guard (round 1): name and slot present but
-      // neither service nor service_reason is specified.
+      // Global preflight F — service-missing guard (round 1).
       if (bookingApplyRound1 && hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId) && bookingApplyArgsMissingService(bookingApplyRound1.arguments)) {
         debug.reason = "booking_apply_preflight_missing_service_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
@@ -799,15 +820,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           }
         }
 
-        // Guard J (round 2): resolve execution subject from booking.apply.subject_id.
+        // Guard J (round 2) — FIRST: subject_id required for all booking.apply calls.
+        // Fires before slot guards and phone guards.
         let round2ExecutionSubjectId: SubjectId | null = null;
-        if (pendingBookingApply && effectiveBookingSubjects) {
-          const round2Resolution = resolveBookingExecutionSubject(
-            effectiveBookingSubjects,
-            pendingBookingApply.arguments,
-          );
-          if (!round2Resolution.ok) {
-            debug.reason = "booking_apply_preflight_subject_resolution_conflict_round2";
+        if (pendingBookingApply) {
+          const rawSubjectId2 = pendingBookingApply.arguments.subject_id;
+          if (rawSubjectId2 == null) {
+            debug.reason = "booking_apply_preflight_subject_id_required_round2";
             return await finalizeBlockedBookingApplyWithToolOutput({
               pendingBookingApply,
               guardedData: {
@@ -815,7 +834,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
                 created_visit: false,
                 may_claim_booked: false,
                 required_next_action: "clarify_subject",
-                reason: round2Resolution.reason,
+                reason: "subject_id_required",
               },
               previousToolResults: toolResults,
               toolRequests,
@@ -828,11 +847,65 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               booking_subjects_after_resolution: bootstrappedRegistry,
             });
           }
-          round2ExecutionSubjectId = round2Resolution.execution_subject_id;
+          if (effectiveBookingSubjects) {
+            const round2Resolution = resolveBookingExecutionSubject(
+              effectiveBookingSubjects,
+              pendingBookingApply.arguments,
+            );
+            if (!round2Resolution.ok) {
+              debug.reason = "booking_apply_preflight_subject_resolution_conflict_round2";
+              return await finalizeBlockedBookingApplyWithToolOutput({
+                pendingBookingApply,
+                guardedData: {
+                  booking_status: "subject_resolution_conflict",
+                  created_visit: false,
+                  may_claim_booked: false,
+                  required_next_action: "clarify_subject",
+                  reason: round2Resolution.reason,
+                },
+                previousToolResults: toolResults,
+                toolRequests,
+                conversationId,
+                systemInstruction,
+                callerContext,
+                input,
+                debug,
+                deps,
+                booking_subjects_after_resolution: bootstrappedRegistry,
+              });
+            }
+            round2ExecutionSubjectId = round2Resolution.execution_subject_id;
+          }
         }
 
         if (pendingBookingApply) {
-          // Past-time preflight (round 2): reject if slot has already passed.
+          // Guard I (round 2): pending typed phone fires right after subject resolution,
+          // before slot guards — phone ownership must be resolved before execution.
+          if (effectiveBookingSubjects?.pending_typed_phone) {
+            debug.reason = "booking_apply_preflight_pending_typed_phone_round2";
+            return await finalizeBlockedBookingApplyWithToolOutput({
+              pendingBookingApply,
+              guardedData: {
+                booking_status: "pending_phone_classification",
+                created_visit: false,
+                may_claim_booked: false,
+                required_next_action: "none",
+                reason: "typed_phone_subject_unclear",
+              },
+              previousToolResults: toolResults,
+              toolRequests,
+              conversationId,
+              systemInstruction,
+              callerContext,
+              input,
+              debug,
+              deps,
+              booking_subjects_after_resolution: bootstrappedRegistry,
+              execution_subject_id: round2ExecutionSubjectId,
+            });
+          }
+
+          // Past-time preflight (round 2): fires after subject resolution.
           if (isPastBookingTime({
               requestedDate: typeof pendingBookingApply.arguments.requested_date === "string"
                 ? pendingBookingApply.arguments.requested_date : undefined,
@@ -866,11 +939,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
                 input,
                 debug,
                 deps,
+                execution_subject_id: round2ExecutionSubjectId,
                 booking_subjects_after_resolution: bootstrappedRegistry,
               });
           }
 
-          // Guard D (round 2): no concrete date+time in args — fires before phone.
+          // Guard D (round 2): missing date+time — fires after subject resolution.
           if (bookingApplyArgsMissingSlot(pendingBookingApply.arguments)) {
             debug.reason = "booking_apply_preflight_missing_slot_round2";
             return await finalizeBlockedBookingApplyWithToolOutput({
@@ -890,13 +964,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               input,
               debug,
               deps,
+              execution_subject_id: round2ExecutionSubjectId,
               booking_subjects_after_resolution: bootstrappedRegistry,
             });
           }
 
-          // Guard G (round 2): no successful availability.check in this turn and no
-          // selected_slot from state matches the requested date/time. Fires before phone
-          // so unverified slots are caught before the user shares their contact.
+          // Guard G (round 2): slot not verified — fires after subject resolution.
           if (shouldInterceptMissingSlotProof({
             pendingToolRequests: secondOutput.tool_requests,
             completedToolResults: toolResults,
@@ -921,14 +994,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               input,
               debug,
               deps,
+              execution_subject_id: round2ExecutionSubjectId,
               booking_subjects_after_resolution: bootstrappedRegistry,
             });
           }
 
-          // Guard H (round 2): requested date+time not in availability.check results.
-          // Fires before phone — no point collecting phone for a slot that doesn't exist.
-          // No-slots and missing-slot cases are handled above; by here ≥1 slot exists and
-          // date+time are present.
+          // Guard H (round 2): invalid slot — fires after subject resolution.
           if (shouldInterceptInvalidSlotDateTime({
             pendingToolRequests: secondOutput.tool_requests,
             completedToolResults: toolResults,
@@ -951,32 +1022,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               input,
               debug,
               deps,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-          // Guard I (round 2): pending typed phone not yet classified by phone_ownership_intent.
-          // Block booking.apply so the model can ask whose phone it is.
-          if (effectiveBookingSubjects?.pending_typed_phone) {
-            debug.reason = "booking_apply_preflight_pending_typed_phone_round2";
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: {
-                booking_status: "pending_phone_classification",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "none",
-                reason: "typed_phone_subject_unclear",
-              },
-              previousToolResults: toolResults,
-              toolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              booking_subjects_after_resolution: bootstrappedRegistry,
               execution_subject_id: round2ExecutionSubjectId,
+              booking_subjects_after_resolution: bootstrappedRegistry,
             });
           }
         }
@@ -1217,6 +1264,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               tool_requests: toolRequests,
               tool_results: toolResults,
               debug,
+              ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
+              ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
             };
           }
           if (forcedOutput !== undefined && forcedOutput.type === "final_response") {
@@ -1240,6 +1289,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               ui: sanitizePhoneCaptureUiForChannel(forcedOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
               ...(forcedOutput.final_response.subject_intent != null ? { subject_intent: forcedOutput.final_response.subject_intent } : {}),
               ...(forcedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: forcedOutput.final_response.phone_ownership_intent } : {}),
+              ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
               ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
             };
           }
@@ -1255,6 +1305,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_requests: toolRequests,
           tool_results: toolResults,
           debug,
+          ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
+          ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
         };
       }
 
@@ -1365,6 +1417,8 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
       tool_requests: toolRequests,
       tool_results: allResults,
       debug,
+      ...(execution_subject_id != null ? { execution_subject_id } : {}),
+      ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
     };
   }
 
@@ -1416,6 +1470,8 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
     tool_requests: toolRequests,
     tool_results: allResults,
     debug,
+    ...(execution_subject_id != null ? { execution_subject_id } : {}),
+    ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
   };
 }
 
@@ -1666,11 +1722,14 @@ function buildSubjectAwarePhoneFields(
     if (bc?.phone_number) return resolveBookingContactFields(bc, subjects);
     return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
   }
-  // Single-subject (no registry): use global provided_phone / channel_contact
+  // Single-subject (no registry): suppress legacy typed provided_phone if this conversation
+  // ever had a multi-subject registry — old ownerless typed phone must not leak into self-booking.
+  const suppressTypedPhone = input.had_booking_subjects && input.provided_phone?.phone_source === "typed";
+  const effectiveProvided = suppressTypedPhone ? null : (input.provided_phone ?? null);
   return {
-    phone_number: input.provided_phone?.phone_number ?? input.channel_contact?.phone_number,
-    phone_source: input.provided_phone?.phone_source ?? input.channel_contact?.phone_source,
-    phone_trust: input.provided_phone ? input.provided_phone.phone_trust : undefined,
+    phone_number: effectiveProvided?.phone_number ?? input.channel_contact?.phone_number,
+    phone_source: effectiveProvided?.phone_source ?? input.channel_contact?.phone_source,
+    phone_trust: effectiveProvided ? effectiveProvided.phone_trust : undefined,
   };
 }
 
@@ -1696,7 +1755,10 @@ function hasSubjectOrContactPhone(input: RuntimeAgentTurnInput, executionSubject
     }
     return true;
   }
-  return hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: input.provided_phone });
+  // Suppress legacy typed provided_phone when conversation had multi-subject registry
+  const suppressTypedPhone = input.had_booking_subjects && input.provided_phone?.phone_source === "typed";
+  const effectiveProvided = suppressTypedPhone ? null : (input.provided_phone ?? null);
+  return hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: effectiveProvided });
 }
 
 function convertToolExecutionResult(

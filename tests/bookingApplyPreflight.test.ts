@@ -92,6 +92,7 @@ const BOOKING_APPLY_REQUEST: RuntimeAgentToolRequest = {
   tool: "booking.apply",
   call_id: "call_book_1",
   arguments: {
+    subject_id: "subject_1",
     service: "chistka",
     requested_date: "2026-07-09",
     requested_time: "12:00",
@@ -518,7 +519,7 @@ test("Test 3: Guard D (round 1) — trusted phone + no date/time → submits gua
           tool: "booking.apply",
           call_id: "call_t3",
           // No requested_date or requested_time — slot not selected
-          arguments: { first_name: "Роман", last_name: "Анбасадоров", service: "осмотр" },
+          arguments: { subject_id: "subject_1", first_name: "Роман", last_name: "Анбасадоров", service: "осмотр" },
         }],
       },
       // Guarded finalization: model asks for slot after seeing missing_slot guarded result
@@ -574,6 +575,7 @@ test("Test 4a: Guard E (round 1) — first_name missing → submits guarded resu
           tool: "booking.apply",
           call_id: "call_t4a",
           arguments: {
+            subject_id: "subject_1",
             // first_name absent, last_name present, date+time present
             last_name: "Анбасадоров",
             requested_date: "2026-07-15",
@@ -637,6 +639,7 @@ test("Test 4b: Guard E (round 1) — last_name missing → submits guarded resul
           tool: "booking.apply",
           call_id: "call_t4b",
           arguments: {
+            subject_id: "subject_1",
             first_name: "Роман",
             // last_name absent
             requested_date: "2026-07-15",
@@ -718,6 +721,7 @@ test("Test 5: full proof + BOOKING_MODE=disabled → booking_write_disabled, no 
           tool: "booking.apply",
           call_id: "call_t5",
           arguments: {
+            subject_id: "subject_1",
             first_name: "Іван",
             last_name: "Петров",
             requested_date: "2026-07-20",
@@ -787,6 +791,7 @@ test("Test 6: golden flow regression — 0 slots → guarded tool result, execut
           tool: "booking.apply",
           call_id: "call_book_roman",
           arguments: {
+            subject_id: "subject_1",
             first_name: "Роман",
             last_name: "Анбасадоров",
             service: "осмотр из-за боли",
@@ -1064,6 +1069,7 @@ test("Integration: invalid slot time in round-2 → executor not called, asks to
     tool: "booking.apply",
     call_id: "call_wrong_time",
     arguments: {
+      subject_id: "subject_1",
       service: "chistka",
       requested_date: "2026-07-09",
       requested_time: "13:00", // NOT in availability results (slot is 12:00)
@@ -1135,6 +1141,7 @@ test("Integration: valid slot time (12:00 in [12:00]) — passes slot validity, 
     tool: "booking.apply",
     call_id: "call_correct_time",
     arguments: {
+      subject_id: "subject_1",
       service: "chistka",
       requested_date: "2026-07-09",
       requested_time: "12:00", // matches the available slot
@@ -1204,6 +1211,7 @@ test("Integration: missing service in round-1 args → executor not called, asks
           tool: "booking.apply",
           call_id: "call_no_svc",
           arguments: {
+            subject_id: "subject_1",
             requested_date: "2026-07-09",
             requested_time: "12:00",
             first_name: "Роман",

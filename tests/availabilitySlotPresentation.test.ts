@@ -382,7 +382,7 @@ describe("PR #135 — H: booking.apply phone and past-time guard regression", ()
         {
           tool: "booking.apply",
           call_id: "h1",
-          arguments: { requested_date: "2026-07-11", requested_time: "14:00", service: "чистка зубов" },
+          arguments: { subject_id: "subject_1", requested_date: "2026-07-11", requested_time: "14:00", service: "чистка зубов" },
         },
       ],
     });
@@ -421,7 +421,7 @@ describe("PR #135 — H: booking.apply phone and past-time guard regression", ()
         {
           tool: "booking.apply",
           call_id: "h2",
-          arguments: { requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" },
+          arguments: { subject_id: "subject_1", requested_date: "2026-07-03", requested_time: "13:00", service: "consultation" },
         },
       ],
     });

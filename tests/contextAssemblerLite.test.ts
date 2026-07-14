@@ -136,7 +136,7 @@ test("CA-5: phone guard still intercepts booking.apply when channel_contact abse
     if (!input.input.tool_results?.length) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "b1", arguments: { first_name: "Иван", last_name: "Петров", service: "чистка", requested_date: "2099-01-15", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "b1", arguments: { subject_id: "subject_1", first_name: "Иван", last_name: "Петров", service: "чистка", requested_date: "2099-01-15", requested_time: "10:00" } }],
       };
     }
     return { type: "final_response", final_response: { final_patient_reply: "Нам нужен номер телефона." } };

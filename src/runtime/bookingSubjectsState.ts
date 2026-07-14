@@ -270,6 +270,16 @@ export function applySubjectIntent(state: BookingSubjectsState, intent: SubjectI
   return { ...state, active_subject_id, subjects };
 }
 
+// ── isEffectiveTrustedContact ────────────────────────────────────────────────
+
+/** True when a booking contact is an effective trusted contact that must not be overwritten
+ *  by a pending typed phone or a share_sender_contact intent. Both "trusted" and
+ *  "trusted_contact_owner" are effective trusted contacts — typing a new number or sharing
+ *  the sender's contact should never silently replace a channel-verified phone. */
+export function isEffectiveTrustedContact(contact: BookingContact | null | undefined): boolean {
+  return contact?.trust === "trusted" || contact?.trust === "trusted_contact_owner";
+}
+
 // ── applyPhoneOwnershipIntent ─────────────────────────────────────────────────
 
 export function applyPhoneOwnershipIntent(
@@ -288,8 +298,8 @@ export function applyPhoneOwnershipIntent(
     // target subject must exist
     const target = state.subjects.find((s) => s.id === targetId);
     if (!target) return state;
-    // target must not already have a trusted contact — don't overwrite
-    if (target.booking_contact?.trust === "trusted") return state;
+    // target must not already have an effective trusted contact — don't overwrite
+    if (isEffectiveTrustedContact(target.booking_contact)) return state;
     // target must not be already booked
     if (target.status === "booked") return state;
     // Assign and clear pending phone only after successful assignment
@@ -320,8 +330,8 @@ export function applyPhoneOwnershipIntent(
     if (!target) return state;
     // Target must not be booked
     if (target.status === "booked") return state;
-    // Target must not already have a trusted contact
-    if (target.booking_contact?.trust === "trusted") return state;
+    // Target must not already have an effective trusted contact
+    if (isEffectiveTrustedContact(target.booking_contact)) return state;
     // Sender (subject_1) must exist and must have a TRULY trusted contact (not unverified or shared)
     const s1 = state.subjects.find((s) => s.id === "subject_1" as SubjectId);
     if (!s1) return state;
@@ -481,7 +491,12 @@ function validateFullBookingContact(raw: unknown, subjectId: SubjectId, allSubje
     if (!ownerBc.phone_number) return null;
     if (ownerBc.source === "typed" || ownerBc.source === "shared_from_subject") return null;
     if (ownerBc.trust !== "trusted") return null;
+    // Shared contact's phone_number must equal owner's phone_number (no silent substitution)
+    if (bc.phone_number !== ownerBc.phone_number) return null;
   }
+
+  // For non-shared contacts: owner_subject_id must be the current subject (or null for legacy compat)
+  if (source !== "shared_from_subject" && ownerSubjectId != null && ownerSubjectId !== subjectId) return null;
 
   return {
     phone_number: bc.phone_number,
@@ -575,8 +590,9 @@ export function normalizeBookingSubjectsState(raw: unknown): BookingSubjectsStat
     }
     const status: "active" | "completed" = rawStatus === "completed" ? "completed" : "active";
 
-    // Completed state must have all subjects booked
+    // Completed state must have all subjects booked and no pending phone
     if (status === "completed" && !subjects.every((s) => s.status === "booked")) return null;
+    if (status === "completed" && r.pending_typed_phone != null) return null;
 
     return {
       version: 3,
@@ -689,6 +705,7 @@ export function bootstrapBookingSubjectsFromIntent(
   intent: SubjectIntent,
   s1Seed?: S1Seed | null,
   channelContact?: ChannelContact | null,
+  pendingTypedPhone?: string | null,
 ): BookingSubjectsState | null {
   if (intent.action !== "create_subjects" && intent.action !== "create_or_switch_subject") return null;
   if (intent.confidence === "low") return null;
@@ -719,7 +736,7 @@ export function bootstrapBookingSubjectsFromIntent(
     status: "active",
     active_subject_id: "subject_1" as SubjectId,
     subjects: [s1],
-    pending_typed_phone: null,
+    pending_typed_phone: pendingTypedPhone ?? null,
     max_subjects: 4,
   };
 
@@ -864,6 +881,14 @@ export function postUpdateBookingSubjects(params: {
   const allBooked = subjects.length > 0 && subjects.every((s) => s.status === "booked");
   const nextStatus: "active" | "completed" = allBooked ? "completed" : state.status;
 
+  // If the active subject was just booked but other subjects remain, switch active to first uncollected.
+  // Parser keeps strict (no auto-rewrite in normalize) — postUpdate is the right place for this.
+  let nextActiveId = state.active_subject_id;
+  if (!allBooked && subjects.find((s) => s.id === state.active_subject_id)?.status === "booked") {
+    const firstUncollected = subjects.find((s) => s.status !== "booked");
+    if (firstUncollected) nextActiveId = firstUncollected.id;
+  }
+
   const bookingApplyData = applyResult?.data as Record<string, unknown> | undefined;
   const blockedForPendingClassification = bookingApplyData?.booking_status === "pending_phone_classification";
   const hadPendingPhone = current.pending_typed_phone != null;
@@ -880,6 +905,7 @@ export function postUpdateBookingSubjects(params: {
 
   return {
     ...state,
+    active_subject_id: nextActiveId,
     subjects,
     pending_typed_phone: nextPendingPhone,
     status: nextStatus,

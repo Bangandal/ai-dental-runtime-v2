@@ -331,8 +331,9 @@ export async function runRuntimeTurnOrchestrated(
         // Pre-turn booking subjects init: carry forward existing state + apply channel contact.
         // No regex-based bootstrap — registry activates only via model subject_intent.
         // Typed phone goes to pending_typed_phone only (phone_ownership_intent resolves ownership).
+        const rawPersistedSubjects = runtimeContextResult.data.booking_subjects ?? null;
         bookingSubjectsForTurn = initBookingSubjectsForTurn({
-          current: runtimeContextResult.data.booking_subjects ?? null,
+          current: rawPersistedSubjects,
           channelContact: channelContactForCase ?? null,
           pendingTypedPhone: typedContactToStore?.phone_number ?? null,
         });
@@ -391,6 +392,12 @@ export async function runRuntimeTurnOrchestrated(
         }
         if (bookingSubjectsForTurn) {
           runtimeTurnInput.booking_subjects = bookingSubjectsForTurn;
+        }
+        // had_booking_subjects: true when this conversation ever had a multi-subject registry
+        // (active or completed). Signals the loop to suppress stale typed provided_phone
+        // so old ownerless phones don't leak into a fresh self-booking after registry completes.
+        if (rawPersistedSubjects != null) {
+          runtimeTurnInput.had_booking_subjects = true;
         }
         // current_turn_typed_phone: only from the current turn's extracted phone, never from
         // persisted existingProvidedPhone — prevents old typed phone from re-entering pending state.
@@ -524,6 +531,7 @@ export async function runRuntimeTurnOrchestrated(
             result.subject_intent,
             s1SeedForBootstrap,
             runtimeTurnInput.channel_contact ?? null,
+            runtimeTurnInput.current_turn_typed_phone ?? null,
           )
         : null);
 

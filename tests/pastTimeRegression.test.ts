@@ -68,6 +68,7 @@ describe("BPTZ-3: model passes today's date for 'завтра' — guard fires, 
             tool: "booking.apply",
             call_id: "bptz3-c1",
             arguments: {
+              subject_id: "subject_1",
               requested_date: TODAY,
               requested_time: "12:00",
               first_name: "Иван",
@@ -153,6 +154,7 @@ describe("BPTZ-4: model correctly passes tomorrow — past_time guard does NOT f
             tool: "booking.apply",
             call_id: "bptz4-c1",
             arguments: {
+              subject_id: "subject_1",
               requested_date: TOMORROW,
               requested_time: "12:00",
               first_name: "Иван",

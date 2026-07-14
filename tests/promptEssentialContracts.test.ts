@@ -187,14 +187,47 @@ describe("Essential prompt contracts (simplified prompt — PR #181)", () => {
       "sms or unknown channel must ask patient to type their number");
   });
 
-  test("PHONE-CHANNEL-4: whatsapp/web uses native channel capture (no button)", () => {
-    assert.match(instruction, /whatsapp.*web.*captured natively|whatsapp\/web.*natively/i,
-      "whatsapp/web must use native channel capture");
+  test("PHONE-CHANNEL-4: whatsapp/web asks patient to provide number (does not claim capture already happened)", () => {
+    // ask_for_phone signals the phone is MISSING — must ask, not claim it was already captured
+    assert.match(instruction, /whatsapp.*ask.*patient.*share|whatsapp.*share.*number|whatsapp.*number.*accepted/i,
+      "whatsapp path must ask patient to share/provide their number");
+    assert.doesNotMatch(instruction, /whatsapp\/web.*phone is captured natively|phone is captured natively by the channel/i,
+      "must not claim phone is already captured natively when phone is missing");
+    assert.match(instruction, /web.*ask.*patient.*enter|web.*enter.*phone|web.*web form|web.*type it directly/i,
+      "web path must ask patient to enter phone via form or by typing");
   });
 
   test("PHONE-CHANNEL-5: never re-ask a phone already provided", () => {
     assert.match(instruction, /Never re-ask a phone already provided/i,
       "must prohibit re-asking an already-provided phone");
+  });
+
+  // ── Universal side-effect claim rule in NEVER (Issue 2) ─────────────────────
+
+  test("SIDE-EFFECT-CLAIM: universal side-effect claim rule is in the NEVER section", () => {
+    const neverStart = instruction.indexOf("## NEVER");
+    const neverEnd = instruction.indexOf("\n##", neverStart + 1);
+    const neverSection = instruction.slice(neverStart, neverEnd > -1 ? neverEnd : undefined);
+
+    assert.ok(neverStart > -1, "NEVER section must exist");
+    assert.match(
+      neverSection,
+      /Never claim.*administrator was notified|Never claim.*staff will contact|Never claim.*handoff occurred/i,
+      "universal side-effect claim rule must be in NEVER, not just in branch-specific paths",
+    );
+    assert.match(
+      neverSection,
+      /unless.*side effect.*created or queued/i,
+      "rule must be conditional on side effect being created or queued",
+    );
+  });
+
+  test("SIDE-EFFECT-CLAIM: PHONE TRUST includes web-form capture as trusted source", () => {
+    const phoneTrustStart = instruction.indexOf("PHONE TRUST:");
+    assert.ok(phoneTrustStart > -1, "PHONE TRUST section must exist");
+    const phoneTrustSnippet = instruction.slice(phoneTrustStart, phoneTrustStart + 200);
+    assert.match(phoneTrustSnippet, /web form|web_form/i,
+      "PHONE TRUST must include web form as a trusted channel-captured phone source");
   });
 
   // ── availability_presentation_truth contract (Point 2) ──────────────────────

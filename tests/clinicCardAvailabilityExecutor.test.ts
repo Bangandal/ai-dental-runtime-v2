@@ -305,3 +305,76 @@ test("limit=0 is ignored — all slots returned", async () => {
     assert.equal(limited.data.slots.length, all.data.slots.length, "limit=0 must not cap slots");
   }
 });
+
+// ── 13. Past date guard ───────────────────────────────────────────────────────
+
+test("past date with context.now returns failed result with availability_past_date", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  // now = 2026-07-15 in Europe/Prague, requested_date = 2026-07-01 (14 days in the past)
+  const result = await executor({
+    requested_date: "2026-07-01",
+    now: new Date("2026-07-15T10:00:00+02:00"),
+  });
+  assert.equal(result.tool, "availability.check");
+  assert.equal(result.status, "failed");
+  if (result.status === "failed") {
+    assert.equal(result.error.code, "availability_past_date");
+    assert.match(result.error.message, /2026-07-01.*past|past.*2026-07-01/i);
+    assert.match(result.error.message, /2026-07-15/);
+    assert.equal(result.error.retryable, false);
+  }
+});
+
+test("yesterday with context.now returns availability_past_date", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const result = await executor({
+    requested_date: "2026-07-14",
+    now: new Date("2026-07-15T08:00:00+02:00"),
+  });
+  assert.equal(result.status, "failed");
+  if (result.status === "failed") {
+    assert.equal(result.error.code, "availability_past_date");
+  }
+});
+
+test("today with context.now is not rejected by past-date guard", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  // now = 2026-07-15 08:00 Prague time → today is 2026-07-15
+  const result = await executor({
+    requested_date: "2026-07-15",
+    now: new Date("2026-07-15T08:00:00+02:00"),
+  });
+  // should succeed (not rejected as past)
+  assert.equal(result.status, "success");
+});
+
+test("future date with context.now is not rejected", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  const result = await executor({
+    requested_date: "2026-07-20",
+    now: new Date("2026-07-15T10:00:00+02:00"),
+  });
+  assert.equal(result.status, "success");
+});
+
+test("past date WITHOUT context.now is not rejected (no now = no guard)", async () => {
+  const executor = createClinicCardAvailabilityExecutor({
+    env: VALID_ENV,
+    adapterFactory: () => makeAdapter([]),
+  });
+  // No now in context — guard must be skipped
+  const result = await executor({ requested_date: "2026-07-01" });
+  assert.equal(result.status, "success", "without context.now the past-date guard must not fire");
+});

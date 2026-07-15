@@ -27,6 +27,7 @@ import { hasTrustedPhone, hasBookingContactPhone, hasBookingApplyPending } from 
 import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotDateTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
+import { buildAvailabilityActionTruth } from "./availabilityActionTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
 import {
   computeBookingProcessState,
@@ -670,6 +671,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
+      const availabilityActionTruth = buildAvailabilityActionTruth(processedToolRequests, toolResults);
       const availabilityPresentationTruth = buildAvailabilityPresentationTruth(toolResults);
       const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
 
@@ -710,6 +712,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const secondCallContext = {
         ...callerContext,
         ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
+        ...(availabilityActionTruth ? { availability_action_truth: availabilityActionTruth } : {}),
         ...(availabilityPresentationTruth ? { availability_presentation_truth: availabilityPresentationTruth } : {}),
         ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
         booking_process_state: secondCallVisibleState,

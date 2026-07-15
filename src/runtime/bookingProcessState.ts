@@ -359,14 +359,16 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   const p = input.prior ?? {};
 
   // ── Resolve available slots from tool results ──
-  // Blocker A: Track whether a fresh availability.check result exists in THIS turn.
-  // When present, always use the fresh result (even if empty []) — do NOT fall back
-  // to prior.last_available_slots. This prevents stale slots from misleading next_action.
-  const availabilityResultPresent = !!(input.toolResults?.some(
+  // Any availability.check attempt (regardless of result status) supersedes prior evidence.
+  // Success installs fresh slots; failure/denied/past_date installs [].
+  const availabilityAttemptPresent = !!(input.toolResults?.some(
+    (r) => r.tool === "availability.check",
+  ));
+  const availabilitySuccessPresent = !!(input.toolResults?.some(
     (r) => r.tool === "availability.check" && r.status === "success",
   ));
-  const newSlots = input.toolResults ? extractSlotsFromToolResults(input.toolResults) : [];
-  const lastAvailableSlots: AvailableSlot[] = availabilityResultPresent
+  const newSlots = availabilitySuccessPresent && input.toolResults ? extractSlotsFromToolResults(input.toolResults) : [];
+  const lastAvailableSlots: AvailableSlot[] = availabilityAttemptPresent
     ? newSlots
     : (p.last_available_slots ?? []);
 
@@ -385,10 +387,10 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   const phoneSource = input.channelContact?.phone_source;
 
   // ── Detect selected_slot from patient message ──
-  // Blocker B: When a fresh availability.check result arrives, clear the prior selected_slot
-  // unless the patient re-selects a slot from the fresh results in THIS turn.
-  let selectedSlot: AvailableSlot | null = availabilityResultPresent
-    ? null  // clear stale selection — re-detect below from fresh slots
+  // Any availability.check attempt clears the prior selected_slot — stale selection
+  // from an earlier date is no longer valid. Re-detection below uses only fresh slots.
+  let selectedSlot: AvailableSlot | null = availabilityAttemptPresent
+    ? null
     : (p.selected_slot ?? null);
 
   if (
@@ -450,10 +452,9 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
     first_name: firstName,
     last_name: lastName,
     preferred_time_text: p.preferred_time_text,
-    // When a fresh availability.check result was present this turn, always store the result
-    // (even [] to distinguish "empty result" from "no check done yet").
-    // Otherwise preserve prior state (could be undefined, [], or non-empty).
-    last_available_slots: availabilityResultPresent
+    // Any availability attempt explicitly stores its outcome ([] for failure, fresh slots for success).
+    // When no attempt was made this turn, preserve prior state.
+    last_available_slots: availabilityAttemptPresent
       ? lastAvailableSlots
       : p.last_available_slots,
     selected_slot: selectedSlot,

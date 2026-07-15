@@ -27,7 +27,7 @@ import { hasTrustedPhone, hasBookingContactPhone, hasBookingApplyPending } from 
 import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotDateTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
-import { buildAvailabilityActionTruth } from "./availabilityActionTruth.ts";
+import { buildAvailabilityActionTruth, resolveAuthoritativeAvailabilityAttempt } from "./availabilityActionTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
 import {
   computeBookingProcessState,
@@ -671,14 +671,17 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
-      const availabilityActionTruth = buildAvailabilityActionTruth(processedToolRequests, toolResults);
-      const availabilityPresentationTruth = buildAvailabilityPresentationTruth(processedToolRequests, toolResults);
+      // Resolve the authoritative availability attempt once; pass to all three consumers
+      // so action truth, presentation truth, and booking state share the same pair.
+      const authoritativeAvailabilityAttempt = resolveAuthoritativeAvailabilityAttempt(processedToolRequests, toolResults);
+      const availabilityActionTruth = buildAvailabilityActionTruth(authoritativeAvailabilityAttempt);
+      const availabilityPresentationTruth = buildAvailabilityPresentationTruth(authoritativeAvailabilityAttempt);
       const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
 
       // Update booking process state with tool results from this round (e.g. newly returned slots).
       bookingProcessState = computeBookingProcessState({
         prior: priorProcessState,
-        toolResults,
+        authoritativeAvailabilityAttempt,
         patientMessage: input.user_message,
         channelContact: input.channel_contact,
       });

@@ -1,5 +1,6 @@
 import type { RuntimeAgentToolResult, ChannelContact } from "./openaiRuntimeAgent.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
+import type { AuthoritativeAvailabilityAttempt } from "./availabilityActionTruth.ts";
 
 export interface AvailableSlot {
   starts_at: string;
@@ -340,7 +341,17 @@ export function extractSlotsFromToolResults(toolResults: RuntimeAgentToolResult[
 export interface ComputeBookingProcessStateInput {
   /** Previously persisted state (may be partial / from last turn). */
   prior?: Partial<BookingProcessState> | null;
-  /** Tool results from the current turn. */
+  /**
+   * Pre-resolved authoritative availability attempt from the runtime loop.
+   * When present, takes priority over toolResults for availability slot resolution.
+   * Ensures booking state uses the same authoritative pair as the truth objects.
+   */
+  authoritativeAvailabilityAttempt?: AuthoritativeAvailabilityAttempt;
+  /**
+   * Tool results from the current turn.
+   * Used for backwards compat when authoritativeAvailabilityAttempt is absent (e.g. direct tests).
+   * Production always passes authoritativeAvailabilityAttempt from the loop.
+   */
   toolResults?: RuntimeAgentToolResult[];
   /** Raw patient message for selected_slot detection. */
   patientMessage?: string;
@@ -358,22 +369,37 @@ export interface ComputeBookingProcessStateInput {
 export function computeBookingProcessState(input: ComputeBookingProcessStateInput): BookingProcessState {
   const p = input.prior ?? {};
 
-  // ── Resolve available slots from tool results ──
-  // Any availability.check attempt (regardless of result status) supersedes prior evidence.
-  // Only the LAST availability.check result (by position) is authoritative — earlier results
-  // in the same round are superseded. Success installs fresh slots; failure/denied/past_date
-  // installs []. toolResults are pushed in request order by the loop.
-  let lastAvailResult: RuntimeAgentToolResult | undefined;
-  if (input.toolResults) {
-    for (const r of input.toolResults) {
-      if (r.tool === "availability.check") lastAvailResult = r;
+  // ── Resolve available slots ──
+  // When authoritativeAvailabilityAttempt is present (always in production, passed from loop):
+  //   use it — guarantees the same pair as availability_action_truth and presentation_truth.
+  // When absent (backwards-compat for direct test calls without requests):
+  //   fall back to finding the last availability.check by position in toolResults.
+  let availabilityAttemptPresent: boolean;
+  let availabilitySuccessPresent: boolean;
+  let newSlots: AvailableSlot[];
+
+  if (input.authoritativeAvailabilityAttempt !== undefined) {
+    const { attempted, pair } = input.authoritativeAvailabilityAttempt;
+    availabilityAttemptPresent = attempted;
+    availabilitySuccessPresent = attempted && pair !== null && pair.result.status === "success";
+    newSlots = availabilitySuccessPresent && pair !== null
+      ? extractSlotsFromToolResults([pair.result])
+      : [];
+  } else {
+    // Fallback: positional last-result scan (used only by test callers that omit requests)
+    let lastAvailResult: RuntimeAgentToolResult | undefined;
+    if (input.toolResults) {
+      for (const r of input.toolResults) {
+        if (r.tool === "availability.check") lastAvailResult = r;
+      }
     }
+    availabilityAttemptPresent = lastAvailResult !== undefined;
+    availabilitySuccessPresent = lastAvailResult?.status === "success" ?? false;
+    newSlots = availabilitySuccessPresent && lastAvailResult
+      ? extractSlotsFromToolResults([lastAvailResult])
+      : [];
   }
-  const availabilityAttemptPresent = lastAvailResult !== undefined;
-  const availabilitySuccessPresent = lastAvailResult?.status === "success";
-  const newSlots = availabilitySuccessPresent && lastAvailResult
-    ? extractSlotsFromToolResults([lastAvailResult])
-    : [];
+
   const lastAvailableSlots: AvailableSlot[] = availabilityAttemptPresent
     ? newSlots
     : (p.last_available_slots ?? []);

@@ -1,5 +1,4 @@
-import type { RuntimeAgentToolRequest, RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
-import { findLastAuthoritativeAvailabilityPair, extractSlotHHMM } from "./availabilityActionTruth.ts";
+import { type AuthoritativeAvailabilityAttempt, extractSlotHHMM } from "./availabilityActionTruth.ts";
 
 export interface AvailabilityPresentationTruth {
   must_list_exact_slots_only: true;
@@ -10,22 +9,24 @@ export interface AvailabilityPresentationTruth {
 }
 
 /**
- * Derives presentation truth from the authoritative availability pair (last request by position,
- * paired strictly by call_id). Does not aggregate earlier superseded success-results.
+ * Derives presentation truth from the pre-resolved authoritative availability attempt.
+ *
+ * The loop resolves the attempt once and passes it here (and to action truth and booking state)
+ * so all three consumers share a single authoritative source.
  *
  * Returns null when:
- *   - no authoritative pair exists (see findLastAuthoritativeAvailabilityPair)
- *   - the authoritative result is not a success
- *   - the authoritative success result has zero slots
+ *   - attempted=false (no availability.check this turn)
+ *   - pair=null (missing or unmatched call_id)
+ *   - authoritative result is not a success
+ *   - authoritative success result has zero slots
  */
 export function buildAvailabilityPresentationTruth(
-  requests: RuntimeAgentToolRequest[],
-  results: RuntimeAgentToolResult[],
+  attempt: AuthoritativeAvailabilityAttempt,
 ): AvailabilityPresentationTruth | null {
-  const pair = findLastAuthoritativeAvailabilityPair(requests, results);
-  if (!pair || pair.result.status !== "success") return null;
+  if (!attempt.attempted || attempt.pair === null) return null;
+  if (attempt.pair.result.status !== "success") return null;
 
-  const data = pair.result.data as { slots?: unknown[] } | undefined;
+  const data = attempt.pair.result.data as { slots?: unknown[] } | undefined;
   if (!data || !Array.isArray(data.slots) || data.slots.length === 0) return null;
 
   const allowedSlotStarts: string[] = [];

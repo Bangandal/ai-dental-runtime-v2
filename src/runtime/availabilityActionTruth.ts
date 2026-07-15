@@ -38,36 +38,59 @@ export interface AuthoritativeAvailabilityPair {
 }
 
 /**
- * Returns the authoritative availability pair for the current round:
- *   - the LAST availability.check request by position in requests
- *   - paired strictly with the result that shares its call_id
+ * Discriminated union representing the authoritative availability resolution for one turn.
  *
- * Returns null when:
- *   - no availability.check request is present
- *   - the last request has no call_id (missing call_id must never authorize slot presentation)
- *   - no result with a matching call_id exists
+ * attempted=false  → no availability.check request this turn; preserve prior state.
+ * attempted=true, pair=null  → request present but call_id missing or unmatched; no slots authorized.
+ * attempted=true, pair={...} → exact match; use only this pair.
+ */
+export type AuthoritativeAvailabilityAttempt =
+  | { attempted: false; pair: null }
+  | { attempted: true; pair: AuthoritativeAvailabilityPair | null };
+
+/**
+ * Resolves the single authoritative availability attempt for the current round.
+ *
+ * Selection rules:
+ *  1. Find the LAST availability.check request by position in requests.
+ *  2. If none → attempted=false (prior state preserved downstream).
+ *  3. If the last request has no call_id → attempted=true, pair=null (no slot authorization).
+ *  4. Find the result whose call_id matches exactly → attempted=true, pair={request, result}.
+ *  5. No match found → attempted=true, pair=null.
  *
  * Earlier requests in the same round are superseded by the last one.
+ */
+export function resolveAuthoritativeAvailabilityAttempt(
+  requests: RuntimeAgentToolRequest[],
+  results: RuntimeAgentToolResult[],
+): AuthoritativeAvailabilityAttempt {
+  let lastRequest: RuntimeAgentToolRequest | undefined;
+  for (const r of requests) {
+    if (r.tool === "availability.check") lastRequest = r;
+  }
+
+  if (!lastRequest) return { attempted: false, pair: null };
+
+  if (!lastRequest.call_id) return { attempted: true, pair: null };
+
+  const result = results.find(
+    (r) => r.tool === "availability.check" && r.call_id === lastRequest!.call_id,
+  );
+
+  if (!result) return { attempted: true, pair: null };
+
+  return { attempted: true, pair: { request: lastRequest, result } };
+}
+
+/**
+ * Convenience wrapper — returns the pair directly (null when not attempted or when pair is null).
  */
 export function findLastAuthoritativeAvailabilityPair(
   requests: RuntimeAgentToolRequest[],
   results: RuntimeAgentToolResult[],
 ): AuthoritativeAvailabilityPair | null {
-  let lastRequest: RuntimeAgentToolRequest | undefined;
-  for (const r of requests) {
-    if (r.tool === "availability.check") lastRequest = r;
-  }
-  if (!lastRequest) return null;
-
-  // Require call_id — unkeyed requests must not accidentally pair with any result.
-  if (!lastRequest.call_id) return null;
-
-  const result = results.find(
-    (r) => r.tool === "availability.check" && r.call_id === lastRequest!.call_id,
-  );
-  if (!result) return null;
-
-  return { request: lastRequest, result };
+  const attempt = resolveAuthoritativeAvailabilityAttempt(requests, results);
+  return attempt.attempted ? attempt.pair : null;
 }
 
 function extractAllowedSlotStarts(result: RuntimeAgentToolResult): string[] {
@@ -84,14 +107,18 @@ function extractAllowedSlotStarts(result: RuntimeAgentToolResult): string[] {
   return starts;
 }
 
+/**
+ * Builds availability action truth from a pre-resolved authoritative attempt.
+ *
+ * The loop resolves the attempt once and passes it here (and to presentation truth
+ * and booking state) so all three consumers share a single authoritative source.
+ */
 export function buildAvailabilityActionTruth(
-  requests: RuntimeAgentToolRequest[],
-  results: RuntimeAgentToolResult[],
+  attempt: AuthoritativeAvailabilityAttempt,
 ): AvailabilityActionTruth | null {
-  const pair = findLastAuthoritativeAvailabilityPair(requests, results);
-  if (!pair) return null;
+  if (!attempt.attempted || attempt.pair === null) return null;
 
-  const { request, result } = pair;
+  const { request, result } = attempt.pair;
   const requested_date =
     typeof request.arguments.requested_date === "string" ? request.arguments.requested_date : null;
   const requested_time =

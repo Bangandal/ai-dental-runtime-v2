@@ -578,7 +578,7 @@ test("Test 4a: Guard E (round 1) — first_name missing → submits guarded resu
             subject_id: "subject_1",
             // first_name absent, last_name present, date+time present
             last_name: "Анбасадоров",
-            requested_date: "2026-07-15",
+            requested_date: "2027-08-15",
             requested_time: "10:00",
             service: "осмотр",
           },
@@ -593,7 +593,8 @@ test("Test 4a: Guard E (round 1) — first_name missing → submits guarded resu
         return { status: "success" as const, data: { booking_action: "booking_apply", booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-15T10:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"),
+    now: new Date("2027-08-15T07:00:00Z"),
   });
 
   const result = await loop.runTurn({
@@ -642,7 +643,7 @@ test("Test 4b: Guard E (round 1) — last_name missing → submits guarded resul
             subject_id: "subject_1",
             first_name: "Роман",
             // last_name absent
-            requested_date: "2026-07-15",
+            requested_date: "2027-08-15",
             requested_time: "10:00",
             service: "осмотр",
           },
@@ -657,7 +658,8 @@ test("Test 4b: Guard E (round 1) — last_name missing → submits guarded resul
         return { status: "success" as const, data: { booking_action: "booking_apply", booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "99" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-15T10:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"),
+    now: new Date("2027-08-15T07:00:00Z"),
   });
 
   const result = await loop.runTurn({

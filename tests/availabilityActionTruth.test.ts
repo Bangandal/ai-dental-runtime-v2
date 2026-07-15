@@ -15,11 +15,25 @@ import {
   createInMemoryBookingProcessStateRepository,
   type AvailableSlot,
 } from "../src/runtime/bookingProcessState.ts";
-import { buildAvailabilityActionTruth } from "../src/runtime/availabilityActionTruth.ts";
+import {
+  buildAvailabilityActionTruth,
+  resolveAuthoritativeAvailabilityAttempt,
+  type AuthoritativeAvailabilityAttempt,
+} from "../src/runtime/availabilityActionTruth.ts";
 import { buildAvailabilityPresentationTruth } from "../src/runtime/availabilityPresentationTruth.ts";
 import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntimeAgent.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller, type RuntimeAgentCallerInput } from "../src/runtime/runtimeAgentLoop.ts";
 import type { RuntimeAgentToolResult, RuntimeAgentToolRequest } from "../src/runtime/openaiRuntimeAgent.ts";
+
+/** Test helper — resolves requests+results into the attempt then calls buildAvailabilityActionTruth. */
+function actionTruth(requests: RuntimeAgentToolRequest[], results: RuntimeAgentToolResult[]) {
+  return buildAvailabilityActionTruth(resolveAuthoritativeAvailabilityAttempt(requests, results));
+}
+
+/** Test helper — resolves requests+results then calls buildAvailabilityPresentationTruth. */
+function presentationTruth(requests: RuntimeAgentToolRequest[], results: RuntimeAgentToolResult[]) {
+  return buildAvailabilityPresentationTruth(resolveAuthoritativeAvailabilityAttempt(requests, results));
+}
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -195,7 +209,7 @@ describe("Booking process state — stale slot invalidation", () => {
 
 describe("buildAvailabilityActionTruth", () => {
   test("7: success with slots → slots_available, can_present_slots=true, allowed_slot_starts in HH:MM", () => {
-    const truth = buildAvailabilityActionTruth([REQ_NEW_DATE], [SUCCESS_WITH_SLOTS]);
+    const truth = actionTruth([REQ_NEW_DATE], [SUCCESS_WITH_SLOTS]);
     assert.ok(truth !== null);
     assert.equal(truth!.outcome, "slots_available");
     assert.equal(truth!.can_present_slots, true);
@@ -208,7 +222,7 @@ describe("buildAvailabilityActionTruth", () => {
   });
 
   test("8: success with zero slots → no_slots, can_present_slots=false, empty allowed_slot_starts", () => {
-    const truth = buildAvailabilityActionTruth([REQ_EMPTY], [SUCCESS_EMPTY]);
+    const truth = actionTruth([REQ_EMPTY], [SUCCESS_EMPTY]);
     assert.ok(truth !== null);
     assert.equal(truth!.outcome, "no_slots");
     assert.equal(truth!.can_present_slots, false);
@@ -217,7 +231,7 @@ describe("buildAvailabilityActionTruth", () => {
   });
 
   test("9: availability_past_date → past_date, ask_for_future_date", () => {
-    const truth = buildAvailabilityActionTruth([REQ_PAST_DATE], [PAST_DATE_RESULT]);
+    const truth = actionTruth([REQ_PAST_DATE], [PAST_DATE_RESULT]);
     assert.ok(truth !== null);
     assert.equal(truth!.outcome, "past_date");
     assert.equal(truth!.can_present_slots, false);
@@ -226,7 +240,7 @@ describe("buildAvailabilityActionTruth", () => {
   });
 
   test("10: generic failure → technical_failure, retry_or_contact_clinic", () => {
-    const truth = buildAvailabilityActionTruth([REQ_FAIL], [GENERIC_FAIL_RESULT]);
+    const truth = actionTruth([REQ_FAIL], [GENERIC_FAIL_RESULT]);
     assert.ok(truth !== null);
     assert.equal(truth!.outcome, "technical_failure");
     assert.equal(truth!.can_present_slots, false);
@@ -251,13 +265,13 @@ describe("buildAvailabilityActionTruth", () => {
       status: "success",
       data: { slots: [{ starts_at: "2026-07-17T09:00:00" }] },
     };
-    const truth = buildAvailabilityActionTruth([reqA], [resultB, resultA]);
+    const truth = actionTruth([reqA], [resultB, resultA]);
     assert.ok(truth !== null);
     assert.equal(truth!.outcome, "slots_available", "must pair with result A, not result B");
   });
 
   test("12: requested_date and requested_time come from tool request arguments", () => {
-    const truth = buildAvailabilityActionTruth([REQ_NEW_DATE], [SUCCESS_WITH_SLOTS]);
+    const truth = actionTruth([REQ_NEW_DATE], [SUCCESS_WITH_SLOTS]);
     assert.ok(truth !== null);
     assert.equal(truth!.requested_date, "2026-07-17", "date from request args");
     assert.equal(truth!.requested_time, "09:00", "time from request args");
@@ -328,7 +342,7 @@ describe("Multi-check: last availability.check supersedes earlier results", () =
   // ── action truth ──
 
   test("MC-1: first success, second failure → technical_failure, can_present_slots=false", () => {
-    const truth = buildAvailabilityActionTruth(
+    const truth = actionTruth(
       [REQ_FIRST, REQ_SECOND],
       [RESULT_FIRST_SUCCESS, RESULT_SECOND_FAILURE],
     );
@@ -339,7 +353,7 @@ describe("Multi-check: last availability.check supersedes earlier results", () =
   });
 
   test("MC-2: first failure, second success → only second result slots in allowed_slot_starts", () => {
-    const truth = buildAvailabilityActionTruth(
+    const truth = actionTruth(
       [REQ_FIRST, REQ_SECOND],
       [RESULT_FIRST_FAILURE, RESULT_SECOND_SUCCESS],
     );
@@ -354,7 +368,7 @@ describe("Multi-check: last availability.check supersedes earlier results", () =
   });
 
   test("MC-3: two successes for different dates → only final result slots survive", () => {
-    const truth = buildAvailabilityActionTruth(
+    const truth = actionTruth(
       [REQ_FIRST, REQ_SECOND],
       [RESULT_FIRST_ALT_DATE, RESULT_SECOND_SUCCESS],
     );
@@ -369,7 +383,7 @@ describe("Multi-check: last availability.check supersedes earlier results", () =
 
   test("MC-4: request/result in different order still pair by exact call_id", () => {
     // Results arrive in reverse order from requests
-    const truth = buildAvailabilityActionTruth(
+    const truth = actionTruth(
       [REQ_FIRST, REQ_SECOND],
       [RESULT_SECOND_SUCCESS, RESULT_FIRST_SUCCESS],
     );
@@ -391,7 +405,7 @@ describe("Multi-check: last availability.check supersedes earlier results", () =
       status: "success",
       data: { slots: [{ starts_at: "2026-07-17T09:00:00" }] },
     };
-    const truth = buildAvailabilityActionTruth([reqNoCid], [result]);
+    const truth = actionTruth([reqNoCid], [result]);
     assert.equal(truth, null, "missing call_id on request must not authorize slot presentation");
   });
 
@@ -439,8 +453,8 @@ describe("Multi-check: last availability.check supersedes earlier results", () =
   test("MC-7: action truth and presentation truth reference the same final attempt (same allowed_slot_starts)", () => {
     const requests = [REQ_FIRST, REQ_SECOND];
     const results = [RESULT_FIRST_SUCCESS, RESULT_SECOND_SUCCESS];
-    const actionTruth = buildAvailabilityActionTruth(requests, results);
-    const presentationTruth = buildAvailabilityPresentationTruth(requests, results);
+    const actionTruth = buildAvailabilityActionTruth(resolveAuthoritativeAvailabilityAttempt(requests, results));
+    const presentationTruth = buildAvailabilityPresentationTruth(resolveAuthoritativeAvailabilityAttempt(requests, results));
     assert.ok(actionTruth !== null);
     assert.ok(presentationTruth !== null);
     // Both must agree on slot list
@@ -641,6 +655,193 @@ describe("Runtime integration — availability_action_truth in second call", () 
       !bps?.last_available_slots || bps.last_available_slots.length === 0,
       "stale July 1 slots must not appear in second-call booking_process_state after failed check",
     );
+  });
+});
+
+// ── Authoritative attempt — three-consumer consistency ───────────────────────
+
+describe("Authoritative attempt — required three-consumer consistency tests", () => {
+  const REQ_A: RuntimeAgentToolRequest = {
+    tool: "availability.check",
+    call_id: "call_a",
+    arguments: { requested_date: "2026-07-20", requested_time: "09:00" },
+  };
+  const REQ_B: RuntimeAgentToolRequest = {
+    tool: "availability.check",
+    call_id: "call_b",
+    arguments: { requested_date: "2026-07-21" },
+  };
+  const RESULT_A: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "call_a",
+    status: "success",
+    data: { slots: [{ starts_at: "2026-07-20T11:00:00", slot_id: "sA11" }] },
+  };
+  const RESULT_B: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "call_b",
+    status: "success",
+    data: {
+      slots: [
+        { starts_at: "2026-07-21T09:00:00", slot_id: "sB09" },
+        { starts_at: "2026-07-21T14:00:00", slot_id: "sB14" },
+      ],
+    },
+  };
+
+  test("AA-1: reordered results [B,A] with requests [A,B] — all three consumers use last request (B)", () => {
+    const requests = [REQ_A, REQ_B];
+    const results = [RESULT_B, RESULT_A]; // reversed order
+
+    // Action truth uses B
+    const at = actionTruth(requests, results);
+    assert.ok(at !== null, "action truth must not be null");
+    assert.equal(at!.outcome, "slots_available");
+    assert.deepEqual(at!.allowed_slot_starts, ["09:00", "14:00"], "action truth must use REQ_B slots");
+    assert.ok(!at!.allowed_slot_starts.includes("11:00"), "REQ_A slot 11:00 must not appear");
+
+    // Presentation truth uses B
+    const pt = presentationTruth(requests, results);
+    assert.ok(pt !== null, "presentation truth must not be null");
+    assert.deepEqual(pt!.allowed_slot_starts, ["09:00", "14:00"], "presentation truth must use REQ_B slots");
+
+    // Booking state uses B via authoritativeAvailabilityAttempt
+    const attempt = resolveAuthoritativeAvailabilityAttempt(requests, results);
+    const state = computeBookingProcessState({
+      prior: PRIOR_WITH_SLOTS,
+      authoritativeAvailabilityAttempt: attempt,
+    });
+    assert.equal(state.last_available_slots?.length, 2, "booking state must have 2 slots from B");
+    assert.ok(
+      state.last_available_slots?.every(s => s.starts_at.includes("2026-07-21")),
+      "booking state slots must be from REQ_B (July 21)",
+    );
+  });
+
+  test("AA-2: missing request call_id + successful result → no action truth, no presentation truth, booking state clears", () => {
+    const reqNoCid: RuntimeAgentToolRequest = {
+      tool: "availability.check",
+      call_id: undefined,
+      arguments: { requested_date: "2026-07-21" },
+    };
+    const resultWithCid: RuntimeAgentToolResult = {
+      tool: "availability.check",
+      call_id: "call_b",
+      status: "success",
+      data: { slots: [{ starts_at: "2026-07-21T09:00:00", slot_id: "sB09" }] },
+    };
+
+    const at = actionTruth([reqNoCid], [resultWithCid]);
+    assert.equal(at, null, "action truth must be null when request has no call_id");
+
+    const pt = presentationTruth([reqNoCid], [resultWithCid]);
+    assert.equal(pt, null, "presentation truth must be null when request has no call_id");
+
+    const attempt = resolveAuthoritativeAvailabilityAttempt([reqNoCid], [resultWithCid]);
+    const state = computeBookingProcessState({
+      prior: PRIOR_WITH_SLOTS,
+      authoritativeAvailabilityAttempt: attempt,
+    });
+    assert.deepEqual(state.last_available_slots, [], "booking state must clear prior slots when call_id missing");
+    assert.equal(state.selected_slot, null, "booking state must clear selected_slot when call_id missing");
+  });
+
+  test("AA-3: unmatched call_id → no action truth, no presentation truth, booking state clears", () => {
+    const reqUnmatched: RuntimeAgentToolRequest = {
+      tool: "availability.check",
+      call_id: "call_xyz",
+      arguments: { requested_date: "2026-07-21" },
+    };
+    const resultDifferentId: RuntimeAgentToolResult = {
+      tool: "availability.check",
+      call_id: "call_different",
+      status: "success",
+      data: { slots: [{ starts_at: "2026-07-21T09:00:00", slot_id: "sB09" }] },
+    };
+
+    const at = actionTruth([reqUnmatched], [resultDifferentId]);
+    assert.equal(at, null, "action truth must be null when call_id has no matching result");
+
+    const pt = presentationTruth([reqUnmatched], [resultDifferentId]);
+    assert.equal(pt, null, "presentation truth must be null when call_id unmatched");
+
+    const attempt = resolveAuthoritativeAvailabilityAttempt([reqUnmatched], [resultDifferentId]);
+    const state = computeBookingProcessState({
+      prior: PRIOR_WITH_SLOTS,
+      authoritativeAvailabilityAttempt: attempt,
+    });
+    assert.deepEqual(state.last_available_slots, [], "booking state must clear prior slots when call_id unmatched");
+    assert.equal(state.selected_slot, null, "booking state must clear selected_slot when call_id unmatched");
+  });
+
+  test("AA-4: full runtime second-call context — state and both truth objects reference same authoritative attempt", async () => {
+    const secondCallContexts: Record<string, unknown>[] = [];
+    let callCount = 0;
+    const caller: RuntimeAgentCaller = async (input) => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          type: "tool_requests" as const,
+          conversation_id: "conv_aa4",
+          tool_requests: [
+            { tool: "availability.check" as const, call_id: "call_aa4", arguments: { requested_date: "2026-07-21" } },
+          ],
+        };
+      }
+      secondCallContexts.push(input.input.context);
+      return {
+        type: "final_response" as const,
+        conversation_id: "conv_aa4",
+        final_response: { final_patient_reply: "Есть: 09:00, 14:00" },
+      };
+    };
+
+    const loop = createRuntimeAgentLoop({
+      model: "test-model",
+      caller,
+      executors: { "availability.check": async () => ({ status: "success" as const, data: { slots: [
+        { starts_at: "2026-07-21T09:00:00", slot_id: "sAA09" },
+        { starts_at: "2026-07-21T14:00:00", slot_id: "sAA14" },
+      ] } }) } as never,
+      now: new Date("2026-07-15T10:00:00Z"),
+    });
+
+    await loop.runTurn({ clinic_id: "c1", contact_id: "aa4", case_id: null, user_message: "когда есть?", locale: "ru" });
+
+    assert.equal(secondCallContexts.length, 1, "second call must have occurred");
+    const ctx = secondCallContexts[0];
+    const at = ctx.availability_action_truth as { allowed_slot_starts: string[] } | undefined;
+    const pt = ctx.availability_presentation_truth as { allowed_slot_starts: string[] } | undefined;
+    const bps = ctx.booking_process_state as { last_available_slots?: Array<{ starts_at: string }> } | undefined;
+
+    assert.ok(at !== undefined, "action truth must be in second-call context");
+    assert.ok(pt !== undefined, "presentation truth must be in second-call context");
+    assert.ok(bps !== undefined, "booking process state must be in second-call context");
+
+    // All three agree on slots
+    assert.deepEqual(at!.allowed_slot_starts, ["09:00", "14:00"], "action truth must have correct slots");
+    assert.deepEqual(pt!.allowed_slot_starts, ["09:00", "14:00"], "presentation truth must match action truth");
+    assert.ok(bps!.last_available_slots?.some(s => s.starts_at.includes("2026-07-21")), "booking state must use same attempt's slots");
+  });
+
+  test("AA-5: exact HH:MM equality between action truth and presentation truth allowed_slot_starts", () => {
+    const requests = [REQ_A, REQ_B];
+    const results = [RESULT_A, RESULT_B];
+    const attempt = resolveAuthoritativeAvailabilityAttempt(requests, results);
+
+    const at = buildAvailabilityActionTruth(attempt);
+    const pt = buildAvailabilityPresentationTruth(attempt);
+
+    assert.ok(at !== null && pt !== null);
+    // Values must be HH:MM (not full ISO)
+    for (const s of at!.allowed_slot_starts) {
+      assert.match(s, /^\d{2}:\d{2}$/, `action truth slot "${s}" must be HH:MM format`);
+    }
+    for (const s of pt!.allowed_slot_starts) {
+      assert.match(s, /^\d{2}:\d{2}$/, `presentation truth slot "${s}" must be HH:MM format`);
+    }
+    // Must be exactly equal
+    assert.deepEqual(at!.allowed_slot_starts, pt!.allowed_slot_starts, "action truth and presentation truth must have identical allowed_slot_starts");
   });
 });
 

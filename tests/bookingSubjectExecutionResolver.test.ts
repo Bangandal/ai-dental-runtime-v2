@@ -271,7 +271,7 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
           call_id: "book_r1",
           arguments: {
             first_name: "Иван", last_name: "Петров",
-            service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00",
+            service: "Чистка", requested_date: "2027-08-15", requested_time: "10:00",
             subject_id: "subject_2",
           },
         }]),
@@ -283,7 +283,8 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
           return { status: "success" as const, data: { created_visit: true, booking_status: "visit_created", may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
         },
       },
-      bookingProcessStateRepository: SLOT_REPO,
+      bookingProcessStateRepository: makeSlotRepo("2027-08-15T10:00:00"),
+      now: new Date("2027-08-15T07:00:00Z"),
     });
     const state = makeState("subject_1" as SubjectId, [
       makeSubject("subject_1" as SubjectId, "sender", { patient_name: "Рима" }), // no phone
@@ -306,7 +307,7 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
         makeToolRequests([{
           tool: "availability.check",
           call_id: "avail_1",
-          arguments: { requested_date: "2026-07-15", requested_time: "10:00" },
+          arguments: { requested_date: "2027-08-15", requested_time: "10:00" },
         }]),
         // Call 2 (round 2): model asks to book for subject_1
         makeToolRequests([{
@@ -314,7 +315,7 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
           call_id: "book_r2",
           arguments: {
             first_name: "Рима", last_name: "Кова",
-            service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00",
+            service: "Чистка", requested_date: "2027-08-15", requested_time: "10:00",
             subject_id: "subject_1",
           },
         }]),
@@ -325,13 +326,14 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
         "availability.check": async () => ({
           tool: "availability.check" as const,
           status: "success" as const,
-          data: { slots: [{ slot_id: "s1", starts_at: "2026-07-15T10:00:00", ends_at: "2026-07-15T10:30:00" }] },
+          data: { slots: [{ slot_id: "s1", starts_at: "2027-08-15T10:00:00", ends_at: "2027-08-15T10:30:00" }] },
         }),
         "booking.apply": async (ctx) => {
           executedPhone = ctx.phone_number;
           return { status: "success" as const, data: { created_visit: true, booking_status: "visit_created", may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
         },
       },
+      now: new Date("2027-08-15T07:00:00Z"),
     });
     const s1WithPhone = makeSubject("subject_1" as SubjectId, "sender", {
       patient_name: "Рима",

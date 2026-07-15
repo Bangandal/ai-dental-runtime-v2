@@ -12,7 +12,7 @@
  * H. Existing bookingApplyGuard behaviour unchanged (regression)
  */
 
-import { describe, it } from "node:test";
+import { describe, it, test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";

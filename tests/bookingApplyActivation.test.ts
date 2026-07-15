@@ -78,7 +78,7 @@ function makeSlotStateRepo(starts_at: string) {
   };
 }
 
-function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Partial<ClinicCardAdapter> = {}, slotStartsAt?: string) {
+function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Partial<ClinicCardAdapter> = {}, slotStartsAt?: string, now?: Date) {
   const callerQueue: RuntimeAgentCaller[] = [];
   return {
     pushCaller(caller: RuntimeAgentCaller) { callerQueue.push(caller); },
@@ -96,6 +96,7 @@ function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Part
         }),
       },
       ...(slotStartsAt ? { bookingProcessStateRepository: makeSlotStateRepo(slotStartsAt) } : {}),
+      ...(now ? { now } : {}),
     }),
   };
 }
@@ -115,12 +116,12 @@ test("B: CLINICCARD_BOOKING_MODE disabled → booking_write_disabled; action tru
   const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV, {
     createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "X", phone: null } }; },
     createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
-  }, "2026-07-15T10:00:00");
+  }, "2027-08-15T10:00:00", new Date("2027-08-15T07:00:00Z"));
 
   // Round 1: model requests booking.apply
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "booking.apply", call_id: "call_b", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_b", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
   }));
 
   // Round 2: model receives tool result + booking_apply_action_truth in context
@@ -223,14 +224,14 @@ test("E: visit_created → action truth can_say_booking_created=true; model repl
       executorPhones.push(input.phone ?? "");
       return { ok: true, data: { id: 42, name: input.name, phone: input.phone ?? null } };
     },
-  }, "2026-07-15T10:00:00");
+  }, "2027-08-15T10:00:00", new Date("2027-08-15T07:00:00Z"));
 
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "booking.apply", call_id: "call_e", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_e", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
   }));
 
-  const modelReply = "Отлично, вы записаны на 15 июля в 10:00! Ждём вас.";
+  const modelReply = "Отлично, вы записаны на 15 августа в 10:00! Ждём вас.";
   pushCaller(async (input) => {
     receivedActionTruth = (input.input.context as Record<string, unknown>)?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
     return { type: "final_response", final_response: { final_patient_reply: modelReply } };
@@ -266,18 +267,18 @@ test("E: visit_created → action truth can_say_booking_created=true; model repl
 test("F: forced finalization path receives booking_apply_action_truth in resolved_context", async () => {
   let forcedCallContext: Record<string, unknown> | undefined;
 
-  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV, {}, "2026-07-15T10:00:00");
+  const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV, {}, "2027-08-15T10:00:00", new Date("2027-08-15T07:00:00Z"));
 
   // Round 1: model requests booking.apply
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "booking.apply", call_id: "call_f1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2026-07-15", requested_time: "10:00" } }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_f1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
   }));
 
   // Round 2: model requests more tools (triggers forced finalization path)
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "availability.check", call_id: "call_f2", arguments: { requested_date: "2026-07-15" } }],
+    tool_requests: [{ tool: "availability.check", call_id: "call_f2", arguments: { requested_date: "2027-08-15" } }],
   }));
 
   // Forced finalization (round 3): capture context

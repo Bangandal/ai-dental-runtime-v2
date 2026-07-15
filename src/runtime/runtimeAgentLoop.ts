@@ -27,6 +27,7 @@ import { hasTrustedPhone, hasBookingContactPhone, hasBookingApplyPending } from 
 import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotDateTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
 import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
+import { buildAvailabilityActionTruth, resolveAuthoritativeAvailabilityAttempt, findLastAvailabilityRequest } from "./availabilityActionTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
 import {
   computeBookingProcessState,
@@ -288,7 +289,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       // model replies "нет свободных слотов" instead of "this time has passed".
       // Only fires when requested_time is explicitly present — missing time means "show all
       // slots for the day", which the executor handles correctly via past-slot filtering.
-      const availCheckRound1 = toolRequests.find((r) => r.tool === "availability.check");
+      const availCheckRound1 = findLastAvailabilityRequest(toolRequests);
       if (availCheckRound1) {
         const availTime = typeof availCheckRound1.arguments.requested_time === "string"
           ? availCheckRound1.arguments.requested_time : undefined;
@@ -670,13 +671,17 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
-      const availabilityPresentationTruth = buildAvailabilityPresentationTruth(toolResults);
+      // Resolve the authoritative availability attempt once; pass to all three consumers
+      // so action truth, presentation truth, and booking state share the same pair.
+      const authoritativeAvailabilityAttempt = resolveAuthoritativeAvailabilityAttempt(processedToolRequests, toolResults);
+      const availabilityActionTruth = buildAvailabilityActionTruth(authoritativeAvailabilityAttempt);
+      const availabilityPresentationTruth = buildAvailabilityPresentationTruth(authoritativeAvailabilityAttempt);
       const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
 
       // Update booking process state with tool results from this round (e.g. newly returned slots).
       bookingProcessState = computeBookingProcessState({
         prior: priorProcessState,
-        toolResults,
+        authoritativeAvailabilityAttempt,
         patientMessage: input.user_message,
         channelContact: input.channel_contact,
       });
@@ -710,6 +715,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const secondCallContext = {
         ...callerContext,
         ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
+        ...(availabilityActionTruth ? { availability_action_truth: availabilityActionTruth } : {}),
         ...(availabilityPresentationTruth ? { availability_presentation_truth: availabilityPresentationTruth } : {}),
         ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
         booking_process_state: secondCallVisibleState,

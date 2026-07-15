@@ -252,6 +252,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## AVAILABILITY RULES",
     "- Never claim a slot/time/day available without availability.check results from this turn.",
     "- Vague time → check first, list exact slots. Exact time → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available.",
+    "When availability_action_truth is present, follow it strictly. can_present_slots=false means no slot may be presented or reused from conversation history, including any slots discussed in earlier turns. past_date: explain that the requested date has already passed and ask the patient for a date from today onward. Only allowed_slot_starts values from the current availability_action_truth may be shown to the patient.",
 
     // ── BOOKING SUBJECTS ─────────────────────────────────────────────────────
     "## BOOKING SUBJECTS",

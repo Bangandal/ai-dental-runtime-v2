@@ -149,6 +149,7 @@ test("GO-A: round-1 booking.apply, no avail.check proof, no phone → slot_not_v
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    now: new Date("2026-07-15T07:00:00Z"), // 09:00 Prague — before 11:00 slot
     caller: makeCallerSequence([
       {
         type: "tool_requests",
@@ -272,6 +273,7 @@ test("GO-C: round-2 valid slot (avail.check matches), no phone → missing_trust
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    now: new Date("2026-07-15T07:00:00Z"), // 09:00 Prague — before 11:00 slot
     caller: makeCallerSequence([
       {
         type: "tool_requests",
@@ -394,6 +396,7 @@ test("GO-E: round-2 valid slot + trusted phone + missing name → missing_patien
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    now: new Date("2026-07-15T07:00:00Z"), // 09:00 Prague — before 11:00 slot
     caller: makeCallerSequence([
       {
         type: "tool_requests",

@@ -393,7 +393,7 @@ describe("Multi-check: last availability.check supersedes earlier results", () =
     assert.deepEqual(truth!.allowed_slot_starts, ["09:00", "14:00"], "must pair second request with its result");
   });
 
-  test("MC-5: request with missing call_id cannot pair and returns null", () => {
+  test("MC-5: request with missing call_id cannot pair → technical_failure, can_present_slots=false", () => {
     const reqNoCid: RuntimeAgentToolRequest = {
       tool: "availability.check",
       call_id: undefined,
@@ -406,7 +406,10 @@ describe("Multi-check: last availability.check supersedes earlier results", () =
       data: { slots: [{ starts_at: "2026-07-17T09:00:00" }] },
     };
     const truth = actionTruth([reqNoCid], [result]);
-    assert.equal(truth, null, "missing call_id on request must not authorize slot presentation");
+    assert.ok(truth !== null, "missing call_id must produce action truth (technical_failure), not null");
+    assert.equal(truth!.outcome, "technical_failure", "must be technical_failure when call_id missing");
+    assert.equal(truth!.can_present_slots, false, "must not authorize slot presentation");
+    assert.deepEqual(truth!.allowed_slot_starts, [], "no slots allowed");
   });
 
   // ── booking process state ──
@@ -718,7 +721,7 @@ describe("Authoritative attempt — required three-consumer consistency tests", 
     );
   });
 
-  test("AA-2: missing request call_id + successful result → no action truth, no presentation truth, booking state clears", () => {
+  test("AA-2: missing request call_id + successful result → technical_failure action truth, no presentation truth, booking state clears", () => {
     const reqNoCid: RuntimeAgentToolRequest = {
       tool: "availability.check",
       call_id: undefined,
@@ -731,12 +734,18 @@ describe("Authoritative attempt — required three-consumer consistency tests", 
       data: { slots: [{ starts_at: "2026-07-21T09:00:00", slot_id: "sB09" }] },
     };
 
+    // Action truth must be technical_failure with can_present_slots=false (not null)
     const at = actionTruth([reqNoCid], [resultWithCid]);
-    assert.equal(at, null, "action truth must be null when request has no call_id");
+    assert.ok(at !== null, "action truth must be present even when call_id missing");
+    assert.equal(at!.outcome, "technical_failure", "must be technical_failure when call_id missing");
+    assert.equal(at!.can_present_slots, false, "must not authorize slot presentation");
+    assert.deepEqual(at!.allowed_slot_starts, [], "no slots allowed");
 
+    // Presentation truth must remain absent (no pair → no authorized slots)
     const pt = presentationTruth([reqNoCid], [resultWithCid]);
     assert.equal(pt, null, "presentation truth must be null when request has no call_id");
 
+    // Booking state must clear
     const attempt = resolveAuthoritativeAvailabilityAttempt([reqNoCid], [resultWithCid]);
     const state = computeBookingProcessState({
       prior: PRIOR_WITH_SLOTS,
@@ -746,7 +755,7 @@ describe("Authoritative attempt — required three-consumer consistency tests", 
     assert.equal(state.selected_slot, null, "booking state must clear selected_slot when call_id missing");
   });
 
-  test("AA-3: unmatched call_id → no action truth, no presentation truth, booking state clears", () => {
+  test("AA-3: unmatched call_id → technical_failure action truth, no presentation truth, booking state clears", () => {
     const reqUnmatched: RuntimeAgentToolRequest = {
       tool: "availability.check",
       call_id: "call_xyz",
@@ -759,12 +768,18 @@ describe("Authoritative attempt — required three-consumer consistency tests", 
       data: { slots: [{ starts_at: "2026-07-21T09:00:00", slot_id: "sB09" }] },
     };
 
+    // Action truth must be technical_failure with can_present_slots=false (not null)
     const at = actionTruth([reqUnmatched], [resultDifferentId]);
-    assert.equal(at, null, "action truth must be null when call_id has no matching result");
+    assert.ok(at !== null, "action truth must be present even when call_id unmatched");
+    assert.equal(at!.outcome, "technical_failure", "must be technical_failure when call_id unmatched");
+    assert.equal(at!.can_present_slots, false, "must not authorize slot presentation");
+    assert.deepEqual(at!.allowed_slot_starts, [], "no slots allowed");
 
+    // Presentation truth must remain absent
     const pt = presentationTruth([reqUnmatched], [resultDifferentId]);
     assert.equal(pt, null, "presentation truth must be null when call_id unmatched");
 
+    // Booking state must clear
     const attempt = resolveAuthoritativeAvailabilityAttempt([reqUnmatched], [resultDifferentId]);
     const state = computeBookingProcessState({
       prior: PRIOR_WITH_SLOTS,
@@ -842,6 +857,228 @@ describe("Authoritative attempt — required three-consumer consistency tests", 
     }
     // Must be exactly equal
     assert.deepEqual(at!.allowed_slot_starts, pt!.allowed_slot_starts, "action truth and presentation truth must have identical allowed_slot_starts");
+  });
+});
+
+// ── Preflight last-check-wins ─────────────────────────────────────────────────
+
+describe("Availability preflight — last-check-wins (Blocker 1)", () => {
+  // now = 14:00 Prague (12:00 UTC), so 09:00 Prague on the same day is in the past
+  const NOW = new Date("2026-07-15T12:00:00Z"); // 14:00 Europe/Prague
+
+  const PAST_TIME_REQ = { tool: "availability.check" as const, call_id: "past_req", arguments: { requested_date: "2026-07-15", requested_time: "09:00", service_interest: "checkup" } };
+  const FUTURE_REQ    = { tool: "availability.check" as const, call_id: "future_req", arguments: { requested_date: "2026-07-21", service_interest: "checkup" } };
+
+  test("PF-1: first=past-time, last=future → no premature interception; executor called; second model call completes", async () => {
+    let executorCallCount = 0;
+    let secondCallHappened = false;
+    let callCount = 0;
+
+    const caller: RuntimeAgentCaller = async (input) => {
+      callCount++;
+      if (callCount === 1) {
+        // Model returns two requests: first=past-time, last=future
+        return {
+          type: "tool_requests" as const,
+          conversation_id: "conv_pf1",
+          tool_requests: [PAST_TIME_REQ, FUTURE_REQ],
+        };
+      }
+      secondCallHappened = true;
+      return {
+        type: "final_response" as const,
+        conversation_id: "conv_pf1",
+        final_response: { final_patient_reply: "Есть слоты 21 июля: 09:00" },
+      };
+    };
+
+    const fakeExecutor = async () => {
+      executorCallCount++;
+      return { status: "success" as const, data: { slots: [{ starts_at: "2026-07-21T09:00:00", slot_id: "s1" }] } };
+    };
+
+    const loop = createRuntimeAgentLoop({
+      model: "test",
+      caller,
+      executors: { "availability.check": fakeExecutor } as never,
+      now: NOW,
+      timezone: "Europe/Prague",
+    });
+
+    const result = await loop.runTurn({ clinic_id: "c1", contact_id: "pf1", case_id: null, user_message: "есть?", locale: "ru" });
+
+    assert.ok(secondCallHappened, "second model call must have happened — no premature past-time interception");
+    assert.ok(executorCallCount > 0, "executor must have been called");
+    // result must not be a past_time short-circuit reply
+    assert.ok(result.final_patient_reply !== undefined || secondCallHappened, "must reach second model call");
+  });
+
+  test("PF-2: first=future, last=past-time → intercepted as past-time; executor not called", async () => {
+    let executorCallCount = 0;
+    let secondCallHappened = false;
+    let callCount = 0;
+
+    const caller: RuntimeAgentCaller = async () => {
+      callCount++;
+      if (callCount === 1) {
+        // Model returns two requests: first=future, last=past-time
+        return {
+          type: "tool_requests" as const,
+          conversation_id: "conv_pf2",
+          tool_requests: [FUTURE_REQ, PAST_TIME_REQ],
+        };
+      }
+      secondCallHappened = true;
+      return {
+        type: "final_response" as const,
+        conversation_id: "conv_pf2",
+        final_response: { final_patient_reply: "ok" },
+      };
+    };
+
+    const fakeExecutor = async () => {
+      executorCallCount++;
+      return { status: "success" as const, data: { slots: [] } };
+    };
+
+    const loop = createRuntimeAgentLoop({
+      model: "test",
+      caller,
+      executors: { "availability.check": fakeExecutor } as never,
+      now: NOW,
+      timezone: "Europe/Prague",
+    });
+
+    await loop.runTurn({ clinic_id: "c1", contact_id: "pf2", case_id: null, user_message: "есть?", locale: "ru" });
+
+    assert.equal(executorCallCount, 0, "executor must NOT be called when last request is past-time");
+    assert.equal(secondCallHappened, false, "must short-circuit before second model call");
+  });
+
+  test("PF-3: single availability request — past-time still intercepted (unchanged behavior)", async () => {
+    let executorCalled = false;
+    let callCount = 0;
+
+    const caller: RuntimeAgentCaller = async () => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          type: "tool_requests" as const,
+          conversation_id: "conv_pf3",
+          tool_requests: [PAST_TIME_REQ],
+        };
+      }
+      return {
+        type: "final_response" as const,
+        conversation_id: "conv_pf3",
+        final_response: { final_patient_reply: "ok" },
+      };
+    };
+
+    const loop = createRuntimeAgentLoop({
+      model: "test",
+      caller,
+      executors: { "availability.check": async () => { executorCalled = true; return { status: "success" as const, data: { slots: [] } }; } } as never,
+      now: NOW,
+      timezone: "Europe/Prague",
+    });
+
+    await loop.runTurn({ clinic_id: "c1", contact_id: "pf3", case_id: null, user_message: "есть?", locale: "ru" });
+
+    assert.equal(executorCalled, false, "single past-time request must still be intercepted before executor");
+  });
+});
+
+// ── pair=null full-runtime behavior ───────────────────────────────────────────
+
+describe("pair=null full-runtime — technical_failure in second call context (Blocker 2)", () => {
+  test("PNR-1: request with no call_id → second call has technical_failure action truth, no presentation truth, empty booking state", async () => {
+    const secondCallContexts: Record<string, unknown>[] = [];
+    let callCount = 0;
+
+    const caller: RuntimeAgentCaller = async (input) => {
+      callCount++;
+      if (callCount === 1) {
+        return {
+          type: "tool_requests" as const,
+          conversation_id: "conv_pnr1",
+          // call_id intentionally absent → pair=null scenario
+          tool_requests: [{ tool: "availability.check" as const, call_id: undefined as unknown as string, arguments: { requested_date: "2026-07-21" } }],
+        };
+      }
+      secondCallContexts.push(input.input.context);
+      return {
+        type: "final_response" as const,
+        conversation_id: "conv_pnr1",
+        final_response: { final_patient_reply: "Извините, техническая ошибка." },
+      };
+    };
+
+    const loop = createRuntimeAgentLoop({
+      model: "test",
+      caller,
+      executors: { "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-21T09:00:00" }] } }) } as never,
+      now: new Date("2026-07-15T10:00:00Z"),
+    });
+
+    const repo = createInMemoryBookingProcessStateRepository();
+    await repo.saveState(
+      { clinic_id: "c1", contact_id: "pnr1", case_id: null },
+      { last_available_slots: [SLOT_A, SLOT_B], selected_slot: SLOT_A, proof: { service_known: false, name_known: false, slot_known: true, trusted_phone_known: false, ready_for_booking_apply: false } },
+    );
+
+    await loop.runTurn({ clinic_id: "c1", contact_id: "pnr1", case_id: null, user_message: "есть?", locale: "ru" });
+
+    assert.equal(secondCallContexts.length, 1, "second call must have happened");
+    const ctx = secondCallContexts[0];
+
+    // Action truth must be technical_failure, not null
+    const at = ctx.availability_action_truth as { outcome: string; can_present_slots: boolean; allowed_slot_starts: string[] } | undefined;
+    assert.ok(at !== undefined, "availability_action_truth must be present in second-call context");
+    assert.equal(at!.can_present_slots, false, "can_present_slots must be false");
+    assert.deepEqual(at!.allowed_slot_starts, [], "allowed_slot_starts must be empty");
+
+    // Presentation truth must be absent
+    assert.ok(!("availability_presentation_truth" in ctx), "availability_presentation_truth must NOT be in context when pair=null");
+
+    // Booking state must clear prior slots
+    const bps = ctx.booking_process_state as { last_available_slots?: unknown[] } | undefined;
+    assert.ok(bps !== undefined, "booking_process_state must be present");
+    assert.deepEqual(bps!.last_available_slots, [], "booking state must clear stale slots when pair=null");
+  });
+});
+
+// ── Duplicate slot deduplication ─────────────────────────────────────────────
+
+describe("Duplicate slot deduplication — shared extractUniqueAllowedSlotStarts (Issue 3)", () => {
+  test("DUP-1: duplicate HH:MM slots → both truth builders deduplicate to same array", () => {
+    const reqDup: RuntimeAgentToolRequest = {
+      tool: "availability.check",
+      call_id: "call_dup",
+      arguments: { requested_date: "2026-07-21" },
+    };
+    const resultWithDups: RuntimeAgentToolResult = {
+      tool: "availability.check",
+      call_id: "call_dup",
+      status: "success",
+      data: {
+        slots: [
+          { starts_at: "2026-07-21T09:00:00", slot_id: "s1" },
+          { starts_at: "2026-07-21T09:00:00", slot_id: "s2" }, // duplicate 09:00
+          { starts_at: "2026-07-21T10:00:00", slot_id: "s3" },
+        ],
+      },
+    };
+
+    const at = actionTruth([reqDup], [resultWithDups]);
+    const pt = presentationTruth([reqDup], [resultWithDups]);
+
+    assert.ok(at !== null, "action truth must not be null");
+    assert.ok(pt !== null, "presentation truth must not be null");
+
+    assert.deepEqual(at!.allowed_slot_starts, ["09:00", "10:00"], "action truth must deduplicate 09:00");
+    assert.deepEqual(pt!.allowed_slot_starts, ["09:00", "10:00"], "presentation truth must deduplicate 09:00");
+    assert.deepEqual(at!.allowed_slot_starts, pt!.allowed_slot_starts, "both truth builders must expose identical arrays");
   });
 });
 

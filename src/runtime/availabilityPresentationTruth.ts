@@ -1,4 +1,4 @@
-import { type AuthoritativeAvailabilityAttempt, extractSlotHHMM } from "./availabilityActionTruth.ts";
+import { type AuthoritativeAvailabilityAttempt, extractUniqueAllowedSlotStarts } from "./availabilityActionTruth.ts";
 
 export interface AvailabilityPresentationTruth {
   must_list_exact_slots_only: true;
@@ -11,14 +11,11 @@ export interface AvailabilityPresentationTruth {
 /**
  * Derives presentation truth from the pre-resolved authoritative availability attempt.
  *
- * The loop resolves the attempt once and passes it here (and to action truth and booking state)
- * so all three consumers share a single authoritative source.
- *
  * Returns null when:
  *   - attempted=false (no availability.check this turn)
- *   - pair=null (missing or unmatched call_id)
+ *   - pair=null (missing or unmatched call_id — no result is authorized)
  *   - authoritative result is not a success
- *   - authoritative success result has zero slots
+ *   - authoritative success result has zero unique slots
  */
 export function buildAvailabilityPresentationTruth(
   attempt: AuthoritativeAvailabilityAttempt,
@@ -26,20 +23,7 @@ export function buildAvailabilityPresentationTruth(
   if (!attempt.attempted || attempt.pair === null) return null;
   if (attempt.pair.result.status !== "success") return null;
 
-  const data = attempt.pair.result.data as { slots?: unknown[] } | undefined;
-  if (!data || !Array.isArray(data.slots) || data.slots.length === 0) return null;
-
-  const allowedSlotStarts: string[] = [];
-  for (const slot of data.slots) {
-    if (slot !== null && typeof slot === "object") {
-      const s = slot as { starts_at?: unknown };
-      const hhmm = extractSlotHHMM(s.starts_at);
-      if (hhmm !== null && !allowedSlotStarts.includes(hhmm)) {
-        allowedSlotStarts.push(hhmm);
-      }
-    }
-  }
-
+  const allowedSlotStarts = extractUniqueAllowedSlotStarts(attempt.pair.result);
   if (allowedSlotStarts.length === 0) return null;
 
   return {

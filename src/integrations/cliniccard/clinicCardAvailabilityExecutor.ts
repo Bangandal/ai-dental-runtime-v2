@@ -78,6 +78,21 @@ export function createClinicCardAvailabilityExecutor(
     }
 
     const timezone = config.timezone || context.timezone || "Europe/Prague";
+
+    // Reject past dates — ClinicCard returns slots for any date, including past ones.
+    // Only enforced when context.now is present (always set in production).
+    if (context.now) {
+      const today = getTodayInTimezone(context.now, timezone);
+      if (requestedDate < today) {
+        return makeFailedToolResult(
+          "availability.check",
+          "availability_past_date",
+          `${requestedDate} is in the past. Today is ${today}. Ask the patient for a date from today onwards.`,
+          false,
+        );
+      }
+    }
+
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
 

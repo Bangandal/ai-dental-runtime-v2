@@ -672,7 +672,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
       const availabilityActionTruth = buildAvailabilityActionTruth(processedToolRequests, toolResults);
-      const availabilityPresentationTruth = buildAvailabilityPresentationTruth(toolResults);
+      const availabilityPresentationTruth = buildAvailabilityPresentationTruth(processedToolRequests, toolResults);
       const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
 
       // Update booking process state with tool results from this round (e.g. newly returned slots).

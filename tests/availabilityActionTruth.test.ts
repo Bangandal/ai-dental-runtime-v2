@@ -16,6 +16,7 @@ import {
   type AvailableSlot,
 } from "../src/runtime/bookingProcessState.ts";
 import { buildAvailabilityActionTruth } from "../src/runtime/availabilityActionTruth.ts";
+import { buildAvailabilityPresentationTruth } from "../src/runtime/availabilityPresentationTruth.ts";
 import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntimeAgent.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller, type RuntimeAgentCallerInput } from "../src/runtime/runtimeAgentLoop.ts";
 import type { RuntimeAgentToolResult, RuntimeAgentToolRequest } from "../src/runtime/openaiRuntimeAgent.ts";
@@ -193,15 +194,17 @@ describe("Booking process state — stale slot invalidation", () => {
 // ── Availability action truth ─────────────────────────────────────────────────
 
 describe("buildAvailabilityActionTruth", () => {
-  test("7: success with slots → slots_available, can_present_slots=true, allowed_slot_starts populated", () => {
+  test("7: success with slots → slots_available, can_present_slots=true, allowed_slot_starts in HH:MM", () => {
     const truth = buildAvailabilityActionTruth([REQ_NEW_DATE], [SUCCESS_WITH_SLOTS]);
     assert.ok(truth !== null);
     assert.equal(truth!.outcome, "slots_available");
     assert.equal(truth!.can_present_slots, true);
     assert.equal(truth!.required_next_action, "choose_slot");
     assert.equal(truth!.allowed_slot_starts.length, 2);
-    assert.ok(truth!.allowed_slot_starts.includes("2026-07-17T09:00:00"));
-    assert.ok(truth!.allowed_slot_starts.includes("2026-07-17T10:00:00"));
+    // allowed_slot_starts must be HH:MM, not full ISO
+    assert.ok(truth!.allowed_slot_starts.includes("09:00"), "must include 09:00 in HH:MM");
+    assert.ok(truth!.allowed_slot_starts.includes("10:00"), "must include 10:00 in HH:MM");
+    assert.ok(!truth!.allowed_slot_starts.some(s => s.includes("T")), "must not contain ISO T-separator");
   });
 
   test("8: success with zero slots → no_slots, can_present_slots=false, empty allowed_slot_starts", () => {
@@ -258,6 +261,196 @@ describe("buildAvailabilityActionTruth", () => {
     assert.ok(truth !== null);
     assert.equal(truth!.requested_date, "2026-07-17", "date from request args");
     assert.equal(truth!.requested_time, "09:00", "time from request args");
+  });
+});
+
+// ── Multi-check invariant tests ───────────────────────────────────────────────
+
+describe("Multi-check: last availability.check supersedes earlier results", () => {
+  const REQ_FIRST: RuntimeAgentToolRequest = {
+    tool: "availability.check",
+    call_id: "call_first",
+    arguments: { requested_date: "2026-07-01" },
+  };
+  const REQ_SECOND: RuntimeAgentToolRequest = {
+    tool: "availability.check",
+    call_id: "call_second",
+    arguments: { requested_date: "2026-07-17" },
+  };
+
+  const RESULT_FIRST_SUCCESS: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "call_first",
+    status: "success",
+    data: {
+      slots: [
+        { starts_at: "2026-07-01T09:00:00", slot_id: "s0901" },
+        { starts_at: "2026-07-01T10:00:00", slot_id: "s0101" },
+      ],
+    },
+  };
+
+  const RESULT_SECOND_FAILURE: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "call_second",
+    status: "failed",
+    error: { code: "availability_past_date", message: "2026-07-17 is in the past.", retryable: false },
+  };
+
+  const RESULT_FIRST_FAILURE: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "call_first",
+    status: "failed",
+    error: { code: "cliniccard_error", message: "503", retryable: true },
+  };
+
+  const RESULT_SECOND_SUCCESS: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "call_second",
+    status: "success",
+    data: {
+      slots: [
+        { starts_at: "2026-07-17T09:00:00", slot_id: "s1709" },
+        { starts_at: "2026-07-17T14:00:00", slot_id: "s1714" },
+      ],
+    },
+  };
+
+  const RESULT_FIRST_ALT_DATE: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "call_first",
+    status: "success",
+    data: {
+      slots: [{ starts_at: "2026-07-01T11:00:00", slot_id: "s0111" }],
+    },
+  };
+
+  // ── action truth ──
+
+  test("MC-1: first success, second failure → technical_failure, can_present_slots=false", () => {
+    const truth = buildAvailabilityActionTruth(
+      [REQ_FIRST, REQ_SECOND],
+      [RESULT_FIRST_SUCCESS, RESULT_SECOND_FAILURE],
+    );
+    assert.ok(truth !== null);
+    assert.equal(truth!.outcome, "past_date", "last (second) result determines outcome");
+    assert.equal(truth!.can_present_slots, false, "first success must not authorize presentation");
+    assert.deepEqual(truth!.allowed_slot_starts, [], "no slots allowed when last result failed");
+  });
+
+  test("MC-2: first failure, second success → only second result slots in allowed_slot_starts", () => {
+    const truth = buildAvailabilityActionTruth(
+      [REQ_FIRST, REQ_SECOND],
+      [RESULT_FIRST_FAILURE, RESULT_SECOND_SUCCESS],
+    );
+    assert.ok(truth !== null);
+    assert.equal(truth!.outcome, "slots_available", "second success determines outcome");
+    assert.equal(truth!.can_present_slots, true);
+    assert.deepEqual(truth!.allowed_slot_starts, ["09:00", "14:00"], "only second result slots");
+    assert.ok(
+      !truth!.allowed_slot_starts.some(s => s.includes("2026-07-01")),
+      "first failure result must not contribute slots",
+    );
+  });
+
+  test("MC-3: two successes for different dates → only final result slots survive", () => {
+    const truth = buildAvailabilityActionTruth(
+      [REQ_FIRST, REQ_SECOND],
+      [RESULT_FIRST_ALT_DATE, RESULT_SECOND_SUCCESS],
+    );
+    assert.ok(truth !== null);
+    assert.equal(truth!.outcome, "slots_available");
+    assert.deepEqual(truth!.allowed_slot_starts, ["09:00", "14:00"], "only July-17 slots from second result");
+    assert.ok(
+      !truth!.allowed_slot_starts.includes("11:00"),
+      "July-1 slot from first success must be superseded",
+    );
+  });
+
+  test("MC-4: request/result in different order still pair by exact call_id", () => {
+    // Results arrive in reverse order from requests
+    const truth = buildAvailabilityActionTruth(
+      [REQ_FIRST, REQ_SECOND],
+      [RESULT_SECOND_SUCCESS, RESULT_FIRST_SUCCESS],
+    );
+    assert.ok(truth !== null);
+    // Last REQUEST is REQ_SECOND (call_id "call_second"), should pair with RESULT_SECOND_SUCCESS
+    assert.equal(truth!.outcome, "slots_available");
+    assert.deepEqual(truth!.allowed_slot_starts, ["09:00", "14:00"], "must pair second request with its result");
+  });
+
+  test("MC-5: request with missing call_id cannot pair and returns null", () => {
+    const reqNoCid: RuntimeAgentToolRequest = {
+      tool: "availability.check",
+      call_id: undefined,
+      arguments: { requested_date: "2026-07-17" },
+    };
+    const result: RuntimeAgentToolResult = {
+      tool: "availability.check",
+      call_id: "call_second",
+      status: "success",
+      data: { slots: [{ starts_at: "2026-07-17T09:00:00" }] },
+    };
+    const truth = buildAvailabilityActionTruth([reqNoCid], [result]);
+    assert.equal(truth, null, "missing call_id on request must not authorize slot presentation");
+  });
+
+  // ── booking process state ──
+
+  test("MC-6a: computeBookingProcessState — first success, second failure → last_available_slots=[]", () => {
+    const state = computeBookingProcessState({
+      prior: PRIOR_WITH_SLOTS,
+      toolResults: [RESULT_FIRST_SUCCESS, RESULT_SECOND_FAILURE],
+    });
+    assert.deepEqual(state.last_available_slots, [], "last failure must clear slots even though first succeeded");
+    assert.equal(state.selected_slot, null);
+  });
+
+  test("MC-6b: computeBookingProcessState — first failure, second success → only second slots", () => {
+    const state = computeBookingProcessState({
+      prior: PRIOR_WITH_SLOTS,
+      toolResults: [RESULT_FIRST_FAILURE, RESULT_SECOND_SUCCESS],
+    });
+    assert.equal(state.last_available_slots?.length, 2, "must have 2 slots from second success");
+    assert.ok(
+      state.last_available_slots?.every(s => s.starts_at.includes("2026-07-17")),
+      "slots must be from second result only (July 17), not first failure",
+    );
+  });
+
+  test("MC-6c: computeBookingProcessState — two successes → only last result slots", () => {
+    const state = computeBookingProcessState({
+      prior: {},
+      toolResults: [RESULT_FIRST_ALT_DATE, RESULT_SECOND_SUCCESS],
+    });
+    assert.equal(state.last_available_slots?.length, 2);
+    assert.ok(
+      state.last_available_slots?.every(s => s.starts_at.includes("2026-07-17")),
+      "must be July 17 slots from second result only",
+    );
+    assert.ok(
+      !state.last_available_slots?.some(s => s.starts_at.includes("2026-07-01")),
+      "July 1 slot from first success must be superseded",
+    );
+  });
+
+  // ── cross-truth consistency ──
+
+  test("MC-7: action truth and presentation truth reference the same final attempt (same allowed_slot_starts)", () => {
+    const requests = [REQ_FIRST, REQ_SECOND];
+    const results = [RESULT_FIRST_SUCCESS, RESULT_SECOND_SUCCESS];
+    const actionTruth = buildAvailabilityActionTruth(requests, results);
+    const presentationTruth = buildAvailabilityPresentationTruth(requests, results);
+    assert.ok(actionTruth !== null);
+    assert.ok(presentationTruth !== null);
+    // Both must agree on slot list
+    assert.deepEqual(
+      actionTruth!.allowed_slot_starts,
+      presentationTruth!.allowed_slot_starts,
+      "action truth and presentation truth must expose the same allowed_slot_starts",
+    );
+    // Slots must be from second result only
+    assert.deepEqual(actionTruth!.allowed_slot_starts, ["09:00", "14:00"]);
   });
 });
 

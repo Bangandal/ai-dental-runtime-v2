@@ -360,14 +360,20 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
 
   // ── Resolve available slots from tool results ──
   // Any availability.check attempt (regardless of result status) supersedes prior evidence.
-  // Success installs fresh slots; failure/denied/past_date installs [].
-  const availabilityAttemptPresent = !!(input.toolResults?.some(
-    (r) => r.tool === "availability.check",
-  ));
-  const availabilitySuccessPresent = !!(input.toolResults?.some(
-    (r) => r.tool === "availability.check" && r.status === "success",
-  ));
-  const newSlots = availabilitySuccessPresent && input.toolResults ? extractSlotsFromToolResults(input.toolResults) : [];
+  // Only the LAST availability.check result (by position) is authoritative — earlier results
+  // in the same round are superseded. Success installs fresh slots; failure/denied/past_date
+  // installs []. toolResults are pushed in request order by the loop.
+  let lastAvailResult: RuntimeAgentToolResult | undefined;
+  if (input.toolResults) {
+    for (const r of input.toolResults) {
+      if (r.tool === "availability.check") lastAvailResult = r;
+    }
+  }
+  const availabilityAttemptPresent = lastAvailResult !== undefined;
+  const availabilitySuccessPresent = lastAvailResult?.status === "success";
+  const newSlots = availabilitySuccessPresent && lastAvailResult
+    ? extractSlotsFromToolResults([lastAvailResult])
+    : [];
   const lastAvailableSlots: AvailableSlot[] = availabilityAttemptPresent
     ? newSlots
     : (p.last_available_slots ?? []);

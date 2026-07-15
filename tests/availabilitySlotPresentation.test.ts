@@ -225,8 +225,9 @@ describe("PR #135 — D & E: buildAvailabilityPresentationTruth extracts correct
         },
       },
     ];
+    const requests = [{ tool: "availability.check" as const, call_id: "c1", arguments: {} }];
 
-    const truth = buildAvailabilityPresentationTruth(toolResults);
+    const truth = buildAvailabilityPresentationTruth(requests, toolResults);
     assert.ok(truth !== null, "Should return truth for successful availability results");
     assert.deepStrictEqual(truth!.allowed_slot_starts, ["13:00", "14:30"]);
   });
@@ -248,8 +249,9 @@ describe("PR #135 — D & E: buildAvailabilityPresentationTruth extracts correct
         },
       },
     ];
+    const requests = [{ tool: "availability.check" as const, call_id: "c2", arguments: {} }];
 
-    const truth = buildAvailabilityPresentationTruth(toolResults);
+    const truth = buildAvailabilityPresentationTruth(requests, toolResults);
     assert.ok(truth !== null, "Should return truth");
     // The function extracts HH:MM from ISO string directly (not timezone-converted)
     // So 07:00, 07:30, 12:00, 12:30, 15:30 are the UTC times
@@ -275,8 +277,9 @@ describe("PR #135 — D & E: buildAvailabilityPresentationTruth extracts correct
         },
       },
     ];
+    const requests = [{ tool: "availability.check" as const, call_id: "c3", arguments: {} }];
 
-    const truth = buildAvailabilityPresentationTruth(toolResults);
+    const truth = buildAvailabilityPresentationTruth(requests, toolResults);
     assert.ok(truth !== null, "Should return truth");
     assert.deepStrictEqual(
       truth!.allowed_slot_starts,
@@ -300,8 +303,9 @@ describe("PR #135 — F: max_slots_to_present is always 5", () => {
         },
       },
     ];
+    const requests = [{ tool: "availability.check" as const, call_id: "c4", arguments: {} }];
 
-    const truth = buildAvailabilityPresentationTruth(toolResults);
+    const truth = buildAvailabilityPresentationTruth(requests, toolResults);
     assert.ok(truth !== null);
     assert.strictEqual(truth!.max_slots_to_present, 5);
   });
@@ -315,8 +319,9 @@ describe("PR #135 — F: max_slots_to_present is always 5", () => {
         data: { slots: [{ starts_at: "2026-07-11T10:00:00" }] },
       },
     ];
+    const requests = [{ tool: "availability.check" as const, call_id: "c5", arguments: {} }];
 
-    const truth = buildAvailabilityPresentationTruth(toolResults);
+    const truth = buildAvailabilityPresentationTruth(requests, toolResults);
     assert.ok(truth !== null);
     assert.strictEqual(truth!.must_list_exact_slots_only, true);
     assert.strictEqual(truth!.must_not_summarize_ranges, true);

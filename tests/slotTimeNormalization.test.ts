@@ -98,32 +98,34 @@ test("STN-6: detectSelectedSlot('На 15 00') matches 15:00 slot", () => {
 
 // ── STN-7 ─────────────────────────────────────────────────────────────────────
 
-test("STN-7: shouldInterceptMissingSlotProof returns false when requested time is in lastAvailableSlots", () => {
+test("STN-7: shouldInterceptMissingSlotProof — lastAvailableSlots alone is NOT sufficient proof (PR #184)", () => {
+  // PR #184 removes the lastAvailableSlots permissive fallback.
+  // Without active_availability_evidence + selected_slot_proof, booking must be intercepted.
   const result = shouldInterceptMissingSlotProof({
     pendingToolRequests: [BOOKING_APPLY_1500],
-    completedToolResults: [],
+    currentAvailabilityAttempt: { attempted: false, request: null, pair: null },
+    activeAvailabilityEvidence: null,
     selectedSlot: null,
-    lastAvailableSlots: [SLOT_1330, SLOT_1500],
   });
   assert.strictEqual(
     result,
-    false,
-    "Should NOT intercept: 15:00 is in lastAvailableSlots even though selectedSlot is null",
+    true,
+    "Should intercept: lastAvailableSlots alone is not authoritative evidence",
   );
 });
 
 // ── STN-8 ─────────────────────────────────────────────────────────────────────
 
-test("STN-8: shouldInterceptMissingSlotProof returns true when time is NOT in lastAvailableSlots and selectedSlot is null", () => {
+test("STN-8: shouldInterceptMissingSlotProof returns true when no evidence and selectedSlot is null", () => {
   const result = shouldInterceptMissingSlotProof({
     pendingToolRequests: [BOOKING_APPLY_1500],
-    completedToolResults: [],
+    currentAvailabilityAttempt: { attempted: false, request: null, pair: null },
+    activeAvailabilityEvidence: null,
     selectedSlot: null,
-    lastAvailableSlots: [SLOT_1330], // only 13:30, not 15:00
   });
   assert.strictEqual(
     result,
     true,
-    "Should intercept: 15:00 is NOT in lastAvailableSlots and no selectedSlot",
+    "Should intercept: no evidence and no selected slot",
   );
 });

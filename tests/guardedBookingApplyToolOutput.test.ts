@@ -113,8 +113,19 @@ function makeCallerSequence(outputs: Awaited<ReturnType<RuntimeAgentCaller>>[]):
 }
 
 function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }
@@ -622,6 +633,8 @@ test("PR144-A (no-tool loop): first-call final_response with ask_for_phone state
         first_name: "Тест",
         last_name: "Пациент",
         selected_slot: { starts_at: "2026-08-05T14:00:00", slot_id: "s1" },
+        active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+        selected_slot_proof: { availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
         next_action: "ask_for_phone" as const,
         phone_trusted: undefined,
         proof: { service_known: true, name_known: true, slot_known: true, trusted_phone_known: false, ready_for_booking_apply: false },
@@ -752,6 +765,8 @@ test("PR144-E: no ClinicCard writes when contact button is attached via maybeAtt
         first_name: "Тест",
         last_name: "Пациент",
         selected_slot: { starts_at: "2026-08-05T14:00:00", slot_id: "s1" },
+        active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+        selected_slot_proof: { availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
         phone_trusted: undefined,
         proof: { service_known: true, name_known: true, slot_known: true, trusted_phone_known: false, ready_for_booking_apply: false },
       }),

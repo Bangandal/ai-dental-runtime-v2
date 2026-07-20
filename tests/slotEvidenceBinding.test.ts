@@ -1,0 +1,758 @@
+/**
+ * PR #184 — slot evidence binding tests.
+ *
+ * Section 11 of the PR spec requires 28 tests covering:
+ * A. Evidence construction (normalizeSlotKey, slotToKey, buildAllowedSlotKeysFromResult)
+ * B. Selection provenance (validateBookingSlotEvidence — both paths)
+ * C. Booking preflight (shouldInterceptMissingSlotProof, shouldInterceptInvalidSlotDateTime)
+ * D. Runtime integration (booking.apply allowed / blocked through the full loop)
+ * E. Non-regression (legacy state without proof → slot_known=false)
+ */
+
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  normalizeSlotKey,
+  slotToKey,
+  buildAllowedSlotKeysFromResult,
+  validateBookingSlotEvidence,
+  type AvailabilityEvidence,
+  type SelectedSlotProof,
+} from "../src/runtime/slotEvidence.ts";
+import {
+  shouldInterceptMissingSlotProof,
+  shouldInterceptInvalidSlotDateTime,
+} from "../src/runtime/bookingApplyPreflight.ts";
+import {
+  createRuntimeAgentLoop,
+  type RuntimeAgentCaller,
+} from "../src/runtime/runtimeAgentLoop.ts";
+import type { AuthoritativeAvailabilityAttempt } from "../src/runtime/availabilityActionTruth.ts";
+import type { RuntimeAgentToolResult } from "../src/runtime/openaiRuntimeAgent.ts";
+
+// ── A. Evidence construction ──────────────────────────────────────────────────
+
+// A-1
+test("normalizeSlotKey: canonical format from date + HH:MM", () => {
+  assert.equal(normalizeSlotKey("2027-08-15", "10:30"), "2027-08-15T10:30");
+  assert.equal(normalizeSlotKey("2027-08-15", "09:05"), "2027-08-15T09:05");
+});
+
+// A-2
+test("normalizeSlotKey: accepts HH:MM:SS (strips seconds)", () => {
+  assert.equal(normalizeSlotKey("2027-08-15", "10:30:00"), "2027-08-15T10:30");
+});
+
+// A-3
+test("normalizeSlotKey: returns null for invalid date", () => {
+  assert.equal(normalizeSlotKey("not-a-date", "10:30"), null);
+  assert.equal(normalizeSlotKey("2027-08", "10:30"), null);
+  assert.equal(normalizeSlotKey("", "10:30"), null);
+});
+
+// A-4
+test("normalizeSlotKey: returns null for invalid time", () => {
+  assert.equal(normalizeSlotKey("2027-08-15", ""), null);
+  assert.equal(normalizeSlotKey("2027-08-15", "25:00"), null);
+  assert.equal(normalizeSlotKey("2027-08-15", "10:60"), null);
+  assert.equal(normalizeSlotKey("2027-08-15", "nottime"), null);
+});
+
+// A-5
+test("slotToKey: extracts canonical key from ISO datetime", () => {
+  assert.equal(slotToKey({ starts_at: "2027-08-15T10:30:00" }), "2027-08-15T10:30");
+  assert.equal(slotToKey({ starts_at: "2027-08-15T10:30:00.000Z" }), "2027-08-15T10:30");
+  assert.equal(slotToKey({ starts_at: "2027-08-15T10:30" }), "2027-08-15T10:30");
+});
+
+// A-6
+test("slotToKey: returns null for empty or non-ISO strings", () => {
+  assert.equal(slotToKey({ starts_at: "" }), null);
+  assert.equal(slotToKey({ starts_at: "not-a-datetime" }), null);
+});
+
+// A-7
+test("buildAllowedSlotKeysFromResult: extracts unique canonical keys from availability result", () => {
+  const result: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "av1",
+    status: "success",
+    data: {
+      slots: [
+        { starts_at: "2027-08-15T10:00:00" },
+        { starts_at: "2027-08-15T10:30:00" },
+        { starts_at: "2027-08-15T14:00:00" },
+      ],
+    },
+  };
+  const keys = buildAllowedSlotKeysFromResult(result);
+  assert.deepEqual(keys, ["2027-08-15T10:00", "2027-08-15T10:30", "2027-08-15T14:00"]);
+});
+
+// A-8
+test("buildAllowedSlotKeysFromResult: deduplicates identical starts_at values", () => {
+  const result: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "av2",
+    status: "success",
+    data: {
+      slots: [
+        { starts_at: "2027-08-15T10:00:00" },
+        { starts_at: "2027-08-15T10:00:00" },
+        { starts_at: "2027-08-15T11:00:00" },
+      ],
+    },
+  };
+  const keys = buildAllowedSlotKeysFromResult(result);
+  assert.equal(keys.length, 2);
+  assert.equal(keys[0], "2027-08-15T10:00");
+  assert.equal(keys[1], "2027-08-15T11:00");
+});
+
+// A-9
+test("buildAllowedSlotKeysFromResult: returns [] for failed result or no slots", () => {
+  const failedResult: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "av3",
+    status: "error",
+    data: null,
+  };
+  assert.deepEqual(buildAllowedSlotKeysFromResult(failedResult), []);
+
+  const emptyResult: RuntimeAgentToolResult = {
+    tool: "availability.check",
+    call_id: "av4",
+    status: "success",
+    data: { slots: [] },
+  };
+  assert.deepEqual(buildAllowedSlotKeysFromResult(emptyResult), []);
+});
+
+// ── B. Selection provenance (validateBookingSlotEvidence) ─────────────────────
+
+const NO_ATTEMPT: AuthoritativeAvailabilityAttempt = { attempted: false, request: null, pair: null };
+
+function makeCurrentTurnAttempt(callId: string, slotKeys: string[]): AuthoritativeAvailabilityAttempt {
+  return {
+    attempted: true,
+    request: { tool: "availability.check", call_id: callId, arguments: { requested_date: "2027-08-15" } },
+    pair: {
+      request: { tool: "availability.check", call_id: callId, arguments: { requested_date: "2027-08-15" } },
+      result: {
+        tool: "availability.check",
+        call_id: callId,
+        status: "success",
+        data: {
+          slots: slotKeys.map((k) => {
+            const [date, time] = k.split("T");
+            return { starts_at: `${date}T${time}:00` };
+          }),
+        },
+      },
+    },
+  };
+}
+
+function makeBookingRequest(date: string, time: string) {
+  return {
+    tool: "booking.apply",
+    call_id: "ba1",
+    arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: date, requested_time: time },
+  };
+}
+
+// B-1: current-turn path — slot found in current availability result
+test("validateBookingSlotEvidence: current-turn path passes when slot in authoritative result", () => {
+  const attempt = makeCurrentTurnAttempt("av_b1", ["2027-08-15T10:00", "2027-08-15T14:00"]);
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
+    currentAvailabilityAttempt: attempt,
+    activeAvailabilityEvidence: null,
+    selectedSlot: null,
+    selectedSlotProof: null,
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.source, "current_turn_availability");
+    assert.equal(result.slot_key, "2027-08-15T10:00");
+    assert.equal(result.availability_call_id, "av_b1");
+  }
+});
+
+// B-2: current-turn path — slot NOT in result → slot_not_in_authoritative_evidence
+test("validateBookingSlotEvidence: current-turn path rejects slot not in result", () => {
+  const attempt = makeCurrentTurnAttempt("av_b2", ["2027-08-15T10:00"]);
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: makeBookingRequest("2027-08-15", "14:00"),
+    currentAvailabilityAttempt: attempt,
+    activeAvailabilityEvidence: null,
+    selectedSlot: null,
+    selectedSlotProof: null,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "slot_not_in_authoritative_evidence");
+});
+
+// B-3: persisted path — full chain passes
+test("validateBookingSlotEvidence: persisted path passes with matching evidence + proof", () => {
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_b3",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00", "2027-08-15T14:00"],
+  };
+  const proof: SelectedSlotProof = { availability_call_id: "av_b3", slot_key: "2027-08-15T10:00" };
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: evidence,
+    selectedSlot: { starts_at: "2027-08-15T10:00:00" },
+    selectedSlotProof: proof,
+  });
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.source, "persisted_selected_slot");
+    assert.equal(result.slot_key, "2027-08-15T10:00");
+    assert.equal(result.availability_call_id, "av_b3");
+  }
+});
+
+// B-4: persisted path — no evidence → no_authoritative_availability_evidence
+test("validateBookingSlotEvidence: persisted path fails when no evidence", () => {
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: null,
+    selectedSlot: { starts_at: "2027-08-15T10:00:00" },
+    selectedSlotProof: { availability_call_id: "av_b4", slot_key: "2027-08-15T10:00" },
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "no_authoritative_availability_evidence");
+});
+
+// B-5: persisted path — proof missing → selected_slot_proof_missing
+test("validateBookingSlotEvidence: persisted path fails when proof absent", () => {
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_b5",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00"],
+  };
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: evidence,
+    selectedSlot: { starts_at: "2027-08-15T10:00:00" },
+    selectedSlotProof: null,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "selected_slot_proof_missing");
+});
+
+// B-6: persisted path — proof slot_key differs from requested slot → mismatch
+test("validateBookingSlotEvidence: persisted path fails when proof slot_key mismatches requested", () => {
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_b6",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00", "2027-08-15T14:00"],
+  };
+  const proof: SelectedSlotProof = { availability_call_id: "av_b6", slot_key: "2027-08-15T14:00" };
+  // Proof says 14:00 but request asks for 10:00
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: evidence,
+    selectedSlot: { starts_at: "2027-08-15T10:00:00" },
+    selectedSlotProof: proof,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "selected_slot_proof_mismatch");
+});
+
+// B-7: persisted path — proof call_id differs from evidence call_id → mismatch
+test("validateBookingSlotEvidence: persisted path fails when proof call_id differs from evidence call_id", () => {
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_current",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00"],
+  };
+  const proof: SelectedSlotProof = { availability_call_id: "av_old", slot_key: "2027-08-15T10:00" };
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: evidence,
+    selectedSlot: { starts_at: "2027-08-15T10:00:00" },
+    selectedSlotProof: proof,
+  });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "selected_slot_proof_mismatch");
+});
+
+// B-8: persisted path — slot in evidence but different date with same HH:MM → mismatch
+test("validateBookingSlotEvidence: cross-date booking attempt is rejected (same time, different date)", () => {
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_b8",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00"],
+  };
+  const proof: SelectedSlotProof = { availability_call_id: "av_b8", slot_key: "2027-08-15T10:00" };
+  // Request tries to book "2027-08-16" (different date) with same time
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: makeBookingRequest("2027-08-16", "10:00"),
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: evidence,
+    selectedSlot: { starts_at: "2027-08-15T10:00:00" },
+    selectedSlotProof: proof,
+  });
+  assert.equal(result.ok, false);
+  // selected_slot is 08-15 but requested is 08-16 → mismatch
+  if (!result.ok) assert.ok(result.reason === "selected_slot_proof_mismatch" || result.reason === "no_authoritative_availability_evidence");
+});
+
+// ── C. Booking preflight guard functions ──────────────────────────────────────
+
+const PENDING_BOOKING = [
+  { tool: "booking.apply", call_id: "ba_c", arguments: { subject_id: "s1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } },
+];
+
+// C-1: shouldInterceptMissingSlotProof returns false when current-turn evidence passes
+test("shouldInterceptMissingSlotProof: returns false when current-turn availability authorizes slot", () => {
+  const attempt = makeCurrentTurnAttempt("av_c1", ["2027-08-15T10:00"]);
+  const result = shouldInterceptMissingSlotProof({
+    pendingToolRequests: PENDING_BOOKING,
+    currentAvailabilityAttempt: attempt,
+    activeAvailabilityEvidence: null,
+    selectedSlot: null,
+    selectedSlotProof: null,
+  });
+  assert.equal(result, false);
+});
+
+// C-2: shouldInterceptMissingSlotProof returns true when no evidence at all
+test("shouldInterceptMissingSlotProof: returns true when no evidence and no current-turn attempt", () => {
+  const result = shouldInterceptMissingSlotProof({
+    pendingToolRequests: PENDING_BOOKING,
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: null,
+    selectedSlot: null,
+    selectedSlotProof: null,
+  });
+  assert.equal(result, true);
+});
+
+// C-3: shouldInterceptMissingSlotProof returns true when evidence present but proof missing
+test("shouldInterceptMissingSlotProof: returns true when evidence present but no proof", () => {
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_c3",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00"],
+  };
+  const result = shouldInterceptMissingSlotProof({
+    pendingToolRequests: PENDING_BOOKING,
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: evidence,
+    selectedSlot: { starts_at: "2027-08-15T10:00:00" },
+    selectedSlotProof: null,
+  });
+  assert.equal(result, true);
+});
+
+// C-4: shouldInterceptMissingSlotProof returns false when full persisted chain passes
+test("shouldInterceptMissingSlotProof: returns false when evidence + proof match", () => {
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_c4",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00"],
+  };
+  const proof: SelectedSlotProof = { availability_call_id: "av_c4", slot_key: "2027-08-15T10:00" };
+  const result = shouldInterceptMissingSlotProof({
+    pendingToolRequests: PENDING_BOOKING,
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: evidence,
+    selectedSlot: { starts_at: "2027-08-15T10:00:00" },
+    selectedSlotProof: proof,
+  });
+  assert.equal(result, false);
+});
+
+// C-5: shouldInterceptInvalidSlotDateTime returns false when no evidence (handled by Guard G first)
+test("shouldInterceptInvalidSlotDateTime: returns false when no evidence (not this guard's domain)", () => {
+  const result = shouldInterceptInvalidSlotDateTime({
+    pendingToolRequests: PENDING_BOOKING,
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: null,
+    selectedSlot: null,
+    selectedSlotProof: null,
+  });
+  assert.equal(result, false);
+});
+
+// C-6: shouldInterceptInvalidSlotDateTime returns true when slot not in current-turn evidence
+test("shouldInterceptInvalidSlotDateTime: returns true when slot not in current-turn result", () => {
+  const attempt = makeCurrentTurnAttempt("av_c6", ["2027-08-15T10:00"]);
+  const pendingWrongSlot = [
+    { tool: "booking.apply", call_id: "ba_c6", arguments: { subject_id: "s1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2027-08-15", requested_time: "14:00" } },
+  ];
+  const result = shouldInterceptInvalidSlotDateTime({
+    pendingToolRequests: pendingWrongSlot,
+    currentAvailabilityAttempt: attempt,
+    activeAvailabilityEvidence: null,
+    selectedSlot: null,
+    selectedSlotProof: null,
+  });
+  assert.equal(result, true);
+});
+
+// C-7: shouldInterceptMissingSlotProof returns false when no booking.apply in pending
+test("shouldInterceptMissingSlotProof: returns false when no booking.apply pending", () => {
+  const result = shouldInterceptMissingSlotProof({
+    pendingToolRequests: [{ tool: "kb.search", call_id: "kb1", arguments: { query: "prices" } }],
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: null,
+    selectedSlot: null,
+    selectedSlotProof: null,
+  });
+  assert.equal(result, false);
+});
+
+// ── D. Runtime integration ─────────────────────────────────────────────────────
+
+function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
+  return {
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { availability_call_id: callId, slot_key: slotKey },
+      };
+    },
+    async saveState() {},
+  };
+}
+
+// D-1: booking.apply executes when persisted evidence + proof present
+test("D-1: booking.apply executes when persisted evidence and proof authorize the slot", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_d1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Записано!" } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"),
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  const result = await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Запишите меня",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, true, "executor must be called when evidence + proof present");
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "booking.apply must have a result");
+  assert.equal(bookingResult!.status, "success");
+});
+
+// D-2: booking.apply blocked when no evidence (slot_not_verified)
+test("D-2: booking.apply blocked when no evidence or proof in persisted state", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_d2", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Нужно проверить время." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { tool: "booking.apply", status: "success", data: {} };
+      },
+    },
+    // No evidence/proof in state
+    bookingProcessStateRepository: {
+      async loadState() { return { selected_slot: { starts_at: "2027-08-15T10:00:00" }, last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }] }; },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Запишите меня",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, false, "executor must NOT be called without evidence");
+});
+
+// D-3: booking.apply executes via current-turn availability.check → booking.apply in one turn
+test("D-3: current-turn availability.check → booking.apply in same turn (avail-then-book flow)", async () => {
+  let executorCalled = false;
+  let round = 0;
+  const caller: RuntimeAgentCaller = async (input) => {
+    round++;
+    if (round === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", call_id: "av_d3", arguments: { requested_date: "2027-08-15", requested_time: "10:00" } }],
+      };
+    }
+    if (round === 2) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_d3", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Записано!" } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "availability.check": async () => ({
+        tool: "availability.check",
+        call_id: "av_d3",
+        status: "success",
+        data: { slots: [{ starts_at: "2027-08-15T10:00:00" }] },
+      }),
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { tool: "booking.apply", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Запишите на 10:00",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, true, "executor must be called via current-turn avail path");
+});
+
+// D-4: current-turn avail check returns slots; model requests wrong slot → Guard H fires
+test("D-4: Guard H fires when model requests slot not in current-turn availability result", async () => {
+  let executorCalled = false;
+  let round = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    round++;
+    if (round === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "availability.check", call_id: "av_d4", arguments: { requested_date: "2027-08-15" } }],
+      };
+    }
+    if (round === 2) {
+      // Model hallucinates 14:00 but availability only has 10:00
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_d4", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "14:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Это время недоступно." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "availability.check": async () => ({
+        tool: "availability.check",
+        call_id: "av_d4",
+        status: "success",
+        data: { slots: [{ starts_at: "2027-08-15T10:00:00" }] },
+      }),
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { tool: "booking.apply", status: "success", data: {} };
+      },
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  const result = await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Запишите на 14:00",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, false, "executor must NOT be called for slot not in availability");
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  if (bookingResult) {
+    assert.notEqual((bookingResult.data as Record<string, unknown>)?.booking_status, "visit_created");
+  }
+});
+
+// ── E. Non-regression ──────────────────────────────────────────────────────────
+
+// E-1: legacy state (selected_slot only, no evidence) → slot_known=false, Guard G fires
+test("E-1: legacy selected_slot without evidence → booking.apply blocked (slot_not_verified)", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_e1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Нужно сначала проверить." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { tool: "booking.apply", status: "success", data: {} };
+      },
+    },
+    // Legacy state: selected_slot but NO evidence or proof
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T10:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
+          // No active_availability_evidence, no selected_slot_proof
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Запишите меня",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, false, "legacy state without proof must block booking");
+});
+
+// E-2: stale proof for a slot that is no longer in current evidence → blocked
+// The current evidence only has 10:00; patient had selected 14:00 in a prior turn
+// when that slot was available. The 14:00 slot was removed (another patient booked it).
+// The proof-rebuild logic sets proof=null since 14:00 is not in current evidence.
+test("E-2: stale proof for slot no longer in current evidence is rejected", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_e2", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "14:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Нужно проверить." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { tool: "booking.apply", status: "success", data: {} };
+      },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T14:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T14:00:00" }],
+          active_availability_evidence: {
+            availability_call_id: "av_current",
+            requested_date: "2027-08-15",
+            requested_time: null,
+            // Current evidence has only 10:00 — 14:00 was removed
+            allowed_slot_keys: ["2027-08-15T10:00"],
+          },
+          // Stale proof claims 14:00 was valid from an older call
+          selected_slot_proof: { availability_call_id: "av_stale", slot_key: "2027-08-15T14:00" },
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Запишите на 14:00",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, false, "stale slot no longer in evidence must block booking");
+});
+
+// E-3: last_available_slots alone (without evidence) does not authorize booking
+test("E-3: last_available_slots alone without evidence does not authorize booking", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_e3", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Нужно проверить." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => {
+        executorCalled = true;
+        return { tool: "booking.apply", status: "success", data: {} };
+      },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          // last_available_slots WITHOUT evidence metadata → not authoritative
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Запишите меня",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, false, "last_available_slots without evidence must not authorize booking");
+});

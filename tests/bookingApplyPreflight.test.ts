@@ -47,10 +47,32 @@ import {
   shouldInterceptInvalidSlotDateTime,
   buildInvalidSlotReply,
 } from "../src/runtime/bookingApplyPreflight.ts";
+import type { AuthoritativeAvailabilityAttempt } from "../src/runtime/availabilityActionTruth.ts";
 
 function makeSlotStateRepo(starts_at: string) {
+  // Build full authoritative evidence so the slot is proven (slot_known=true).
+  // This simulates state that was produced after a proper availability.check flow.
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: {
+          availability_call_id: callId,
+          requested_date: date,
+          requested_time: null,
+          allowed_slot_keys: [slotKey],
+        },
+        selected_slot_proof: {
+          availability_call_id: callId,
+          slot_key: slotKey,
+        },
+      };
+    },
     async saveState() {},
   };
 }
@@ -726,7 +748,7 @@ test("Test 5: full proof + BOOKING_MODE=disabled → booking_write_disabled, no 
             subject_id: "subject_1",
             first_name: "Іван",
             last_name: "Петров",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
             service: "Чистка зубов",
           },
@@ -743,7 +765,8 @@ test("Test 5: full proof + BOOKING_MODE=disabled → booking_write_disabled, no 
         adapterFactory: () => mockAdapter,
       }),
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
+    now: new Date("2027-08-15T07:00:00Z"),
   });
 
   const result = await loop.runTurn({
@@ -928,6 +951,19 @@ test("Test 1a: no slots + no trusted phone → no-slots guarded result, conversa
 
 // ── Unit: shouldInterceptInvalidSlotDateTime ──────────────────────────────────────
 
+// Fixtures for shouldInterceptInvalidSlotDateTime unit tests
+const _BSDT_REQUEST: import("../src/runtime/openaiRuntimeAgent.ts").RuntimeAgentToolRequest = {
+  tool: "availability.check",
+  call_id: "call_avail_bsdt",
+  arguments: { requested_date: "2026-07-09" },
+};
+const _SUCCESS_ATTEMPT_BSDT: AuthoritativeAvailabilityAttempt = {
+  attempted: true,
+  request: _BSDT_REQUEST,
+  pair: { request: _BSDT_REQUEST, result: AVAILABILITY_SUCCESS },
+};
+const _NO_ATTEMPT_BSDT: AuthoritativeAvailabilityAttempt = { attempted: false, request: null, pair: null };
+
 test("shouldInterceptInvalidSlotDateTime: true when requested_time not in allowed slots", () => {
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
@@ -936,7 +972,10 @@ test("shouldInterceptInvalidSlotDateTime: true when requested_time not in allowe
         call_id: "c1",
         arguments: { requested_date: "2026-07-09", requested_time: "13:00", first_name: "A", last_name: "B", service: "s" },
       }],
-      completedToolResults: [AVAILABILITY_SUCCESS], // AVAILABILITY_SUCCESS has 12:00 slot
+      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT, // has 12:00 slot only
+      activeAvailabilityEvidence: null,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     true,
   );
@@ -950,7 +989,10 @@ test("shouldInterceptInvalidSlotDateTime: false when requested_time matches a sl
         call_id: "c2",
         arguments: { requested_date: "2026-07-09", requested_time: "12:00", first_name: "A", last_name: "B", service: "s" },
       }],
-      completedToolResults: [AVAILABILITY_SUCCESS], // has starts_at "2026-07-09T12:00:00"
+      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT, // has starts_at "2026-07-09T12:00:00"
+      activeAvailabilityEvidence: null,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     false,
   );
@@ -960,7 +1002,10 @@ test("shouldInterceptInvalidSlotDateTime: false when no availability results (no
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [BOOKING_APPLY_REQUEST],
-      completedToolResults: [],
+      currentAvailabilityAttempt: _NO_ATTEMPT_BSDT,
+      activeAvailabilityEvidence: null,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     false,
   );
@@ -970,7 +1015,10 @@ test("shouldInterceptInvalidSlotDateTime: false when no booking.apply pending", 
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [AVAILABILITY_REQUEST],
-      completedToolResults: [AVAILABILITY_SUCCESS],
+      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT,
+      activeAvailabilityEvidence: null,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     false,
   );
@@ -984,7 +1032,10 @@ test("shouldInterceptInvalidSlotDateTime: false when requested_time absent (Guar
         call_id: "c3",
         arguments: { requested_date: "2026-07-09", first_name: "A", last_name: "B", service: "s" },
       }],
-      completedToolResults: [AVAILABILITY_SUCCESS],
+      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT,
+      activeAvailabilityEvidence: null,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     false,
   );
@@ -999,7 +1050,10 @@ test("shouldInterceptInvalidSlotDateTime: handles HH:MM:SS format in requested_t
         call_id: "c4",
         arguments: { requested_date: "2026-07-09", requested_time: "12:00:00", first_name: "A", last_name: "B", service: "s" },
       }],
-      completedToolResults: [AVAILABILITY_SUCCESS],
+      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT,
+      activeAvailabilityEvidence: null,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     false,
   );
@@ -1015,7 +1069,10 @@ test("shouldInterceptInvalidSlotDateTime: true when time matches but date differ
         call_id: "c5",
         arguments: { requested_date: "2026-07-07", requested_time: "12:00", first_name: "A", last_name: "B", service: "s" },
       }],
-      completedToolResults: [AVAILABILITY_SUCCESS],
+      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT,
+      activeAvailabilityEvidence: null,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     true,
   );

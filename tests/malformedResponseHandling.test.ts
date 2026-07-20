@@ -25,8 +25,19 @@ import type { ConversationMemoryRepository } from "../src/runtime/runtimeReposit
 const MALFORMED_MARKER = ["malformed_openai_response"];
 
 function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }
@@ -136,7 +147,7 @@ test("Codex-P2-B: second-call malformed clears conversation memory and returns n
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
       };
     }
     return { ...malformedOutput(), conversation_id: "conv_from_second_call" };
@@ -147,7 +158,8 @@ test("Codex-P2-B: second-call malformed clears conversation memory and returns n
     caller,
     executors: bookingApplyExecutors("booking_write_disabled"),
     conversationMemoryRepository: repo,
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"),
+    now: new Date("2027-08-15T07:00:00Z"),
   });
   const result = await agent.runTurn(makeInput("ru"));
 
@@ -179,11 +191,11 @@ test("Codex-P2-D: debug reasons unaffected by the memory-save fix", async () => 
   const bookingCaller: RuntimeAgentCaller = async () => {
     round += 1;
     if (round === 1) {
-      return { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }] };
+      return { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
     }
     return malformedOutput();
   };
-  const bookingResult = await createRuntimeAgentLoop({ model: "m", caller: bookingCaller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") }).runTurn(makeInput("ru"));
+  const bookingResult = await createRuntimeAgentLoop({ model: "m", caller: bookingCaller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"), now: new Date("2027-08-15T07:00:00Z") }).runTurn(makeInput("ru"));
   assert.equal((bookingResult.debug as any).reason, "malformed_second_model_response_booking_fallback");
 
   let round2 = 0;
@@ -228,12 +240,12 @@ test("C: second call malformed after booking_write_disabled returns booking emer
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
       };
     }
     return malformedOutput();
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"), now: new Date("2027-08-15T07:00:00Z") });
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.doesNotMatch(result.final_patient_reply, /having trouble/i);
@@ -249,12 +261,12 @@ test("D: second call malformed after booking.apply never claims booked/confirmed
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
       };
     }
     return malformedOutput();
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("cliniccard_write_failed"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("cliniccard_write_failed"), bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"), now: new Date("2027-08-15T07:00:00Z") });
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.doesNotMatch(result.final_patient_reply, /запись (создана|подтверждена)/i);
@@ -332,12 +344,12 @@ test("H: malformed second-call path preserves tool_results so admin_notification
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
       };
     }
     return malformedOutput();
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"), now: new Date("2027-08-15T07:00:00Z") });
   const result = await agent.runTurn(makeInput("ru"));
 
   const { buildBookingApplyActionTruth } = await import("../src/runtime/bookingApplyGuard.ts");

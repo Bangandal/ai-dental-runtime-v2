@@ -1,11 +1,12 @@
 /**
  * PR #163 — booking.apply requires selected_slot proof.
+ * PR #184 — updated to use authoritative evidence-based proof (validateBookingSlotEvidence).
  *
  * Guard G: booking.apply may proceed only when there is verified slot proof —
- * either a successful availability.check result in the current turn whose slots
- * cover the requested date+time, or a selected_slot from booking process state
- * that matches. Without proof, booking.apply is blocked with
- * booking_status: "slot_not_verified" before reaching the ClinicCard executor.
+ * either a current-turn authoritative availability.check result covering the requested
+ * date+time, or a persisted selected_slot with a matching selected_slot_proof and
+ * active_availability_evidence. Without proof, booking.apply is blocked with
+ * booking_status: "slot_not_verified".
  *
  * 5 unit tests (shouldInterceptMissingSlotProof) + 3 integration tests.
  */
@@ -21,6 +22,8 @@ import type {
   ChannelContact,
 } from "../src/runtime/openaiRuntimeAgent.ts";
 import type { AvailableSlot } from "../src/runtime/bookingProcessState.ts";
+import type { AuthoritativeAvailabilityAttempt } from "../src/runtime/availabilityActionTruth.ts";
+import type { AvailabilityEvidence, SelectedSlotProof } from "../src/runtime/slotEvidence.ts";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +51,12 @@ const BOOKING_APPLY_FULL: RuntimeAgentToolRequest = {
   },
 };
 
+const AVAIL_REQUEST: RuntimeAgentToolRequest = {
+  tool: "availability.check",
+  call_id: "call_av_1",
+  arguments: { requested_date: "2026-07-09" },
+};
+
 const AVAILABILITY_SUCCESS: RuntimeAgentToolResult = {
   tool: "availability.check",
   call_id: "call_av_1",
@@ -60,6 +69,26 @@ const AVAILABILITY_FAILED: RuntimeAgentToolResult = {
   call_id: "call_av_2",
   status: "failed",
   error: { code: "adapter_error", message: "timeout" },
+};
+
+const NO_ATTEMPT: AuthoritativeAvailabilityAttempt = { attempted: false, request: null, pair: null };
+
+const SUCCESS_ATTEMPT: AuthoritativeAvailabilityAttempt = {
+  attempted: true,
+  request: AVAIL_REQUEST,
+  pair: { request: AVAIL_REQUEST, result: AVAILABILITY_SUCCESS },
+};
+
+const EVIDENCE: AvailabilityEvidence = {
+  availability_call_id: "call_av_1",
+  requested_date: "2026-07-09",
+  requested_time: null,
+  allowed_slot_keys: ["2026-07-09T12:00"],
+};
+
+const SLOT_PROOF: SelectedSlotProof = {
+  availability_call_id: "call_av_1",
+  slot_key: "2026-07-09T12:00",
 };
 
 const BASE_TURN_INPUT = {
@@ -78,58 +107,68 @@ function makeCallerSequence(outputs: Awaited<ReturnType<RuntimeAgentCaller>>[]):
 
 // ── Unit: shouldInterceptMissingSlotProof ─────────────────────────────────────
 
-test("BSPG-1: intercepts when no avail.check in results and no selectedSlot", () => {
+test("BSPG-1: intercepts when no availability evidence and no selectedSlot", () => {
   assert.equal(
     shouldInterceptMissingSlotProof({
       pendingToolRequests: [BOOKING_APPLY_FULL],
-      completedToolResults: [],
+      currentAvailabilityAttempt: NO_ATTEMPT,
+      activeAvailabilityEvidence: null,
       selectedSlot: null,
     }),
     true,
   );
 });
 
-test("BSPG-2: does NOT intercept when successful avail.check result is present (shouldInterceptInvalidSlotDateTime handles mismatch)", () => {
+test("BSPG-2: does NOT intercept when current-turn successful avail.check covers the requested slot", () => {
   assert.equal(
     shouldInterceptMissingSlotProof({
       pendingToolRequests: [BOOKING_APPLY_FULL],
-      completedToolResults: [AVAILABILITY_SUCCESS],
+      currentAvailabilityAttempt: SUCCESS_ATTEMPT,
+      activeAvailabilityEvidence: null,
       selectedSlot: null,
     }),
     false,
   );
 });
 
-test("BSPG-3: does NOT intercept when no avail.check but selectedSlot matches requested date+time", () => {
+test("BSPG-3: does NOT intercept when selectedSlot has valid proof matching requested date+time", () => {
   assert.equal(
     shouldInterceptMissingSlotProof({
       pendingToolRequests: [BOOKING_APPLY_FULL],
-      completedToolResults: [],
+      currentAvailabilityAttempt: NO_ATTEMPT,
+      activeAvailabilityEvidence: EVIDENCE,
       selectedSlot: SLOT,
+      selectedSlotProof: SLOT_PROOF,
     }),
     false,
   );
 });
 
-test("BSPG-4: intercepts when selectedSlot date mismatches requested_date", () => {
-  const wrongDateSlot: AvailableSlot = { starts_at: "2026-07-10T12:00:00" }; // different date
+test("BSPG-4: intercepts when selectedSlot date mismatches requested_date (proof key mismatch)", () => {
+  const wrongDateSlot: AvailableSlot = { starts_at: "2026-07-10T12:00:00" };
+  const wrongProof: SelectedSlotProof = { availability_call_id: "call_av_1", slot_key: "2026-07-10T12:00" };
   assert.equal(
     shouldInterceptMissingSlotProof({
       pendingToolRequests: [BOOKING_APPLY_FULL],
-      completedToolResults: [],
+      currentAvailabilityAttempt: NO_ATTEMPT,
+      activeAvailabilityEvidence: EVIDENCE,
       selectedSlot: wrongDateSlot,
+      selectedSlotProof: wrongProof,
     }),
     true,
   );
 });
 
-test("BSPG-5: intercepts when selectedSlot time mismatches requested_time", () => {
-  const wrongTimeSlot: AvailableSlot = { starts_at: "2026-07-09T14:00:00" }; // different time
+test("BSPG-5: intercepts when selectedSlot time mismatches requested_time (proof key mismatch)", () => {
+  const wrongTimeSlot: AvailableSlot = { starts_at: "2026-07-09T14:00:00" };
+  const wrongProof: SelectedSlotProof = { availability_call_id: "call_av_1", slot_key: "2026-07-09T14:00" };
   assert.equal(
     shouldInterceptMissingSlotProof({
       pendingToolRequests: [BOOKING_APPLY_FULL],
-      completedToolResults: [],
+      currentAvailabilityAttempt: NO_ATTEMPT,
+      activeAvailabilityEvidence: EVIDENCE,
       selectedSlot: wrongTimeSlot,
+      selectedSlotProof: wrongProof,
     }),
     true,
   );

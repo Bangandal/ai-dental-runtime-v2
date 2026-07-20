@@ -153,6 +153,7 @@ test("C: 'Отлично 17:30' → selected_slot=17:30, next_action=ask_for_pho
       service_reason: "осмотр из-за боли",
       first_name: "Анна",
       last_name: "Иванова",
+      active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T17:30", "2026-08-05T18:30"] },
     },
     patientMessage: "Отлично 17:30",
     channelContact: undefined, // no trusted phone
@@ -171,6 +172,7 @@ test("C2: when all fields known including trusted phone → next_action=ready_fo
       service_reason: "чистка зубов",
       first_name: "Иван",
       last_name: "Петров",
+      active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
     },
     patientMessage: "14:00 хорошо",
     channelContact: TRUSTED_CONTACT,
@@ -344,6 +346,7 @@ test("proof: all fields known → ready_for_booking_apply=true", () => {
       service_reason: "чистка",
       first_name: "Иван",
       last_name: "Петров",
+      active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
     },
     patientMessage: "14:00",
     channelContact: TRUSTED_CONTACT,

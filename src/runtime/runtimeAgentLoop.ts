@@ -502,11 +502,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       // Global preflight G — slot proof guard (round 1): fires after subject resolution.
+      // No tools have executed yet; currentAvailabilityAttempt is the "not attempted" state.
       if (bookingApplyRound1 && shouldInterceptMissingSlotProof({
         pendingToolRequests: toolRequests,
-        completedToolResults: [],
+        currentAvailabilityAttempt: { attempted: false, request: null, pair: null },
+        activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
         selectedSlot: bookingProcessState.selected_slot,
-        lastAvailableSlots: bookingProcessState.last_available_slots,
+        selectedSlotProof: bookingProcessState.selected_slot_proof,
       })) {
         debug.reason = "booking_apply_preflight_missing_slot_proof_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
@@ -1083,9 +1085,10 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           // 10. Guard G (round 2): slot not verified — fires after subject resolution.
           if (shouldInterceptMissingSlotProof({
             pendingToolRequests: secondOutput.tool_requests,
-            completedToolResults: toolResults,
+            currentAvailabilityAttempt: authoritativeAvailabilityAttempt,
+            activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
             selectedSlot: bookingProcessState.selected_slot,
-            lastAvailableSlots: bookingProcessState.last_available_slots,
+            selectedSlotProof: bookingProcessState.selected_slot_proof,
           })) {
             debug.reason = "booking_apply_preflight_missing_slot_proof_round2";
             return await finalizeBlockedBookingApplyWithToolOutput({
@@ -1113,7 +1116,10 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           // 11. Guard H (round 2): invalid slot — fires after subject resolution.
           if (shouldInterceptInvalidSlotDateTime({
             pendingToolRequests: secondOutput.tool_requests,
-            completedToolResults: toolResults,
+            currentAvailabilityAttempt: authoritativeAvailabilityAttempt,
+            activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
+            selectedSlot: bookingProcessState.selected_slot,
+            selectedSlotProof: bookingProcessState.selected_slot_proof,
           })) {
             debug.reason = "booking_apply_preflight_invalid_slot_round2";
             return await finalizeBlockedBookingApplyWithToolOutput({

@@ -243,8 +243,19 @@ describe("PR#180-6: phone_ownership_intent propagated in all return paths", () =
 // Guard G (slot proof) fires before Guard J (subject resolution) and Guard I (pending phone).
 // Bypass it by supplying a bookingProcessStateRepository with a matching selected_slot.
 function makeSlotRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }

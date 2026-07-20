@@ -24,6 +24,8 @@ import type {
   ChannelContact,
 } from "../src/runtime/openaiRuntimeAgent.ts";
 import type { AvailableSlot } from "../src/runtime/bookingProcessState.ts";
+import type { AuthoritativeAvailabilityAttempt } from "../src/runtime/availabilityActionTruth.ts";
+import type { AvailabilityEvidence, SelectedSlotProof } from "../src/runtime/slotEvidence.ts";
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -74,8 +76,28 @@ const BOOKING_CORRECT_DATE: RuntimeAgentToolRequest = {
 
 const AVAILABILITY_REQUEST: RuntimeAgentToolRequest = {
   tool: "availability.check",
-  call_id: "call_avreq_dt",
+  call_id: "call_av_dt1",
   arguments: { requested_date: "2026-07-10", service_interest: "чистка" },
+};
+
+const SUCCESS_ATTEMPT_JULY10: AuthoritativeAvailabilityAttempt = {
+  attempted: true,
+  request: AVAILABILITY_REQUEST,
+  pair: { request: AVAILABILITY_REQUEST, result: AVAIL_JULY_10_1200 },
+};
+
+const NO_ATTEMPT: AuthoritativeAvailabilityAttempt = { attempted: false, request: null, pair: null };
+
+const EVIDENCE_JULY10: AvailabilityEvidence = {
+  availability_call_id: "call_av_dt1",
+  requested_date: "2026-07-10",
+  requested_time: null,
+  allowed_slot_keys: ["2026-07-10T12:00"],
+};
+
+const SLOT_PROOF_JULY10: SelectedSlotProof = {
+  availability_call_id: "call_av_dt1",
+  slot_key: "2026-07-10T12:00",
 };
 
 const BASE_TURN_INPUT = {
@@ -92,38 +114,60 @@ function makeCallerSequence(outputs: Awaited<ReturnType<RuntimeAgentCaller>>[]):
   return async () => outputs[call++] ?? outputs[outputs.length - 1];
 }
 
-// ── Unit: shouldInterceptInvalidSlotDateTime ──────────────────────────────────
+// ── Unit: shouldInterceptInvalidSlotDateTime / shouldInterceptMissingSlotProof ─
 
 test("BSDT-3: shouldInterceptInvalidSlotDateTime — same time, different date → true (blocked)", () => {
-  // Slot is on 2026-07-10; request is for 2026-07-11 at the same time — must be blocked.
+  // Current-turn avail has slot on 2026-07-10; booking requests 2026-07-11 at same time.
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [BOOKING_WRONG_DATE],
-      completedToolResults: [AVAIL_JULY_10_1200],
+      currentAvailabilityAttempt: SUCCESS_ATTEMPT_JULY10,
+      activeAvailabilityEvidence: EVIDENCE_JULY10,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     true,
   );
 });
 
-test("BSDT-4: shouldInterceptMissingSlotProof — selected_slot fallback works when no avail.check in current turn", () => {
+test("BSDT-4: shouldInterceptMissingSlotProof — selectedSlot without proof → intercepts (provenance required)", () => {
+  // Selected slot matches the request but there is no selectedSlotProof — must intercept.
   const matchingSlot: AvailableSlot = { starts_at: "2026-07-10T12:00:00" };
-  // No avail.check in completedToolResults; selectedSlot matches requested date+time → no intercept.
   assert.equal(
     shouldInterceptMissingSlotProof({
       pendingToolRequests: [BOOKING_CORRECT_DATE],
-      completedToolResults: [],
+      currentAvailabilityAttempt: NO_ATTEMPT,
+      activeAvailabilityEvidence: EVIDENCE_JULY10,
       selectedSlot: matchingSlot,
+      selectedSlotProof: null,
+    }),
+    true,
+  );
+});
+
+test("BSDT-4b: shouldInterceptMissingSlotProof — selectedSlot with valid proof → does NOT intercept", () => {
+  const matchingSlot: AvailableSlot = { starts_at: "2026-07-10T12:00:00" };
+  assert.equal(
+    shouldInterceptMissingSlotProof({
+      pendingToolRequests: [BOOKING_CORRECT_DATE],
+      currentAvailabilityAttempt: NO_ATTEMPT,
+      activeAvailabilityEvidence: EVIDENCE_JULY10,
+      selectedSlot: matchingSlot,
+      selectedSlotProof: SLOT_PROOF_JULY10,
     }),
     false,
   );
 });
 
 test("BSDT-5-unit: shouldInterceptInvalidSlotDateTime — date+time match → false (allowed)", () => {
-  // Slot is on 2026-07-10 at 12:00; request matches exactly → no intercept.
+  // Current-turn avail has slot on 2026-07-10 at 12:00; request matches exactly.
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [BOOKING_CORRECT_DATE],
-      completedToolResults: [AVAIL_JULY_10_1200],
+      currentAvailabilityAttempt: SUCCESS_ATTEMPT_JULY10,
+      activeAvailabilityEvidence: EVIDENCE_JULY10,
+      selectedSlot: null,
+      selectedSlotProof: null,
     }),
     false,
   );

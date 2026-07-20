@@ -85,6 +85,8 @@ test("B: prior state with service+name+slot known → ask_for_phone exposed with
     first_name: "Иван",
     last_name: "Иванов",
     selected_slot: { starts_at: "2026-08-05T14:00:00" },
+    active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+    selected_slot_proof: { availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
   };
   const state = computeBookingProcessState({ prior });
   const visible = buildModelVisibleBookingProcessState({
@@ -481,6 +483,8 @@ test("Guard-5: when service+name+slot all grounded in prior state and phone miss
     first_name: "Оксана",
     last_name: "Ковальчук",
     selected_slot: { starts_at: "2026-08-05T14:00:00" },
+    active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+    selected_slot_proof: { availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
   };
   const state = computeBookingProcessState({ prior }); // phone_trusted=false (no channel_contact)
   const visible = buildModelVisibleBookingProcessState({

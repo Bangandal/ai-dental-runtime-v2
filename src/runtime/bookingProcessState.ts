@@ -468,11 +468,14 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
     ? null
     : (p.selected_slot_proof ?? null);
 
+  let selectionEstablishedThisTurn = false;
+
   if (input.patientMessage && lastAvailableSlots.length > 0 && !selectedSlot) {
     const detected = detectSelectedSlot(input.patientMessage, lastAvailableSlots);
     if (detected !== null) {
       selectedSlot = detected;
-      selectedSlotProof = null; // will be built below if evidence exists
+      selectedSlotProof = null;
+      selectionEstablishedThisTurn = true;
     }
   }
 
@@ -483,24 +486,42 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
       const matched = lastAvailableSlots.find((s) => slotToKey(s) === requestedKey);
       if (matched) {
         selectedSlot = matched;
-        selectedSlotProof = null; // will be built below if evidence exists
+        selectedSlotProof = null;
+        selectionEstablishedThisTurn = true;
       }
     }
   }
 
-  // ── Build selected_slot_proof when slot is known and evidence is present ──
-  if (selectedSlot && activeAvailabilityEvidence) {
-    const key = slotToKey(selectedSlot);
-    if (key && activeAvailabilityEvidence.allowed_slot_keys.includes(key)) {
-      selectedSlotProof = {
-        availability_call_id: activeAvailabilityEvidence.availability_call_id,
-        slot_key: key,
-      };
+  // ── Build / validate selected_slot_proof ──
+  // Proof is ONLY created when selection was established this turn.
+  // Persisted proof is validated (not reconstructed) — missing proof stays missing.
+  if (selectionEstablishedThisTurn) {
+    if (selectedSlot && activeAvailabilityEvidence) {
+      const key = slotToKey(selectedSlot);
+      if (key && activeAvailabilityEvidence.allowed_slot_keys.includes(key)) {
+        selectedSlotProof = {
+          availability_call_id: activeAvailabilityEvidence.availability_call_id,
+          slot_key: key,
+        };
+      } else {
+        selectedSlotProof = null;
+      }
     } else {
-      // Slot doesn't map to the current evidence — no proof possible.
+      selectedSlotProof = null;
+    }
+  } else if (selectedSlotProof && selectedSlot && activeAvailabilityEvidence) {
+    // Validate persisted proof — clear it if the chain is broken, keep it if intact.
+    const key = slotToKey(selectedSlot);
+    const proofValid =
+      key !== null &&
+      selectedSlotProof.slot_key === key &&
+      selectedSlotProof.availability_call_id === activeAvailabilityEvidence.availability_call_id &&
+      activeAvailabilityEvidence.allowed_slot_keys.includes(selectedSlotProof.slot_key);
+    if (!proofValid) {
       selectedSlotProof = null;
     }
   }
+  // If selectedSlotProof is null and selectionEstablishedThisTurn is false, proof stays null.
 
   // ── Compute proof ──
   const serviceKnown = !!serviceReason;

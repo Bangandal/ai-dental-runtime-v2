@@ -101,6 +101,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/runtime/runtimeCaseLite.ts",
     "src/runtime/openaiResponsesOutputText.ts",
     "src/runtime/openaiRuntimeCaseLiteExtractor.ts",
+    "src/runtime/slotEvidence.ts",
     "src/runtime/bookingApplyPreflight.ts",
     "src/runtime/bookingProcessState.ts",
     "src/runtime/supabaseBookingProcessStateRepository.ts",

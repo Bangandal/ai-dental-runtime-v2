@@ -17,7 +17,8 @@ export interface SelectedSlotProof {
 
 /**
  * Normalizes a date + time pair to the canonical slot key format YYYY-MM-DDTHH:MM.
- * Accepts HH:MM or HH:MM:SS for time. Returns null for invalid or incomplete inputs.
+ * Accepts HH:MM or HH:MM:SS for time, and single-digit hours. Returns null for invalid inputs.
+ * Used for parsing structured availability slots (slotToKey). NOT for booking request validation.
  */
 export function normalizeSlotKey(date: string, time: string): string | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date.trim())) return null;
@@ -27,6 +28,53 @@ export function normalizeSlotKey(date: string, time: string): string | null {
   const m = parseInt(timeMatch[2], 10);
   if (h > 23 || m > 59) return null;
   return `${date.trim()}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+function isValidCalendarDate(date: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+  const [y, mo, d] = date.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return dt.getUTCFullYear() === y && dt.getUTCMonth() === mo - 1 && dt.getUTCDate() === d;
+}
+
+function isStrictHHMM(time: string): boolean {
+  if (!/^\d{2}:\d{2}$/.test(time)) return false;
+  const [h, m] = time.split(":").map(Number);
+  return h <= 23 && m <= 59;
+}
+
+/**
+ * Strict booking-request key: requires exactly YYYY-MM-DD (valid calendar date) and HH:MM
+ * (two-digit hour, no seconds). Rejects "9:00", "09:00:00", "2027-02-31", etc.
+ * Use this for validating patient booking requests — not for parsing availability slots.
+ */
+export function normalizeBookingRequestKey(date: string, time: string): string | null {
+  const d = date.trim();
+  const t = time.trim();
+  if (!isValidCalendarDate(d)) return null;
+  if (!isStrictHHMM(t)) return null;
+  return `${d}T${t}`;
+}
+
+export type BookingSlotFormatResult =
+  | { ok: true; slot_key: string }
+  | { ok: false; reason: "missing_booking_slot" | "invalid_booking_slot_format" };
+
+/**
+ * Validates that a booking.apply request includes a strictly-formatted date (YYYY-MM-DD,
+ * valid calendar) and time (HH:MM exact, two-digit hour). Single-digit hours, seconds
+ * suffixes, and impossible calendar dates are all rejected as invalid_booking_slot_format.
+ * This is the single source of truth for format validation — guards must not duplicate it.
+ */
+export function validateBookingRequestFormat(
+  args: Record<string, unknown>,
+): BookingSlotFormatResult {
+  const date = typeof args.requested_date === "string" ? args.requested_date.trim() : null;
+  const time = typeof args.requested_time === "string" ? args.requested_time.trim() : null;
+  if (!date || !time) return { ok: false, reason: "missing_booking_slot" };
+  const key = normalizeBookingRequestKey(date, time);
+  if (!key) return { ok: false, reason: "invalid_booking_slot_format" };
+  return { ok: true, slot_key: key };
 }
 
 /**
@@ -73,6 +121,7 @@ export type BookingSlotEvidenceResult =
       ok: false;
       reason:
         | "missing_booking_slot"
+        | "invalid_booking_slot_format"
         | "no_authoritative_availability_evidence"
         | "slot_not_in_authoritative_evidence"
         | "selected_slot_proof_missing"
@@ -123,8 +172,8 @@ export function validateBookingSlotEvidence(params: {
       : null;
 
   if (!requestedDate || !requestedTime) return { ok: false, reason: "missing_booking_slot" };
-  const requestedKey = normalizeSlotKey(requestedDate, requestedTime);
-  if (!requestedKey) return { ok: false, reason: "missing_booking_slot" };
+  const requestedKey = normalizeBookingRequestKey(requestedDate, requestedTime);
+  if (!requestedKey) return { ok: false, reason: "invalid_booking_slot_format" };
 
   // Path 1: current-turn authoritative availability
   if (

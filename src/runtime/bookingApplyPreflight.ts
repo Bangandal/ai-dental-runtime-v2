@@ -59,16 +59,13 @@ export function buildNoSlotsPreflightReply(locale?: string | null): string {
 // ── Missing slot date/time guard ──────────────────────────────────────────────
 
 /**
- * Returns true when booking.apply args don't include both requested_date AND
- * requested_time.
+ * Returns true when booking.apply args are missing requested_date / requested_time,
+ * OR when either field is present but fails strict format validation (non-two-digit hour,
+ * seconds suffix, impossible calendar date, etc.). Guards G and H delegate all format
+ * checking here — they skip when this returns true.
  */
 export function bookingApplyArgsMissingSlot(args: Record<string, unknown>): boolean {
-  return (
-    typeof args.requested_date !== "string" ||
-    !args.requested_date.trim() ||
-    typeof args.requested_time !== "string" ||
-    !args.requested_time.trim()
-  );
+  return !validateBookingRequestFormat(args).ok;
 }
 
 const MISSING_SLOT_REPLIES: Record<string, string> = {
@@ -137,7 +134,7 @@ export function buildMissingServiceReply(locale?: string | null): string {
 import type { AvailableSlot } from "./bookingProcessState.ts";
 import type { AuthoritativeAvailabilityAttempt } from "./availabilityActionTruth.ts";
 import type { AvailabilityEvidence, SelectedSlotProof } from "./slotEvidence.ts";
-import { validateBookingSlotEvidence } from "./slotEvidence.ts";
+import { validateBookingSlotEvidence, validateBookingRequestFormat } from "./slotEvidence.ts";
 
 /** Shared params for both slot evidence guards. */
 interface SlotEvidenceGuardParams {
@@ -164,10 +161,8 @@ export function shouldInterceptMissingSlotProof(params: SlotEvidenceGuardParams)
   const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
   if (!req) return false;
 
-  // Missing date/time is handled upstream by bookingApplyArgsMissingSlot.
-  const hasDate = typeof req.arguments.requested_date === "string" && !!req.arguments.requested_date.trim();
-  const hasTime = typeof req.arguments.requested_time === "string" && !!req.arguments.requested_time.trim();
-  if (!hasDate || !hasTime) return false;
+  // Missing or malformed date/time is handled upstream by bookingApplyArgsMissingSlot (Guard D).
+  if (!validateBookingRequestFormat(req.arguments).ok) return false;
 
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: req,
@@ -211,9 +206,8 @@ export function shouldInterceptInvalidSlotDateTime(params: SlotEvidenceGuardPara
   const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
   if (!req) return false;
 
-  const hasDate = typeof req.arguments.requested_date === "string" && !!req.arguments.requested_date.trim();
-  const hasTime = typeof req.arguments.requested_time === "string" && !!req.arguments.requested_time.trim();
-  if (!hasDate || !hasTime) return false;
+  // Missing or malformed date/time is handled upstream by bookingApplyArgsMissingSlot (Guard D).
+  if (!validateBookingRequestFormat(req.arguments).ok) return false;
 
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: req,

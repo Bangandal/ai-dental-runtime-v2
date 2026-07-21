@@ -90,6 +90,7 @@ test("TC-1: booking.apply without subject_id always blocked (no registry present
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -102,7 +103,7 @@ test("TC-1: booking.apply without subject_id always blocked (no registry present
             first_name: "Иван",
             last_name: "Петров",
             service: "чистка",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
           },
         }],
@@ -115,7 +116,7 @@ test("TC-1: booking.apply without subject_id always blocked (no registry present
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -144,6 +145,7 @@ test("TC-2: subject_id=subject_1, no registry → executor uses channel_contact 
   let capturedPhone: string | undefined;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -156,7 +158,7 @@ test("TC-2: subject_id=subject_1, no registry → executor uses channel_contact 
             first_name: "Іван",
             last_name: "Петров",
             service: "чистка",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
           },
         }],
@@ -169,7 +171,7 @@ test("TC-2: subject_id=subject_1, no registry → executor uses channel_contact 
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -185,6 +187,7 @@ test("TC-2: subject_id=subject_1, no registry → executor uses channel_contact 
 
 test("TC-3: subject_id=subject_2, no registry → registry bootstrapped via bootstrapRegistryFromBookingApplyArgs", async () => {
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -197,7 +200,7 @@ test("TC-3: subject_id=subject_2, no registry → registry bootstrapped via boot
             first_name: "Анна",
             last_name: "Козлова",
             service: "осмотр",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
           },
         }],
@@ -210,7 +213,7 @@ test("TC-3: subject_id=subject_2, no registry → registry bootstrapped via boot
         data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -231,6 +234,7 @@ test("TC-4: no subject_id → executor never called regardless of phone/slot pre
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -243,7 +247,7 @@ test("TC-4: no subject_id → executor never called regardless of phone/slot pre
             first_name: "Тест",
             last_name: "Пациент",
             service: "чистка",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
           },
         }],
@@ -256,7 +260,7 @@ test("TC-4: no subject_id → executor never called regardless of phone/slot pre
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   await loop.runTurn({
@@ -272,6 +276,7 @@ test("TC-4: no subject_id → executor never called regardless of phone/slot pre
 test("TC-5: same request in RU, CS, EN all hit subject_resolution_conflict when subject_id absent", async () => {
   async function runWithLocale(locale: "ru" | "cs" | "en") {
     const loop = createRuntimeAgentLoop({
+      now: new Date("2027-08-15T07:00:00Z"),
       model: "test-model",
       caller: makeCallerSequence([
         {
@@ -284,7 +289,7 @@ test("TC-5: same request in RU, CS, EN all hit subject_resolution_conflict when 
               first_name: "Test",
               last_name: "User",
               service: "cleaning",
-              requested_date: "2026-07-20",
+              requested_date: "2027-08-15",
               requested_time: "11:00",
             },
           }],
@@ -292,7 +297,7 @@ test("TC-5: same request in RU, CS, EN all hit subject_resolution_conflict when 
         { type: "final_response", final_response: { final_patient_reply: "OK" } },
       ]),
       executors: {},
-      bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+      bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
     });
 
     return loop.runTurn({
@@ -394,6 +399,7 @@ test("TC-8: had_booking_subjects suppresses stale typed provided_phone in self-b
   const STALE_TYPED_PHONE = "+420999888777";
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -406,7 +412,7 @@ test("TC-8: had_booking_subjects suppresses stale typed provided_phone in self-b
             first_name: "Рима",
             last_name: "Шевченко",
             service: "осмотр",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
           },
         }],
@@ -419,7 +425,7 @@ test("TC-8: had_booking_subjects suppresses stale typed provided_phone in self-b
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -455,7 +461,7 @@ test("TC-9: booking.apply in round-1 then kb.search round-2 → forced finalizat
       },
       {
         id: "subject_2" as SubjectId, role: "mentioned_person", label: null, patient_name: "Иван", service: "чистка",
-        slot: "2026-07-20T11:00", booking_contact: { phone_number: "+420123456789", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
+        slot: "2027-08-15T11:00", booking_contact: { phone_number: "+420123456789", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
         status: "collecting", missing: [],
       },
     ],
@@ -464,6 +470,7 @@ test("TC-9: booking.apply in round-1 then kb.search round-2 → forced finalizat
   };
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       // Round 1: booking.apply for subject_2
@@ -477,7 +484,7 @@ test("TC-9: booking.apply in round-1 then kb.search round-2 → forced finalizat
             first_name: "Иван",
             last_name: "Петров",
             service: "чистка",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
           },
         }],
@@ -497,7 +504,7 @@ test("TC-9: booking.apply in round-1 then kb.search round-2 → forced finalizat
       }),
       "kb.search": async () => ({ status: "success" as const, data: { chunks: [] } }),
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -517,6 +524,7 @@ test("TC-9: booking.apply in round-1 then kb.search round-2 → forced finalizat
 
 test("TC-10: guarded exception after subject_2 bootstrap → booking_subjects_after_resolution preserved", async () => {
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: async (input) => {
       const callNum = (input.input.tool_results ?? []).length;
@@ -532,7 +540,7 @@ test("TC-10: guarded exception after subject_2 bootstrap → booking_subjects_af
               first_name: "Анна",
               last_name: "Козлова",
               service: "осмотр",
-              requested_date: "2026-07-20",
+              requested_date: "2027-08-15",
               requested_time: "11:00",
             },
           }],
@@ -547,7 +555,7 @@ test("TC-10: guarded exception after subject_2 bootstrap → booking_subjects_af
         data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -912,6 +920,7 @@ test("P3-1: two booking.apply in round-1 with subject_1 and subject_2 → execut
   let executorCallCount = 0;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -925,7 +934,7 @@ test("P3-1: two booking.apply in round-1 with subject_1 and subject_2 → execut
               first_name: "Рима",
               last_name: "Шевченко",
               service: "чистка",
-              requested_date: "2026-07-20",
+              requested_date: "2027-08-15",
               requested_time: "11:00",
             },
           },
@@ -937,7 +946,7 @@ test("P3-1: two booking.apply in round-1 with subject_1 and subject_2 → execut
               first_name: "Анна",
               last_name: "Козлова",
               service: "осмотр",
-              requested_date: "2026-07-20",
+              requested_date: "2027-08-15",
               requested_time: "11:00",
             },
           },
@@ -951,7 +960,7 @@ test("P3-1: two booking.apply in round-1 with subject_1 and subject_2 → execut
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
@@ -971,6 +980,7 @@ test("P3-2: round-1 booking.apply subject_1 executed → round-2 model requests 
   let executorCallCount = 0;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -983,7 +993,7 @@ test("P3-2: round-1 booking.apply subject_1 executed → round-2 model requests 
             first_name: "Рима",
             last_name: "Шевченко",
             service: "чистка",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
           },
         }],
@@ -998,7 +1008,7 @@ test("P3-2: round-1 booking.apply subject_1 executed → round-2 model requests 
             first_name: "Анна",
             last_name: "Козлова",
             service: "осмотр",
-            requested_date: "2026-07-20",
+            requested_date: "2027-08-15",
             requested_time: "11:00",
           },
         }],
@@ -1011,7 +1021,7 @@ test("P3-2: round-1 booking.apply subject_1 executed → round-2 model requests 
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_r1_p3b" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
@@ -1051,30 +1061,31 @@ test("P3-3: availability round-1, one booking.apply round-2 → booking executes
   };
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
         type: "tool_requests",
-        tool_requests: [{ tool: "availability.check", call_id: "avail_p3c", arguments: { requested_date: "2026-07-20", service_interest: "чистка" } }],
+        tool_requests: [{ tool: "availability.check", call_id: "avail_p3c", arguments: { requested_date: "2027-08-15", service_interest: "чистка" } }],
       },
       {
         type: "tool_requests",
         tool_requests: [{
           tool: "booking.apply",
           call_id: "ba_p3c",
-          arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" },
+          arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" },
         }],
       },
       { type: "final_response", final_response: { final_patient_reply: "Анна записана на 11:00!" } },
     ]),
     executors: {
-      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-20T11:00:00", service: "чистка" }] } }),
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2027-08-15T11:00:00", service: "чистка" }] } }),
       "booking.apply": async () => {
         executorCallCount++;
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_p3c" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY, channel_contact: TRUSTED_CONTACT });
@@ -1094,12 +1105,13 @@ test("P4-1: round-1 avail returns 0 slots + round-2 booking.apply subject_2 (no 
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_p4", arguments: { requested_date: "2026-07-20", service_interest: "чистка" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_p4", arguments: { requested_date: "2027-08-15", service_interest: "чистка" } }] },
       {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "ba_p4", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_p4", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
       },
       { type: "final_response", final_response: { final_patient_reply: "К сожалению, нет свободного времени." } },
     ]),
@@ -1126,12 +1138,13 @@ test("P4-2: round-2 booking.apply missing subject_id + zero slots → subject_re
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_p4b", arguments: { requested_date: "2026-07-20" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_p4b", arguments: { requested_date: "2027-08-15" } }] },
       {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "ba_p4b", arguments: { first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_p4b", arguments: { first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
       },
       { type: "final_response", final_response: { final_patient_reply: "Уточните." } },
     ]),
@@ -1158,11 +1171,12 @@ test("P5-2: prior registry + FRESH typed phone (current turn) + self booking →
   let capturedPhone: string | undefined;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "ba_p5b", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "осмотр", requested_date: "2026-07-20", requested_time: "11:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_p5b", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "осмотр", requested_date: "2027-08-15", requested_time: "11:00" } }],
       },
       { type: "final_response", final_response: { final_patient_reply: "Рима записана!" } },
     ]),
@@ -1172,7 +1186,7 @@ test("P5-2: prior registry + FRESH typed phone (current turn) + self booking →
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   await loop.runTurn({
@@ -1202,18 +1216,19 @@ test("P5-3: prior registry + fresh typed phone + subject_2 → pending_typed_pho
   };
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "ba_p5c", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_p5c", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
       },
       { type: "final_response", final_response: { final_patient_reply: "Уточните чей телефон." } },
     ]),
     executors: {
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }; },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY, channel_contact: TRUSTED_CONTACT, current_turn_typed_phone: TYPED_PHONE, had_booking_subjects: true });
@@ -1229,18 +1244,19 @@ test("P5-3: prior registry + fresh typed phone + subject_2 → pending_typed_pho
 async function runWithInvalidSubjectId(subjectId: unknown): Promise<void> {
   let executorCalled = false;
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "ba_inv", arguments: { subject_id: subjectId, first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_inv", arguments: { subject_id: subjectId, first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
       },
       { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
     ]),
     executors: {
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } }; },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
   const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
   assert.equal(executorCalled, false, `executor must NOT be called for invalid subject_id: ${JSON.stringify(subjectId)}`);
@@ -1261,20 +1277,21 @@ test("P8-5: active registry + invalid subject ID → subject_resolution_conflict
     active_subject_id: "subject_2" as SubjectId,
     subjects: [
       { id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: null, service: null, slot: null, booking_contact: { phone_number: "+380991350135", source: "telegram_contact_button", trust: "trusted", owner_subject_id: "subject_1" as SubjectId, collected_at: null }, status: "collecting", missing: [] },
-      { id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна", service: "чистка", slot: "2026-07-20T11:00", booking_contact: null, status: "collecting", missing: ["booking_contact"] },
+      { id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна", service: "чистка", slot: "2027-08-15T11:00", booking_contact: null, status: "collecting", missing: ["booking_contact"] },
     ],
     pending_typed_phone: null,
     max_subjects: 4,
   };
   let executorCalled = false;
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8e", arguments: { subject_id: "subject_invalid", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8e", arguments: { subject_id: "subject_invalid", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }] },
       { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
     ]),
     executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
   const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY, channel_contact: TRUSTED_CONTACT });
   assert.equal(executorCalled, false);
@@ -1287,17 +1304,18 @@ test("P8-5: active registry + invalid subject ID → subject_resolution_conflict
 test("P8-6: round-2 + invalid subject ID ('self') → subject_resolution_conflict, executor=0", async () => {
   let executorCalled = false;
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8f", arguments: { requested_date: "2026-07-20" } }] },
-      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8f", arguments: { subject_id: "self", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8f", arguments: { requested_date: "2027-08-15" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8f", arguments: { subject_id: "self", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }] },
       { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
     ]),
     executors: {
-      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-20T11:00:00" }] } }),
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2027-08-15T11:00:00" }] } }),
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
   const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
   assert.equal(executorCalled, false);
@@ -1310,10 +1328,11 @@ test("P8-6: round-2 + invalid subject ID ('self') → subject_resolution_conflic
 test("P8-7: zero slots + missing subject ID → subject_resolution_conflict (not no_available_slots)", async () => {
   let executorCalled = false;
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8g", arguments: { requested_date: "2026-07-20" } }] },
-      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8g", arguments: { first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8g", arguments: { requested_date: "2027-08-15" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8g", arguments: { first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }] },
       { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
     ]),
     executors: {
@@ -1332,10 +1351,11 @@ test("P8-7: zero slots + missing subject ID → subject_resolution_conflict (not
 test("P8-8: zero slots + invalid subject ID → subject_resolution_conflict (not no_available_slots)", async () => {
   let executorCalled = false;
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8h", arguments: { requested_date: "2026-07-20" } }] },
-      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8h", arguments: { subject_id: "subject_99", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_p8h", arguments: { requested_date: "2027-08-15" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_p8h", arguments: { subject_id: "subject_99", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }] },
       { type: "final_response", final_response: { final_patient_reply: "Ошибка." } },
     ]),
     executors: {
@@ -1413,7 +1433,7 @@ test("OC-2: real two-turn orchestrator — turn-1 bootstraps registry via subjec
           channel_contact: { phone_number: "+380991350135", phone_source: "telegram_contact_button" as const, phone_consent: true, phone_collected_at: "2026-07-01T00:00:00.000Z" },
           provided_phone: null,
           booking_subjects: bookingSubjectsForLoad,
-          selected_slot_starts_at: "2026-07-20T11:00:00",
+          selected_slot_starts_at: "2027-08-15T11:00:00",
           case_context_lite: null,
           runtime_flags: { has_durable_context: true, context_source: "supabase" as const, context_loaded_at: new Date().toISOString() },
           recent_history: [],
@@ -1424,6 +1444,7 @@ test("OC-2: real two-turn orchestrator — turn-1 bootstraps registry via subjec
 
   // Turn 1: model emits subject_intent in final_response → orchestrator bootstraps registry
   const turn1Loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -1449,20 +1470,21 @@ test("OC-2: real two-turn orchestrator — turn-1 bootstraps registry via subjec
 
   // Turn 2: real loop — availability.check round-1 + booking.apply subject_2 round-2
   const turn2Loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_oc2", arguments: { requested_date: "2026-07-20", service_interest: "чистка" } }] },
-      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_oc2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_oc2", arguments: { requested_date: "2027-08-15", service_interest: "чистка" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_oc2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }] },
       { type: "final_response", final_response: { final_patient_reply: "Анна Козлова записана на чистку 20 июля в 11:00!" } },
     ]),
     executors: {
-      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-20T11:00:00", service: "чистка" }] } }),
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2027-08-15T11:00:00", service: "чистка" }] } }),
       "booking.apply": async () => {
         turn2ExecutorCallCount++;
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_oc2_real" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
   const turn2Service = createRuntimeTurnService({ agent: turn2Loop });
 
@@ -1510,7 +1532,7 @@ test("P3-2 (strengthened): round-1 booking subject_1 executed → round-2 bookin
         status: "collecting", missing: [],
       },
       {
-        id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна Козлова", service: "чистка", slot: "2026-07-20T11:00",
+        id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна Козлова", service: "чистка", slot: "2027-08-15T11:00",
         booking_contact: { phone_number: "+420111222333", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
         status: "collecting", missing: [],
       },
@@ -1520,6 +1542,7 @@ test("P3-2 (strengthened): round-1 booking subject_1 executed → round-2 bookin
   };
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -1527,7 +1550,7 @@ test("P3-2 (strengthened): round-1 booking subject_1 executed → round-2 bookin
         tool_requests: [{
           tool: "booking.apply",
           call_id: FIRST_CALL_ID,
-          arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" },
+          arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" },
         }],
       },
       {
@@ -1535,7 +1558,7 @@ test("P3-2 (strengthened): round-1 booking subject_1 executed → round-2 bookin
         tool_requests: [{
           tool: "booking.apply",
           call_id: "ba_r2_p3b_str",
-          arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" },
+          arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" },
         }],
       },
       { type: "final_response", final_response: { final_patient_reply: "Рима записана. Анну оформим следующим сообщением." } },
@@ -1546,7 +1569,7 @@ test("P3-2 (strengthened): round-1 booking subject_1 executed → round-2 bookin
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_s1" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY, channel_contact: TRUSTED_CONTACT });
@@ -1595,13 +1618,13 @@ test("New-P1: integration — round-1 booking subject_1 success, round-2 blocks 
     subjects: [
       {
         id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: "Рима Шевченко", service: "чистка",
-        slot: "2026-07-20T11:00",
+        slot: "2027-08-15T11:00",
         booking_contact: { phone_number: "+380991350135", source: "telegram_contact_button", trust: "trusted", owner_subject_id: "subject_1" as SubjectId, collected_at: null },
         status: "collecting", missing: [],
       },
       {
         id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна Козлова", service: "чистка",
-        slot: "2026-07-20T11:00",
+        slot: "2027-08-15T11:00",
         booking_contact: { phone_number: "+420111222333", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
         status: "collecting", missing: [],
       },
@@ -1621,7 +1644,7 @@ test("New-P1: integration — round-1 booking subject_1 success, round-2 blocks 
           channel_contact: { phone_number: "+380991350135", phone_source: "telegram_contact_button" as const, phone_consent: true, phone_collected_at: "2026-07-01T00:00:00.000Z" },
           provided_phone: null,
           booking_subjects: REGISTRY,
-          selected_slot_starts_at: "2026-07-20T11:00:00",
+          selected_slot_starts_at: "2027-08-15T11:00:00",
           case_context_lite: null,
           runtime_flags: { has_durable_context: true, context_source: "supabase" as const, context_loaded_at: new Date().toISOString() },
           recent_history: [],
@@ -1652,6 +1675,7 @@ test("New-P1: integration — round-1 booking subject_1 success, round-2 blocks 
   };
 
   const turnLoop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
@@ -1659,7 +1683,7 @@ test("New-P1: integration — round-1 booking subject_1 success, round-2 blocks 
         tool_requests: [{
           tool: "booking.apply",
           call_id: "ba_p1_int_r1",
-          arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" },
+          arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" },
         }],
       },
       {
@@ -1667,7 +1691,7 @@ test("New-P1: integration — round-1 booking subject_1 success, round-2 blocks 
         tool_requests: [{
           tool: "booking.apply",
           call_id: "ba_p1_int_r2",
-          arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" },
+          arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" },
         }],
       },
       { type: "final_response", final_response: { final_patient_reply: "Рима записана. Анну оформим в следующий раз." } },
@@ -1678,7 +1702,7 @@ test("New-P1: integration — round-1 booking subject_1 success, round-2 blocks 
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_p1" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const turnService = createRuntimeTurnService({ agent: turnLoop });
@@ -1706,23 +1730,24 @@ test("New-P2-round2-multi: availability round-1 + two booking.apply round-2 → 
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_r2m", arguments: { requested_date: "2026-07-20" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_r2m", arguments: { requested_date: "2027-08-15" } }] },
       {
         type: "tool_requests",
         tool_requests: [
-          { tool: "booking.apply", call_id: "ba_r2m_1", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } },
-          { tool: "booking.apply", call_id: "ba_r2m_2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2026-07-20", requested_time: "11:00" } },
+          { tool: "booking.apply", call_id: "ba_r2m_1", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } },
+          { tool: "booking.apply", call_id: "ba_r2m_2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2027-08-15", requested_time: "11:00" } },
         ],
       },
       { type: "final_response", final_response: { final_patient_reply: "Пожалуйста, уточните запись по одному." } },
     ]),
     executors: {
-      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-20T11:00:00" }] } }),
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2027-08-15T11:00:00" }] } }),
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
@@ -1744,13 +1769,14 @@ test("New-P1-round1-multi-both-closed: two booking.apply in round-1 → both cal
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
         type: "tool_requests",
         tool_requests: [
-          { tool: "booking.apply", call_id: "ba_r1m_a", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } },
-          { tool: "booking.apply", call_id: "ba_r1m_b", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2026-07-20", requested_time: "11:00" } },
+          { tool: "booking.apply", call_id: "ba_r1m_a", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } },
+          { tool: "booking.apply", call_id: "ba_r1m_b", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2027-08-15", requested_time: "11:00" } },
         ],
       },
       { type: "final_response", final_response: { final_patient_reply: "Пожалуйста, уточните запись по одному." } },
@@ -1758,7 +1784,7 @@ test("New-P1-round1-multi-both-closed: two booking.apply in round-1 → both cal
     executors: {
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
@@ -1791,7 +1817,7 @@ function makeValidV2(): Record<string, unknown> {
         label: null,
         patient_name: "Рима Шевченко",
         service: "чистка",
-        slot: "2026-07-20T11:00",
+        slot: "2027-08-15T11:00",
         status: "collecting",
         booking_contact: {
           phone_number: "+380991350135",
@@ -1882,7 +1908,7 @@ const PROOF_STATE: BookingSubjectsState = {
     { id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: "Рима", service: null, slot: null, booking_contact: null, status: "collecting", missing: [] },
     {
       id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна", service: "чистка",
-      slot: "2026-07-20T11:00",
+      slot: "2027-08-15T11:00",
       booking_contact: { phone_number: "+420111222333", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
       status: "collecting", missing: [],
     },
@@ -1894,7 +1920,7 @@ const PROOF_STATE: BookingSubjectsState = {
 test("Proof-1: missing cliniccard_visit_id → subject NOT marked booked (partial proof rejected)", () => {
   const updated = postUpdateBookingSubjects({
     current: PROOF_STATE,
-    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf1", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf1", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
     toolResults: [{ tool: "booking.apply", call_id: "ba_pf1", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } }],
     executionSubjectId: "subject_2" as SubjectId,
   });
@@ -1905,7 +1931,7 @@ test("Proof-1: missing cliniccard_visit_id → subject NOT marked booked (partia
 test("Proof-2: booking_status=missing_phone → subject NOT marked booked", () => {
   const updated = postUpdateBookingSubjects({
     current: PROOF_STATE,
-    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
     toolResults: [{ tool: "booking.apply", call_id: "ba_pf2", status: "success", data: { booking_status: "missing_phone", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null } }],
     executionSubjectId: "subject_2" as SubjectId,
   });
@@ -1916,7 +1942,7 @@ test("Proof-2: booking_status=missing_phone → subject NOT marked booked", () =
 test("Proof-3: may_claim_booked=false → subject NOT marked booked", () => {
   const updated = postUpdateBookingSubjects({
     current: PROOF_STATE,
-    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf3", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf3", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
     toolResults: [{ tool: "booking.apply", call_id: "ba_pf3", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: false, cliniccard_visit_id: "v-partial" } }],
     executionSubjectId: "subject_2" as SubjectId,
   });
@@ -1927,7 +1953,7 @@ test("Proof-3: may_claim_booked=false → subject NOT marked booked", () => {
 test("Proof-4: tool result status=denied → subject NOT marked booked", () => {
   const updated = postUpdateBookingSubjects({
     current: PROOF_STATE,
-    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf4", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf4", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
     toolResults: [{ tool: "booking.apply", call_id: "ba_pf4", status: "denied", error: { code: "guard_block", message: "guard blocked" } }],
     executionSubjectId: "subject_2" as SubjectId,
   });
@@ -1938,7 +1964,7 @@ test("Proof-4: tool result status=denied → subject NOT marked booked", () => {
 test("Proof-5: full proof (all 5 fields) → subject marked booked", () => {
   const updated = postUpdateBookingSubjects({
     current: PROOF_STATE,
-    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf5", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+    toolRequests: [{ tool: "booking.apply", call_id: "ba_pf5", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
     toolResults: [{ tool: "booking.apply", call_id: "ba_pf5", status: "success", data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit-proof5" } }],
     executionSubjectId: "subject_2" as SubjectId,
   });
@@ -1952,14 +1978,15 @@ test("Mixed-R1-avail: round-1 booking A + booking B + availability C → multipl
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
         type: "tool_requests",
         tool_requests: [
-          { tool: "booking.apply", call_id: "ba_mr1_a", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } },
-          { tool: "booking.apply", call_id: "ba_mr1_b", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2026-07-20", requested_time: "11:30" } },
-          { tool: "availability.check", call_id: "av_mr1_c", arguments: { requested_date: "2026-07-20" } },
+          { tool: "booking.apply", call_id: "ba_mr1_a", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } },
+          { tool: "booking.apply", call_id: "ba_mr1_b", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2027-08-15", requested_time: "11:30" } },
+          { tool: "availability.check", call_id: "av_mr1_c", arguments: { requested_date: "2027-08-15" } },
         ],
       },
       { type: "final_response", final_response: { final_patient_reply: "Пожалуйста, делайте по одной записи." } },
@@ -1968,7 +1995,7 @@ test("Mixed-R1-avail: round-1 booking A + booking B + availability C → multipl
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
       "availability.check": async () => { executorCalled = true; return { status: "success" as const, data: { slots: [] } }; },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
@@ -1994,25 +2021,26 @@ test("Mixed-R2-kb: avail round-1 + [booking A + booking B + kb.search C] round-2
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_r1_mr2", arguments: { requested_date: "2026-07-20" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "av_r1_mr2", arguments: { requested_date: "2027-08-15" } }] },
       {
         type: "tool_requests",
         tool_requests: [
-          { tool: "booking.apply", call_id: "ba_mr2_a", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } },
-          { tool: "booking.apply", call_id: "ba_mr2_b", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2026-07-20", requested_time: "11:30" } },
+          { tool: "booking.apply", call_id: "ba_mr2_a", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } },
+          { tool: "booking.apply", call_id: "ba_mr2_b", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2027-08-15", requested_time: "11:30" } },
           { tool: "kb.search", call_id: "kb_mr2_c", arguments: { query: "стоимость чистки" } },
         ],
       },
       { type: "final_response", final_response: { final_patient_reply: "Пожалуйста, делайте по одной записи." } },
     ]),
     executors: {
-      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2026-07-20T11:00:00" }] } }),
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2027-08-15T11:00:00" }] } }),
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
       "kb.search": async () => { executorCalled = true; return { status: "success" as const, data: { results: [] } }; },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, channel_contact: TRUSTED_CONTACT });
@@ -2040,19 +2068,19 @@ test("Mixed-R1-books-then-R2-multi: round-1 books subject_1 (1 executor call), r
     subjects: [
       {
         id: "subject_1" as SubjectId, role: "sender", label: null, patient_name: "Рима Шевченко", service: "чистка",
-        slot: "2026-07-20T11:00",
+        slot: "2027-08-15T11:00",
         booking_contact: { phone_number: "+380991350135", source: "telegram_contact_button", trust: "trusted", owner_subject_id: "subject_1" as SubjectId, collected_at: null },
         status: "collecting", missing: [],
       },
       {
         id: "subject_2" as SubjectId, role: "mentioned_person", label: "мама", patient_name: "Анна Козлова", service: "осмотр",
-        slot: "2026-07-20T12:00",
+        slot: "2027-08-15T12:00",
         booking_contact: { phone_number: "+420111222333", source: "typed", trust: "unverified", owner_subject_id: "subject_2" as SubjectId, collected_at: null },
         status: "collecting", missing: [],
       },
       {
         id: "subject_3" as SubjectId, role: "mentioned_person", label: "папа", patient_name: "Петр Козлов", service: "пломба",
-        slot: "2026-07-20T13:00",
+        slot: "2027-08-15T13:00",
         booking_contact: { phone_number: "+420333444555", source: "typed", trust: "unverified", owner_subject_id: "subject_3" as SubjectId, collected_at: null },
         status: "collecting", missing: [],
       },
@@ -2064,17 +2092,18 @@ test("Mixed-R1-books-then-R2-multi: round-1 books subject_1 (1 executor call), r
   let executorCallCount = 0;
 
   const loop = createRuntimeAgentLoop({
+    now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
       {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "ba_r1_s1", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "ba_r1_s1", arguments: { subject_id: "subject_1", first_name: "Рима", last_name: "Шевченко", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }],
       },
       {
         type: "tool_requests",
         tool_requests: [
-          { tool: "booking.apply", call_id: "ba_r2_s2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2026-07-20", requested_time: "12:00" } },
-          { tool: "booking.apply", call_id: "ba_r2_s3", arguments: { subject_id: "subject_3", first_name: "Петр", last_name: "Козлов", service: "пломба", requested_date: "2026-07-20", requested_time: "13:00" } },
+          { tool: "booking.apply", call_id: "ba_r2_s2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "осмотр", requested_date: "2027-08-15", requested_time: "12:00" } },
+          { tool: "booking.apply", call_id: "ba_r2_s3", arguments: { subject_id: "subject_3", first_name: "Петр", last_name: "Козлов", service: "пломба", requested_date: "2027-08-15", requested_time: "13:00" } },
         ],
       },
       { type: "final_response", final_response: { final_patient_reply: "Рима записана. Для мамы и папы нужно по одной записи." } },
@@ -2085,7 +2114,7 @@ test("Mixed-R1-books-then-R2-multi: round-1 books subject_1 (1 executor call), r
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit-s1-r1" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY_3S, channel_contact: TRUSTED_CONTACT });

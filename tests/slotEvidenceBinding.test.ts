@@ -1154,3 +1154,329 @@ test("G-6: impossible calendar date (2027-02-31) blocked at Guard D, executor no
 
   assert.equal(executorCalled, false, "impossible calendar date must be blocked at Guard D");
 });
+
+// ── H. Partial-state recovery via fresh patient selection ─────────────────────
+
+// H-1: persisted slot + evidence + proof:null, patient explicitly repeats same time → proof created
+test("H-1: patient repeats same time on existing slot-without-proof → proof created, slot_known=true", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_h1",
+          arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" },
+        }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Записан!" } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock_h1" } }; },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T10:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
+          active_availability_evidence: { availability_call_id: "av_h1", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Да, давайте на 10:00",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, true, "explicit time re-selection must re-establish proof and allow booking");
+});
+
+// H-2: same setup, patient selects by ordinal "первый" → proof for first slot
+test("H-2: patient selects by ordinal 'первый' on slot-without-proof → proof created for first slot", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_h2",
+          arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" },
+        }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Записан!" } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock_h2" } }; },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T10:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
+          active_availability_evidence: { availability_call_id: "av_h2", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Давайте первый",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, true, "ordinal 'первый' must re-establish proof for first slot");
+});
+
+// H-3: persisted slot 10:00, patient explicitly selects 11:00 → slot changes, proof changes
+test("H-3: patient selects different time → selected_slot changes, proof changes", async () => {
+  let capturedArgs: Record<string, unknown> | null = null;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_h3",
+          arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" },
+        }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Записан на 11:00!" } };
+  };
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async (ctx) => { executorCalled = true; capturedArgs = ctx as unknown as Record<string, unknown>; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock_h3" } }; },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T10:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }, { starts_at: "2027-08-15T11:00:00" }],
+          active_availability_evidence: { availability_call_id: "av_h3", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00", "2027-08-15T11:00"] },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Нет, лучше на 11:00",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, true, "explicit slot change must create new proof for the new slot");
+});
+
+// H-4: generic message without time/ordinal → proof remains null, booking blocked
+test("H-4: generic booking intent without time → proof stays null, booking blocked", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_h4",
+          arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" },
+        }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Нужно выбрать время." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T10:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
+          active_availability_evidence: { availability_call_id: "av_h4", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Хочу записаться",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, false, "generic message without explicit time must not create proof");
+});
+
+// H-5: patient selects time not in active evidence → no proof, booking blocked
+test("H-5: patient selects time absent from active evidence → no proof created, booking blocked", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_h5",
+          arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "14:00" },
+        }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "14:00 недоступно." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T10:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }, { starts_at: "2027-08-15T14:00:00" }],
+          active_availability_evidence: {
+            availability_call_id: "av_h5",
+            requested_date: "2027-08-15",
+            requested_time: null,
+            // 14:00 is NOT in evidence even though it's in last_available_slots
+            allowed_slot_keys: ["2027-08-15T10:00"],
+          },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Запишите на 14:00",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, false, "slot detected from message but absent from evidence must not create proof");
+});
+
+// H-6: full runtime recovery — partial state + explicit re-selection → booking succeeds
+test("H-6: full runtime recovery: partial state + explicit selection + booking.apply succeeds", async () => {
+  let executorCalled = false;
+  let callerCount = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    callerCount++;
+    if (callerCount === 1) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_h6",
+          arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" },
+        }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Записан!" } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock_h6" } }; },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T10:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
+          active_availability_evidence: { availability_call_id: "av_h6", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Да, давайте на 10:00",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, true, "full recovery: partial state + explicit re-selection must allow booking");
+});
+
+// H-7: G-1 no-auto-upgrade remains green — matching fields alone never create proof
+test("H-7: G-1 invariant holds after fix — generic message on partial state does not create proof", async () => {
+  let executorCalled = false;
+  const caller: RuntimeAgentCaller = async (input) => {
+    if (!input.input.tool_results?.length) {
+      return {
+        type: "tool_requests",
+        tool_requests: [{
+          tool: "booking.apply",
+          call_id: "ba_h7",
+          arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" },
+        }],
+      };
+    }
+    return { type: "final_response", final_response: { final_patient_reply: "Нужно подтвердить время." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          selected_slot: { starts_at: "2027-08-15T10:00:00" },
+          last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
+          active_availability_evidence: { availability_call_id: "av_h7", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState() {},
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  await agent.runTurn({
+    clinic_id: "clinic_1",
+    user_message: "Хочу записаться",
+    channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCalled, false, "matching persisted fields + generic message must NOT auto-create proof (G-1 invariant)");
+});

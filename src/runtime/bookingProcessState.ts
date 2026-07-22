@@ -470,7 +470,10 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
 
   let selectionEstablishedThisTurn = false;
 
-  if (input.patientMessage && lastAvailableSlots.length > 0 && !selectedSlot) {
+  // Run detection even when selectedSlot already exists — patient may re-select to re-establish
+  // missing provenance. detectSelectedSlot returns null for generic messages ("хочу записаться"),
+  // so only an explicit time or ordinal reference triggers selectionEstablishedThisTurn.
+  if (input.patientMessage && lastAvailableSlots.length > 0) {
     const detected = detectSelectedSlot(input.patientMessage, lastAvailableSlots);
     if (detected !== null) {
       selectedSlot = detected;

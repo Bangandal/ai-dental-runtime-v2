@@ -52,7 +52,7 @@ test("OpenAI caller receives active tool definitions only", async () => {
   await agent.runTurn(makeTurnInput());
   const toolNames = ((captured?.tools ?? []) as Array<Record<string, unknown>>).map((tool) => String(tool.name));
 
-  assert.deepEqual(toolNames.sort(), ["availability_check", "booking_apply", "kb_search"]);
+  assert.deepEqual(toolNames.sort(), ["availability_check", "booking_apply", "booking_select_slot", "kb_search"]);
 });
 
 test("kb.search path executes RPC and returns final response", async () => {

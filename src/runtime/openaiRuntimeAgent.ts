@@ -65,9 +65,10 @@ export type RuntimeAgentToolName =
   | "booking.confirm"
   | "cancel_hold"
   | "appointment.lookup"
+  | "booking.select_slot"
   | "booking.apply";
 
-export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.apply"] as const;
+export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.select_slot", "booking.apply"] as const;
 
 export const FUTURE_RUNTIME_AGENT_TOOLS = [
   "hold.create",
@@ -154,6 +155,11 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     description: "Use for checking available appointment slots.",
     required_args: ["requested_date"],
     optional_args: ["requested_time", "service_interest", "limit"],
+  },
+  "booking.select_slot": {
+    description: "Confirm the patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. Call booking.apply only after this tool returns selection_status='selected'.",
+    required_args: ["subject_id", "requested_date", "requested_time"],
+    optional_args: [],
   },
   "booking.apply": {
     description: "Create a visit in ClinicCard when the patient has provided all required details (first name, last name, service, date, time) and the channel has captured their phone number. Returns booking_status indicating whether the visit was created or why it could not be. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
@@ -246,6 +252,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## TOOLS",
     "- kb.search: clinic FAQ, services, prices, location, insurance, opening hours.",
     "- availability.check: available slots. Always convert relative date expressions (\"tomorrow\", \"завтра\", \"в пятницу\", \"next week\", etc.) into ISO YYYY-MM-DD before passing to availability.check. Never pass natural-language date strings to availability.check.",
+    "- booking.select_slot: confirm the patient's slot choice. Interpret the patient's natural-language choice yourself. Call booking.select_slot only for the exact date and time the patient affirmatively selected. Do NOT call it for a rejected, ambiguous, or merely mentioned time. Do NOT call booking.apply until booking.select_slot has returned selection_status='selected' in this turn or a prior turn.",
     "- booking.apply: create a visit when patient confirmed slot + service. subject_id is ALWAYS required — see BOOKING SUBJECTS rules.",
 
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────

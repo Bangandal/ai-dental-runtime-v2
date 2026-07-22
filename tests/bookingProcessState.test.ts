@@ -17,8 +17,6 @@ import test from "node:test";
 
 import {
   computeBookingProcessState,
-  detectSelectedSlot,
-  extractSlotTime,
   extractSlotsFromToolResults,
   createInMemoryBookingProcessStateRepository,
   buildModelVisibleBookingProcessState,
@@ -95,90 +93,13 @@ test("A3: last_available_slots preserved across turns (from prior state when no 
     toolResults: [AVAIL_RESULT_WITH_SLOTS],
     channelContact: TRUSTED_CONTACT,
   });
-  // Second turn — no tool results, just patient message
+  // Second turn — no tool results
   const state2 = computeBookingProcessState({
     prior,
-    patientMessage: "Мне удобно 17:30",
     channelContact: TRUSTED_CONTACT,
   });
   assert.ok(Array.isArray(state2.last_available_slots), "A3: slots preserved from prior");
   assert.equal(state2.last_available_slots!.length, 2, "A3: 2 slots preserved");
-});
-
-// ── Test B: Patient says "17:30" → selected_slot matches ──────────────────────
-
-test("B: detectSelectedSlot finds 17:30 slot when patient says '17:30'", () => {
-  const slots = [SLOT_1730, SLOT_1830];
-  const detected = detectSelectedSlot("17:30", slots);
-  assert.ok(detected !== null, "B: must detect slot");
-  assert.equal(detected!.starts_at, "2026-08-05T17:30:00", "B: must match 17:30 slot");
-});
-
-test("B2: detectSelectedSlot finds 17:30 when patient says 'давайте 17:30'", () => {
-  const slots = [SLOT_1730, SLOT_1830];
-  const detected = detectSelectedSlot("давайте 17:30", slots);
-  assert.ok(detected !== null, "B2: must detect slot");
-  assert.equal(detected!.slot_id, "s1730");
-});
-
-test("B3: extractSlotTime extracts '17:30' from various phrasings", () => {
-  assert.equal(extractSlotTime("17:30"), "17:30");
-  assert.equal(extractSlotTime("в 17:30"), "17:30");
-  assert.equal(extractSlotTime("давайте 17:30"), "17:30");
-  assert.equal(extractSlotTime("Отлично 17:30 подходит"), "17:30");
-  assert.equal(extractSlotTime("нет времени"), null, "no time in text should return null");
-});
-
-test("B4: computeBookingProcessState detects selected_slot when prior has slots and patient gives time", () => {
-  const state = computeBookingProcessState({
-    prior: {
-      last_available_slots: [SLOT_1730, SLOT_1830],
-      service_reason: "чистка зубов",
-      first_name: "Иван",
-      last_name: "Петров",
-    },
-    patientMessage: "17:30 подходит",
-    channelContact: TRUSTED_CONTACT,
-  });
-  assert.ok(state.selected_slot !== null && state.selected_slot !== undefined, "B4: selected_slot must be set");
-  assert.equal(state.selected_slot!.starts_at, "2026-08-05T17:30:00");
-});
-
-// ── Test C: "Отлично 17:30" → selected_slot=17:30, next_action=ask_for_phone ──
-
-test("C: 'Отлично 17:30' → selected_slot=17:30, next_action=ask_for_phone when no trusted phone", () => {
-  const state = computeBookingProcessState({
-    prior: {
-      last_available_slots: [SLOT_1730, SLOT_1830],
-      service_reason: "осмотр из-за боли",
-      first_name: "Анна",
-      last_name: "Иванова",
-      active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T17:30", "2026-08-05T18:30"] },
-    },
-    patientMessage: "Отлично 17:30",
-    channelContact: undefined, // no trusted phone
-  });
-  assert.ok(state.selected_slot !== null && state.selected_slot !== undefined, "C: selected_slot must be set");
-  assert.equal(state.selected_slot!.starts_at, "2026-08-05T17:30:00", "C: correct slot selected");
-  assert.equal(state.next_action, "ask_for_phone", "C: next_action must be ask_for_phone");
-  assert.equal(state.proof.slot_known, true, "C: slot_known must be true");
-  assert.equal(state.proof.trusted_phone_known, false, "C: trusted_phone_known must be false");
-});
-
-test("C2: when all fields known including trusted phone → next_action=ready_for_booking_apply", () => {
-  const state = computeBookingProcessState({
-    prior: {
-      last_available_slots: [SLOT_1400],
-      service_reason: "чистка зубов",
-      first_name: "Иван",
-      last_name: "Петров",
-      active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
-    },
-    patientMessage: "14:00 хорошо",
-    channelContact: TRUSTED_CONTACT,
-  });
-  assert.equal(state.next_action, "ready_for_booking_apply", "C2: all known → ready");
-  assert.equal(state.proof.ready_for_booking_apply, true, "C2: proof must be true");
 });
 
 // ── Test D: Patient gives name once → next turn no ask_for_name ───────────────
@@ -187,7 +108,6 @@ test("D: name captured once, second turn must not have next_action=ask_for_name"
   // Turn 1: service known, name provided, slot still needed
   const state1 = computeBookingProcessState({
     prior: { service_reason: "осмотр" },
-    patientMessage: "Иван Петров",
     channelContact: TRUSTED_CONTACT,
     bookingApplyFirstName: "Иван",
     bookingApplyLastName: "Петров",
@@ -196,10 +116,9 @@ test("D: name captured once, second turn must not have next_action=ask_for_name"
   assert.equal(state1.last_name, "Петров", "D: last_name captured");
   assert.notEqual(state1.next_action, "ask_for_name", "D: turn 1 must not ask for name (it's already known)");
 
-  // Turn 2: no name in message, prior state has name
+  // Turn 2: prior state has name
   const state2 = computeBookingProcessState({
     prior: state1,
-    patientMessage: "давайте пятницу",
     channelContact: TRUSTED_CONTACT,
   });
   assert.equal(state2.first_name, "Иван", "D: name preserved in turn 2");
@@ -218,37 +137,14 @@ test("E: service_reason captured once, second turn must not have next_action=ask
   assert.equal(state1.service_reason, "чистка зубов", "E: service_reason captured");
   assert.notEqual(state1.next_action, "ask_for_service", "E: turn 1 must not ask for service");
 
-  // Turn 2: no service in message, prior state has service
+  // Turn 2: prior state has service
   const state2 = computeBookingProcessState({
     prior: state1,
-    patientMessage: "завтра 10:00",
     channelContact: TRUSTED_CONTACT,
   });
   assert.equal(state2.service_reason, "чистка зубов", "E: service preserved in turn 2");
   assert.notEqual(state2.next_action, "ask_for_service", "E: turn 2 must NOT ask for service");
   assert.equal(state2.proof.service_known, true, "E: service_known must be true in turn 2");
-});
-
-// ── Test F: Invalid time not in slots → choose_from_available_slots ──────────
-
-test("F: patient says '18:00' but only 17:30 and 18:30 were offered → choose_from_available_slots", () => {
-  const state = computeBookingProcessState({
-    prior: {
-      last_available_slots: [SLOT_1730, SLOT_1830],
-      service_reason: "осмотр",
-      first_name: "Анна",
-      last_name: "Иванова",
-    },
-    patientMessage: "18:00 пожалуйста",
-    channelContact: TRUSTED_CONTACT,
-  });
-  assert.equal(state.selected_slot, null, "F: selected_slot must remain null for unmatched time");
-  assert.equal(state.next_action, "choose_from_available_slots", "F: must ask to choose from available slots");
-});
-
-test("F2: detectSelectedSlot returns null for time not in offered slots", () => {
-  const result = detectSelectedSlot("18:00", [SLOT_1730, SLOT_1830]);
-  assert.equal(result, null, "F2: 18:00 not in [17:30, 18:30] must return null");
 });
 
 // ── Test G: No ClinicCard writes in state-only turns ─────────────────────────
@@ -312,22 +208,6 @@ test("G: state-only turns (availability.check + slot selection) never trigger Cl
   assert.equal(bookingExecutorCalled, false, "G: still no booking executor calls");
 });
 
-// ── Ordinal reference tests ───────────────────────────────────────────────────
-
-test("ordinal: 'первый' maps to first slot", () => {
-  const slots = [SLOT_1400, SLOT_1730, SLOT_1830];
-  const result = detectSelectedSlot("давайте первый", slots);
-  assert.ok(result !== null, "ordinal: first slot must be detected");
-  assert.equal(result!.slot_id, "s1400", "ordinal: must be first slot (14:00)");
-});
-
-test("ordinal: 'последний' maps to last slot", () => {
-  const slots = [SLOT_1400, SLOT_1730, SLOT_1830];
-  const result = detectSelectedSlot("давайте последний", slots);
-  assert.ok(result !== null, "ordinal: last slot must be detected");
-  assert.equal(result!.slot_id, "s1830", "ordinal: must be last slot (18:30)");
-});
-
 // ── Proof checklist tests ─────────────────────────────────────────────────────
 
 test("proof: all fields missing → service_known=false, name_known=false, slot_known=false", () => {
@@ -348,7 +228,7 @@ test("proof: all fields known → ready_for_booking_apply=true", () => {
       last_name: "Петров",
       active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
     },
-    patientMessage: "14:00",
+    selectSlotData: { selection_status: "selected", selected_slot_key: "2026-08-05T14:00", may_apply_booking: true },
     channelContact: TRUSTED_CONTACT,
   });
   assert.equal(state.proof.service_known, true);
@@ -404,7 +284,6 @@ test("Blocker-A: fresh availability.check with [] clears prior last_available_sl
 test("Blocker-A: no availability.check this turn → last_available_slots preserved from prior", () => {
   const state = computeBookingProcessState({
     prior: { last_available_slots: [SLOT_1730] },
-    patientMessage: "хорошо",
     channelContact: TRUSTED_CONTACT,
   });
   assert.equal(state.last_available_slots?.length, 1, "Blocker-A: prior slots preserved when no fresh avail.check");
@@ -429,7 +308,6 @@ test("Blocker-B: prior selected_slot cleared when new availability.check returns
       last_name: "Иванова",
     },
     toolResults: [AVAIL_NEW_DATE],
-    patientMessage: "что-нибудь другое",
     channelContact: TRUSTED_CONTACT,
   });
   assert.equal(state.selected_slot, null, "Blocker-B: prior selected_slot must be cleared on fresh avail.check");
@@ -453,76 +331,6 @@ test("Blocker-B: prior selected_slot cleared when new availability.check returns
   assert.equal(state.selected_slot, null, "Blocker-B: selected_slot must be null when avail returns []");
   assert.equal(state.proof.slot_known, false, "Blocker-B: proof.slot_known must be false");
   assert.deepEqual(state.last_available_slots, [], "Blocker-B: last_available_slots must be []");
-});
-
-test("Blocker-B: selected_slot re-detected from fresh slots when patient message matches", () => {
-  const state = computeBookingProcessState({
-    prior: {
-      selected_slot: SLOT_1730,  // old slot (would be cleared)
-      last_available_slots: [SLOT_1730],
-      service_reason: "осмотр",
-      first_name: "Анна",
-      last_name: "Иванова",
-    },
-    toolResults: [AVAIL_RESULT_WITH_SLOTS],
-    patientMessage: "17:30 подходит",
-    channelContact: TRUSTED_CONTACT,
-  });
-  // Fresh avail returned same slots, patient message re-selects 17:30 → slot re-detected
-  assert.ok(state.selected_slot !== null, "Blocker-B: slot must be re-detected from fresh slots");
-  assert.equal(state.selected_slot?.slot_id, "s1730", "Blocker-B: correct slot re-detected");
-});
-
-// ── Blocker C tests: ordinal matching must NOT match weekday prepositions ─────
-
-test("Blocker-C: 'во вторник' must NOT select second slot", () => {
-  const slots = [SLOT_1400, SLOT_1730, SLOT_1830];
-  const result = detectSelectedSlot("во вторник", slots);
-  assert.equal(result, null, "Blocker-C: 'во вторник' (Tuesday) must not select slot[1]");
-});
-
-test("Blocker-C: 'в четверг' must NOT select fourth slot", () => {
-  const slots = [SLOT_1400, SLOT_1730, SLOT_1830,
-    { starts_at: "2026-08-05T19:00:00", slot_id: "s4" },
-    { starts_at: "2026-08-05T20:00:00", slot_id: "s5" }];
-  const result = detectSelectedSlot("в четверг", slots);
-  assert.equal(result, null, "Blocker-C: 'в четверг' (Thursday) must not select slot[3]");
-});
-
-test("Blocker-C: 'в пятницу' must NOT select fifth slot", () => {
-  const slots = [SLOT_1400, SLOT_1730, SLOT_1830,
-    { starts_at: "2026-08-05T19:00:00", slot_id: "s4" },
-    { starts_at: "2026-08-05T20:00:00", slot_id: "s5" }];
-  const result = detectSelectedSlot("в пятницу", slots);
-  assert.equal(result, null, "Blocker-C: 'в пятницу' (Friday) must not select slot[4]");
-});
-
-test("Blocker-C: explicit ordinal 'второй' still selects slot[1]", () => {
-  const slots = [SLOT_1400, SLOT_1730, SLOT_1830];
-  const result = detectSelectedSlot("давайте второй", slots);
-  assert.ok(result !== null, "Blocker-C: 'второй' (ordinal) must select slot[1]");
-  assert.equal(result!.slot_id, "s1730", "Blocker-C: must select second slot");
-});
-
-test("Blocker-C: 'четвёртый' selects slot[3] without false positive on 'четверг'", () => {
-  const slots = [SLOT_1400, SLOT_1730, SLOT_1830,
-    { starts_at: "2026-08-05T19:00:00", slot_id: "s4" }];
-  const ordinal = detectSelectedSlot("четвёртый", slots);
-  assert.ok(ordinal !== null, "Blocker-C: 'четвёртый' must select slot[3]");
-  assert.equal(ordinal!.slot_id, "s4");
-  const weekday = detectSelectedSlot("в четверг", slots);
-  assert.equal(weekday, null, "Blocker-C: 'в четверг' must not select slot[3]");
-});
-
-test("Blocker-C: 'пятый' selects slot[4] but 'пятница' does not", () => {
-  const slots = [SLOT_1400, SLOT_1730, SLOT_1830,
-    { starts_at: "2026-08-05T19:00:00", slot_id: "s4" },
-    { starts_at: "2026-08-05T20:00:00", slot_id: "s5" }];
-  const ordinal = detectSelectedSlot("пятый слот", slots);
-  assert.ok(ordinal !== null, "Blocker-C: 'пятый слот' must select slot[4]");
-  assert.equal(ordinal!.slot_id, "s5");
-  const weekday = detectSelectedSlot("в пятницу утром", slots);
-  assert.equal(weekday, null, "Blocker-C: 'в пятницу' must not select slot[4]");
 });
 
 // ── Blocker D test: state persisted on no-tool final_response path ────────────
@@ -556,15 +364,16 @@ test("Blocker-D: selected_slot persisted when model returns final_response direc
     // (In real usage, repo.loadState provides this — here we pre-seed the repo)
   });
 
-  // Pre-seed prior state in repo and run again to verify detection + save
+  // Pre-seed prior state in repo and run again to verify persistence
   const priorState = computeBookingProcessState({
     prior: {
       last_available_slots: [SLOT_1730, SLOT_1830],
       service_reason: "осмотр",
       first_name: "Анна",
       last_name: "Иванова",
+      active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T17:30", "2026-08-05T18:30"] },
     },
-    patientMessage: "17:30 подходит",
+    selectSlotData: { selection_status: "selected", selected_slot_key: "2026-08-05T17:30", may_apply_booking: true },
     channelContact: undefined,
   });
   await repo.saveState({ clinic_id: "clinic_1", contact_id: "contact_pr143", case_id: null }, priorState);
@@ -684,49 +493,6 @@ test("new-2: prior state (service/name/slots) is visible in first call context",
   assert.equal(bps!.service_reason, "чистка зубов", "new-2: service_reason from prior state visible");
   assert.equal(bps!.first_name, "Иван", "new-2: first_name from prior state visible");
   assert.ok(Array.isArray(bps!.last_available_slots), "new-2: last_available_slots from prior visible");
-});
-
-test("new-3: user says '17:30', first call context includes detected selected_slot", async () => {
-  let capturedContext: Record<string, unknown> | undefined;
-  const repo = createInMemoryBookingProcessStateRepository();
-
-  // Pre-seed prior state with slots offered
-  const priorState = computeBookingProcessState({
-    prior: { last_available_slots: [SLOT_1730, SLOT_1830] },
-    channelContact: undefined,
-  });
-  await repo.saveState({ clinic_id: "clinic_1", contact_id: "contact_pr143", case_id: null }, priorState);
-
-  const loop = createRuntimeAgentLoop({
-    model: "test-model",
-    caller: async (callerInput) => {
-      capturedContext = callerInput.input.context;
-      return {
-        type: "final_response",
-        conversation_id: "conv_new3",
-        final_response: { final_patient_reply: "Отлично, 17:30 выбрано." },
-      };
-    },
-    executors: {
-      "availability.check": async () => ({ status: "success" as const, data: { slots: [] } }),
-      "booking.apply": async () => ({ status: "success" as const, data: { booking_status: "visit_created" } }),
-    },
-    bookingProcessStateRepository: repo,
-    now: new Date("2026-08-05T10:00:00"),
-  });
-
-  await loop.runTurn({
-    ...BASE_TURN_INPUT,
-    user_message: "17:30",
-    channel_contact: undefined,
-  });
-
-  assert.ok(capturedContext !== undefined, "new-3: caller must be called");
-  const bps = capturedContext!.booking_process_state as Record<string, unknown> | undefined;
-  assert.ok(bps !== undefined, "new-3: booking_process_state must be present");
-  const sel = bps!.selected_slot as Record<string, unknown> | null | undefined;
-  assert.ok(sel !== null && sel !== undefined, "new-3: selected_slot must be detected in first call context");
-  assert.equal(sel!.slot_id, "s1730", "new-3: correct slot selected");
 });
 
 test("new-4: no-tool final_response persists state even when selected_slot is null but phone_trusted changed", async () => {

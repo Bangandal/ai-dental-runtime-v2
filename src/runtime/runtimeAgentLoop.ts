@@ -37,6 +37,7 @@ import {
   type BookingProcessState,
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
+import { executeBookingSelectSlot, type BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
 
 export interface RuntimeAgentCallerInput {
@@ -134,10 +135,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
       }
 
-      // Initial state derived from prior + patient message (no tool results yet this turn)
+      // Initial state derived from prior state (no tool results yet this turn)
       let bookingProcessState = computeBookingProcessState({
         prior: priorProcessState,
-        patientMessage: input.user_message,
         channelContact: input.channel_contact,
       });
 
@@ -613,6 +613,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         });
       }
 
+      // Track the first successful booking.select_slot result this turn.
+      let selectSlotSuccessData: BookingSelectSlotSuccessData | null = null;
+
       for (const request of toolRequests) {
         if (!ACTIVE_TOOL_SET.has(request.tool)) {
           toolResults.push({
@@ -621,6 +624,31 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             status: "denied",
             error: { code: "tool_not_active", message: `${request.tool} is not active` },
           });
+          continue;
+        }
+
+        if (request.tool === "booking.select_slot") {
+          const selectResult = executeBookingSelectSlot(
+            request.arguments,
+            priorProcessState?.active_availability_evidence ?? null,
+          );
+          if (selectResult.ok) {
+            selectSlotSuccessData = selectResult.data;
+            toolResults.push({
+              tool: "booking.select_slot",
+              call_id: request.call_id,
+              status: "success",
+              data: selectResult.data,
+            });
+          } else {
+            toolResults.push({
+              tool: "booking.select_slot",
+              call_id: request.call_id,
+              status: "failed",
+              error: { code: selectResult.reason, message: selectResult.reason },
+            });
+          }
+          processedToolRequests.push(request);
           continue;
         }
 
@@ -680,12 +708,12 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const availabilityPresentationTruth = buildAvailabilityPresentationTruth(authoritativeAvailabilityAttempt);
       const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
 
-      // Update booking process state with tool results from this round (e.g. newly returned slots).
+      // Update booking process state with tool results from this round.
       bookingProcessState = computeBookingProcessState({
         prior: priorProcessState,
         authoritativeAvailabilityAttempt,
-        patientMessage: input.user_message,
         channelContact: input.channel_contact,
+        selectSlotData: selectSlotSuccessData,
       });
       // Persist updated state (best-effort — non-blocking).
       if (deps.bookingProcessStateRepository) {
@@ -701,7 +729,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       // booking.apply tool results, or selected_slot detected from offered slots).
       // Non-booking tools (knowledge.search, faq, etc.) do NOT make state grounded.
       const hasBookingToolResult = toolResults.some(
-        (r) => r.tool === "availability.check" || r.tool === "booking.apply",
+        (r) => r.tool === "availability.check" || r.tool === "booking.apply" || r.tool === "booking.select_slot",
       );
       const selectedSlotDetected = bookingProcessState.selected_slot != null;
       const secondCallGrounded =

@@ -3,6 +3,7 @@ import { hasTrustedPhone } from "./bookingContactGuard.ts";
 import type { AuthoritativeAvailabilityAttempt } from "./availabilityActionTruth.ts";
 import type { AvailabilityEvidence, SelectedSlotProof } from "./slotEvidence.ts";
 import { slotToKey, normalizeSlotKey, buildAllowedSlotKeysFromResult } from "./slotEvidence.ts";
+import type { BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";
 
 export interface AvailableSlot {
   starts_at: string;
@@ -195,272 +196,6 @@ export function buildModelVisibleBookingProcessState(opts: {
   };
 }
 
-// ── Slot extraction ────────────────────────────────────────────────────────────
-
-function normalizeHHMM(raw: string): string {
-  const match = raw.match(/^(\d{1,2}):(\d{2})/);
-  if (!match) return raw;
-  const h = match[1].padStart(2, "0");
-  const m = match[2];
-  return `${h}:${m}`;
-}
-
-/**
- * Extracts a time string like "17:30" from patient text.
- * Handles formats: "17:30", "17.30", "1730", preceded by whitespace/punctuation.
- */
-export function extractSlotTime(text: string): string | null {
-  // Standard HH:MM (e.g. "17:30", "в 17:30", "отлично 17:30")
-  const colonMatch = text.match(/\b(\d{1,2}):(\d{2})\b/);
-  if (colonMatch) return normalizeHHMM(`${colonMatch[1]}:${colonMatch[2]}`);
-
-  // Dot separator (e.g. "17.30")
-  const dotMatch = text.match(/\b(\d{1,2})\.(\d{2})\b/);
-  if (dotMatch) return normalizeHHMM(`${dotMatch[1]}:${dotMatch[2]}`);
-
-  // Space separator (e.g. "15 00", "на 15 00") — patient omits colon
-  const spaceMatch = text.match(/\b(\d{1,2}) (\d{2})\b/);
-  if (spaceMatch) return normalizeHHMM(`${spaceMatch[1]}:${spaceMatch[2]}`);
-
-  return null;
-}
-
-/**
- * Extracts HH:MM from a starts_at ISO string (e.g. "2026-08-05T14:00:00" → "14:00").
- */
-function extractSlotHHMM(startsAt: string): string | null {
-  const match = startsAt.match(/T(\d{2}:\d{2})(?::\d{2})?/);
-  if (match) return match[1];
-  // Short form "HH:MM"
-  const short = startsAt.match(/^(\d{2}:\d{2})$/);
-  return short ? short[1] : null;
-}
-
-/**
- * Detects ordinal references ("первый", "второй", "последний", etc.)
- * and maps them to a 0-based index into the slots array.
- *
- * Uses Unicode-aware word boundaries ((?<!\p{L}) / (?!\p{L})) so that weekday
- * words are not confused with ordinals:
- *   "во вторник" → NOT slot[1]   (вторник ≠ второй)
- *   "в четверг"  → NOT slot[3]   (четверг ≠ четвёртый)
- *   "в пятницу"  → NOT slot[4]   (пятница ≠ пятый)
- */
-function detectOrdinalIndex(text: string, slotCount: number): number | null {
-  const lower = text.toLowerCase();
-
-  /** Returns true if any of the exact word forms appears in `lower`, bounded by non-letter chars. */
-  function matchAny(forms: string[]): boolean {
-    const escaped = forms.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const pattern = `(?<!\\p{L})(${escaped.join("|")})(?!\\p{L})`;
-    return new RegExp(pattern, "ui").test(lower);
-  }
-
-  const ordinals: { forms: string[]; index: number }[] = [
-    {
-      forms: ["первый", "первого", "первому", "первым", "первом", "первое", "первая", "первых", "1-й", "first"],
-      index: 0,
-    },
-    {
-      // "второй"/"второго"/etc. — NOT "вторник" (Tuesday, different word)
-      forms: ["второй", "второго", "второму", "вторым", "втором", "второе", "вторая", "вторых", "2-й", "second"],
-      index: 1,
-    },
-    {
-      forms: ["третий", "третьего", "третьему", "третьим", "третьем", "третье", "третья", "третьих", "3-й", "third"],
-      index: 2,
-    },
-    {
-      // "четвёртый"/"четвертый"/etc. — NOT "четверг" (Thursday, different word)
-      forms: [
-        "четвёртый", "четвертый",
-        "четвёртого", "четвертого",
-        "четвёртому", "четвертому",
-        "четвёртым", "четвертым",
-        "четвёртом", "четвертом",
-        "четвёртое", "четвертое",
-        "четвёртая", "четвертая",
-        "четвёртых", "четвертых",
-        "4-й", "fourth",
-      ],
-      index: 3,
-    },
-    {
-      // "пятый"/"пятого"/etc. — NOT "пятница" (Friday, different word)
-      forms: ["пятый", "пятого", "пятому", "пятым", "пятом", "пятое", "пятая", "пятых", "5-й", "fifth"],
-      index: 4,
-    },
-  ];
-
-  for (const { forms, index } of ordinals) {
-    if (matchAny(forms) && index < slotCount) {
-      return index;
-    }
-  }
-
-  // "последний" / "last" → last slot
-  if (matchAny(["последний", "последнего", "последнему", "последним", "последнем", "last"]) && slotCount > 0) {
-    return slotCount - 1;
-  }
-
-  return null;
-}
-
-/**
- * Given patient text and a list of previously offered slots, returns the matching slot
- * or null if no match found (including ordinal references like "первый", "последний").
- */
-export function detectSelectedSlot(patientText: string, availableSlots: AvailableSlot[]): AvailableSlot | null {
-  if (!availableSlots.length) return null;
-
-  // Try ordinal reference first
-  const ordinalIndex = detectOrdinalIndex(patientText, availableSlots.length);
-  if (ordinalIndex !== null) {
-    return availableSlots[ordinalIndex] ?? null;
-  }
-
-  // Try exact time match
-  const extracted = extractSlotTime(patientText);
-  if (!extracted) return null;
-
-  const match = availableSlots.find((slot) => {
-    const slotHHMM = extractSlotHHMM(slot.starts_at);
-    return slotHHMM === extracted;
-  });
-
-  return match ?? null;
-}
-
-// ── Shared time-mention extraction ────────────────────────────────────────────
-
-export interface TimeMention {
-  normalized_time: string; // always "HH:MM"
-  start: number;
-  end: number;
-}
-
-/**
- * Finds all time mentions in lowercased text, normalizing every recognized
- * format — "HH:MM", "HH.MM", "HH MM" — to "HH:MM".
- *
- * Returns mentions sorted by start position with overlapping spans removed so
- * that one span produces exactly one TimeMention regardless of which separator
- * matched it.
- */
-export function extractSlotTimeMentions(text: string): TimeMention[] {
-  const mentions: TimeMention[] = [];
-
-  const collect = (re: RegExp) => {
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
-      const hour = m[1].padStart(2, "0");
-      mentions.push({
-        normalized_time: `${hour}:${m[2]}`,
-        start: m.index,
-        end: m.index + m[0].length,
-      });
-    }
-  };
-
-  collect(/\b(\d{1,2}):(\d{2})\b/g);  // "10:00"
-  collect(/\b(\d{1,2})\.(\d{2})\b/g); // "10.00"
-  collect(/\b(\d{1,2}) (\d{2})\b/g);  // "10 00"
-
-  mentions.sort((a, b) => a.start - b.start);
-
-  // Remove overlapping spans — keep the first match at each position
-  const result: TimeMention[] = [];
-  for (const m of mentions) {
-    const last = result[result.length - 1];
-    if (!last || m.start >= last.end) result.push(m);
-  }
-  return result;
-}
-
-/**
- * Returns true when the text immediately before `mention.start` ends with
- * "не [optional preposition]", indicating the time is structurally negated.
- *
- * Covers: "не 10:00", "не в 10:00", "не на 10.00", "не к 10 00", etc.
- * Does NOT fire when "не" appears far earlier in the sentence.
- */
-function isMentionNegated(text: string, mention: TimeMention): boolean {
-  const windowStart = Math.max(0, mention.start - 20);
-  const before = text.slice(windowStart, mention.start);
-  return /не\s+(?:(?:в|на|к|до|по)\s+)?$/iu.test(before);
-}
-
-const NEGATABLE_ORDINAL_FORMS = [
-  "первый", "первого", "первому", "первым", "первом", "первое", "первая", "первых",
-  "второй", "второго", "второму", "вторым", "втором", "второе", "вторая", "вторых",
-  "третий", "третьего", "третьему", "третьим", "третьем", "третье", "третья", "третьих",
-  "четвёртый", "четвертый", "четвёртого", "четвертого", "четвёртому", "четвертому",
-  "четвёртым", "четвертым", "четвёртом", "четвертом", "четвёртое", "четвертое",
-  "четвёртая", "четвертая", "четвёртых", "четвертых",
-  "пятый", "пятого", "пятому", "пятым", "пятом", "пятое", "пятая", "пятых",
-  "последний", "последнего", "последнему", "последним", "последнем",
-];
-
-const NEGATED_ORDINAL_RE = new RegExp(
-  `не\\s+(?:${NEGATABLE_ORDINAL_FORMS.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
-  "ui",
-);
-
-/**
- * Strict wrapper around detectSelectedSlot that returns null whenever the message
- * contains a negated or ambiguous slot reference. Fails closed so that a rejected
- * slot is never converted into selectionEstablishedThisTurn=true.
- *
- * Returns null for:
- *   "не 10:00" / "не в 10:00" / "не на 10.00" / "не 10 00"  — negated time (all formats)
- *   "не первый" / "не второй" / …                             — negated ordinal
- *   "не 10:00, лучше 11:00"                                   — negated time (negation fires first)
- *   "не первый, а второй"                                     — negated ordinal
- *   "10:00 или 11:00" / "10.00 или 11.00" / "10 00 или 11 00" — multiple distinct times
- *
- * Repeated mentions of the same normalized time ("10:00, да, именно 10:00") are
- * deduplicated before the ambiguity check and do NOT count as two distinct slots.
- *
- * Only a single unambiguous affirmative reference (time or ordinal) with no
- * structurally connected negation produces a match.
- */
-export function detectAffirmativeSelectedSlot(
-  patientText: string,
-  availableSlots: AvailableSlot[],
-): AvailableSlot | null {
-  if (!availableSlots.length) return null;
-
-  const lower = patientText.toLowerCase();
-
-  // Normalized HH:MM for each offered slot (from the API's ISO timestamps)
-  const slotHHMMs = new Set(
-    availableSlots
-      .map((s) => extractSlotHHMM(s.starts_at))
-      .filter((t): t is string => t !== null),
-  );
-
-  // All time mentions in all formats (normalized to HH:MM, with source spans)
-  const allMentions = extractSlotTimeMentions(lower);
-
-  // Mentions that correspond to an actually offered slot time
-  const slotMentions = allMentions.filter((m) => slotHHMMs.has(m.normalized_time));
-
-  // Fail closed: if ANY slot mention is structurally negated, reject the whole message.
-  for (const mention of slotMentions) {
-    if (isMentionNegated(lower, mention)) return null;
-  }
-
-  // Negation before any ordinal form
-  if (NEGATED_ORDINAL_RE.test(lower)) return null;
-
-  // Two or more DISTINCT normalized slot times mentioned → ambiguous.
-  // Repeated mentions of the same time (e.g. "10:00, именно 10:00") count as one.
-  const distinctTimes = new Set(slotMentions.map((m) => m.normalized_time));
-  if (distinctTimes.size > 1) return null;
-
-  return detectSelectedSlot(patientText, availableSlots);
-}
-
 // ── Slot extraction from tool results ─────────────────────────────────────────
 
 export function extractSlotsFromToolResults(toolResults: RuntimeAgentToolResult[]): AvailableSlot[] {
@@ -502,12 +237,14 @@ export interface ComputeBookingProcessStateInput {
    * Production always passes authoritativeAvailabilityAttempt from the loop.
    */
   toolResults?: RuntimeAgentToolResult[];
-  /** Raw patient message for selected_slot detection. */
-  patientMessage?: string;
   /** Channel contact for trusted phone resolution. */
   channelContact?: ChannelContact;
-  /** Override selected_slot from explicit booking.apply args (round 2). */
-  bookingApplySlot?: { date: string; time: string } | null;
+  /**
+   * Successful booking.select_slot result from this turn.
+   * When present, creates selected_slot and selected_slot_proof from the validated key.
+   * Ignored when a new availability.check was performed this turn (evidence was refreshed).
+   */
+  selectSlotData?: BookingSelectSlotSuccessData | null;
   /** Override service from explicit booking.apply args. */
   bookingApplyService?: string | null;
   /** Override name from explicit booking.apply args. */
@@ -588,9 +325,8 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   const phoneTrusted = hasTrustedPhone(input.channelContact);
   const phoneSource = input.channelContact?.phone_source;
 
-  // ── Detect selected_slot from patient message ──
-  // Any availability.check attempt clears the prior selected_slot and proof — stale
-  // selection from an earlier date is no longer valid. Detection below uses fresh slots.
+  // ── Resolve selected_slot and proof ──
+  // Any availability.check attempt clears prior slot and proof — stale selection no longer valid.
   let selectedSlot: AvailableSlot | null = availabilityAttemptPresent
     ? null
     : (p.selected_slot ?? null);
@@ -600,49 +336,23 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
 
   let selectionEstablishedThisTurn = false;
 
-  // Run detection even when selectedSlot already exists — patient may re-select to re-establish
-  // missing provenance. detectAffirmativeSelectedSlot returns null for generic messages and for
-  // negated/ambiguous references, so only a clear affirmative mention creates proof.
-  if (input.patientMessage && lastAvailableSlots.length > 0) {
-    const detected = detectAffirmativeSelectedSlot(input.patientMessage, lastAvailableSlots);
-    if (detected !== null) {
-      selectedSlot = detected;
-      selectedSlotProof = null;
-      selectionEstablishedThisTurn = true;
-    }
+  // booking.select_slot result: creates slot + proof from the validated key.
+  // Only applied when no new availability.check was performed (which would stale the evidence).
+  if (!availabilityAttemptPresent && input.selectSlotData && activeAvailabilityEvidence) {
+    const key = input.selectSlotData.selected_slot_key;
+    const matchedSlot = lastAvailableSlots.find((s) => slotToKey(s) === key)
+      ?? { starts_at: `${key}:00` };
+    selectedSlot = matchedSlot;
+    selectedSlotProof = {
+      availability_call_id: activeAvailabilityEvidence.availability_call_id,
+      slot_key: key,
+    };
+    selectionEstablishedThisTurn = true;
   }
 
-  // Explicit slot from booking.apply args: match full date+time key (not HH:MM only).
-  if (input.bookingApplySlot) {
-    const requestedKey = normalizeSlotKey(input.bookingApplySlot.date, input.bookingApplySlot.time);
-    if (requestedKey) {
-      const matched = lastAvailableSlots.find((s) => slotToKey(s) === requestedKey);
-      if (matched) {
-        selectedSlot = matched;
-        selectedSlotProof = null;
-        selectionEstablishedThisTurn = true;
-      }
-    }
-  }
-
-  // ── Build / validate selected_slot_proof ──
-  // Proof is ONLY created when selection was established this turn.
-  // Persisted proof is validated (not reconstructed) — missing proof stays missing.
-  if (selectionEstablishedThisTurn) {
-    if (selectedSlot && activeAvailabilityEvidence) {
-      const key = slotToKey(selectedSlot);
-      if (key && activeAvailabilityEvidence.allowed_slot_keys.includes(key)) {
-        selectedSlotProof = {
-          availability_call_id: activeAvailabilityEvidence.availability_call_id,
-          slot_key: key,
-        };
-      } else {
-        selectedSlotProof = null;
-      }
-    } else {
-      selectedSlotProof = null;
-    }
-  } else if (selectedSlotProof && selectedSlot && activeAvailabilityEvidence) {
+  // ── Validate persisted proof ──
+  // Proof is created only via booking.select_slot. Persisted proof is validated (not reconstructed).
+  if (!selectionEstablishedThisTurn && selectedSlotProof && selectedSlot && activeAvailabilityEvidence) {
     // Validate persisted proof — clear it if the chain is broken, keep it if intact.
     const key = slotToKey(selectedSlot);
     const proofValid =
@@ -694,15 +404,6 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
     nextAction = "ready_for_booking_apply";
   } else {
     nextAction = "ask_for_slot";
-  }
-
-  if (
-    input.patientMessage &&
-    lastAvailableSlots.length > 0 &&
-    !selectedSlot &&
-    extractSlotTime(input.patientMessage) !== null
-  ) {
-    nextAction = "choose_from_available_slots";
   }
 
   return {

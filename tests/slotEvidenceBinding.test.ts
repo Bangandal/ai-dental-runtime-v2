@@ -1488,3 +1488,97 @@ test("J-12: executeBookingSelectSlot strict format: single-digit hour rejected, 
   if (r2.ok) assert.equal(r2.data.selected_slot_key, "2027-08-15T09:00");
 });
 
+// J-13: one booking.select_slot request → appears exactly once in returned tool_requests
+test("J-13: one booking.select_slot in model output → appears exactly once in returned tool_requests", async () => {
+  let savedState: unknown = null;
+  let callerRound = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    callerRound++;
+    if (callerRound === 1) {
+      return {
+        type: "tool_requests" as const,
+        tool_requests: [{ tool: "booking.select_slot", call_id: "ss_j13", arguments: { subject_id: "subject_1", requested_date: "2027-08-15", requested_time: "10:00" } }],
+      };
+    }
+    return { type: "final_response" as const, final_response: { final_patient_reply: "Выбрано." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {},
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          active_availability_evidence: { availability_call_id: "av_j13", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState(_key: unknown, state: unknown) { savedState = state; },
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  const result = await agent.runTurn({ clinic_id: "clinic_1", user_message: "Хочу на 10:00", channel_contact: undefined });
+
+  const selectSlotRequests = result.tool_requests.filter((r) => r.tool === "booking.select_slot");
+  assert.equal(selectSlotRequests.length, 1, "J-13: exactly one booking.select_slot must appear in tool_requests");
+  assert.equal(selectSlotRequests[0]!.call_id, "ss_j13", "J-13: the single request must be the one the model sent");
+  const s = savedState as { selected_slot_proof?: unknown } | null;
+  assert.ok(s?.selected_slot_proof !== null && s?.selected_slot_proof !== undefined, "J-13: single select_slot must still create proof");
+});
+
+// J-14: multiple booking.select_slot calls in one round → ambiguous → all rejected, no proof created
+test("J-14: multiple booking.select_slot in one round → all rejected as ambiguous_selection, no proof created", async () => {
+  let savedState: unknown = null;
+  let callerRound = 0;
+  const caller: RuntimeAgentCaller = async () => {
+    callerRound++;
+    if (callerRound === 1) {
+      return {
+        type: "tool_requests" as const,
+        tool_requests: [
+          { tool: "booking.select_slot", call_id: "ss_j14a", arguments: { subject_id: "subject_1", requested_date: "2027-08-15", requested_time: "10:00" } },
+          { tool: "booking.select_slot", call_id: "ss_j14b", arguments: { subject_id: "subject_1", requested_date: "2027-08-15", requested_time: "14:00" } },
+        ],
+      };
+    }
+    return { type: "final_response" as const, final_response: { final_patient_reply: "Уточните время." } };
+  };
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller,
+    executors: {},
+    bookingProcessStateRepository: {
+      async loadState() {
+        return {
+          active_availability_evidence: { availability_call_id: "av_j14", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00", "2027-08-15T14:00"] },
+          selected_slot_proof: null,
+        };
+      },
+      async saveState(_key: unknown, state: unknown) { savedState = state; },
+    },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+
+  const result = await agent.runTurn({ clinic_id: "clinic_1", user_message: "Хочу на 10:00 или 14:00", channel_contact: undefined });
+
+  // Both requests must appear in tool_requests (not silently dropped)
+  const selectSlotRequests = result.tool_requests.filter((r) => r.tool === "booking.select_slot");
+  assert.equal(selectSlotRequests.length, 2, "J-14: both ambiguous select_slot requests must appear in tool_requests");
+
+  // Both must receive ambiguous_selection error results
+  const selectSlotResults = result.tool_results.filter((r) => r.tool === "booking.select_slot");
+  assert.equal(selectSlotResults.length, 2, "J-14: both requests must have tool results");
+  for (const r of selectSlotResults) {
+    assert.equal(r.status, "failed", `J-14: ${r.call_id} must be failed`);
+    if (r.status === "failed") {
+      assert.equal(r.error?.code, "ambiguous_selection", `J-14: ${r.call_id} error must be ambiguous_selection`);
+    }
+  }
+
+  // No proof must be created — the final slot proof must remain null/undefined
+  const s = savedState as { selected_slot_proof?: unknown } | null;
+  const proof = s?.selected_slot_proof;
+  assert.ok(proof === null || proof === undefined, "J-14: ambiguous multiple select_slot must not create proof");
+});
+

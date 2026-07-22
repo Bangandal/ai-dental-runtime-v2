@@ -1643,3 +1643,212 @@ test("I-7: detectAffirmativeSelectedSlot unit — negated references → null, a
   // Generic — no time
   assert.equal(detectAffirmativeSelectedSlot("Хочу записаться", slots), null, "generic → null");
 });
+
+// I-8: "Нет, не в 10:00" — preposition-negated time creates no proof
+test("I-8: 'Нет, не в 10:00' — preposition-negated time: no proof, executor not called", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i8", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Нет, не в 10:00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "'не в 10:00' must not create proof");
+});
+
+// I-9: "Не на 10:00" — "на"-preposition negation creates no proof
+test("I-9: 'Не на 10:00' — preposition-negated time: no proof", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i9", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Не на 10:00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "'не на 10:00' must not create proof");
+});
+
+// I-10: "Не 10.00" — dot-format negated time creates no proof
+test("I-10: 'Не 10.00' — dot-format negated time: no proof", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i10", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Не 10.00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "'не 10.00' must not create proof");
+});
+
+// I-11: "Не в 10.00" — dot-format preposition-negated time creates no proof
+test("I-11: 'Не в 10.00' — dot-format preposition-negated time: no proof", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i11", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Не в 10.00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "'не в 10.00' must not create proof");
+});
+
+// I-12: "Не 10 00" — space-format negated time creates no proof
+test("I-12: 'Не 10 00' — space-format negated time: no proof", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i12", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Не 10 00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "'не 10 00' must not create proof");
+});
+
+// I-13: "Не на 10 00" — space-format preposition-negated time creates no proof
+test("I-13: 'Не на 10 00' — space-format preposition-negated time: no proof", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i13", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Не на 10 00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "'не на 10 00' must not create proof");
+});
+
+// I-14: "10.00 или 11.00" — dot-format ambiguity creates no proof
+test("I-14: '10.00 или 11.00' — dot-format multi-time ambiguity: no proof", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i14", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Уточните время." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_TWO_SLOTS; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "10.00 или 11.00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "dot-format two times must be treated as ambiguous");
+});
+
+// I-15: "10 00 или 11 00" — space-format ambiguity creates no proof
+test("I-15: '10 00 или 11 00' — space-format multi-time ambiguity: no proof", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i15", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Уточните время." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_TWO_SLOTS; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "10 00 или 11 00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "space-format two times must be treated as ambiguous");
+});
+
+// I-16: "Да, на 10.00" — dot-format affirmative still creates proof (positive recovery)
+test("I-16: 'Да, на 10.00' — dot-format affirmative: proof created, booking succeeds", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i16", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Записал." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Да, на 10.00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, true, "'да, на 10.00' (dot format) must still create proof and allow booking");
+});
+
+// I-17: "Да, на 10 00" — space-format affirmative still creates proof (positive recovery)
+test("I-17: 'Да, на 10 00' — space-format affirmative: proof created, booking succeeds", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i17", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Записал." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Да, на 10 00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, true, "'да, на 10 00' (space format) must still create proof and allow booking");
+});
+
+// I-18: "10:00, да, именно 10:00" — duplicate mention of same time is not ambiguous
+test("I-18: '10:00, да, именно 10:00' — same time mentioned twice is not treated as two distinct slots", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i18", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Записал." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "10:00, да, именно 10:00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, true, "duplicate mention of the same time must not be counted as ambiguous");
+});

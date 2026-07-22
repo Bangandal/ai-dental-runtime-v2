@@ -331,6 +331,65 @@ export function detectSelectedSlot(patientText: string, availableSlots: Availabl
   return match ?? null;
 }
 
+// ── Shared time-mention extraction ────────────────────────────────────────────
+
+export interface TimeMention {
+  normalized_time: string; // always "HH:MM"
+  start: number;
+  end: number;
+}
+
+/**
+ * Finds all time mentions in lowercased text, normalizing every recognized
+ * format — "HH:MM", "HH.MM", "HH MM" — to "HH:MM".
+ *
+ * Returns mentions sorted by start position with overlapping spans removed so
+ * that one span produces exactly one TimeMention regardless of which separator
+ * matched it.
+ */
+export function extractSlotTimeMentions(text: string): TimeMention[] {
+  const mentions: TimeMention[] = [];
+
+  const collect = (re: RegExp) => {
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const hour = m[1].padStart(2, "0");
+      mentions.push({
+        normalized_time: `${hour}:${m[2]}`,
+        start: m.index,
+        end: m.index + m[0].length,
+      });
+    }
+  };
+
+  collect(/\b(\d{1,2}):(\d{2})\b/g);  // "10:00"
+  collect(/\b(\d{1,2})\.(\d{2})\b/g); // "10.00"
+  collect(/\b(\d{1,2}) (\d{2})\b/g);  // "10 00"
+
+  mentions.sort((a, b) => a.start - b.start);
+
+  // Remove overlapping spans — keep the first match at each position
+  const result: TimeMention[] = [];
+  for (const m of mentions) {
+    const last = result[result.length - 1];
+    if (!last || m.start >= last.end) result.push(m);
+  }
+  return result;
+}
+
+/**
+ * Returns true when the text immediately before `mention.start` ends with
+ * "не [optional preposition]", indicating the time is structurally negated.
+ *
+ * Covers: "не 10:00", "не в 10:00", "не на 10.00", "не к 10 00", etc.
+ * Does NOT fire when "не" appears far earlier in the sentence.
+ */
+function isMentionNegated(text: string, mention: TimeMention): boolean {
+  const windowStart = Math.max(0, mention.start - 20);
+  const before = text.slice(windowStart, mention.start);
+  return /не\s+(?:(?:в|на|к|до|по)\s+)?$/iu.test(before);
+}
+
 const NEGATABLE_ORDINAL_FORMS = [
   "первый", "первого", "первому", "первым", "первом", "первое", "первая", "первых",
   "второй", "второго", "второму", "вторым", "втором", "второе", "вторая", "вторых",
@@ -353,14 +412,17 @@ const NEGATED_ORDINAL_RE = new RegExp(
  * slot is never converted into selectionEstablishedThisTurn=true.
  *
  * Returns null for:
- *   "не 10:00"                   — negated time
- *   "не первый"                  — negated ordinal
- *   "не 10:00, лучше 11:00"      — negated time (two times also trigger multi-mention block)
- *   "не первый, а второй"        — negated ordinal
- *   "10:00 или 11:00"            — multiple distinct slot times, cannot resolve safely
+ *   "не 10:00" / "не в 10:00" / "не на 10.00" / "не 10 00"  — negated time (all formats)
+ *   "не первый" / "не второй" / …                             — negated ordinal
+ *   "не 10:00, лучше 11:00"                                   — negated time (negation fires first)
+ *   "не первый, а второй"                                     — negated ordinal
+ *   "10:00 или 11:00" / "10.00 или 11.00" / "10 00 или 11 00" — multiple distinct times
+ *
+ * Repeated mentions of the same normalized time ("10:00, да, именно 10:00") are
+ * deduplicated before the ambiguity check and do NOT count as two distinct slots.
  *
  * Only a single unambiguous affirmative reference (time or ordinal) with no
- * nearby negation produces a match.
+ * structurally connected negation produces a match.
  */
 export function detectAffirmativeSelectedSlot(
   patientText: string,
@@ -370,24 +432,31 @@ export function detectAffirmativeSelectedSlot(
 
   const lower = patientText.toLowerCase();
 
-  const slotHHMMs = availableSlots
-    .map((s) => extractSlotHHMM(s.starts_at))
-    .filter((t): t is string => t !== null);
+  // Normalized HH:MM for each offered slot (from the API's ISO timestamps)
+  const slotHHMMs = new Set(
+    availableSlots
+      .map((s) => extractSlotHHMM(s.starts_at))
+      .filter((t): t is string => t !== null),
+  );
 
-  // "не 10:00" — negation immediately before any slot time
-  for (const hhmm of slotHHMMs) {
-    if (new RegExp(`не\\s+${hhmm.replace(":", ":")}`, "ui").test(lower)) return null;
+  // All time mentions in all formats (normalized to HH:MM, with source spans)
+  const allMentions = extractSlotTimeMentions(lower);
+
+  // Mentions that correspond to an actually offered slot time
+  const slotMentions = allMentions.filter((m) => slotHHMMs.has(m.normalized_time));
+
+  // Fail closed: if ANY slot mention is structurally negated, reject the whole message.
+  for (const mention of slotMentions) {
+    if (isMentionNegated(lower, mention)) return null;
   }
 
-  // "не первый" / "не второй" / … — negation before any ordinal form
+  // Negation before any ordinal form
   if (NEGATED_ORDINAL_RE.test(lower)) return null;
 
-  // Two or more distinct slot times mentioned → ambiguous, cannot resolve safely
-  let mentionedCount = 0;
-  for (const hhmm of slotHHMMs) {
-    if (lower.includes(hhmm)) mentionedCount++;
-  }
-  if (mentionedCount > 1) return null;
+  // Two or more DISTINCT normalized slot times mentioned → ambiguous.
+  // Repeated mentions of the same time (e.g. "10:00, именно 10:00") count as one.
+  const distinctTimes = new Set(slotMentions.map((m) => m.normalized_time));
+  if (distinctTimes.size > 1) return null;
 
   return detectSelectedSlot(patientText, availableSlots);
 }

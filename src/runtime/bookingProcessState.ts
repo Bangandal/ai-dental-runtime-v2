@@ -331,6 +331,67 @@ export function detectSelectedSlot(patientText: string, availableSlots: Availabl
   return match ?? null;
 }
 
+const NEGATABLE_ORDINAL_FORMS = [
+  "первый", "первого", "первому", "первым", "первом", "первое", "первая", "первых",
+  "второй", "второго", "второму", "вторым", "втором", "второе", "вторая", "вторых",
+  "третий", "третьего", "третьему", "третьим", "третьем", "третье", "третья", "третьих",
+  "четвёртый", "четвертый", "четвёртого", "четвертого", "четвёртому", "четвертому",
+  "четвёртым", "четвертым", "четвёртом", "четвертом", "четвёртое", "четвертое",
+  "четвёртая", "четвертая", "четвёртых", "четвертых",
+  "пятый", "пятого", "пятому", "пятым", "пятом", "пятое", "пятая", "пятых",
+  "последний", "последнего", "последнему", "последним", "последнем",
+];
+
+const NEGATED_ORDINAL_RE = new RegExp(
+  `не\\s+(?:${NEGATABLE_ORDINAL_FORMS.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+  "ui",
+);
+
+/**
+ * Strict wrapper around detectSelectedSlot that returns null whenever the message
+ * contains a negated or ambiguous slot reference. Fails closed so that a rejected
+ * slot is never converted into selectionEstablishedThisTurn=true.
+ *
+ * Returns null for:
+ *   "не 10:00"                   — negated time
+ *   "не первый"                  — negated ordinal
+ *   "не 10:00, лучше 11:00"      — negated time (two times also trigger multi-mention block)
+ *   "не первый, а второй"        — negated ordinal
+ *   "10:00 или 11:00"            — multiple distinct slot times, cannot resolve safely
+ *
+ * Only a single unambiguous affirmative reference (time or ordinal) with no
+ * nearby negation produces a match.
+ */
+export function detectAffirmativeSelectedSlot(
+  patientText: string,
+  availableSlots: AvailableSlot[],
+): AvailableSlot | null {
+  if (!availableSlots.length) return null;
+
+  const lower = patientText.toLowerCase();
+
+  const slotHHMMs = availableSlots
+    .map((s) => extractSlotHHMM(s.starts_at))
+    .filter((t): t is string => t !== null);
+
+  // "не 10:00" — negation immediately before any slot time
+  for (const hhmm of slotHHMMs) {
+    if (new RegExp(`не\\s+${hhmm.replace(":", ":")}`, "ui").test(lower)) return null;
+  }
+
+  // "не первый" / "не второй" / … — negation before any ordinal form
+  if (NEGATED_ORDINAL_RE.test(lower)) return null;
+
+  // Two or more distinct slot times mentioned → ambiguous, cannot resolve safely
+  let mentionedCount = 0;
+  for (const hhmm of slotHHMMs) {
+    if (lower.includes(hhmm)) mentionedCount++;
+  }
+  if (mentionedCount > 1) return null;
+
+  return detectSelectedSlot(patientText, availableSlots);
+}
+
 // ── Slot extraction from tool results ─────────────────────────────────────────
 
 export function extractSlotsFromToolResults(toolResults: RuntimeAgentToolResult[]): AvailableSlot[] {
@@ -471,10 +532,10 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   let selectionEstablishedThisTurn = false;
 
   // Run detection even when selectedSlot already exists — patient may re-select to re-establish
-  // missing provenance. detectSelectedSlot returns null for generic messages ("хочу записаться"),
-  // so only an explicit time or ordinal reference triggers selectionEstablishedThisTurn.
+  // missing provenance. detectAffirmativeSelectedSlot returns null for generic messages and for
+  // negated/ambiguous references, so only a clear affirmative mention creates proof.
   if (input.patientMessage && lastAvailableSlots.length > 0) {
-    const detected = detectSelectedSlot(input.patientMessage, lastAvailableSlots);
+    const detected = detectAffirmativeSelectedSlot(input.patientMessage, lastAvailableSlots);
     if (detected !== null) {
       selectedSlot = detected;
       selectedSlotProof = null;

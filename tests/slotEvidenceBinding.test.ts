@@ -23,6 +23,9 @@ import {
   type SelectedSlotProof,
 } from "../src/runtime/slotEvidence.ts";
 import {
+  detectAffirmativeSelectedSlot,
+} from "../src/runtime/bookingProcessState.ts";
+import {
   shouldInterceptMissingSlotProof,
   shouldInterceptInvalidSlotDateTime,
 } from "../src/runtime/bookingApplyPreflight.ts";
@@ -1479,4 +1482,164 @@ test("H-7: G-1 invariant holds after fix — generic message on partial state do
   });
 
   assert.equal(executorCalled, false, "matching persisted fields + generic message must NOT auto-create proof (G-1 invariant)");
+});
+
+// ── I. Negated / ambiguous references never create proof ──────────────────────
+
+const PARTIAL_STATE_10 = {
+  selected_slot: { starts_at: "2027-08-15T10:00:00" },
+  last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
+  active_availability_evidence: { availability_call_id: "av_i", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
+  selected_slot_proof: null,
+};
+
+const PARTIAL_STATE_TWO_SLOTS = {
+  selected_slot: { starts_at: "2027-08-15T10:00:00" },
+  last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }, { starts_at: "2027-08-15T11:00:00" }],
+  active_availability_evidence: { availability_call_id: "av_i2", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00", "2027-08-15T11:00"] },
+  selected_slot_proof: null,
+};
+
+// I-1: "Нет, не 10:00" → proof stays null, executor=0
+test("I-1: 'Нет, не 10:00' — negated time never creates proof, booking blocked", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо, выберите другое время." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Нет, не 10:00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "negated 'не 10:00' must never create proof");
+});
+
+// I-2: "Не 10:00, лучше 11:00" → 10:00 never proven, request safely blocked
+test("I-2: 'Не 10:00, лучше 11:00' — negated time blocks both; 10:00 never proven", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i2", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_TWO_SLOTS; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Не 10:00, лучше 11:00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "negated 'не 10:00' must never prove 10:00; contrasting request safely blocked");
+});
+
+// I-3: "Не первый" → first slot never proven
+test("I-3: 'Не первый' — negated ordinal never proves first slot", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i3", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Выберите другой." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Не первый", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "negated ordinal 'не первый' must never prove first slot");
+});
+
+// I-4: "Не первый, а второй" → first slot never proven
+test("I-4: 'Не первый, а второй' — first slot never proven", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i4", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Хорошо." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_TWO_SLOTS; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Не первый, а второй", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "'не первый, а второй' must never prove first slot");
+});
+
+// I-5: two distinct times mentioned without clear affirmation → no proof
+test("I-5: two distinct slot times mentioned without affirmation → ambiguous, no proof created", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i5", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Уточните время." } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_TWO_SLOTS; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "10:00 или 11:00 — не знаю", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "two times mentioned without clear affirmation must not create proof");
+});
+
+// I-6: positive recovery still works after negation-guard is added (non-regression)
+test("I-6: positive recovery green after negation guard — 'Да, на 10:00' still creates proof", async () => {
+  let executorCalled = false;
+  const agent = createRuntimeAgentLoop({
+    model: "test",
+    caller: async (input) => {
+      if (!input.input.tool_results?.length) {
+        return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply", call_id: "ba_i6", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }] };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Записан!" } };
+    },
+    executors: { "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock_i6" } }; } },
+    bookingProcessStateRepository: { async loadState() { return PARTIAL_STATE_10; }, async saveState() {} },
+    now: new Date("2027-08-15T07:00:00Z"),
+  });
+  await agent.runTurn({ clinic_id: "clinic_1", user_message: "Да, давайте на 10:00", channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, true, "affirmative 'Да, на 10:00' must still create proof after negation guard added");
+});
+
+// I-7: unit — detectAffirmativeSelectedSlot negation/affirmation logic
+test("I-7: detectAffirmativeSelectedSlot unit — negated references → null, affirmative → slot", () => {
+  const slots = [
+    { starts_at: "2027-08-15T10:00:00" },
+    { starts_at: "2027-08-15T11:00:00" },
+  ];
+
+  // Negated time
+  assert.equal(detectAffirmativeSelectedSlot("Нет, не 10:00", slots), null, "negated time → null");
+  assert.equal(detectAffirmativeSelectedSlot("Не 10:00, лучше 11:00", slots), null, "negated+contrast → null");
+
+  // Negated ordinal
+  assert.equal(detectAffirmativeSelectedSlot("Не первый", slots), null, "negated ordinal → null");
+  assert.equal(detectAffirmativeSelectedSlot("Не первый, а второй", slots), null, "negated ordinal contrast → null");
+
+  // Ambiguous (two times)
+  assert.equal(detectAffirmativeSelectedSlot("10:00 или 11:00", slots), null, "two times → null");
+
+  // Affirmative — single time
+  assert.ok(detectAffirmativeSelectedSlot("Да, на 10:00", slots) !== null, "affirmative single time → slot");
+  assert.equal(detectAffirmativeSelectedSlot("Да, на 10:00", slots)?.starts_at, "2027-08-15T10:00:00");
+
+  // Affirmative — ordinal
+  assert.ok(detectAffirmativeSelectedSlot("Давайте первый", slots) !== null, "ordinal → first slot");
+  assert.equal(detectAffirmativeSelectedSlot("Давайте первый", slots)?.starts_at, "2027-08-15T10:00:00");
+
+  // Generic — no time
+  assert.equal(detectAffirmativeSelectedSlot("Хочу записаться", slots), null, "generic → null");
 });

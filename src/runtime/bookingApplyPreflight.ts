@@ -203,17 +203,15 @@ export function shouldInterceptInvalidSlotDateTime(params: SlotEvidenceGuardPara
   const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
   if (!req) return false;
 
-  // Missing or malformed date/time is handled upstream by bookingApplyArgsMissingSlot (Guard D).
-  if (!validateBookingRequestFormat(req.arguments).ok) return false;
+  // No evidence → can't detect invalid slot (Guard G handles missing-evidence case).
+  if (!params.activeAvailabilityEvidence) return false;
 
-  const result = validateBookingSlotEvidence({
-    bookingApplyRequest: req,
-    activeAvailabilityEvidence: params.activeAvailabilityEvidence,
-    selectedSlot: params.selectedSlot,
-    selectedSlotProof: params.selectedSlotProof,
-  });
-  if (result.ok) return false;
-  return result.reason === "slot_not_in_authoritative_evidence";
+  // Missing or malformed date/time is handled upstream by bookingApplyArgsMissingSlot (Guard D).
+  const fmt = validateBookingRequestFormat(req.arguments);
+  if (!fmt.ok) return false;
+
+  // Evidence exists — slot must be in the allowed keys regardless of proof state.
+  return !params.activeAvailabilityEvidence.allowed_slot_keys.includes(fmt.slot_key);
 }
 
 const INVALID_SLOT_REPLIES: Record<string, string> = {

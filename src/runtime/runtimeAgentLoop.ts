@@ -922,6 +922,21 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           });
         }
 
+        // 2c. Round-2 booking.select_slot — explicitly rejected with deterministic failed results.
+        // booking.select_slot is only valid in round-1; any round-2 occurrence is a protocol error.
+        const round2SelectSlotRequests = secondOutput.tool_requests.filter((r) => r.tool === "booking.select_slot");
+        if (round2SelectSlotRequests.length > 0) {
+          for (const req of round2SelectSlotRequests) {
+            toolResults.push({
+              tool: "booking.select_slot",
+              call_id: req.call_id,
+              status: "failed",
+              error: { code: "select_slot_not_allowed_in_round2", message: "select_slot_not_allowed_in_round2" },
+            });
+          }
+          debug.reason = "booking_select_slot_rejected_in_round2";
+        }
+
         // 3. Guard J (round 2) — strict subject_id validation (subject_1..subject_4 only).
         let round2ExecutionSubjectId: SubjectId | null = null;
         if (pendingBookingApply) {

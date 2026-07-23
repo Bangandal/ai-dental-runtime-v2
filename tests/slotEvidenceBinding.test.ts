@@ -165,33 +165,37 @@ function makeBookingRequest(date: string, time: string) {
   };
 }
 
-// B-1: current-turn path — slot found in current availability result
-test("validateBookingSlotEvidence: current-turn path passes when slot in authoritative result", () => {
+// B-1: bypass removed — avail.check result alone (no active evidence, no proof) → validation fails
+test("validateBookingSlotEvidence: avail.check alone without active evidence → no_authoritative_availability_evidence (bypass removed)", () => {
   const attempt = makeCurrentTurnAttempt("av_b1", ["2027-08-15T10:00", "2027-08-15T14:00"]);
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
-    currentAvailabilityAttempt: attempt,
+    currentAvailabilityAttempt: attempt,  // ignored — no longer part of the validation chain
     activeAvailabilityEvidence: null,
     selectedSlot: null,
     selectedSlotProof: null,
   });
-  assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.equal(result.source, "current_turn_availability");
-    assert.equal(result.slot_key, "2027-08-15T10:00");
-    assert.equal(result.availability_call_id, "av_b1");
-  }
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.reason, "no_authoritative_availability_evidence");
 });
 
-// B-2: current-turn path — slot NOT in result → slot_not_in_authoritative_evidence
-test("validateBookingSlotEvidence: current-turn path rejects slot not in result", () => {
-  const attempt = makeCurrentTurnAttempt("av_b2", ["2027-08-15T10:00"]);
+// B-2: slot not in authoritative evidence → slot_not_in_authoritative_evidence
+test("validateBookingSlotEvidence: slot not in active evidence allowed_slot_keys → slot_not_in_authoritative_evidence", () => {
+  // Evidence only has 10:00; proof and selected_slot point to 14:00 (not in evidence).
+  // This produces slot_not_in_authoritative_evidence (Check 7). In production this state is
+  // unreachable because computeBookingProcessState clears proofs whose slot_key is absent from
+  // allowed_slot_keys, but the unit test exercises the path directly.
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_b2",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00"],
+  };
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: makeBookingRequest("2027-08-15", "14:00"),
-    currentAvailabilityAttempt: attempt,
-    activeAvailabilityEvidence: null,
-    selectedSlot: null,
-    selectedSlotProof: null,
+    activeAvailabilityEvidence: evidence,
+    selectedSlot: { starts_at: "2027-08-15T14:00:00" },
+    selectedSlotProof: { subject_id: "subject_1" as const, availability_call_id: "av_b2", slot_key: "2027-08-15T14:00" },
   });
   assert.equal(result.ok, false);
   if (!result.ok) assert.equal(result.reason, "slot_not_in_authoritative_evidence");
@@ -205,7 +209,7 @@ test("validateBookingSlotEvidence: persisted path passes with matching evidence 
     requested_time: null,
     allowed_slot_keys: ["2027-08-15T10:00", "2027-08-15T14:00"],
   };
-  const proof: SelectedSlotProof = { availability_call_id: "av_b3", slot_key: "2027-08-15T10:00" };
+  const proof: SelectedSlotProof = { subject_id: "subject_1" as const, availability_call_id: "av_b3", slot_key: "2027-08-15T10:00" };
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
     currentAvailabilityAttempt: NO_ATTEMPT,
@@ -261,7 +265,7 @@ test("validateBookingSlotEvidence: persisted path fails when proof slot_key mism
     requested_time: null,
     allowed_slot_keys: ["2027-08-15T10:00", "2027-08-15T14:00"],
   };
-  const proof: SelectedSlotProof = { availability_call_id: "av_b6", slot_key: "2027-08-15T14:00" };
+  const proof: SelectedSlotProof = { subject_id: "subject_1" as const, availability_call_id: "av_b6", slot_key: "2027-08-15T14:00" };
   // Proof says 14:00 but request asks for 10:00
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
@@ -282,7 +286,7 @@ test("validateBookingSlotEvidence: persisted path fails when proof call_id diffe
     requested_time: null,
     allowed_slot_keys: ["2027-08-15T10:00"],
   };
-  const proof: SelectedSlotProof = { availability_call_id: "av_old", slot_key: "2027-08-15T10:00" };
+  const proof: SelectedSlotProof = { subject_id: "subject_1" as const, availability_call_id: "av_old", slot_key: "2027-08-15T10:00" };
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: makeBookingRequest("2027-08-15", "10:00"),
     currentAvailabilityAttempt: NO_ATTEMPT,
@@ -302,7 +306,7 @@ test("validateBookingSlotEvidence: cross-date booking attempt is rejected (same 
     requested_time: null,
     allowed_slot_keys: ["2027-08-15T10:00"],
   };
-  const proof: SelectedSlotProof = { availability_call_id: "av_b8", slot_key: "2027-08-15T10:00" };
+  const proof: SelectedSlotProof = { subject_id: "subject_1" as const, availability_call_id: "av_b8", slot_key: "2027-08-15T10:00" };
   // Request tries to book "2027-08-16" (different date) with same time
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: makeBookingRequest("2027-08-16", "10:00"),
@@ -319,20 +323,20 @@ test("validateBookingSlotEvidence: cross-date booking attempt is rejected (same 
 // ── C. Booking preflight guard functions ──────────────────────────────────────
 
 const PENDING_BOOKING = [
-  { tool: "booking.apply", call_id: "ba_c", arguments: { subject_id: "s1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } },
+  { tool: "booking.apply", call_id: "ba_c", arguments: { subject_id: "subject_1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } },
 ];
 
-// C-1: shouldInterceptMissingSlotProof returns false when current-turn evidence passes
-test("shouldInterceptMissingSlotProof: returns false when current-turn availability authorizes slot", () => {
+// C-1: bypass removed — avail.check result alone no longer authorizes booking.apply
+test("shouldInterceptMissingSlotProof: avail.check alone (no active evidence, no proof) → intercepts (bypass removed)", () => {
   const attempt = makeCurrentTurnAttempt("av_c1", ["2027-08-15T10:00"]);
   const result = shouldInterceptMissingSlotProof({
     pendingToolRequests: PENDING_BOOKING,
-    currentAvailabilityAttempt: attempt,
+    currentAvailabilityAttempt: attempt,  // ignored — no longer part of validation
     activeAvailabilityEvidence: null,
     selectedSlot: null,
     selectedSlotProof: null,
   });
-  assert.equal(result, false);
+  assert.equal(result, true);
 });
 
 // C-2: shouldInterceptMissingSlotProof returns true when no evidence at all
@@ -373,7 +377,7 @@ test("shouldInterceptMissingSlotProof: returns false when evidence + proof match
     requested_time: null,
     allowed_slot_keys: ["2027-08-15T10:00"],
   };
-  const proof: SelectedSlotProof = { availability_call_id: "av_c4", slot_key: "2027-08-15T10:00" };
+  const proof: SelectedSlotProof = { subject_id: "subject_1" as const, availability_call_id: "av_c4", slot_key: "2027-08-15T10:00" };
   const result = shouldInterceptMissingSlotProof({
     pendingToolRequests: PENDING_BOOKING,
     currentAvailabilityAttempt: NO_ATTEMPT,
@@ -396,16 +400,21 @@ test("shouldInterceptInvalidSlotDateTime: returns false when no evidence (not th
   assert.equal(result, false);
 });
 
-// C-6: shouldInterceptInvalidSlotDateTime returns true when slot not in current-turn evidence
-test("shouldInterceptInvalidSlotDateTime: returns true when slot not in current-turn result", () => {
-  const attempt = makeCurrentTurnAttempt("av_c6", ["2027-08-15T10:00"]);
+// C-6: shouldInterceptInvalidSlotDateTime returns true when slot not in active evidence
+test("shouldInterceptInvalidSlotDateTime: returns true when slot not in active evidence allowed_slot_keys", () => {
   const pendingWrongSlot = [
     { tool: "booking.apply", call_id: "ba_c6", arguments: { subject_id: "s1", first_name: "A", last_name: "B", service: "чистка", requested_date: "2027-08-15", requested_time: "14:00" } },
   ];
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "av_c6",
+    requested_date: "2027-08-15",
+    requested_time: null,
+    allowed_slot_keys: ["2027-08-15T10:00"],  // only 10:00; request is for 14:00
+  };
   const result = shouldInterceptInvalidSlotDateTime({
     pendingToolRequests: pendingWrongSlot,
-    currentAvailabilityAttempt: attempt,
-    activeAvailabilityEvidence: null,
+    currentAvailabilityAttempt: NO_ATTEMPT,
+    activeAvailabilityEvidence: evidence,
     selectedSlot: null,
     selectedSlotProof: null,
   });
@@ -519,11 +528,12 @@ test("D-2: booking.apply blocked when no evidence or proof in persisted state", 
   assert.equal(executorCalled, false, "executor must NOT be called without evidence");
 });
 
-// D-3: booking.apply executes via current-turn availability.check → booking.apply in one turn
-test("D-3: current-turn availability.check → booking.apply in same turn (avail-then-book flow)", async () => {
+// D-3: bypass removed — availability.check alone no longer authorizes booking.apply
+// Model must call booking.select_slot to create proof before booking.apply can succeed.
+test("D-3: avail.check → booking.apply without select_slot → executor NOT called (bypass removed)", async () => {
   let executorCalled = false;
   let round = 0;
-  const caller: RuntimeAgentCaller = async (input) => {
+  const caller: RuntimeAgentCaller = async () => {
     round++;
     if (round === 1) {
       return {
@@ -537,7 +547,7 @@ test("D-3: current-turn availability.check → booking.apply in same turn (avail
         tool_requests: [{ tool: "booking.apply", call_id: "ba_d3", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
       };
     }
-    return { type: "final_response", final_response: { final_patient_reply: "Записано!" } };
+    return { type: "final_response", final_response: { final_patient_reply: "Выберите слот через select_slot." } };
   };
   const agent = createRuntimeAgentLoop({
     model: "test",
@@ -557,13 +567,17 @@ test("D-3: current-turn availability.check → booking.apply in same turn (avail
     now: new Date("2027-08-15T07:00:00Z"),
   });
 
-  await agent.runTurn({
+  const result = await agent.runTurn({
     clinic_id: "clinic_1",
     user_message: "Запишите на 10:00",
     channel_contact: { phone_number: "+420600111222", phone_source: "telegram_contact_button" },
   });
 
-  assert.equal(executorCalled, true, "executor must be called via current-turn avail path");
+  assert.equal(executorCalled, false, "executor must NOT be called — avail.check alone is insufficient (select_slot proof required)");
+  const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  if (bookingResult) {
+    assert.equal((bookingResult.data as Record<string, unknown>)?.booking_status, "slot_not_verified");
+  }
 });
 
 // D-4: current-turn avail check returns slots; model requests wrong slot → Guard H fires

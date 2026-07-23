@@ -142,6 +142,30 @@ function makeCallerSequence(outputs: Awaited<ReturnType<RuntimeAgentCaller>>[]):
   return async () => outputs[call++] ?? outputs[outputs.length - 1];
 }
 
+function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "go_test_call";
+  return {
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: callId, slot_key: slotKey },
+      };
+    },
+    async saveState() {},
+  };
+}
+
+const SELECT_SLOT_JULY15_1100: RuntimeAgentToolRequest = {
+  tool: "booking.select_slot",
+  call_id: "call_ss_go",
+  arguments: { subject_id: "subject_1", requested_date: "2026-07-15", requested_time: "11:00" },
+};
+
 // ── GO-A: Round-1 unverified slot + no phone → slot_not_verified ──────────────
 
 test("GO-A: round-1 booking.apply, no avail.check proof, no phone → slot_not_verified (not missing_trusted_phone)", async () => {
@@ -200,11 +224,12 @@ test("GO-A: round-1 booking.apply, no avail.check proof, no phone → slot_not_v
 
 // ── GO-B: Round-2 wrong time + no phone → invalid_slot ───────────────────────
 
-test("GO-B: round-2 avail.check ran, booking.apply requests wrong time, no phone → invalid_slot (not missing_trusted_phone)", async () => {
+test("GO-B: round-2 avail.check ran, booking.apply requests wrong time, no phone → slot_not_verified (not missing_trusted_phone)", async () => {
   let bookingExecutorCalled = false;
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    now: new Date("2026-07-15T07:00:00Z"), // 09:00 Prague — before 11:00 or 14:00 slots
     caller: makeCallerSequence([
       {
         type: "tool_requests",
@@ -250,25 +275,25 @@ test("GO-B: round-2 avail.check ran, booking.apply requests wrong time, no phone
   assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
   assert.equal(
     (bookingResult!.data as Record<string, unknown>).booking_status,
-    "invalid_slot",
-    "booking_status must be invalid_slot — slot validity guard must fire before phone guard",
+    "slot_not_verified",
+    "booking_status must be slot_not_verified — avail.check clears proof; Guard G fires before phone guard",
   );
   assert.notEqual(
     (bookingResult!.data as Record<string, unknown>).booking_status,
     "missing_trusted_phone",
-    "phone guard must NOT fire before slot validity guard",
+    "phone guard must NOT fire before slot proof guard",
   );
   const debugReason = (result.debug as Record<string, unknown>)?.reason;
   assert.equal(
     debugReason,
-    "booking_apply_preflight_invalid_slot_round2",
-    `debug.reason must be invalid_slot_round2 — got: ${debugReason}`,
+    "booking_apply_preflight_missing_slot_proof_round2",
+    `debug.reason must be missing_slot_proof_round2 — got: ${debugReason}`,
   );
 });
 
 // ── GO-C: Valid verified slot + no phone → missing_trusted_phone ──────────────
 
-test("GO-C: round-2 valid slot (avail.check matches), no phone → missing_trusted_phone", async () => {
+test("GO-C: round-2 verified slot (select_slot proof), no phone → missing_trusted_phone", async () => {
   let bookingExecutorCalled = false;
 
   const loop = createRuntimeAgentLoop({
@@ -278,7 +303,7 @@ test("GO-C: round-2 valid slot (avail.check matches), no phone → missing_trust
       {
         type: "tool_requests",
         conversation_id: "conv_go_c",
-        tool_requests: [AVAIL_REQUEST],
+        tool_requests: [SELECT_SLOT_JULY15_1100],
       },
       {
         type: "tool_requests",
@@ -292,19 +317,12 @@ test("GO-C: round-2 valid slot (avail.check matches), no phone → missing_trust
       },
     ]),
     executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: {
-          slots: [{ starts_at: "2026-07-15T11:00:00", ends_at: "2026-07-15T11:30:00" }],
-          total_slots: 1,
-          free_slots_count: 1,
-        },
-      }),
       "booking.apply": async () => {
         bookingExecutorCalled = true;
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
       },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-15T11:00:00"),
   });
 
   const result = await loop.runTurn({
@@ -391,7 +409,7 @@ test("GO-D: round-2 avail.check returns 0 slots + trusted phone → no_available
 
 // ── GO-E: Valid slot + trusted phone + missing name → missing_patient_name ────
 
-test("GO-E: round-2 valid slot + trusted phone + missing name → missing_patient_name", async () => {
+test("GO-E: round-2 verified slot (select_slot proof) + trusted phone + missing name → missing_patient_name", async () => {
   let bookingExecutorCalled = false;
 
   const loop = createRuntimeAgentLoop({
@@ -401,7 +419,7 @@ test("GO-E: round-2 valid slot + trusted phone + missing name → missing_patien
       {
         type: "tool_requests",
         conversation_id: "conv_go_e",
-        tool_requests: [AVAIL_REQUEST],
+        tool_requests: [SELECT_SLOT_JULY15_1100],
       },
       {
         type: "tool_requests",
@@ -415,19 +433,12 @@ test("GO-E: round-2 valid slot + trusted phone + missing name → missing_patien
       },
     ]),
     executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: {
-          slots: [{ starts_at: "2026-07-15T11:00:00", ends_at: "2026-07-15T11:30:00" }],
-          total_slots: 1,
-          free_slots_count: 1,
-        },
-      }),
       "booking.apply": async () => {
         bookingExecutorCalled = true;
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
       },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-15T11:00:00"),
   });
 
   const result = await loop.runTurn({

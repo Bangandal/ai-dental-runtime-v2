@@ -1025,10 +1025,11 @@ test("shouldInterceptInvalidSlotDateTime: false when requested_time absent even 
   );
 });
 
-test("shouldInterceptInvalidSlotDateTime: false when cross-date (caught by shouldInterceptMissingSlotProof via mismatch)", () => {
-  // Cross-date booking: selected_slot is 2026-07-09 but booking requests 2026-07-07.
-  // This returns selected_slot_proof_mismatch, not slot_not_in_authoritative_evidence,
-  // so shouldInterceptInvalidSlotDateTime returns false (shouldInterceptMissingSlotProof handles it).
+test("shouldInterceptInvalidSlotDateTime: true when booking requests different date (slot not in evidence)", () => {
+  // Cross-date booking: evidence has "2026-07-09T12:00", booking requests "2026-07-07T12:00".
+  // Guard H fires because "2026-07-07T12:00" is not in allowed_slot_keys.
+  // In the full loop, Guard G fires first (proof mismatch for cross-date), so Guard H is
+  // never reached — but the function itself correctly returns true for any out-of-evidence slot.
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
@@ -1040,7 +1041,7 @@ test("shouldInterceptInvalidSlotDateTime: false when cross-date (caught by shoul
       selectedSlot: { starts_at: "2026-07-09T12:00:00" },
       selectedSlotProof: { subject_id: "subject_1" as const, availability_call_id: "call_avail_bsdt", slot_key: "2026-07-09T12:00" },
     }),
-    false,
+    true,
   );
 });
 

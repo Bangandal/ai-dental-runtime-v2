@@ -22,6 +22,7 @@ import {
   buildModelVisibleBookingProcessState,
   type AvailableSlot,
 } from "../src/runtime/bookingProcessState.ts";
+import type { AvailabilityEvidence, SelectedSlotProof } from "../src/runtime/slotEvidence.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import type { RuntimeAgentToolResult, ChannelContact } from "../src/runtime/openaiRuntimeAgent.ts";
 
@@ -609,4 +610,138 @@ test("buildModelVisibleBookingProcessState D: safety flags slot_known, trusted_p
   assert.equal(lowProof?.["slot_known"], true, "D: low-confidence proof.slot_known must be present");
   assert.equal(lowProof?.["trusted_phone_known"], true, "D: low-confidence proof.trusted_phone_known must be present");
   assert.equal(typeof lowProof?.["ready_for_booking_apply"], "boolean", "D: low-confidence proof.ready_for_booking_apply must be present");
+});
+
+// ── P. Legacy/invalid subject_id proof — state authority tests ─────────────────
+
+const LEGACY_EVIDENCE: AvailabilityEvidence = {
+  availability_call_id: "av_legacy",
+  requested_date: "2028-01-15",
+  requested_time: null,
+  allowed_slot_keys: ["2028-01-15T10:00"],
+};
+
+const LEGACY_SLOT = { starts_at: "2028-01-15T10:00:00" };
+
+test("P-1: legacy proof (no subject_id) → selected_slot preserved, proof=null, slot_known=false, slot_evidence_status=stale", () => {
+  const legacyProof: SelectedSlotProof = {
+    // subject_id intentionally absent (legacy)
+    availability_call_id: "av_legacy",
+    slot_key: "2028-01-15T10:00",
+  };
+  const state = computeBookingProcessState({
+    prior: {
+      selected_slot: LEGACY_SLOT,
+      active_availability_evidence: LEGACY_EVIDENCE,
+      selected_slot_proof: legacyProof,
+    },
+    channelContact: TRUSTED_CONTACT,
+  });
+
+  assert.deepEqual(state.selected_slot, LEGACY_SLOT, "P-1: selected_slot must be preserved for dialogue continuity");
+  assert.equal(state.selected_slot_proof, null, "P-1: proof must be cleared when subject_id absent");
+  assert.equal(state.proof.slot_known, false, "P-1: slot_known must be false");
+  assert.equal(state.proof.ready_for_booking_apply, false, "P-1: ready_for_booking_apply must be false");
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  assert.equal(visible.slot_evidence_status, "stale", "P-1: slot_evidence_status must be stale");
+});
+
+test("P-2: proof with invalid subject_id ('subject_99') → same stale state", () => {
+  const invalidProof = {
+    subject_id: "subject_99" as unknown as `subject_${number}`,
+    availability_call_id: "av_legacy",
+    slot_key: "2028-01-15T10:00",
+  };
+  const state = computeBookingProcessState({
+    prior: {
+      selected_slot: LEGACY_SLOT,
+      active_availability_evidence: LEGACY_EVIDENCE,
+      selected_slot_proof: invalidProof,
+    },
+    channelContact: TRUSTED_CONTACT,
+  });
+
+  assert.deepEqual(state.selected_slot, LEGACY_SLOT, "P-2: selected_slot preserved");
+  assert.equal(state.selected_slot_proof, null, "P-2: proof must be cleared for invalid subject_id");
+  assert.equal(state.proof.slot_known, false, "P-2: slot_known=false");
+  assert.equal(state.proof.ready_for_booking_apply, false, "P-2: ready_for_booking_apply=false");
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  assert.equal(visible.slot_evidence_status, "stale", "P-2: slot_evidence_status=stale");
+});
+
+test("P-3: valid subject_1 proof → slot_known=true, slot_evidence_status=verified", () => {
+  const validProof: SelectedSlotProof = {
+    subject_id: "subject_1" as const,
+    availability_call_id: "av_legacy",
+    slot_key: "2028-01-15T10:00",
+  };
+  const state = computeBookingProcessState({
+    prior: {
+      selected_slot: LEGACY_SLOT,
+      active_availability_evidence: LEGACY_EVIDENCE,
+      selected_slot_proof: validProof,
+      first_name: "Ivan",
+      last_name: "Petrov",
+      service_reason: "чистка",
+    },
+    channelContact: TRUSTED_CONTACT,
+  });
+
+  assert.equal(state.proof.slot_known, true, "P-3: slot_known=true for valid subject_1 proof");
+  assert.notEqual(state.selected_slot_proof, null, "P-3: proof must be preserved");
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  assert.equal(visible.slot_evidence_status, "verified", "P-3: slot_evidence_status=verified");
+  assert.equal(visible.proof?.ready_for_booking_apply, true, "P-3: ready_for_booking_apply=true when all fields present");
+});
+
+test("P-4: valid subject_2 proof → slot_known=true, proof preserved with subject_2", () => {
+  const evidence2: AvailabilityEvidence = {
+    availability_call_id: "av_s2",
+    requested_date: "2028-01-15",
+    requested_time: null,
+    allowed_slot_keys: ["2028-01-15T10:00"],
+  };
+  const validProof2: SelectedSlotProof = {
+    subject_id: "subject_2" as `subject_${number}`,
+    availability_call_id: "av_s2",
+    slot_key: "2028-01-15T10:00",
+  };
+  const state = computeBookingProcessState({
+    prior: {
+      selected_slot: LEGACY_SLOT,
+      active_availability_evidence: evidence2,
+      selected_slot_proof: validProof2,
+    },
+    channelContact: TRUSTED_CONTACT,
+  });
+
+  assert.equal(state.proof.slot_known, true, "P-4: slot_known=true for valid subject_2 proof");
+  assert.equal(state.selected_slot_proof?.subject_id, "subject_2", "P-4: subject_id must remain subject_2 (not reassigned)");
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  assert.equal(visible.slot_evidence_status, "verified", "P-4: slot_evidence_status=verified");
+});
+
+test("P-5: model-visible state for legacy proof does not expose verified or ready_for_booking_apply=true", () => {
+  const legacyProof: SelectedSlotProof = {
+    // no subject_id
+    availability_call_id: "av_legacy",
+    slot_key: "2028-01-15T10:00",
+  };
+  const state = computeBookingProcessState({
+    prior: {
+      selected_slot: LEGACY_SLOT,
+      active_availability_evidence: LEGACY_EVIDENCE,
+      selected_slot_proof: legacyProof,
+      first_name: "Ivan",
+      last_name: "Petrov",
+      service_reason: "чистка",
+    },
+    channelContact: TRUSTED_CONTACT,
+  });
+
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  assert.notEqual(visible.slot_evidence_status, "verified", "P-5: stale legacy proof must NOT appear as verified");
+  assert.equal(visible.slot_evidence_status, "stale", "P-5: slot_evidence_status must be stale");
+  assert.equal(visible.proof?.slot_known, false, "P-5: proof.slot_known must be false");
+  assert.notEqual(visible.proof?.ready_for_booking_apply, true, "P-5: ready_for_booking_apply must NOT be true");
 });

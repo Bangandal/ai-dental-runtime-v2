@@ -355,8 +355,15 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   // Proof is created only via booking.select_slot. Persisted proof is validated (not reconstructed).
   if (!selectionEstablishedThisTurn && selectedSlotProof && selectedSlot && activeAvailabilityEvidence) {
     // Validate persisted proof — clear it if the chain is broken, keep it if intact.
+    // subject_id must be one of the four valid booking subjects; legacy proofs without it are stale.
+    // We use a strict set rather than parseSubjectId which accepts any subject_\d+ (incl. subject_99).
+    const VALID_PROOF_SUBJECTS = new Set<string>(["subject_1", "subject_2", "subject_3", "subject_4"]);
+    const proofSubjectId = typeof selectedSlotProof.subject_id === "string" && VALID_PROOF_SUBJECTS.has(selectedSlotProof.subject_id)
+      ? selectedSlotProof.subject_id
+      : null;
     const key = slotToKey(selectedSlot);
     const proofValid =
+      proofSubjectId !== null &&
       key !== null &&
       selectedSlotProof.slot_key === key &&
       selectedSlotProof.availability_call_id === activeAvailabilityEvidence.availability_call_id &&

@@ -426,7 +426,7 @@ test("shouldInterceptMissingSlotProof: returns false when no booking.apply pendi
 
 // ── D. Runtime integration ─────────────────────────────────────────────────────
 
-function makeSlotStateRepo(starts_at: string) {
+function makeSlotStateRepo(starts_at: string, subjectId: `subject_${number}` = "subject_1") {
   const date = starts_at.slice(0, 10);
   const hhmm = starts_at.slice(11, 16);
   const slotKey = `${date}T${hhmm}`;
@@ -437,7 +437,7 @@ function makeSlotStateRepo(starts_at: string) {
         selected_slot: { starts_at },
         last_available_slots: [{ starts_at }],
         active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
-        selected_slot_proof: { availability_call_id: callId, slot_key: slotKey },
+        selected_slot_proof: { subject_id: subjectId, availability_call_id: callId, slot_key: slotKey },
       };
     },
     async saveState() {},
@@ -701,7 +701,7 @@ test("E-2: stale proof for slot no longer in current evidence is rejected", asyn
             allowed_slot_keys: ["2027-08-15T10:00"],
           },
           // Stale proof claims 14:00 was valid from an older call
-          selected_slot_proof: { availability_call_id: "av_stale", slot_key: "2027-08-15T14:00" },
+          selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "av_stale", slot_key: "2027-08-15T14:00" },
         };
       },
       async saveState() {},
@@ -836,7 +836,7 @@ test("F-6: malformed requested_time blocks booking.apply at Guard D, executor ne
             selected_slot: { starts_at: "2027-08-15T10:00:00" },
             last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
             active_availability_evidence: { availability_call_id: "av1", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
-            selected_slot_proof: { availability_call_id: "av1", slot_key: "2027-08-15T10:00" },
+            selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "av1", slot_key: "2027-08-15T10:00" },
           };
         },
         async saveState() {},
@@ -939,7 +939,7 @@ test("G-2: persisted valid proof is preserved, booking.apply succeeds", async ()
             requested_time: null,
             allowed_slot_keys: ["2027-08-15T10:00"],
           },
-          selected_slot_proof: { availability_call_id: "av_g2", slot_key: "2027-08-15T10:00" },
+          selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "av_g2", slot_key: "2027-08-15T10:00" },
         };
       },
       async saveState() {},
@@ -990,6 +990,7 @@ test("G-3: persisted proof with stale availability_call_id is cleared, booking b
             allowed_slot_keys: ["2027-08-15T10:00"],
           },
           selected_slot_proof: {
+            subject_id: "subject_1" as const,
             availability_call_id: "av_OLD",  // stale proof from prior availability check
             slot_key: "2027-08-15T10:00",
           },
@@ -1090,7 +1091,7 @@ test("G-6: impossible calendar date (2027-02-31) blocked at Guard D, executor no
           selected_slot: { starts_at: "2027-08-15T10:00:00" },
           last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
           active_availability_evidence: { availability_call_id: "av1", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
-          selected_slot_proof: { availability_call_id: "av1", slot_key: "2027-08-15T10:00" },
+          selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "av1", slot_key: "2027-08-15T10:00" },
         };
       },
       async saveState() {},
@@ -1403,7 +1404,7 @@ test("J-10: new availability.check this turn clears prior booking.select_slot pr
           selected_slot: { starts_at: "2027-08-15T10:00:00" },
           last_available_slots: [{ starts_at: "2027-08-15T10:00:00" }],
           active_availability_evidence: { availability_call_id: "av_old", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T10:00"] },
-          selected_slot_proof: { availability_call_id: "av_old", slot_key: "2027-08-15T10:00" },
+          selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "av_old", slot_key: "2027-08-15T10:00" },
         };
       },
       async saveState() {},
@@ -1580,5 +1581,233 @@ test("J-14: multiple booking.select_slot in one round → all rejected as ambigu
   const s = savedState as { selected_slot_proof?: unknown } | null;
   const proof = s?.selected_slot_proof;
   assert.ok(proof === null || proof === undefined, "J-14: ambiguous multiple select_slot must not create proof");
+});
+
+// ── J-15: avail.check alone does not authorize booking.apply ──────────────────
+
+// J-15: Verifies the bypass removal — avail.check in round-1 no longer authorizes booking.apply.
+// avail.check clears prior proof; Guard G fires in round-2 → slot_not_verified.
+test("J-15: availability.check without booking.select_slot → booking.apply blocked (slot_not_verified)", async () => {
+  let executorCalled = false;
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      if (!input.input.tool_results?.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [{ tool: "availability.check", call_id: "avail_j15", arguments: { requested_date: "2028-01-15" } }],
+        };
+      }
+      if (input.input.tool_results.some((r: { tool: string }) => r.tool === "availability.check")) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [{ tool: "booking.apply", call_id: "ba_j15", arguments: { subject_id: "subject_1", first_name: "Test", last_name: "User", service: "чистка", requested_date: "2028-01-15", requested_time: "10:00" } }],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Нужно выбрать слот." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "availability.check": async () => ({
+        status: "success" as const,
+        data: { slots: [{ starts_at: "2028-01-15T10:00:00", ends_at: "2028-01-15T10:30:00" }], total_slots: 1, free_slots_count: 1 },
+      }),
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+  });
+  const result = await loop.runTurn({ clinic_id: "clinic_1", contact_id: "contact_j15", case_id: null, user_message: "запиши", locale: "ru", trace_id: "tr_j15", channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "J-15: avail.check alone must not authorize booking.apply");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult, "J-15: guarded result must be present");
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "slot_not_verified", "J-15: must be slot_not_verified — avail.check bypass removed");
+});
+
+// ── J-16: select_slot subject_2 proof → booking.apply subject_1 → blocked ─────
+
+// J-16: Cross-subject proof mismatch. State has subject_2 proof; booking.apply for subject_1
+// triggers validateBookingSlotEvidence check 8 → selected_slot_proof_mismatch → slot_not_verified.
+test("J-16: subject_2 proof → booking.apply subject_1 → blocked (cross-subject mismatch)", async () => {
+  let executorCalled = false;
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      if (!input.input.tool_results?.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [{ tool: "booking.apply", call_id: "ba_j16", arguments: { subject_id: "subject_1", first_name: "Test", last_name: "User", service: "чистка", requested_date: "2028-01-15", requested_time: "10:00" } }],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Слот не верифицирован." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    // Proof is for subject_2; booking.apply is for subject_1 → mismatch
+    bookingProcessStateRepository: makeSlotStateRepo("2028-01-15T10:00:00", "subject_2"),
+  });
+  const result = await loop.runTurn({ clinic_id: "clinic_1", contact_id: "contact_j16", case_id: null, user_message: "запиши", locale: "ru", trace_id: "tr_j16", channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "J-16: executor must not run when proof is for different subject");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult, "J-16: guarded result must be present");
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "slot_not_verified", "J-16: must be slot_not_verified on cross-subject proof mismatch");
+});
+
+// ── J-17: select_slot subject_2 proof → booking.apply subject_2 → executor called ──
+
+// J-17: When proof matches the booking subject, booking.apply executes.
+test("J-17: subject_2 proof → booking.apply subject_2 → executor called (subject match)", async () => {
+  let executorCalled = false;
+  const registryWithS2 = {
+    version: 3,
+    status: "active" as const,
+    active_subject_id: "subject_2" as `subject_${number}`,
+    subjects: [{
+      id: "subject_2" as `subject_${number}`,
+      role: "mentioned_person" as const,
+      label: null,
+      patient_name: "Иван Тест",
+      service: "чистка",
+      slot: null,
+      booking_contact: { phone_number: "+420555444333", source: "typed" as const, trust: "unverified" as const, owner_subject_id: "subject_2" as `subject_${number}`, collected_at: null },
+      status: "collecting" as const,
+      missing: [],
+    }],
+    pending_typed_phone: null,
+    max_subjects: 4,
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      if (!input.input.tool_results?.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [{ tool: "booking.apply", call_id: "ba_j17", arguments: { subject_id: "subject_2", first_name: "Иван", last_name: "Тест", service: "чистка", requested_date: "2028-01-15", requested_time: "10:00" } }],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Записан." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "v_j17" } }; },
+    },
+    // Proof is for subject_2; booking.apply is also for subject_2 → match → executor called
+    bookingProcessStateRepository: makeSlotStateRepo("2028-01-15T10:00:00", "subject_2"),
+  });
+  const result = await loop.runTurn({ clinic_id: "clinic_1", contact_id: "contact_j17", case_id: null, user_message: "запиши", locale: "ru", trace_id: "tr_j17", booking_subjects: registryWithS2 });
+  assert.equal(executorCalled, true, "J-17: executor must be called when proof subject matches booking.apply subject");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult, "J-17: booking result must be present");
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "visit_created", "J-17: booking must succeed");
+});
+
+// ── J-18: select_slot for non-existent subject → subject_resolution_conflict ───
+
+// J-18: When booking_subjects registry is absent and subject_2 is requested,
+// executeBookingSelectSlot returns subject_resolution_conflict. No proof is created.
+test("J-18: booking.select_slot subject_2 without registry → subject_resolution_conflict, no proof", async () => {
+  let savedState: unknown = undefined;
+  const stateRepo = {
+    async loadState() { return null; },
+    async saveState(_k: unknown, state: unknown) { savedState = state; },
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      if (!input.input.tool_results?.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [{ tool: "booking.select_slot", call_id: "ss_j18", arguments: { subject_id: "subject_2", requested_date: "2028-01-15", requested_time: "10:00" } }],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Субъект не найден." } };
+    }) as RuntimeAgentCaller,
+    executors: {},
+    bookingProcessStateRepository: stateRepo,
+  });
+  await loop.runTurn({ clinic_id: "clinic_1", contact_id: "contact_j18", case_id: null, user_message: "запиши субъект 2", locale: "ru", trace_id: "tr_j18" });
+  const ssResult = (savedState as { selected_slot_proof?: unknown } | null | undefined);
+  assert.ok(ssResult?.selected_slot_proof === null || ssResult?.selected_slot_proof === undefined, "J-18: no proof must be created when select_slot fails with subject_resolution_conflict");
+});
+
+// ── J-19: legacy proof without subject_id → stale, booking blocked ────────────
+
+// J-19: A selected_slot_proof without subject_id is treated as a legacy/stale proof.
+// validateBookingSlotEvidence check 3a returns selected_slot_proof_missing → slot_not_verified.
+test("J-19: legacy selected_slot_proof without subject_id → treated as stale, booking.apply blocked", async () => {
+  let executorCalled = false;
+  const legacyStateRepo = {
+    async loadState() {
+      const slotKey = "2028-01-15T10:00";
+      return {
+        selected_slot: { starts_at: "2028-01-15T10:00:00" },
+        last_available_slots: [{ starts_at: "2028-01-15T10:00:00" }],
+        active_availability_evidence: { availability_call_id: "legacy_call", requested_date: "2028-01-15", requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { availability_call_id: "legacy_call", slot_key: slotKey }, // no subject_id (legacy)
+      };
+    },
+    async saveState() {},
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      if (!input.input.tool_results?.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [{ tool: "booking.apply", call_id: "ba_j19", arguments: { subject_id: "subject_1", first_name: "Test", last_name: "User", service: "чистка", requested_date: "2028-01-15", requested_time: "10:00" } }],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Устаревший слот." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    bookingProcessStateRepository: legacyStateRepo,
+  });
+  const result = await loop.runTurn({ clinic_id: "clinic_1", contact_id: "contact_j19", case_id: null, user_message: "запиши", locale: "ru", trace_id: "tr_j19", channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCalled, false, "J-19: executor must not run for legacy proof without subject_id");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult, "J-19: guarded result must be present");
+  assert.equal((baResult!.data as Record<string, unknown>).booking_status, "slot_not_verified", "J-19: legacy proof treated as stale → slot_not_verified");
+});
+
+// ── J-20: select_slot round-1 → booking.apply round-2 → exactly one write ────
+
+// J-20: Correct flow — select_slot in round-1 creates proof, booking.apply in round-2 executes.
+// Executor must be called exactly once (no double-execution).
+test("J-20: booking.select_slot round-1 then booking.apply round-2 → executor called exactly once", async () => {
+  let executorCallCount = 0;
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [{ tool: "booking.select_slot", call_id: "ss_j20", arguments: { subject_id: "subject_1", requested_date: "2028-01-15", requested_time: "10:00" } }],
+        };
+      }
+      if (results.some((r: { tool: string }) => r.tool === "booking.select_slot")) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [{ tool: "booking.apply", call_id: "ba_j20", arguments: { subject_id: "subject_1", first_name: "Test", last_name: "User", service: "чистка", requested_date: "2028-01-15", requested_time: "10:00" } }],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Записано." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "v_j20" } };
+      },
+    },
+    // State repo provides evidence so select_slot can create proof
+    bookingProcessStateRepository: makeSlotStateRepo("2028-01-15T10:00:00", "subject_1"),
+  });
+  await loop.runTurn({ clinic_id: "clinic_1", contact_id: "contact_j20", case_id: null, user_message: "запиши", locale: "ru", trace_id: "tr_j20", channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCallCount, 1, "J-20: booking.apply executor must be called exactly once");
 });
 

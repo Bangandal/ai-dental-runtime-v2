@@ -47,7 +47,6 @@ import {
   shouldInterceptInvalidSlotDateTime,
   buildInvalidSlotReply,
 } from "../src/runtime/bookingApplyPreflight.ts";
-import type { AuthoritativeAvailabilityAttempt } from "../src/runtime/availabilityActionTruth.ts";
 
 function makeSlotStateRepo(starts_at: string) {
   // Build full authoritative evidence so the slot is proven (slot_known=true).
@@ -68,6 +67,7 @@ function makeSlotStateRepo(starts_at: string) {
           allowed_slot_keys: [slotKey],
         },
         selected_slot_proof: {
+          subject_id: "subject_1" as const,
           availability_call_id: callId,
           slot_key: slotKey,
         },
@@ -361,25 +361,27 @@ test("runtimeAgentLoop: no-slots preflight — booking.apply not executed when 0
 // → Guard A fires, submits guarded missing_trusted_phone result, model responds,
 // booking.apply executor NOT called, conversation_id preserved.
 
-test("runtimeAgentLoop: Guard A fires when booking.apply pending and phone absent (valid slot present)", async () => {
+test("runtimeAgentLoop: Guard G fires (slot_not_verified) when booking.apply requested without prior booking.select_slot", async () => {
+  // Blocker 1 required test: availability.check succeeds in round-1, round-2 booking.apply
+  // requests an exact returned slot, but no booking.select_slot was called.
+  // Booking executor call count must be zero.
   let bookingApplyExecutorCalled = false;
 
   const caller = makeCallerSequence([
     {
       type: "tool_requests",
-      conversation_id: "conv_141_2",
+      conversation_id: "conv_b1",
       tool_requests: [AVAILABILITY_REQUEST],
     },
     {
       type: "tool_requests",
-      conversation_id: "conv_141_2",
+      conversation_id: "conv_b1",
       tool_requests: [BOOKING_APPLY_REQUEST],
     },
-    // Guarded finalization: model asks for phone after seeing missing_trusted_phone guarded result
     {
       type: "final_response",
-      conversation_id: "conv_141_2",
-      final_response: { final_patient_reply: "Для записи нужен ваш телефон. Поделитесь контактом." },
+      conversation_id: "conv_b1",
+      final_response: { final_patient_reply: "Выберите слот через booking.select_slot." },
     },
   ]);
 
@@ -393,51 +395,22 @@ test("runtimeAgentLoop: Guard A fires when booking.apply pending and phone absen
       }),
       "booking.apply": async () => {
         bookingApplyExecutorCalled = true;
-        return {
-          status: "success" as const,
-          data: {
-            booking_action: "booking_apply",
-            booking_status: "visit_created",
-            created_visit: true,
-            may_claim_booked: true,
-            cliniccard_visit_id: "visit_999",
-            cliniccard_patient_id: "patient_999",
-            phone_source: "telegram_contact_button",
-          },
-        };
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
       },
     },
   });
 
   const result = await loop.runTurn({
     ...BASE_TURN_INPUT,
-    conversation_id: "conv_141_2",
-    channel_contact: undefined,
+    conversation_id: "conv_b1",
+    channel_contact: TRUSTED_CONTACT,
   });
 
-  // booking.apply executor must NOT have been called
-  assert.equal(bookingApplyExecutorCalled, false, "booking.apply executor must not be called when phone absent");
-
-  // Guarded missing_trusted_phone result must be present (not real executor)
+  assert.equal(bookingApplyExecutorCalled, false, "booking executor must not be called — slot not proven via booking.select_slot");
   const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
-  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
-  const bookingData = bookingResult!.data as Record<string, unknown>;
-  assert.equal(bookingData.booking_status, "missing_trusted_phone", "guarded status must be missing_trusted_phone");
-  assert.equal(bookingData.created_visit, false, "created_visit must be false");
-  assert.equal(bookingData.may_claim_booked, false, "may_claim_booked must be false");
-
-  // Reply comes from model — phone request
-  assert.ok(result.final_patient_reply.length > 0, "must have a reply");
-
-  // Conversation preserved — conversation_id clean
-  assert.equal(result.conversation_id, "conv_141_2", "conversation_id must be preserved");
-  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
-
-  // debug.reason must identify Guard A intercept
-  assert.equal(
-    (result.debug as Record<string, unknown>)?.reason,
-    "booking_apply_intercepted_missing_trusted_phone",
-  );
+  assert.ok(bookingResult, "guarded booking.apply result must appear");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "slot_not_verified");
+  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_missing_slot_proof_round2");
 });
 
 // ── Unit: bookingApplyArgsMissingSlot ────────────────────────────────────────
@@ -951,48 +924,45 @@ test("Test 1a: no slots + no trusted phone → no-slots guarded result, conversa
 
 // ── Unit: shouldInterceptInvalidSlotDateTime ──────────────────────────────────────
 
-// Fixtures for shouldInterceptInvalidSlotDateTime unit tests
-const _BSDT_REQUEST: import("../src/runtime/openaiRuntimeAgent.ts").RuntimeAgentToolRequest = {
-  tool: "availability.check",
-  call_id: "call_avail_bsdt",
-  arguments: { requested_date: "2026-07-09" },
+// Fixtures for shouldInterceptInvalidSlotDateTime unit tests.
+// These tests use the persisted-proof path (current-turn path was removed in Blocker 1).
+const _BSDT_EVIDENCE = {
+  availability_call_id: "call_avail_bsdt",
+  requested_date: "2026-07-09",
+  requested_time: null,
+  allowed_slot_keys: ["2026-07-09T12:00"],
 };
-const _SUCCESS_ATTEMPT_BSDT: AuthoritativeAvailabilityAttempt = {
-  attempted: true,
-  request: _BSDT_REQUEST,
-  pair: { request: _BSDT_REQUEST, result: AVAILABILITY_SUCCESS },
-};
-const _NO_ATTEMPT_BSDT: AuthoritativeAvailabilityAttempt = { attempted: false, request: null, pair: null };
 
-test("shouldInterceptInvalidSlotDateTime: true when requested_time not in allowed slots", () => {
+test("shouldInterceptInvalidSlotDateTime: true when requested slot not in persisted evidence", () => {
+  // Evidence only has 12:00; booking requests 13:00. Proof points to 13:00 but it's
+  // not in allowed_slot_keys → slot_not_in_authoritative_evidence → intercept.
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
         tool: "booking.apply",
         call_id: "c1",
-        arguments: { requested_date: "2026-07-09", requested_time: "13:00", first_name: "A", last_name: "B", service: "s" },
+        arguments: { subject_id: "subject_1", requested_date: "2026-07-09", requested_time: "13:00", first_name: "A", last_name: "B", service: "s" },
       }],
-      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT, // has 12:00 slot only
-      activeAvailabilityEvidence: null,
-      selectedSlot: null,
-      selectedSlotProof: null,
+      activeAvailabilityEvidence: _BSDT_EVIDENCE,
+      selectedSlot: { starts_at: "2026-07-09T13:00:00" },
+      selectedSlotProof: { subject_id: "subject_1" as const, availability_call_id: "call_avail_bsdt", slot_key: "2026-07-09T13:00" },
     }),
     true,
   );
 });
 
-test("shouldInterceptInvalidSlotDateTime: false when requested_time matches a slot", () => {
+test("shouldInterceptInvalidSlotDateTime: false when persisted proof authorizes the requested slot", () => {
+  // Evidence has 12:00; booking requests 12:00; proof matches → passes all checks → no intercept.
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
         tool: "booking.apply",
         call_id: "c2",
-        arguments: { requested_date: "2026-07-09", requested_time: "12:00", first_name: "A", last_name: "B", service: "s" },
+        arguments: { subject_id: "subject_1", requested_date: "2026-07-09", requested_time: "12:00", first_name: "A", last_name: "B", service: "s" },
       }],
-      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT, // has starts_at "2026-07-09T12:00:00"
-      activeAvailabilityEvidence: null,
-      selectedSlot: null,
-      selectedSlotProof: null,
+      activeAvailabilityEvidence: _BSDT_EVIDENCE,
+      selectedSlot: { starts_at: "2026-07-09T12:00:00" },
+      selectedSlotProof: { subject_id: "subject_1" as const, availability_call_id: "call_avail_bsdt", slot_key: "2026-07-09T12:00" },
     }),
     false,
   );
@@ -1002,7 +972,6 @@ test("shouldInterceptInvalidSlotDateTime: false when no availability results (no
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [BOOKING_APPLY_REQUEST],
-      currentAvailabilityAttempt: _NO_ATTEMPT_BSDT,
       activeAvailabilityEvidence: null,
       selectedSlot: null,
       selectedSlotProof: null,
@@ -1015,7 +984,6 @@ test("shouldInterceptInvalidSlotDateTime: false when no booking.apply pending", 
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [AVAILABILITY_REQUEST],
-      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT,
       activeAvailabilityEvidence: null,
       selectedSlot: null,
       selectedSlotProof: null,
@@ -1032,7 +1000,6 @@ test("shouldInterceptInvalidSlotDateTime: false when requested_time absent (Guar
         call_id: "c3",
         arguments: { requested_date: "2026-07-09", first_name: "A", last_name: "B", service: "s" },
       }],
-      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT,
       activeAvailabilityEvidence: null,
       selectedSlot: null,
       selectedSlotProof: null,
@@ -1041,8 +1008,8 @@ test("shouldInterceptInvalidSlotDateTime: false when requested_time absent (Guar
   );
 });
 
-test("shouldInterceptInvalidSlotDateTime: handles HH:MM:SS format in requested_time", () => {
-  // requested_time "12:00:00" normalized to "12:00" should match slot at 12:00
+test("shouldInterceptInvalidSlotDateTime: false when requested_time absent even with evidence (Guard D handles it)", () => {
+  // HH:MM:SS format is invalid_booking_slot_format, not slot_not_in_authoritative_evidence
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
@@ -1050,8 +1017,7 @@ test("shouldInterceptInvalidSlotDateTime: handles HH:MM:SS format in requested_t
         call_id: "c4",
         arguments: { requested_date: "2026-07-09", requested_time: "12:00:00", first_name: "A", last_name: "B", service: "s" },
       }],
-      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT,
-      activeAvailabilityEvidence: null,
+      activeAvailabilityEvidence: _BSDT_EVIDENCE,
       selectedSlot: null,
       selectedSlotProof: null,
     }),
@@ -1059,22 +1025,22 @@ test("shouldInterceptInvalidSlotDateTime: handles HH:MM:SS format in requested_t
   );
 });
 
-test("shouldInterceptInvalidSlotDateTime: true when time matches but date differs from slot date", () => {
-  // AVAILABILITY_SUCCESS has starts_at "2026-07-09T12:00:00" — date is 2026-07-09.
-  // Requesting same time (12:00) on a different date (2026-07-07) must be blocked.
+test("shouldInterceptInvalidSlotDateTime: false when cross-date (caught by shouldInterceptMissingSlotProof via mismatch)", () => {
+  // Cross-date booking: selected_slot is 2026-07-09 but booking requests 2026-07-07.
+  // This returns selected_slot_proof_mismatch, not slot_not_in_authoritative_evidence,
+  // so shouldInterceptInvalidSlotDateTime returns false (shouldInterceptMissingSlotProof handles it).
   assert.equal(
     shouldInterceptInvalidSlotDateTime({
       pendingToolRequests: [{
         tool: "booking.apply",
         call_id: "c5",
-        arguments: { requested_date: "2026-07-07", requested_time: "12:00", first_name: "A", last_name: "B", service: "s" },
+        arguments: { subject_id: "subject_1", requested_date: "2026-07-07", requested_time: "12:00", first_name: "A", last_name: "B", service: "s" },
       }],
-      currentAvailabilityAttempt: _SUCCESS_ATTEMPT_BSDT,
-      activeAvailabilityEvidence: null,
-      selectedSlot: null,
-      selectedSlotProof: null,
+      activeAvailabilityEvidence: _BSDT_EVIDENCE,
+      selectedSlot: { starts_at: "2026-07-09T12:00:00" },
+      selectedSlotProof: { subject_id: "subject_1" as const, availability_call_id: "call_avail_bsdt", slot_key: "2026-07-09T12:00" },
     }),
-    true,
+    false,
   );
 });
 
@@ -1121,139 +1087,63 @@ test("buildMissingServiceReply: EN is non-empty", () => {
 
 // ── Integration Test: slot validity (invalid time, round 2) ──────────────────
 
-test("Integration: invalid slot time in round-2 → executor not called, asks to choose slot", async () => {
+test("Integration: availability.check alone does not authorize booking.apply — slot_not_verified (Blocker 1)", async () => {
+  // Blocker 1: round-1 availability.check succeeds + round-2 booking.apply (same slot)
+  // without booking.select_slot → executor must NOT be called.
   let bookingApplyExecutorCalled = false;
-
   const BOOKING_WRONG_TIME: RuntimeAgentToolRequest = {
     tool: "booking.apply",
     call_id: "call_wrong_time",
-    arguments: {
-      subject_id: "subject_1",
-      service: "chistka",
-      requested_date: "2026-07-09",
-      requested_time: "13:00", // NOT in availability results (slot is 12:00)
-      first_name: "Роман",
-      last_name: "Анбасадоров",
-    },
+    arguments: { subject_id: "subject_1", service: "chistka", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Роман", last_name: "Анбасадоров" },
   };
-
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     caller: makeCallerSequence([
-      {
-        type: "tool_requests",
-        conversation_id: "conv_invalid_slot",
-        tool_requests: [AVAILABILITY_REQUEST],
-      },
-      {
-        type: "tool_requests",
-        conversation_id: "conv_invalid_slot",
-        tool_requests: [BOOKING_WRONG_TIME],
-      },
-      {
-        type: "final_response",
-        conversation_id: "conv_invalid_slot",
-        final_response: { final_patient_reply: "Выбранное время недоступно. Выберите из доступных слотов." },
-      },
+      { type: "tool_requests", conversation_id: "conv_b1_57", tool_requests: [AVAILABILITY_REQUEST] },
+      { type: "tool_requests", conversation_id: "conv_b1_57", tool_requests: [BOOKING_WRONG_TIME] },
+      { type: "final_response", conversation_id: "conv_b1_57", final_response: { final_patient_reply: "Нужно выбрать слот." } },
     ]),
     executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 }, // 12:00 slot
-      }),
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 } }),
+      "booking.apply": async () => { bookingApplyExecutorCalled = true; return { status: "success" as const, data: {} }; },
+    },
+    now: new Date("2026-07-09T07:00:00Z"),
+  });
+  const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_b1_57", channel_contact: TRUSTED_CONTACT });
+  assert.equal(bookingApplyExecutorCalled, false, "executor must not be called — availability.check alone cannot authorize booking");
+  const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
+  assert.ok(bookingResult, "guarded booking.apply result must appear");
+  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "slot_not_verified");
+});
+
+// ── Integration Test: persisted proof authorizes booking.apply ─────────────────
+
+test("Integration: booking.apply executes when persisted selected_slot_proof present", async () => {
+  // booking.select_slot was called in a prior turn → proof persisted in repo → booking.apply executes.
+  let bookingApplyExecutorCalled = false;
+  const BOOKING_CORRECT_TIME: RuntimeAgentToolRequest = {
+    tool: "booking.apply",
+    call_id: "call_correct_time",
+    arguments: { subject_id: "subject_1", service: "chistka", requested_date: "2026-07-09", requested_time: "12:00", first_name: "Роман", last_name: "Анбасадоров" },
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    caller: makeCallerSequence([
+      { type: "tool_requests", conversation_id: "conv_valid_58", tool_requests: [BOOKING_CORRECT_TIME] },
+      { type: "final_response", conversation_id: "conv_valid_58", final_response: { final_patient_reply: "Запись оформлена." } },
+    ]),
+    executors: {
       "booking.apply": async () => {
         bookingApplyExecutorCalled = true;
         return { status: "success" as const, data: { booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false } };
       },
     },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    now: new Date("2026-07-09T07:00:00Z"),
   });
-
-  const result = await loop.runTurn({
-    ...BASE_TURN_INPUT,
-    conversation_id: "conv_invalid_slot",
-    channel_contact: TRUSTED_CONTACT,
-  });
-
-  assert.equal(bookingApplyExecutorCalled, false, "executor must not be called for invalid slot time");
-  const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
-  assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
-  assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "invalid_slot");
-  assert.equal((bookingResult!.data as Record<string, unknown>).created_visit, false);
-  assert.ok(
-    result.final_patient_reply.toLowerCase().includes("врем") ||
-      result.final_patient_reply.toLowerCase().includes("слот") ||
-      result.final_patient_reply.toLowerCase().includes("time") ||
-      result.final_patient_reply.toLowerCase().includes("slot"),
-    `Reply must ask to choose available slot: ${result.final_patient_reply}`,
-  );
-  assert.notEqual(result.conversation_id, null, "conversation_id must be preserved");
-  assert.notEqual(result.conversation_id_resumable, false, "conversation must be resumable");
-  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_invalid_slot_round2");
-});
-
-// ── Integration Test: valid slot time passes preflight ────────────────────────
-
-test("Integration: valid slot time (12:00 in [12:00]) — passes slot validity, executor called", async () => {
-  let bookingApplyExecutorCalled = false;
-
-  const BOOKING_CORRECT_TIME: RuntimeAgentToolRequest = {
-    tool: "booking.apply",
-    call_id: "call_correct_time",
-    arguments: {
-      subject_id: "subject_1",
-      service: "chistka",
-      requested_date: "2026-07-09",
-      requested_time: "12:00", // matches the available slot
-      first_name: "Роман",
-      last_name: "Анбасадоров",
-    },
-  };
-
-  const loop = createRuntimeAgentLoop({
-    model: "test-model",
-    caller: makeCallerSequence([
-      {
-        type: "tool_requests",
-        conversation_id: "conv_valid_slot",
-        tool_requests: [AVAILABILITY_REQUEST],
-      },
-      {
-        type: "tool_requests",
-        conversation_id: "conv_valid_slot",
-        tool_requests: [BOOKING_CORRECT_TIME],
-      },
-      {
-        type: "final_response",
-        conversation_id: "conv_valid_slot",
-        final_response: { final_patient_reply: "Запись оформлена." },
-      },
-    ]),
-    executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 },
-      }),
-      "booking.apply": async () => {
-        bookingApplyExecutorCalled = true;
-        return {
-          status: "success" as const,
-          data: { booking_action: "booking_apply", booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false },
-        };
-      },
-    },
-  });
-
-  const result = await loop.runTurn({
-    ...BASE_TURN_INPUT,
-    conversation_id: "conv_valid_slot",
-    channel_contact: TRUSTED_CONTACT,
-  });
-
-  assert.equal(bookingApplyExecutorCalled, true, "executor must be called when slot time is valid");
-  assert.ok(
-    result.tool_results?.some((r) => r.tool === "booking.apply"),
-    "booking.apply must appear in tool_results",
-  );
+  const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_valid_58", channel_contact: TRUSTED_CONTACT });
+  assert.equal(bookingApplyExecutorCalled, true, "executor must be called when persisted proof authorizes the slot");
+  assert.ok(result.tool_results?.some((r) => r.tool === "booking.apply"), "booking.apply must appear in tool_results");
 });
 
 // ── Integration Test: missing service in round-1 → executor not called ────────

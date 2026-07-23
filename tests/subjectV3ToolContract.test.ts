@@ -47,7 +47,7 @@ import { createRuntimeTurnService } from "../src/runtime/runtimeTurnService.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeSlotStateRepo(starts_at: string) {
+function makeSlotStateRepo(starts_at: string, subjectId: SubjectId = "subject_1" as SubjectId) {
   const date = starts_at.slice(0, 10);
   const hhmm = starts_at.slice(11, 16);
   const slotKey = `${date}T${hhmm}`;
@@ -58,7 +58,7 @@ function makeSlotStateRepo(starts_at: string) {
         selected_slot: { starts_at },
         last_available_slots: [{ starts_at }],
         active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
-        selected_slot_proof: { availability_call_id: callId, slot_key: slotKey },
+        selected_slot_proof: { subject_id: subjectId, availability_call_id: callId, slot_key: slotKey },
       };
     },
     async saveState() {},
@@ -504,7 +504,7 @@ test("TC-9: booking.apply in round-1 then kb.search round-2 → forced finalizat
       }),
       "kb.search": async () => ({ status: "success" as const, data: { chunks: [] } }),
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00", "subject_2" as SubjectId),
   });
 
   const result = await loop.runTurn({
@@ -1065,8 +1065,10 @@ test("P3-3: availability round-1, one booking.apply round-2 → booking executes
     model: "test-model",
     caller: makeCallerSequence([
       {
+        // Round 1: select_slot for subject_2 — creates proof from prior evidence
+        // (avail.check would clear prior proof; select_slot preserves it)
         type: "tool_requests",
-        tool_requests: [{ tool: "availability.check", call_id: "avail_p3c", arguments: { requested_date: "2027-08-15", service_interest: "чистка" } }],
+        tool_requests: [{ tool: "booking.select_slot", call_id: "ss_p3c", arguments: { subject_id: "subject_2", requested_date: "2027-08-15", requested_time: "11:00" } }],
       },
       {
         type: "tool_requests",
@@ -1079,13 +1081,13 @@ test("P3-3: availability round-1, one booking.apply round-2 → booking executes
       { type: "final_response", final_response: { final_patient_reply: "Анна записана на 11:00!" } },
     ]),
     executors: {
-      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2027-08-15T11:00:00", service: "чистка" }] } }),
       "booking.apply": async () => {
         executorCallCount++;
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_p3c" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
+    // Prior state provides evidence + subject_2 proof so select_slot and booking.apply both succeed
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00", "subject_2" as SubjectId),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN, booking_subjects: REGISTRY, channel_contact: TRUSTED_CONTACT });
@@ -1468,23 +1470,24 @@ test("OC-2: real two-turn orchestrator — turn-1 bootstraps registry via subjec
   assert.ok(savedBookingSubjectsOC2 !== null, "turn 1 must persist booking_subjects");
   assert.ok(savedBookingSubjectsOC2!.subjects.find((s) => s.id === "subject_2"), "registry must have subject_2 after turn 1");
 
-  // Turn 2: real loop — availability.check round-1 + booking.apply subject_2 round-2
+  // Turn 2: real loop — select_slot round-1 + booking.apply subject_2 round-2
+  // (avail.check would clear prior proof; select_slot creates proof from prior evidence)
   const turn2Loop = createRuntimeAgentLoop({
     now: new Date("2027-08-15T07:00:00Z"),
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", tool_requests: [{ tool: "availability.check", call_id: "avail_oc2", arguments: { requested_date: "2027-08-15", service_interest: "чистка" } }] },
+      { type: "tool_requests", tool_requests: [{ tool: "booking.select_slot", call_id: "ss_oc2", arguments: { subject_id: "subject_2", requested_date: "2027-08-15", requested_time: "11:00" } }] },
       { type: "tool_requests", tool_requests: [{ tool: "booking.apply", call_id: "ba_oc2", arguments: { subject_id: "subject_2", first_name: "Анна", last_name: "Козлова", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }] },
       { type: "final_response", final_response: { final_patient_reply: "Анна Козлова записана на чистку 20 июля в 11:00!" } },
     ]),
     executors: {
-      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2027-08-15T11:00:00", service: "чистка" }] } }),
       "booking.apply": async () => {
         turn2ExecutorCallCount++;
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "visit_oc2_real" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00"),
+    // Prior state provides evidence + subject_2 proof so select_slot and booking.apply both succeed
+    bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T11:00:00", "subject_2" as SubjectId),
   });
   const turn2Service = createRuntimeTurnService({ agent: turn2Loop });
 

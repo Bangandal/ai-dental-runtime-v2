@@ -23,7 +23,7 @@ import type { ChannelContact } from "../src/runtime/openaiRuntimeAgent.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function makeSlotStateRepo(starts_at: string) {
+function makeSlotStateRepo(starts_at: string, subjectId: SubjectId = "subject_1" as SubjectId) {
   const date = starts_at.slice(0, 10);
   const hhmm = starts_at.slice(11, 16);
   const slotKey = `${date}T${hhmm}`;
@@ -34,7 +34,7 @@ function makeSlotStateRepo(starts_at: string) {
         selected_slot: { starts_at },
         last_available_slots: [{ starts_at }],
         active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
-        selected_slot_proof: { availability_call_id: callId, slot_key: slotKey },
+        selected_slot_proof: { subject_id: subjectId, availability_call_id: callId, slot_key: slotKey },
       };
     },
     async saveState() {},
@@ -141,7 +141,7 @@ test("BSEP-1: round-1 booking result contains execution_subject_id=subject_2", a
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00", "subject_2" as SubjectId),
   });
 
   const result = await loop.runTurn({
@@ -187,7 +187,7 @@ test("BSEP-2: round-1 successful booking persists subject_2.status=booked via po
         data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00", "subject_2" as SubjectId),
   });
 
   const result = await loop.runTurn({
@@ -248,7 +248,7 @@ test("BSEP-3: executor receives phone of subject_2, not subject_1 (sender)", asy
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00", "subject_2" as SubjectId),
   });
 
   await loop.runTurn({
@@ -319,16 +319,14 @@ test("BSEP-4: round-2 bootstrap creates registry when availability.check in roun
 
 // ── Test 5: Round-2 bootstrap does NOT use sender phone for subject_2 ─────────
 
-test("BSEP-5: round-2 bootstrap — booking.apply blocked (no subject_2 phone), sender phone not used", async () => {
+test("BSEP-5: booking.apply blocked (no subject_2 phone), sender phone not used", async () => {
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    // Pin "now" so 2026-07-09T12:00 slot is in the future (avoids past-time guard)
+    now: new Date("2026-07-09T09:00:00.000Z"),
     caller: makeCallerSequence([
-      {
-        type: "tool_requests",
-        tool_requests: [{ tool: "availability.check", call_id: "call_avail2", arguments: { requested_date: "2026-07-09" } }],
-      },
       {
         type: "tool_requests",
         tool_requests: [{
@@ -350,16 +348,13 @@ test("BSEP-5: round-2 bootstrap — booking.apply blocked (no subject_2 phone), 
       },
     ]),
     executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: { slots: [{ slot_id: "s1", starts_at: "2026-07-09T12:00:00", ends_at: "2026-07-09T12:30:00" }], total_slots: 1, free_slots_count: 1 },
-      }),
       "booking.apply": async () => {
         executorCalled = true;
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    // State repo provides valid subject_2 proof; no avail.check in round-1 so proof is preserved
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00", "subject_2" as SubjectId),
   });
 
   const result = await loop.runTurn({
@@ -368,7 +363,7 @@ test("BSEP-5: round-2 bootstrap — booking.apply blocked (no subject_2 phone), 
     // No booking_subjects — bootstrap will create registry without phone for subject_2
   });
 
-  // Executor must NOT be called — subject_2 has no phone and Guard B/A fires
+  // Executor must NOT be called — subject_2 has no phone and phone guard fires
   assert.equal(executorCalled, false, "executor must not run when subject_2 has no phone");
   const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
   assert.ok(bookingResult, "guarded booking result must be present");
@@ -823,16 +818,14 @@ test("BSEP-14: successful booking updates only frozen execution subject, not act
 
 // ── Test 15: Round-2 bootstrap with Guard J subject resolution ────────────────
 
-test("BSEP-15: round-2 bootstrap: registry created, Guard J resolves subject_2, phone missing blocks booking", async () => {
+test("BSEP-15: bootstrap: registry created, phone missing blocks booking for subject_2", async () => {
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    // Pin "now" so 2026-07-09T12:00 slot is in the future (avoids past-time guard)
+    now: new Date("2026-07-09T09:00:00.000Z"),
     caller: makeCallerSequence([
-      {
-        type: "tool_requests",
-        tool_requests: [{ tool: "availability.check", call_id: "av1", arguments: { requested_date: "2026-07-09" } }],
-      },
       {
         type: "tool_requests",
         tool_requests: [{
@@ -854,16 +847,13 @@ test("BSEP-15: round-2 bootstrap: registry created, Guard J resolves subject_2, 
       },
     ]),
     executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: { slots: [{ slot_id: "s1", starts_at: "2026-07-09T12:00:00", ends_at: "2026-07-09T12:30:00" }], total_slots: 1, free_slots_count: 1 },
-      }),
       "booking.apply": async () => {
         executorCalled = true;
         return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
       },
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    // State repo provides valid subject_2 proof; no avail.check in round-1 so proof is preserved
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00", "subject_2" as SubjectId),
   });
 
   // No booking_subjects, no channel_contact for subject_2 phone
@@ -920,7 +910,7 @@ test("BSEP-16: round-1 malformed second response still returns execution_subject
         data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00", "subject_2" as SubjectId),
   });
 
   const result = await loop.runTurn({
@@ -999,7 +989,7 @@ test("BSEP-18: booking_subjects_after_resolution from loop round-trips through p
         data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" },
       }),
     },
-    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00", "subject_2" as SubjectId),
   });
 
   const result = await loop.runTurn({

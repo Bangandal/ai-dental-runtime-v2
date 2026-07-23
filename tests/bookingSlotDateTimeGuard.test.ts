@@ -96,6 +96,7 @@ const EVIDENCE_JULY10: AvailabilityEvidence = {
 };
 
 const SLOT_PROOF_JULY10: SelectedSlotProof = {
+  subject_id: "subject_1" as const,
   availability_call_id: "call_av_dt1",
   slot_key: "2026-07-10T12:00",
 };
@@ -175,7 +176,10 @@ test("BSDT-5-unit: shouldInterceptInvalidSlotDateTime — date+time match → fa
 
 // ── Integration: date mismatch blocks booking ─────────────────────────────────
 
-test("BSDT-1: avail.check returns 2026-07-10T12:00, booking.apply requests 2026-07-11 12:00 → blocked, executor not called", async () => {
+test("BSDT-1: avail.check then booking.apply wrong date (no select_slot) → slot_not_verified, executor not called", async () => {
+  // With the proof requirement, avail.check alone does not authorize booking.apply.
+  // avail.check clears the prior proof, so Guard G fires before Guard H in round-2.
+  // Result: slot_not_verified (proof missing), not invalid_slot.
   let bookingExecutorCalled = false;
 
   const loop = createRuntimeAgentLoop({
@@ -221,30 +225,31 @@ test("BSDT-1: avail.check returns 2026-07-10T12:00, booking.apply requests 2026-
     channel_contact: TRUSTED_CONTACT,
   });
 
-  assert.equal(bookingExecutorCalled, false, "booking.apply executor must NOT be called on date mismatch");
+  assert.equal(bookingExecutorCalled, false, "booking.apply executor must NOT be called");
 
   const bookingResult = result.tool_results.find((r) => r.tool === "booking.apply");
   assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
   assert.equal(
     (bookingResult!.data as Record<string, unknown>).booking_status,
-    "invalid_slot",
-    "booking_status must be invalid_slot on date mismatch",
+    "slot_not_verified",
+    "booking_status must be slot_not_verified (proof required; avail.check alone insufficient)",
   );
   assert.equal((bookingResult!.data as Record<string, unknown>).created_visit, false);
   assert.equal(
     (result.debug as Record<string, unknown>)?.reason,
-    "booking_apply_preflight_invalid_slot_round2",
+    "booking_apply_preflight_missing_slot_proof_round2",
   );
 });
 
 // ── Integration: date+time match allows booking to proceed ────────────────────
 
-test("BSDT-2: avail.check returns 2026-07-10T12:00, booking.apply requests 2026-07-10 12:00 → executor called", async () => {
+test("BSDT-2: avail.check then booking.apply without select_slot → executor NOT called (no bypass)", async () => {
+  // Current-turn availability.check alone no longer authorizes booking.apply.
+  // Model must call booking.select_slot first to create proof.
   let bookingExecutorCalled = false;
 
   const loop = createRuntimeAgentLoop({
     model: "test-model",
-    // Pin "now" to 11:00 Prague (09:00 UTC) so the 12:00 slot is 1 h in the future.
     now: new Date("2026-07-10T09:00:00.000Z"),
     caller: makeCallerSequence([
       {
@@ -260,7 +265,7 @@ test("BSDT-2: avail.check returns 2026-07-10T12:00, booking.apply requests 2026-
       {
         type: "final_response",
         conversation_id: "conv_bsdt2",
-        final_response: { final_patient_reply: "Запись создана на 10 июля в 12:00." },
+        final_response: { final_patient_reply: "Сначала выберите слот." },
       },
     ]),
     executors: {
@@ -285,6 +290,6 @@ test("BSDT-2: avail.check returns 2026-07-10T12:00, booking.apply requests 2026-
     channel_contact: TRUSTED_CONTACT,
   });
 
-  assert.equal(bookingExecutorCalled, true, "booking.apply executor MUST be called when date+time match");
+  assert.equal(bookingExecutorCalled, false, "booking.apply executor must NOT be called without select_slot proof");
   assert.ok(result.final_patient_reply.length > 0, "must have a final reply");
 });

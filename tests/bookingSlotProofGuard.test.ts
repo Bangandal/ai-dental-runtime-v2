@@ -87,6 +87,7 @@ const EVIDENCE: AvailabilityEvidence = {
 };
 
 const SLOT_PROOF: SelectedSlotProof = {
+  subject_id: "subject_1" as const,
   availability_call_id: "call_av_1",
   slot_key: "2026-07-09T12:00",
 };
@@ -119,15 +120,16 @@ test("BSPG-1: intercepts when no availability evidence and no selectedSlot", () 
   );
 });
 
-test("BSPG-2: does NOT intercept when current-turn successful avail.check covers the requested slot", () => {
+test("BSPG-2: intercepts when only current-turn avail.check present — no select_slot proof", () => {
+  // Removed current-turn bypass: availability.check alone never authorizes booking.apply.
+  // Model must call booking.select_slot to create proof; without it, guard fires regardless.
   assert.equal(
     shouldInterceptMissingSlotProof({
       pendingToolRequests: [BOOKING_APPLY_FULL],
-      currentAvailabilityAttempt: SUCCESS_ATTEMPT,
       activeAvailabilityEvidence: null,
       selectedSlot: null,
     }),
-    false,
+    true,
   );
 });
 

@@ -82,7 +82,7 @@ function makeSlotStateRepo(starts_at: string) {
         selected_slot: { starts_at },
         last_available_slots: [{ starts_at }],
         active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
-        selected_slot_proof: { availability_call_id: callId, slot_key: slotKey },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: callId, slot_key: slotKey },
       };
     },
     async saveState() {},
@@ -529,7 +529,7 @@ test("proof: runtimeAgentLoop.ts injects booking_apply_action_truth into second 
 
 // ── PR #180 R4: Emergency fallback gated by complete ClinicCard proof ──────────
 
-const SLOT_REPO_EF = { async loadState() { return { selected_slot: { starts_at: "2027-08-15T11:00:00" }, last_available_slots: [{ starts_at: "2027-08-15T11:00:00" }], active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T11:00"] }, selected_slot_proof: { availability_call_id: "legacy_test_call", slot_key: "2027-08-15T11:00" } }; }, async saveState() {} };
+const SLOT_REPO_EF = { async loadState() { return { selected_slot: { starts_at: "2027-08-15T11:00:00" }, last_available_slots: [{ starts_at: "2027-08-15T11:00:00" }], active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T11:00"] }, selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2027-08-15T11:00" } }; }, async saveState() {} };
 const BASE_TURN_EF = { clinic_id: "clinic_1", contact_id: "contact_1", case_id: null, user_message: "запишите", trace_id: "trace_ef", channel_contact: { phone_number: "+380991350135", phone_source: "telegram_contact_button" as const } };
 
 function makeExceptionLoop(executorData: Record<string, unknown>) {

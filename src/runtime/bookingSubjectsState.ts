@@ -66,6 +66,11 @@ export interface SubjectIntent {
 
 const SUBJECT_ID_RE = /^subject_\d+$/;
 
+export function parseSubjectId(raw: unknown): SubjectId | null {
+  if (typeof raw !== "string") return null;
+  return SUBJECT_ID_RE.test(raw) ? (raw as SubjectId) : null;
+}
+
 export function parseSubjectIntent(raw: unknown): SubjectIntent | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = raw as Record<string, unknown>;

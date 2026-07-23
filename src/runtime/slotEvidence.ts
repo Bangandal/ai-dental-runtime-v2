@@ -1,5 +1,5 @@
 import type { RuntimeAgentToolRequest, RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
-import type { AuthoritativeAvailabilityAttempt } from "./availabilityActionTruth.ts";
+import { parseSubjectId, type SubjectId } from "./bookingSubjectsState.ts";
 
 export interface AvailabilityEvidence {
   availability_call_id: string;
@@ -10,6 +10,8 @@ export interface AvailabilityEvidence {
 }
 
 export interface SelectedSlotProof {
+  /** Subject this proof was created for. Absent in legacy proofs — treated as stale. */
+  subject_id?: SubjectId | null;
   availability_call_id: string;
   /** Canonical YYYY-MM-DDTHH:MM key matching the selected slot. */
   slot_key: string;
@@ -113,7 +115,7 @@ export function buildAllowedSlotKeysFromResult(result: RuntimeAgentToolResult): 
 export type BookingSlotEvidenceResult =
   | {
       ok: true;
-      source: "current_turn_availability" | "persisted_selected_slot";
+      source: "persisted_selected_slot";
       slot_key: string;
       availability_call_id: string;
     }
@@ -129,34 +131,30 @@ export type BookingSlotEvidenceResult =
     };
 
 /**
- * Validates that a booking.apply request can be traced to authoritative availability evidence.
+ * Validates that a booking.apply request can be traced to a complete selected-slot proof chain.
  *
- * Two proof paths — checked in order:
+ * Required chain (all 8 checks):
+ *   1. active availability evidence exists
+ *   2. selected slot exists
+ *   3. selected-slot proof exists
+ *   3a. proof has subject_id (legacy proofs without it are treated as stale)
+ *   4. requested booking slot equals selected slot
+ *   5. proof slot key equals requested slot
+ *   6. proof availability call ID equals active evidence call ID
+ *   7. slot exists in active evidence allowed_slot_keys
+ *   8. proof subject equals booking.apply subject
  *
- * 1. Current-turn: if this turn's authoritative availability.check succeeded and the
- *    requested slot key exists in that result, booking may proceed immediately (supports
- *    avail.check → second-model-call → booking.apply in one turn).
- *
- * 2. Persisted: a prior turn's active_availability_evidence + selected_slot +
- *    selected_slot_proof must all agree on the same slot key and call ID.
- *
- * Explicitly rejected:
- *   - last_available_slots without evidence metadata
- *   - selected_slot without selected_slot_proof
- *   - proof whose call ID differs from active evidence
- *   - a different date with the same HH:MM
- *   - an earlier superseded result from the same round
+ * A successful availability.check alone never authorizes booking.apply.
+ * The structured booking.select_slot tool must be called first to create the proof.
  */
 export function validateBookingSlotEvidence(params: {
   bookingApplyRequest: RuntimeAgentToolRequest;
-  currentAvailabilityAttempt: AuthoritativeAvailabilityAttempt;
   activeAvailabilityEvidence: AvailabilityEvidence | null | undefined;
   selectedSlot: { starts_at: string } | null | undefined;
   selectedSlotProof: SelectedSlotProof | null | undefined;
 }): BookingSlotEvidenceResult {
   const {
     bookingApplyRequest,
-    currentAvailabilityAttempt,
     activeAvailabilityEvidence,
     selectedSlot,
     selectedSlotProof,
@@ -175,45 +173,46 @@ export function validateBookingSlotEvidence(params: {
   const requestedKey = normalizeBookingRequestKey(requestedDate, requestedTime);
   if (!requestedKey) return { ok: false, reason: "invalid_booking_slot_format" };
 
-  // Path 1: current-turn authoritative availability
-  if (
-    currentAvailabilityAttempt.attempted &&
-    currentAvailabilityAttempt.pair !== null &&
-    currentAvailabilityAttempt.pair.result.status === "success" &&
-    currentAvailabilityAttempt.pair.request.call_id
-  ) {
-    const callId = currentAvailabilityAttempt.pair.request.call_id;
-    const allowedKeys = buildAllowedSlotKeysFromResult(currentAvailabilityAttempt.pair.result);
-    if (allowedKeys.includes(requestedKey)) {
-      return { ok: true, source: "current_turn_availability", slot_key: requestedKey, availability_call_id: callId };
-    }
-    return { ok: false, reason: "slot_not_in_authoritative_evidence" };
-  }
-
-  // Path 2: persisted proof
+  // Check 1: active availability evidence
   if (!activeAvailabilityEvidence) {
     return { ok: false, reason: "no_authoritative_availability_evidence" };
   }
 
+  // Checks 2+3: selected slot and proof must exist
   if (!selectedSlot || !selectedSlotProof) {
     return { ok: false, reason: "selected_slot_proof_missing" };
   }
 
+  // Check 3a: legacy proof without subject_id is treated as stale
+  if (!selectedSlotProof.subject_id) {
+    return { ok: false, reason: "selected_slot_proof_missing" };
+  }
+
+  // Check 4: selected slot key matches requested booking slot
   const selectedKey = slotToKey(selectedSlot);
   if (!selectedKey || selectedKey !== requestedKey) {
     return { ok: false, reason: "selected_slot_proof_mismatch" };
   }
 
+  // Check 5: proof slot key matches requested slot
   if (selectedSlotProof.slot_key !== requestedKey) {
     return { ok: false, reason: "selected_slot_proof_mismatch" };
   }
 
+  // Check 6: proof availability call ID matches active evidence call ID
   if (selectedSlotProof.availability_call_id !== activeAvailabilityEvidence.availability_call_id) {
     return { ok: false, reason: "selected_slot_proof_mismatch" };
   }
 
+  // Check 7: slot key exists in active evidence
   if (!activeAvailabilityEvidence.allowed_slot_keys.includes(selectedSlotProof.slot_key)) {
     return { ok: false, reason: "slot_not_in_authoritative_evidence" };
+  }
+
+  // Check 8: proof subject matches booking.apply subject
+  const bookingApplySubjectId = parseSubjectId(bookingApplyRequest.arguments.subject_id);
+  if (!bookingApplySubjectId || selectedSlotProof.subject_id !== bookingApplySubjectId) {
+    return { ok: false, reason: "selected_slot_proof_mismatch" };
   }
 
   return {

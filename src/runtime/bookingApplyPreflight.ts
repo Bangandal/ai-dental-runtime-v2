@@ -132,14 +132,12 @@ export function buildMissingServiceReply(locale?: string | null): string {
 // ── Slot validity / proof guards ──────────────────────────────────────────────
 
 import type { AvailableSlot } from "./bookingProcessState.ts";
-import type { AuthoritativeAvailabilityAttempt } from "./availabilityActionTruth.ts";
 import type { AvailabilityEvidence, SelectedSlotProof } from "./slotEvidence.ts";
 import { validateBookingSlotEvidence, validateBookingRequestFormat } from "./slotEvidence.ts";
 
 /** Shared params for both slot evidence guards. */
 interface SlotEvidenceGuardParams {
   pendingToolRequests: RuntimeAgentToolRequest[];
-  currentAvailabilityAttempt: AuthoritativeAvailabilityAttempt;
   activeAvailabilityEvidence: AvailabilityEvidence | null | undefined;
   selectedSlot?: AvailableSlot | null;
   selectedSlotProof?: SelectedSlotProof | null;
@@ -166,7 +164,6 @@ export function shouldInterceptMissingSlotProof(params: SlotEvidenceGuardParams)
 
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: req,
-    currentAvailabilityAttempt: params.currentAvailabilityAttempt,
     activeAvailabilityEvidence: params.activeAvailabilityEvidence,
     selectedSlot: params.selectedSlot,
     selectedSlotProof: params.selectedSlotProof,
@@ -211,7 +208,6 @@ export function shouldInterceptInvalidSlotDateTime(params: SlotEvidenceGuardPara
 
   const result = validateBookingSlotEvidence({
     bookingApplyRequest: req,
-    currentAvailabilityAttempt: params.currentAvailabilityAttempt,
     activeAvailabilityEvidence: params.activeAvailabilityEvidence,
     selectedSlot: params.selectedSlot,
     selectedSlotProof: params.selectedSlotProof,

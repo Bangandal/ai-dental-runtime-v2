@@ -502,10 +502,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       // Global preflight G — slot proof guard (round 1): fires after subject resolution.
-      // No tools have executed yet; currentAvailabilityAttempt is the "not attempted" state.
       if (bookingApplyRound1 && shouldInterceptMissingSlotProof({
         pendingToolRequests: toolRequests,
-        currentAvailabilityAttempt: { attempted: false, request: null, pair: null },
         activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
         selectedSlot: bookingProcessState.selected_slot,
         selectedSlotProof: bookingProcessState.selected_slot_proof,
@@ -615,6 +613,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       // Track the first successful booking.select_slot result this turn.
       let selectSlotSuccessData: BookingSelectSlotSuccessData | null = null;
+      // Multiple booking.select_slot calls in one round → ambiguous → no proof created.
+      const selectSlotRequestCount = toolRequests.filter((r) => r.tool === "booking.select_slot").length;
+      const selectSlotAmbiguous = selectSlotRequestCount > 1;
 
       for (const request of toolRequests) {
         if (!ACTIVE_TOOL_SET.has(request.tool)) {
@@ -628,9 +629,19 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
 
         if (request.tool === "booking.select_slot") {
+          if (selectSlotAmbiguous) {
+            toolResults.push({
+              tool: "booking.select_slot",
+              call_id: request.call_id,
+              status: "failed",
+              error: { code: "ambiguous_selection", message: "ambiguous_selection" },
+            });
+            continue;
+          }
           const selectResult = executeBookingSelectSlot(
             request.arguments,
             priorProcessState?.active_availability_evidence ?? null,
+            effectiveBookingSubjects?.subjects ?? null,
           );
           if (selectResult.ok) {
             selectSlotSuccessData = selectResult.data;
@@ -648,7 +659,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               error: { code: selectResult.reason, message: selectResult.reason },
             });
           }
-          processedToolRequests.push(request);
           continue;
         }
 
@@ -1113,7 +1123,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           // 10. Guard G (round 2): slot not verified — fires after subject resolution.
           if (shouldInterceptMissingSlotProof({
             pendingToolRequests: secondOutput.tool_requests,
-            currentAvailabilityAttempt: authoritativeAvailabilityAttempt,
             activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
             selectedSlot: bookingProcessState.selected_slot,
             selectedSlotProof: bookingProcessState.selected_slot_proof,
@@ -1144,7 +1153,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           // 11. Guard H (round 2): invalid slot — fires after subject resolution.
           if (shouldInterceptInvalidSlotDateTime({
             pendingToolRequests: secondOutput.tool_requests,
-            currentAvailabilityAttempt: authoritativeAvailabilityAttempt,
             activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
             selectedSlot: bookingProcessState.selected_slot,
             selectedSlotProof: bookingProcessState.selected_slot_proof,

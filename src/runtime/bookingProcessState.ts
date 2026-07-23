@@ -344,6 +344,7 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
       ?? { starts_at: `${key}:00` };
     selectedSlot = matchedSlot;
     selectedSlotProof = {
+      subject_id: input.selectSlotData.subject_id,
       availability_call_id: activeAvailabilityEvidence.availability_call_id,
       slot_key: key,
     };

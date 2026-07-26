@@ -2187,9 +2187,10 @@ test("SR-3: invalid subject_id (subject_99) in booking.select_slot and booking.a
 });
 
 // SR-4 (full-turn): Successful slot replacement (14:00) + same-round booking.apply.
-// Verifies that even when the second model call re-requests booking.apply 14:00,
-// the booking executor is called at most once for the full patient turn.
-test("SR-4: successful 14:00 select_slot + same-round booking.apply — second model call may re-request booking.apply, full-turn executor call count ≤ 1", async () => {
+// Guard S fires: select_slot succeeds (14:00), proof is installed, booking.apply is blocked.
+// Second model call sees both results and re-requests booking.apply 14:00 (round-2).
+// Round-2 proof passes → executor called exactly once for the full patient turn.
+test("SR-4: successful 14:00 select_slot + same-round booking.apply — second model call re-requests booking.apply, full-turn executor call count = 1", async () => {
   let executorCallCount = 0;
   let secondCallSeen = false;
   const stateRepo = {
@@ -2230,7 +2231,8 @@ test("SR-4: successful 14:00 select_slot + same-round booking.apply — second m
           ],
         };
       }
-      // Second call (sees only guarded booking.apply blocked result): model re-requests booking.apply
+      // Second call: sees both ss_sr4 result (success 14:00) and ba_sr4 result (blocked).
+      // Model re-requests booking.apply for the now-verified 14:00 slot.
       secondCallSeen = true;
       return {
         type: "tool_requests" as const,
@@ -2253,6 +2255,362 @@ test("SR-4: successful 14:00 select_slot + same-round booking.apply — second m
     channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" },
   });
   assert.ok(secondCallSeen, "SR-4: second model call must be made");
-  assert.ok(executorCallCount <= 1, `SR-4: booking executor must be called at most once for full turn (was ${executorCallCount})`);
+  assert.equal(executorCallCount, 1, `SR-4: booking executor must be called exactly once for full turn (was ${executorCallCount})`);
 });
 
+// ── PRT: Proof-replacement two-round integration tests ────────────────────────
+// These tests verify the Guard S architectural fix:
+//   round-1: select_slot + booking.apply → Guard S closes both call IDs, falls through
+//   second model call: receives ALL round-1 results (both call IDs closed)
+//   round-2: booking.apply flows through normal guards, executor runs exactly once
+
+// PRT-1: Second model call input has BOTH round-1 call IDs in tool_results (exact set).
+// Blocker 1 regression: the old helper only forwarded the blocked booking.apply result;
+// the select_slot result was dropped. Guard S must close ALL call IDs before the second call.
+test("PRT-1: second model caller receives both ss_1 and ba_1 call IDs in tool_results (exact set)", async () => {
+  let secondCallToolResultIds: string[] = [];
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: null, last_available_slots: null,
+        active_availability_evidence: {
+          availability_call_id: "call_prt1",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00", "2028-03-10T14:00"],
+        },
+        selected_slot_proof: null,
+      };
+    },
+    async saveState() {},
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_1", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_1", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      // Capture call IDs the second call sees
+      secondCallToolResultIds = results.map((r: { call_id: string }) => r.call_id);
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Попробуйте позже." } };
+    }) as RuntimeAgentCaller,
+    executors: {},
+    bookingProcessStateRepository: stateRepo,
+  });
+  await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_prt1", case_id: null,
+    user_message: "запиши", locale: "ru", trace_id: "tr_prt1",
+    channel_contact: { phone_number: "+420111000001", phone_source: "telegram_contact_button" },
+  });
+  const idSet = new Set(secondCallToolResultIds);
+  assert.ok(idSet.has("ss_1"), "PRT-1: second call must receive ss_1 result");
+  assert.ok(idSet.has("ba_1"), "PRT-1: second call must receive ba_1 result");
+  assert.equal(idSet.size, 2, `PRT-1: second call must receive exactly 2 tool results (got ${idSet.size}: ${[...idSet].join(", ")})`);
+});
+
+// PRT-2: Successful slot replacement → round-2 booking.apply executes, executor called exactly once.
+// Blocker 2 regression: the old helper marked dirty when second call returned tool_requests,
+// so round-2 booking.apply never reached the executor. Guard S must fall through to the normal
+// second-call path so round-2 booking.apply can execute.
+test("PRT-2: successful select_slot (10:00) + same-round booking.apply — second call issues round-2 booking.apply, executorCallCount === 1", async () => {
+  let executorCallCount = 0;
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: null, last_available_slots: null,
+        active_availability_evidence: {
+          availability_call_id: "call_prt2",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00", "2028-03-10T14:00"],
+        },
+        selected_slot_proof: null,
+      };
+    },
+    async saveState() {},
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_prt2", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_prt2", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      // Guard S installed proof for 10:00. Model re-requests booking.apply for now-verified slot.
+      return {
+        type: "tool_requests" as const,
+        tool_requests: [
+          { tool: "booking.apply", call_id: "ba_prt2_r2", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+        ],
+      };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+  await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_prt2", case_id: null,
+    user_message: "запиши на 10:00", locale: "ru", trace_id: "tr_prt2",
+    channel_contact: { phone_number: "+420111000002", phone_source: "telegram_contact_button" },
+  });
+  assert.equal(executorCallCount, 1, `PRT-2: executor must be called exactly once (was ${executorCallCount})`);
+});
+
+// PRT-3: Failed select_slot + same-round booking.apply → executor=0, old proof revoked.
+// Guard S fires: select_slot fails (slot not in evidence), old proof is cleared,
+// booking.apply is blocked. No execution should happen in round-2 either (second call returns final_response).
+test("PRT-3: failed select_slot + same-round booking.apply — old proof revoked, executor call count=0", async () => {
+  let executorCallCount = 0;
+  let savedState: Record<string, unknown> | null = null;
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: { starts_at: "2028-03-10T10:00:00" },
+        last_available_slots: [{ starts_at: "2028-03-10T10:00:00" }],
+        active_availability_evidence: {
+          availability_call_id: "call_prt3",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00"],
+        },
+        selected_slot_proof: {
+          subject_id: "subject_1" as const,
+          availability_call_id: "call_prt3",
+          slot_key: "2028-03-10T10:00",
+        },
+      };
+    },
+    async saveState(
+      _key: { clinic_id: string; contact_id?: string | null; case_id?: string | null },
+      state: Record<string, unknown>,
+    ) { savedState = state; },
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            // 14:00 is NOT in allowed_slot_keys → select_slot will fail
+            { tool: "booking.select_slot", call_id: "ss_prt3", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "14:00" } },
+            { tool: "booking.apply", call_id: "ba_prt3", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "14:00" } },
+          ],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Другого времени нет." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+  await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_prt3", case_id: null,
+    user_message: "запиши на 14:00", locale: "ru", trace_id: "tr_prt3",
+    channel_contact: { phone_number: "+420111000003", phone_source: "telegram_contact_button" },
+  });
+  assert.equal(executorCallCount, 0, "PRT-3: executor must not be called when select_slot fails");
+  assert.ok(savedState !== null, "PRT-3: state must be persisted");
+  assert.equal((savedState as Record<string, unknown>)["selected_slot_proof"], null, "PRT-3: old proof must be revoked after failed select_slot");
+});
+
+// PRT-4: Ambiguous selection (2x select_slot) + booking.apply in same round-1.
+// All 3 round-1 call IDs must be closed before the second model call; executor=0.
+test("PRT-4: ambiguous select_slot (2 calls) + booking.apply in same round-1 — all call IDs closed in second call, executor call count=0", async () => {
+  let executorCallCount = 0;
+  let secondCallToolResultIds: string[] = [];
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: null, last_available_slots: null,
+        active_availability_evidence: {
+          availability_call_id: "call_prt4",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00", "2028-03-10T14:00"],
+        },
+        selected_slot_proof: null,
+      };
+    },
+    async saveState() {},
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_prt4a", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.select_slot", call_id: "ss_prt4b", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "14:00" } },
+            { tool: "booking.apply", call_id: "ba_prt4", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      secondCallToolResultIds = results.map((r: { call_id: string }) => r.call_id);
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Уточните слот." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+  await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_prt4", case_id: null,
+    user_message: "запиши", locale: "ru", trace_id: "tr_prt4",
+    channel_contact: { phone_number: "+420111000004", phone_source: "telegram_contact_button" },
+  });
+  assert.equal(executorCallCount, 0, "PRT-4: executor must not be called on ambiguous selection");
+  const idSet = new Set(secondCallToolResultIds);
+  assert.ok(idSet.has("ss_prt4a"), "PRT-4: second call must see ss_prt4a result");
+  assert.ok(idSet.has("ss_prt4b"), "PRT-4: second call must see ss_prt4b result");
+  assert.ok(idSet.has("ba_prt4"), "PRT-4: second call must see ba_prt4 result");
+  assert.equal(idSet.size, 3, `PRT-4: second call must receive all 3 round-1 results (got ${idSet.size})`);
+});
+
+// PRT-5: Guard S fires, second model call returns final_response → clean turn completion.
+// No crash, no executor. This verifies the fall-through path handles the happy-path exit.
+test("PRT-5: Guard S fires, second call returns final_response — clean turn, executor call count=0", async () => {
+  let executorCallCount = 0;
+  let secondCallSeen = false;
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: null, last_available_slots: null,
+        active_availability_evidence: {
+          availability_call_id: "call_prt5",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00", "2028-03-10T14:00"],
+        },
+        selected_slot_proof: null,
+      };
+    },
+    async saveState() {},
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_prt5", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_prt5", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      // Second call: model decides to reply directly without re-requesting booking.apply
+      secondCallSeen = true;
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Слот выбран. Подтвердите запись." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_prt5", case_id: null,
+    user_message: "запиши на 10:00", locale: "ru", trace_id: "tr_prt5",
+    channel_contact: { phone_number: "+420111000005", phone_source: "telegram_contact_button" },
+  });
+  assert.ok(secondCallSeen, "PRT-5: second model call must be made");
+  assert.equal(executorCallCount, 0, "PRT-5: executor must not be called when second call returns final_response");
+  assert.ok(result.final_patient_reply, "PRT-5: turn must complete with a patient reply");
+});
+
+// PRT-6: Guard S fires, second call returns booking.apply → normal round-2 path, executor called.
+// Verifies that the normal round-2 guard chain runs after Guard S and that a valid round-2
+// booking.apply with a fresh proof reaches the executor exactly once.
+test("PRT-6: Guard S fires, second call issues booking.apply — normal round-2 guard path, executor call count=1", async () => {
+  let executorCallCount = 0;
+  let secondCallSeen = false;
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: null, last_available_slots: null,
+        active_availability_evidence: {
+          availability_call_id: "call_prt6",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00", "2028-03-10T14:00"],
+        },
+        selected_slot_proof: null,
+      };
+    },
+    async saveState() {},
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_prt6", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "14:00" } },
+            { tool: "booking.apply", call_id: "ba_prt6", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "14:00" } },
+          ],
+        };
+      }
+      secondCallSeen = true;
+      // Proof for 14:00 is now installed. Round-2 booking.apply for 14:00 should execute.
+      return {
+        type: "tool_requests" as const,
+        tool_requests: [
+          { tool: "booking.apply", call_id: "ba_prt6_r2", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "14:00" } },
+        ],
+      };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+  await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_prt6", case_id: null,
+    user_message: "запиши на 14:00", locale: "ru", trace_id: "tr_prt6",
+    channel_contact: { phone_number: "+420111000006", phone_source: "telegram_contact_button" },
+  });
+  assert.ok(secondCallSeen, "PRT-6: second model call must be made");
+  assert.equal(executorCallCount, 1, `PRT-6: executor must be called exactly once via normal round-2 path (was ${executorCallCount})`);
+});

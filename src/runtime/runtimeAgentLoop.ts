@@ -349,20 +349,22 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         effectiveInput !== input ? effectiveBookingSubjects : null;
 
       // Guard S (round 1) — same-round booking.select_slot + booking.apply:
-      // select_slot is processed deterministically; old proof is revoked; new state
-      // is persisted; booking.apply is blocked. The second model call (inside
-      // finalizeBlockedBookingApplyWithToolOutput) sees the updated proof in context.
+      // Process select_slot deterministically, revoke old proof, persist state, and
+      // close the booking.apply call ID with a blocked result.  ALL round-1 call IDs
+      // are populated in toolResults so the second model call receives a complete
+      // response.  The second call may issue booking.apply in round-2, which flows
+      // through the normal round-2 guards and may execute via the executor.
       const round1SelectSlotRequests = toolRequests.filter((r) => r.tool === "booking.select_slot");
       const round1HasSelectSlot = round1SelectSlotRequests.length > 0;
+      let guardSFired = false;
 
       if (round1HasSelectSlot && bookingApplyRound1) {
         const srAmbiguous = round1SelectSlotRequests.length > 1;
-        const srSelectSlotResults: RuntimeAgentToolResult[] = [];
         let srSuccessData: BookingSelectSlotSuccessData | null = null;
 
         for (const req of round1SelectSlotRequests) {
           if (srAmbiguous) {
-            srSelectSlotResults.push({
+            toolResults.push({
               tool: "booking.select_slot",
               call_id: req.call_id,
               status: "failed",
@@ -376,14 +378,14 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             );
             if (selectResult.ok) {
               srSuccessData = selectResult.data;
-              srSelectSlotResults.push({
+              toolResults.push({
                 tool: "booking.select_slot",
                 call_id: req.call_id,
                 status: "success",
                 data: selectResult.data,
               });
             } else {
-              srSelectSlotResults.push({
+              toolResults.push({
                 tool: "booking.select_slot",
                 call_id: req.call_id,
                 status: "failed",
@@ -393,8 +395,22 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           }
         }
 
+        // Close the same-round booking.apply call ID with a blocked result.
+        toolResults.push({
+          tool: "booking.apply",
+          call_id: bookingApplyRound1.call_id,
+          status: "success",
+          data: {
+            booking_status: "slot_not_verified",
+            created_visit: false as const,
+            may_claim_booked: false as const,
+            required_next_action: "retry_booking_apply",
+            reason: "select_slot_and_booking_apply_same_round",
+          },
+        });
+
         // Revoke old proof (selectSlotAttemptedThisTurn=true); install new if selection succeeded.
-        const srBookingState = computeBookingProcessState({
+        bookingProcessState = computeBookingProcessState({
           prior: priorProcessState,
           channelContact: input.channel_contact,
           selectSlotData: srSuccessData,
@@ -405,47 +421,19 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         if (deps.bookingProcessStateRepository) {
           deps.bookingProcessStateRepository.saveState(
             { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
-            srBookingState,
+            bookingProcessState,
             (info) => { if (!info.saved) debug.booking_process_state_save = info; },
           ).catch(() => undefined);
         }
 
-        // Build updated caller context so the second model call sees the new proof state.
-        const srGrounded =
-          (priorProcessState !== null && hasMeaningfulBookingState(priorProcessState)) ||
-          srSuccessData !== null;
-        const srVisibleState = buildModelVisibleBookingProcessState({
-          state: srBookingState,
-          priorProcessState,
-          bookingStateGrounded: srGrounded,
-        });
-
         debug.reason = "booking_apply_preflight_select_slot_same_round";
-        return await finalizeBlockedBookingApplyWithToolOutput({
-          pendingBookingApply: bookingApplyRound1,
-          guardedData: {
-            booking_status: "slot_not_verified",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "retry_booking_apply",
-            reason: "select_slot_and_booking_apply_same_round",
-          },
-          previousToolResults: srSelectSlotResults,
-          toolRequests: processedToolRequests,
-          conversationId,
-          systemInstruction,
-          callerContext: { ...callerContext, booking_process_state: srVisibleState },
-          input,
-          debug,
-          deps,
-          booking_subjects_after_resolution: bootstrappedRegistry,
-        });
+        guardSFired = true;
       }
 
       // Guard J (round 1) — FIRST: subject_id must be valid (subject_1..subject_4) for ALL
       // booking.apply calls. Resolve/freeze execution subject before ANY other booking guards fire.
       let round1ExecutionSubjectId: SubjectId | null = null;
-      if (bookingApplyRound1) {
+      if (!guardSFired && bookingApplyRound1) {
         const subjectParse1 = parseSubjectTarget(bookingApplyRound1.arguments.subject_id);
         if (!subjectParse1.ok) {
           debug.reason = "booking_apply_preflight_subject_id_invalid_round1";
@@ -505,7 +493,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       // Guard I (round 1) — pending typed phone: fires right after subject resolution, before
       // slot guards. Subject is frozen; phone ownership must be resolved before execution.
-      if (bookingApplyRound1 && effectiveBookingSubjects?.pending_typed_phone) {
+      if (!guardSFired && bookingApplyRound1 && effectiveBookingSubjects?.pending_typed_phone) {
         debug.reason = "booking_apply_preflight_pending_typed_phone_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
           pendingBookingApply: bookingApplyRound1,
@@ -530,7 +518,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       // Global preflight A — past-time guard (round 1): fires after subject resolution.
-      if (bookingApplyRound1) {
+      if (!guardSFired && bookingApplyRound1) {
         if (isPastBookingTime({
           requestedDate: typeof bookingApplyRound1.arguments.requested_date === "string"
             ? bookingApplyRound1.arguments.requested_date : undefined,
@@ -571,7 +559,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       // Global preflight D — no-slot guard (round 1): fires after subject resolution.
-      if (bookingApplyRound1 && bookingApplyArgsMissingSlot(bookingApplyRound1.arguments)) {
+      if (!guardSFired && bookingApplyRound1 && bookingApplyArgsMissingSlot(bookingApplyRound1.arguments)) {
         debug.reason = "booking_apply_preflight_missing_slot_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
           pendingBookingApply: bookingApplyRound1,
@@ -596,7 +584,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       // Global preflight G — slot proof guard (round 1): fires after subject resolution.
-      if (bookingApplyRound1 && shouldInterceptMissingSlotProof({
+      if (!guardSFired && bookingApplyRound1 && shouldInterceptMissingSlotProof({
         pendingToolRequests: toolRequests,
         activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
         selectedSlot: bookingProcessState.selected_slot,
@@ -626,7 +614,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       // Global preflight B — phone guard (round 1): fires after slot guards.
-      if (bookingApplyRound1 && !hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId)) {
+      if (!guardSFired && bookingApplyRound1 && !hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId)) {
         debug.reason = "booking_apply_preflight_missing_trusted_phone_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
           pendingBookingApply: bookingApplyRound1,
@@ -651,7 +639,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       // Global preflight E — name-missing guard (round 1).
-      if (bookingApplyRound1 && hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId)) {
+      if (!guardSFired && bookingApplyRound1 && hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId)) {
         const missingNames = getMissingBookingApplyNameFields(bookingApplyRound1.arguments);
         if (missingNames.length > 0) {
           debug.reason = "booking_apply_preflight_missing_name_round1";
@@ -681,7 +669,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       // Global preflight F — service-missing guard (round 1).
-      if (bookingApplyRound1 && hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId) && bookingApplyArgsMissingService(bookingApplyRound1.arguments)) {
+      if (!guardSFired && bookingApplyRound1 && hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId) && bookingApplyArgsMissingService(bookingApplyRound1.arguments)) {
         debug.reason = "booking_apply_preflight_missing_service_round1";
         return await finalizeBlockedBookingApplyWithToolOutput({
           pendingBookingApply: bookingApplyRound1,
@@ -705,104 +693,124 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         });
       }
 
-      // Track the first successful booking.select_slot result this turn.
-      let selectSlotSuccessData: BookingSelectSlotSuccessData | null = null;
-      // Multiple booking.select_slot calls in one round → ambiguous → no proof created.
-      const selectSlotRequestCount = toolRequests.filter((r) => r.tool === "booking.select_slot").length;
-      const selectSlotAmbiguous = selectSlotRequestCount > 1;
-
-      for (const request of toolRequests) {
-        if (!ACTIVE_TOOL_SET.has(request.tool)) {
-          toolResults.push({
-            tool: request.tool,
-            call_id: request.call_id,
-            status: "denied",
-            error: { code: "tool_not_active", message: `${request.tool} is not active` },
-          });
-          continue;
-        }
-
-        if (request.tool === "booking.select_slot") {
-          if (selectSlotAmbiguous) {
-            toolResults.push({
-              tool: "booking.select_slot",
-              call_id: request.call_id,
-              status: "failed",
-              error: { code: "ambiguous_selection", message: "ambiguous_selection" },
-            });
-            continue;
-          }
-          const selectResult = executeBookingSelectSlot(
-            request.arguments,
-            priorProcessState?.active_availability_evidence ?? null,
-            effectiveBookingSubjects?.subjects ?? null,
-          );
-          if (selectResult.ok) {
-            selectSlotSuccessData = selectResult.data;
-            toolResults.push({
-              tool: "booking.select_slot",
-              call_id: request.call_id,
-              status: "success",
-              data: selectResult.data,
-            });
-          } else {
-            toolResults.push({
-              tool: "booking.select_slot",
-              call_id: request.call_id,
-              status: "failed",
-              error: { code: selectResult.reason, message: selectResult.reason },
-            });
-          }
-          continue;
-        }
-
-        const planner = buildPlannerFromAgentToolRequest(request);
-        const truth = resolveTruthSnapshot(input, request, planner, turnNow);
-        const policy = applyToolPolicy(planner, truth);
-        if (policy.tools_denied.length > 0 || policy.tools_allowed.length === 0) {
-          const denial = policy.tools_denied[0];
-          toolResults.push({
-            tool: request.tool,
-            call_id: request.call_id,
-            status: "denied",
-            error: {
-              code: denial?.reason ?? "policy_denied",
-              message: `Tool denied by policy: ${denial?.reason ?? "unknown"}`,
-            },
-          });
-          continue;
-        }
-
-        const executionContext = buildExecutionContext(
-          request.tool === "booking.apply" ? effectiveInput : input,
-          request,
-          planner,
-          truth,
-          turnNow,
-          request.tool === "booking.apply" ? round1ExecutionSubjectId : null,
-        );
-        const executionResults = await executeAllowedTools({
-          tools_allowed: policy.tools_allowed,
-          registry: deps.executors,
-          context: executionContext,
-        });
-        const execResult = executionResults[0];
-        if (execResult?.tool === "availability.check" && execResult.status === "success" && execResult._diagnostic !== undefined) {
-          debug.availability_diagnostic = execResult._diagnostic;
-        }
-        toolResults.push(convertToolExecutionResult(request, execResult));
-      }
-
-      // Track which booking.apply was executed in round-1 and for which subject,
-      // so the orchestrator can apply the result to the correct subject even when
-      // round-2 requests (and gets blocked for) a second booking.apply.
+      // When Guard S fired, booking.apply was blocked in round-1 (not executed) — no resolution.
       let round1BookingApplyResolution: BookingApplyResolution | null = null;
-      if (bookingApplyRound1 && round1ExecutionSubjectId) {
+      if (!guardSFired && bookingApplyRound1 && round1ExecutionSubjectId) {
         round1BookingApplyResolution = {
           call_id: bookingApplyRound1.call_id,
           subject_id: round1ExecutionSubjectId,
         };
       }
+
+      // Normal tool loop: skip when Guard S has already handled round-1 tools.
+      if (!guardSFired) {
+        // Track the first successful booking.select_slot result this turn.
+        let selectSlotSuccessData: BookingSelectSlotSuccessData | null = null;
+        // Multiple booking.select_slot calls in one round → ambiguous → no proof created.
+        const selectSlotRequestCount = toolRequests.filter((r) => r.tool === "booking.select_slot").length;
+        const selectSlotAmbiguous = selectSlotRequestCount > 1;
+
+        for (const request of toolRequests) {
+          if (!ACTIVE_TOOL_SET.has(request.tool)) {
+            toolResults.push({
+              tool: request.tool,
+              call_id: request.call_id,
+              status: "denied",
+              error: { code: "tool_not_active", message: `${request.tool} is not active` },
+            });
+            continue;
+          }
+
+          if (request.tool === "booking.select_slot") {
+            if (selectSlotAmbiguous) {
+              toolResults.push({
+                tool: "booking.select_slot",
+                call_id: request.call_id,
+                status: "failed",
+                error: { code: "ambiguous_selection", message: "ambiguous_selection" },
+              });
+              continue;
+            }
+            const selectResult = executeBookingSelectSlot(
+              request.arguments,
+              priorProcessState?.active_availability_evidence ?? null,
+              effectiveBookingSubjects?.subjects ?? null,
+            );
+            if (selectResult.ok) {
+              selectSlotSuccessData = selectResult.data;
+              toolResults.push({
+                tool: "booking.select_slot",
+                call_id: request.call_id,
+                status: "success",
+                data: selectResult.data,
+              });
+            } else {
+              toolResults.push({
+                tool: "booking.select_slot",
+                call_id: request.call_id,
+                status: "failed",
+                error: { code: selectResult.reason, message: selectResult.reason },
+              });
+            }
+            continue;
+          }
+
+          const planner = buildPlannerFromAgentToolRequest(request);
+          const truth = resolveTruthSnapshot(input, request, planner, turnNow);
+          const policy = applyToolPolicy(planner, truth);
+          if (policy.tools_denied.length > 0 || policy.tools_allowed.length === 0) {
+            const denial = policy.tools_denied[0];
+            toolResults.push({
+              tool: request.tool,
+              call_id: request.call_id,
+              status: "denied",
+              error: {
+                code: denial?.reason ?? "policy_denied",
+                message: `Tool denied by policy: ${denial?.reason ?? "unknown"}`,
+              },
+            });
+            continue;
+          }
+
+          const executionContext = buildExecutionContext(
+            request.tool === "booking.apply" ? effectiveInput : input,
+            request,
+            planner,
+            truth,
+            turnNow,
+            request.tool === "booking.apply" ? round1ExecutionSubjectId : null,
+          );
+          const executionResults = await executeAllowedTools({
+            tools_allowed: policy.tools_allowed,
+            registry: deps.executors,
+            context: executionContext,
+          });
+          const execResult = executionResults[0];
+          if (execResult?.tool === "availability.check" && execResult.status === "success" && execResult._diagnostic !== undefined) {
+            debug.availability_diagnostic = execResult._diagnostic;
+          }
+          toolResults.push(convertToolExecutionResult(request, execResult));
+        }
+
+        // Update booking process state with tool results from this round.
+        const authAvailAttemptNormal = resolveAuthoritativeAvailabilityAttempt(processedToolRequests, toolResults);
+        bookingProcessState = computeBookingProcessState({
+          prior: priorProcessState,
+          authoritativeAvailabilityAttempt: authAvailAttemptNormal,
+          channelContact: input.channel_contact,
+          selectSlotData: selectSlotSuccessData,
+          // Any select_slot attempt (success or failure) revokes the prior proof.
+          selectSlotAttemptedThisTurn: selectSlotRequestCount > 0,
+        });
+        // Persist updated state (best-effort — non-blocking).
+        if (deps.bookingProcessStateRepository) {
+          deps.bookingProcessStateRepository.saveState(
+            { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+            bookingProcessState,
+            (info) => { if (!info.saved) debug.booking_process_state_save = info; },
+          ).catch(() => undefined);
+        }
+      }  // end if (!guardSFired) normal tool loop
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
       // Resolve the authoritative availability attempt once; pass to all three consumers
@@ -811,24 +819,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       const availabilityActionTruth = buildAvailabilityActionTruth(authoritativeAvailabilityAttempt);
       const availabilityPresentationTruth = buildAvailabilityPresentationTruth(authoritativeAvailabilityAttempt);
       const appointmentDisplayTruth = buildAppointmentDisplayTruth(toolResults);
-
-      // Update booking process state with tool results from this round.
-      bookingProcessState = computeBookingProcessState({
-        prior: priorProcessState,
-        authoritativeAvailabilityAttempt,
-        channelContact: input.channel_contact,
-        selectSlotData: selectSlotSuccessData,
-        // Any select_slot attempt (success or failure) revokes the prior proof.
-        selectSlotAttemptedThisTurn: selectSlotRequestCount > 0,
-      });
-      // Persist updated state (best-effort — non-blocking).
-      if (deps.bookingProcessStateRepository) {
-        deps.bookingProcessStateRepository.saveState(
-          { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
-          bookingProcessState,
-          (info) => { if (!info.saved) debug.booking_process_state_save = info; },
-        ).catch(() => undefined);
-      }
 
       // Second call: grounded when prior state had meaningful booking data, OR
       // when the current turn produced booking-relevant evidence (availability.check /
@@ -994,7 +984,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
         // 2b. One booking write per turn: if round-1 already executed booking.apply,
         //     block any round-2 booking.apply and preserve round-1 resolution.
-        if (pendingBookingApply && toolResults.some((r) => r.tool === "booking.apply")) {
+        //     Skip when Guard S fired — Guard S's blocked result in toolResults must NOT prevent
+        //     the legitimate round-2 booking.apply from reaching the executor.
+        if (!guardSFired && pendingBookingApply && toolResults.some((r) => r.tool === "booking.apply")) {
           debug.reason = "booking_apply_preflight_multiple_booking_apply_round2";
           return await finalizeBlockedBookingApplyWithToolOutput({
             pendingBookingApply,

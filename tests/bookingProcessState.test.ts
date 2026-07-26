@@ -861,3 +861,104 @@ test("CT-6: slotKnown cannot be true when persisted proof subject is absent, eve
   assert.equal(state.proof.slot_known, false, "CT-6: slot_known must be false even with matching slot/call ID");
   assert.equal(state.proof.ready_for_booking_apply, false, "CT-6: ready_for_booking_apply must be false");
 });
+
+// ── R. Selection-attempt revocation tests ─────────────────────────────────────
+
+const R_EVIDENCE: AvailabilityEvidence = {
+  availability_call_id: "av_r",
+  requested_date: "2028-05-20",
+  requested_time: null,
+  allowed_slot_keys: ["2028-05-20T10:00", "2028-05-20T14:00"],
+};
+
+const R_PRIOR_VALID = {
+  selected_slot: { starts_at: "2028-05-20T10:00:00" },
+  active_availability_evidence: R_EVIDENCE,
+  selected_slot_proof: {
+    subject_id: "subject_1" as const,
+    availability_call_id: "av_r",
+    slot_key: "2028-05-20T10:00",
+  } as SelectedSlotProof,
+  service_reason: "чистка",
+  first_name: "Ivan",
+  last_name: "Petrov",
+};
+
+test("R-1: failed replacement revokes prior proof — select_slot not in evidence clears old proof", () => {
+  const state = computeBookingProcessState({
+    prior: R_PRIOR_VALID,
+    // Selection was attempted but the slot (11:00) was not in evidence → selectSlotData=null
+    selectSlotAttemptedThisTurn: true,
+    selectSlotData: null,
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.equal(state.selected_slot, null, "R-1: selected_slot must be null after failed attempt");
+  assert.equal(state.selected_slot_proof, null, "R-1: proof must be revoked");
+  assert.equal(state.proof.slot_known, false, "R-1: slot_known must be false");
+  assert.equal(state.proof.ready_for_booking_apply, false, "R-1: ready_for_booking_apply must be false");
+});
+
+test("R-2: ambiguous replacement (two select_slot calls) revokes prior proof", () => {
+  // Both ambiguous calls produce no selectSlotData → selectSlotAttemptedThisTurn=true, selectSlotData=null
+  const state = computeBookingProcessState({
+    prior: R_PRIOR_VALID,
+    selectSlotAttemptedThisTurn: true,
+    selectSlotData: null,
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.equal(state.selected_slot_proof, null, "R-2: old proof must be cleared on ambiguous attempt");
+  assert.equal(state.proof.slot_known, false, "R-2: slot_known must be false");
+  assert.equal(state.proof.ready_for_booking_apply, false, "R-2: ready_for_booking_apply must be false");
+});
+
+test("R-3: invalid subject replacement revokes prior proof — subject_resolution_conflict clears state", () => {
+  // subject_99 is invalid → executeBookingSelectSlot returns failure → selectSlotData=null
+  const state = computeBookingProcessState({
+    prior: R_PRIOR_VALID,
+    selectSlotAttemptedThisTurn: true,
+    selectSlotData: null,  // invalid subject failed → no success data
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.equal(state.selected_slot_proof, null, "R-3: proof must be cleared");
+  assert.equal(state.proof.slot_known, false, "R-3: slot_known must be false");
+  assert.equal(state.proof.ready_for_booking_apply, false, "R-3: ready_for_booking_apply must be false");
+});
+
+test("R-4: successful replacement installs new proof and removes old proof", () => {
+  // Replace 10:00 with 14:00 successfully
+  const state = computeBookingProcessState({
+    prior: {
+      ...R_PRIOR_VALID,
+      last_available_slots: [
+        { starts_at: "2028-05-20T10:00:00" },
+        { starts_at: "2028-05-20T14:00:00" },
+      ],
+    },
+    selectSlotAttemptedThisTurn: true,
+    selectSlotData: {
+      selection_status: "selected",
+      subject_id: "subject_1" as const,
+      selected_slot_key: "2028-05-20T14:00",
+      may_apply_booking: true,
+    },
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.ok(state.selected_slot_proof !== null, "R-4: new proof must be installed");
+  assert.equal(state.selected_slot_proof?.slot_key, "2028-05-20T14:00", "R-4: new proof must point to 14:00");
+  assert.equal(state.selected_slot_proof?.availability_call_id, "av_r", "R-4: call ID must match current evidence");
+  assert.equal(state.selected_slot_proof?.subject_id, "subject_1", "R-4: subject_id must be preserved");
+  assert.equal(state.proof.slot_known, true, "R-4: slot_known must be true");
+  assert.notEqual(state.selected_slot_proof?.slot_key, "2028-05-20T10:00", "R-4: old 10:00 slot must be gone");
+});
+
+test("R-5: no selection attempt preserves prior valid proof unchanged", () => {
+  // No selectSlotAttemptedThisTurn and no new availability.check → prior proof preserved
+  const state = computeBookingProcessState({
+    prior: R_PRIOR_VALID,
+    // selectSlotAttemptedThisTurn intentionally absent / false
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.ok(state.selected_slot_proof !== null, "R-5: prior proof must be preserved");
+  assert.equal(state.selected_slot_proof?.slot_key, "2028-05-20T10:00", "R-5: proof slot_key unchanged");
+  assert.equal(state.proof.slot_known, true, "R-5: slot_known must remain true");
+});

@@ -246,6 +246,12 @@ export interface ComputeBookingProcessStateInput {
    * Ignored when a new availability.check was performed this turn (evidence was refreshed).
    */
   selectSlotData?: BookingSelectSlotSuccessData | null;
+  /**
+   * True when the current turn contained at least one booking.select_slot request,
+   * regardless of whether it succeeded. A selection attempt revokes the prior proof
+   * before any new proof is installed — a failed attempt must never restore the old proof.
+   */
+  selectSlotAttemptedThisTurn?: boolean;
   /** Override service from explicit booking.apply args. */
   bookingApplyService?: string | null;
   /** Override name from explicit booking.apply args. */
@@ -327,11 +333,13 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   const phoneSource = input.channelContact?.phone_source;
 
   // ── Resolve selected_slot and proof ──
-  // Any availability.check attempt clears prior slot and proof — stale selection no longer valid.
-  let selectedSlot: AvailableSlot | null = availabilityAttemptPresent
+  // Both availability.check and a selection attempt revoke the prior slot and proof.
+  // A failed booking.select_slot must never restore the old proof — revoke first, install only on success.
+  const clearPriorSelection = availabilityAttemptPresent || !!(input.selectSlotAttemptedThisTurn);
+  let selectedSlot: AvailableSlot | null = clearPriorSelection
     ? null
     : (p.selected_slot ?? null);
-  let selectedSlotProof: SelectedSlotProof | null | undefined = availabilityAttemptPresent
+  let selectedSlotProof: SelectedSlotProof | null | undefined = clearPriorSelection
     ? null
     : (p.selected_slot_proof ?? null);
 

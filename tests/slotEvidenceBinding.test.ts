@@ -1825,3 +1825,55 @@ test("J-20: booking.select_slot round-1 then booking.apply round-2 → executor 
   assert.equal(executorCallCount, 1, "J-20: booking.apply executor must be called exactly once");
 });
 
+// ── R-6: round-2 booking.select_slot + booking.apply → both blocked ───────────
+
+// R-6: When round-2 contains booking.select_slot AND booking.apply, select_slot is rejected
+// and booking.apply must be blocked — the round-2 protocol error must not fall through to an
+// old persisted proof. Executor call count must be zero.
+test("R-6: round-2 booking.select_slot plus booking.apply — select_slot_not_allowed_in_round2, booking executor call count=0", async () => {
+  let executorCallCount = 0;
+  // Provide persisted valid proof so booking.apply would normally succeed
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      // Round-1: model returns final_response (no tools)
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          // Round-1: trigger availability check so there IS a round-2
+          tool_requests: [{ tool: "availability.check", call_id: "ac_r6", arguments: { requested_date: "2028-01-15", requested_time: null } }],
+        };
+      }
+      // Round-2: model returns both booking.select_slot AND booking.apply
+      if (results.some((r: { tool: string }) => r.tool === "availability.check")) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_r6", arguments: { subject_id: "subject_1", requested_date: "2028-01-15", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_r6", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2028-01-15", requested_time: "10:00" } },
+          ],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Готово." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2028-01-15T10:00:00" }] } }),
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: makeSlotStateRepo("2028-01-15T10:00:00", "subject_1"),
+  });
+  const result = await loop.runTurn({ clinic_id: "clinic_1", contact_id: "contact_r6", case_id: null, user_message: "запиши", locale: "ru", trace_id: "tr_r6", channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" } });
+  assert.equal(executorCallCount, 0, "R-6: booking executor must not be called");
+  const ssResult = result.tool_results.find((r) => r.tool === "booking.select_slot");
+  assert.ok(ssResult, "R-6: select_slot result must be present");
+  assert.equal((ssResult!.error as Record<string, unknown>)?.code, "select_slot_not_allowed_in_round2", "R-6: select_slot must be rejected");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult, "R-6: booking.apply result must be present");
+  assert.equal((baResult!.data as Record<string, unknown>)?.booking_status, "slot_not_verified", "R-6: booking.apply must be blocked with slot_not_verified");
+});
+

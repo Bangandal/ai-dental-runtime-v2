@@ -2113,3 +2113,146 @@ test("S-4: booking.apply without booking.select_slot in round-1 — normal execu
   assert.equal(executorCallCount, 1, "S-4: booking executor must be called exactly once (normal path)");
 });
 
+// SR-3: Invalid subject (subject_99) in booking.select_slot + booking.apply in same round-1.
+// Guard S fires: select_slot is executed (fails — invalid subject_id → subject_resolution_conflict),
+// old proof is revoked, booking.apply is blocked. Executor must not be called.
+test("SR-3: invalid subject_id (subject_99) in booking.select_slot and booking.apply in same round-1 — select_slot fails subject_resolution_conflict, old proof cleared, booking.apply blocked, executor call count=0", async () => {
+  let executorCallCount = 0;
+  let savedState: Record<string, unknown> | null = null;
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: { starts_at: "2028-01-15T10:00:00" },
+        last_available_slots: [{ starts_at: "2028-01-15T10:00:00" }],
+        active_availability_evidence: {
+          availability_call_id: "call_sr3",
+          requested_date: "2028-01-15",
+          requested_time: null,
+          allowed_slot_keys: ["2028-01-15T10:00"],
+        },
+        selected_slot_proof: {
+          subject_id: "subject_1" as const,
+          availability_call_id: "call_sr3",
+          slot_key: "2028-01-15T10:00",
+        },
+      };
+    },
+    async saveState(
+      _key: { clinic_id: string; contact_id?: string | null; case_id?: string | null },
+      state: Record<string, unknown>,
+    ) {
+      savedState = state;
+    },
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_sr3", arguments: { subject_id: "subject_99", requested_date: "2028-01-15", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_sr3", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2028-01-15", requested_time: "10:00" } },
+          ],
+        };
+      }
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Не смог выбрать слот." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_sr3", case_id: null,
+    user_message: "запиши", locale: "ru", trace_id: "tr_sr3",
+    channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" },
+  });
+  assert.equal(executorCallCount, 0, "SR-3: booking executor must not be called");
+  const ssResult = result.tool_results.find((r) => r.tool === "booking.select_slot");
+  assert.ok(ssResult, "SR-3: select_slot result must be present");
+  assert.equal(ssResult!.status, "failed", "SR-3: select_slot must fail");
+  assert.equal((ssResult!.error as Record<string, unknown>)?.code, "subject_resolution_conflict", "SR-3: select_slot must fail with subject_resolution_conflict");
+  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
+  assert.ok(baResult, "SR-3: booking.apply result must be present");
+  assert.equal((baResult!.data as Record<string, unknown>)?.booking_status, "slot_not_verified", "SR-3: booking.apply blocked with slot_not_verified");
+  assert.equal((baResult!.data as Record<string, unknown>)?.reason, "select_slot_and_booking_apply_same_round", "SR-3: reason must be select_slot_and_booking_apply_same_round");
+  assert.ok(savedState !== null, "SR-3: state must be persisted");
+  assert.equal((savedState as Record<string, unknown>)["selected_slot_proof"], null, "SR-3: old proof must be revoked");
+});
+
+// SR-4 (full-turn): Successful slot replacement (14:00) + same-round booking.apply.
+// Verifies that even when the second model call re-requests booking.apply 14:00,
+// the booking executor is called at most once for the full patient turn.
+test("SR-4: successful 14:00 select_slot + same-round booking.apply — second model call may re-request booking.apply, full-turn executor call count ≤ 1", async () => {
+  let executorCallCount = 0;
+  let secondCallSeen = false;
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: { starts_at: "2028-01-15T10:00:00" },
+        last_available_slots: [
+          { starts_at: "2028-01-15T10:00:00" },
+          { starts_at: "2028-01-15T14:00:00" },
+        ],
+        active_availability_evidence: {
+          availability_call_id: "call_sr4",
+          requested_date: "2028-01-15",
+          requested_time: null,
+          allowed_slot_keys: ["2028-01-15T10:00", "2028-01-15T14:00"],
+        },
+        selected_slot_proof: {
+          subject_id: "subject_1" as const,
+          availability_call_id: "call_sr4",
+          slot_key: "2028-01-15T10:00",
+        },
+      };
+    },
+    async saveState() {},
+  };
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-01-14T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        // Round-1: model sends both select_slot and booking.apply
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_sr4", arguments: { subject_id: "subject_1", requested_date: "2028-01-15", requested_time: "14:00" } },
+            { tool: "booking.apply", call_id: "ba_sr4", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2028-01-15", requested_time: "14:00" } },
+          ],
+        };
+      }
+      // Second call (sees only guarded booking.apply blocked result): model re-requests booking.apply
+      secondCallSeen = true;
+      return {
+        type: "tool_requests" as const,
+        tool_requests: [
+          { tool: "booking.apply", call_id: "ba_sr4_r2", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2028-01-15", requested_time: "14:00" } },
+        ],
+      };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return { status: "success" as const, data: { booking_status: "visit_created", created_visit: true, may_claim_booked: true } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+  await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_sr4", case_id: null,
+    user_message: "запиши на 14:00", locale: "ru", trace_id: "tr_sr4",
+    channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" },
+  });
+  assert.ok(secondCallSeen, "SR-4: second model call must be made");
+  assert.ok(executorCallCount <= 1, `SR-4: booking executor must be called at most once for full turn (was ${executorCallCount})`);
+});
+

@@ -348,6 +348,100 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       let bootstrappedRegistry: BookingSubjectsState | null =
         effectiveInput !== input ? effectiveBookingSubjects : null;
 
+      // Guard S (round 1) — same-round booking.select_slot + booking.apply:
+      // select_slot is processed deterministically; old proof is revoked; new state
+      // is persisted; booking.apply is blocked. The second model call (inside
+      // finalizeBlockedBookingApplyWithToolOutput) sees the updated proof in context.
+      const round1SelectSlotRequests = toolRequests.filter((r) => r.tool === "booking.select_slot");
+      const round1HasSelectSlot = round1SelectSlotRequests.length > 0;
+
+      if (round1HasSelectSlot && bookingApplyRound1) {
+        const srAmbiguous = round1SelectSlotRequests.length > 1;
+        const srSelectSlotResults: RuntimeAgentToolResult[] = [];
+        let srSuccessData: BookingSelectSlotSuccessData | null = null;
+
+        for (const req of round1SelectSlotRequests) {
+          if (srAmbiguous) {
+            srSelectSlotResults.push({
+              tool: "booking.select_slot",
+              call_id: req.call_id,
+              status: "failed",
+              error: { code: "ambiguous_selection", message: "ambiguous_selection" },
+            });
+          } else {
+            const selectResult = executeBookingSelectSlot(
+              req.arguments,
+              priorProcessState?.active_availability_evidence ?? null,
+              effectiveBookingSubjects?.subjects ?? null,
+            );
+            if (selectResult.ok) {
+              srSuccessData = selectResult.data;
+              srSelectSlotResults.push({
+                tool: "booking.select_slot",
+                call_id: req.call_id,
+                status: "success",
+                data: selectResult.data,
+              });
+            } else {
+              srSelectSlotResults.push({
+                tool: "booking.select_slot",
+                call_id: req.call_id,
+                status: "failed",
+                error: { code: selectResult.reason, message: selectResult.reason },
+              });
+            }
+          }
+        }
+
+        // Revoke old proof (selectSlotAttemptedThisTurn=true); install new if selection succeeded.
+        const srBookingState = computeBookingProcessState({
+          prior: priorProcessState,
+          channelContact: input.channel_contact,
+          selectSlotData: srSuccessData,
+          selectSlotAttemptedThisTurn: true,
+        });
+
+        // Persist updated state (best-effort — non-blocking).
+        if (deps.bookingProcessStateRepository) {
+          deps.bookingProcessStateRepository.saveState(
+            { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+            srBookingState,
+            (info) => { if (!info.saved) debug.booking_process_state_save = info; },
+          ).catch(() => undefined);
+        }
+
+        // Build updated caller context so the second model call sees the new proof state.
+        const srGrounded =
+          (priorProcessState !== null && hasMeaningfulBookingState(priorProcessState)) ||
+          srSuccessData !== null;
+        const srVisibleState = buildModelVisibleBookingProcessState({
+          state: srBookingState,
+          priorProcessState,
+          bookingStateGrounded: srGrounded,
+        });
+
+        debug.reason = "booking_apply_preflight_select_slot_same_round";
+        return await finalizeBlockedBookingApplyWithToolOutput({
+          pendingBookingApply: bookingApplyRound1,
+          guardedData: {
+            booking_status: "slot_not_verified",
+            created_visit: false,
+            may_claim_booked: false,
+            required_next_action: "retry_booking_apply",
+            reason: "select_slot_and_booking_apply_same_round",
+          },
+          previousToolResults: srSelectSlotResults,
+          toolRequests: processedToolRequests,
+          conversationId,
+          systemInstruction,
+          callerContext: { ...callerContext, booking_process_state: srVisibleState },
+          input,
+          debug,
+          deps,
+          booking_subjects_after_resolution: bootstrappedRegistry,
+        });
+      }
+
       // Guard J (round 1) — FIRST: subject_id must be valid (subject_1..subject_4) for ALL
       // booking.apply calls. Resolve/freeze execution subject before ANY other booking guards fire.
       let round1ExecutionSubjectId: SubjectId | null = null;

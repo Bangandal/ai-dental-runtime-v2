@@ -1,5 +1,5 @@
 import type { RuntimeAgentToolRequest, RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
-import { parseSubjectId, type SubjectId } from "./bookingSubjectsState.ts";
+import { parseStrictSubjectId, type SubjectId } from "./bookingSubjectsState.ts";
 
 export interface AvailabilityEvidence {
   availability_call_id: string;
@@ -209,8 +209,8 @@ export function validateBookingSlotEvidence(params: {
     return { ok: false, reason: "slot_not_in_authoritative_evidence" };
   }
 
-  // Check 8: proof subject matches booking.apply subject
-  const bookingApplySubjectId = parseSubjectId(bookingApplyRequest.arguments.subject_id);
+  // Check 8: proof subject matches booking.apply subject (strict: only subject_1..subject_4)
+  const bookingApplySubjectId = parseStrictSubjectId(bookingApplyRequest.arguments.subject_id);
   if (!bookingApplySubjectId || selectedSlotProof.subject_id !== bookingApplySubjectId) {
     return { ok: false, reason: "selected_slot_proof_mismatch" };
   }

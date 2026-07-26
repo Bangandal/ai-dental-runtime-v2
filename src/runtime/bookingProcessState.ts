@@ -4,6 +4,7 @@ import type { AuthoritativeAvailabilityAttempt } from "./availabilityActionTruth
 import type { AvailabilityEvidence, SelectedSlotProof } from "./slotEvidence.ts";
 import { slotToKey, normalizeSlotKey, buildAllowedSlotKeysFromResult } from "./slotEvidence.ts";
 import type { BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";
+import { parseStrictSubjectId } from "./bookingSubjectsState.ts";
 
 export interface AvailableSlot {
   starts_at: string;
@@ -338,29 +339,34 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
 
   // booking.select_slot result: creates slot + proof from the validated key.
   // Only applied when no new availability.check was performed (which would stale the evidence).
+  // subject_id must pass strict validation; missing or out-of-range values are fail-closed.
   if (!availabilityAttemptPresent && input.selectSlotData && activeAvailabilityEvidence) {
     const key = input.selectSlotData.selected_slot_key;
-    const matchedSlot = lastAvailableSlots.find((s) => slotToKey(s) === key)
-      ?? { starts_at: `${key}:00` };
-    selectedSlot = matchedSlot;
-    selectedSlotProof = {
-      subject_id: input.selectSlotData.subject_id,
-      availability_call_id: activeAvailabilityEvidence.availability_call_id,
-      slot_key: key,
-    };
-    selectionEstablishedThisTurn = true;
+    const proofSubjectId = parseStrictSubjectId(input.selectSlotData.subject_id);
+    if (
+      proofSubjectId !== null &&
+      key !== null &&
+      activeAvailabilityEvidence.allowed_slot_keys.includes(key)
+    ) {
+      const matchedSlot = lastAvailableSlots.find((s) => slotToKey(s) === key)
+        ?? { starts_at: `${key}:00` };
+      selectedSlot = matchedSlot;
+      selectedSlotProof = {
+        subject_id: proofSubjectId,
+        availability_call_id: activeAvailabilityEvidence.availability_call_id,
+        slot_key: key,
+      };
+      selectionEstablishedThisTurn = true;
+    }
+    // When subject_id is absent or invalid: no proof, no slot, selectionEstablishedThisTurn stays false.
   }
 
   // ── Validate persisted proof ──
   // Proof is created only via booking.select_slot. Persisted proof is validated (not reconstructed).
   if (!selectionEstablishedThisTurn && selectedSlotProof && selectedSlot && activeAvailabilityEvidence) {
     // Validate persisted proof — clear it if the chain is broken, keep it if intact.
-    // subject_id must be one of the four valid booking subjects; legacy proofs without it are stale.
-    // We use a strict set rather than parseSubjectId which accepts any subject_\d+ (incl. subject_99).
-    const VALID_PROOF_SUBJECTS = new Set<string>(["subject_1", "subject_2", "subject_3", "subject_4"]);
-    const proofSubjectId = typeof selectedSlotProof.subject_id === "string" && VALID_PROOF_SUBJECTS.has(selectedSlotProof.subject_id)
-      ? selectedSlotProof.subject_id
-      : null;
+    // subject_id must pass the same strict check as new proofs (subject_1..subject_4 only).
+    const proofSubjectId = parseStrictSubjectId(selectedSlotProof.subject_id);
     const key = slotToKey(selectedSlot);
     const proofValid =
       proofSubjectId !== null &&
@@ -380,7 +386,7 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
 
   // slot_known requires full provenance chain:
   //   selected_slot exists
-  //   + selected_slot_proof exists
+  //   + selected_slot_proof exists with valid subject_id (defense in depth — proof paths above also check)
   //   + active_availability_evidence exists
   //   + call IDs agree
   //   + slot key exists in allowed keys
@@ -388,6 +394,7 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   const slotKnown = !!(
     selectedSlot &&
     selectedSlotProof &&
+    parseStrictSubjectId(selectedSlotProof.subject_id) !== null &&
     activeAvailabilityEvidence &&
     selectedSlotProof.availability_call_id === activeAvailabilityEvidence.availability_call_id &&
     slotKey !== null &&

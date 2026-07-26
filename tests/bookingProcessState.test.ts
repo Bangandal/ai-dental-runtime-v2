@@ -23,6 +23,8 @@ import {
   type AvailableSlot,
 } from "../src/runtime/bookingProcessState.ts";
 import type { AvailabilityEvidence, SelectedSlotProof } from "../src/runtime/slotEvidence.ts";
+import type { BookingSelectSlotSuccessData } from "../src/runtime/bookingSelectSlot.ts";
+import type { SubjectId } from "../src/runtime/bookingSubjectsState.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import type { RuntimeAgentToolResult, ChannelContact } from "../src/runtime/openaiRuntimeAgent.ts";
 
@@ -229,7 +231,7 @@ test("proof: all fields known → ready_for_booking_apply=true", () => {
       last_name: "Петров",
       active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
     },
-    selectSlotData: { selection_status: "selected", selected_slot_key: "2026-08-05T14:00", may_apply_booking: true },
+    selectSlotData: { selection_status: "selected", subject_id: "subject_1" as const, selected_slot_key: "2026-08-05T14:00", may_apply_booking: true },
     channelContact: TRUSTED_CONTACT,
   });
   assert.equal(state.proof.service_known, true);
@@ -374,7 +376,7 @@ test("Blocker-D: selected_slot persisted when model returns final_response direc
       last_name: "Иванова",
       active_availability_evidence: { availability_call_id: "call_avail_pr143", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T17:30", "2026-08-05T18:30"] },
     },
-    selectSlotData: { selection_status: "selected", selected_slot_key: "2026-08-05T17:30", may_apply_booking: true },
+    selectSlotData: { selection_status: "selected", subject_id: "subject_1" as const, selected_slot_key: "2026-08-05T17:30", may_apply_booking: true },
     channelContact: undefined,
   });
   await repo.saveState({ clinic_id: "clinic_1", contact_id: "contact_pr143", case_id: null }, priorState);
@@ -744,4 +746,118 @@ test("P-5: model-visible state for legacy proof does not expose verified or read
   assert.equal(visible.slot_evidence_status, "stale", "P-5: slot_evidence_status must be stale");
   assert.equal(visible.proof?.slot_known, false, "P-5: proof.slot_known must be false");
   assert.notEqual(visible.proof?.ready_for_booking_apply, true, "P-5: ready_for_booking_apply must NOT be true");
+});
+
+// ── CT. Current-turn selectSlotData subject_id validation ─────────────────────
+
+const CT_EVIDENCE: AvailabilityEvidence = {
+  availability_call_id: "av_ct",
+  requested_date: "2028-03-10",
+  requested_time: null,
+  allowed_slot_keys: ["2028-03-10T11:00"],
+};
+
+const CT_SLOT_KEY = "2028-03-10T11:00";
+
+test("CT-1: current-turn selectSlotData without subject_id → no proof, slot_known=false, ready_for_booking_apply=false", () => {
+  const state = computeBookingProcessState({
+    prior: {
+      last_available_slots: [{ starts_at: "2028-03-10T11:00:00" }],
+      active_availability_evidence: CT_EVIDENCE,
+      service_reason: "чистка",
+      first_name: "Ivan",
+      last_name: "Petrov",
+    },
+    // subject_id absent — should be fail-closed
+    selectSlotData: { selection_status: "selected", selected_slot_key: CT_SLOT_KEY, may_apply_booking: true } as unknown as BookingSelectSlotSuccessData,
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.equal(state.selected_slot_proof, null, "CT-1: proof must be null when subject_id absent");
+  assert.equal(state.proof.slot_known, false, "CT-1: slot_known must be false");
+  assert.equal(state.proof.ready_for_booking_apply, false, "CT-1: ready_for_booking_apply must be false");
+});
+
+test("CT-2: current-turn selectSlotData.subject_id='subject_99' → no proof, slot_known=false, ready_for_booking_apply=false", () => {
+  const state = computeBookingProcessState({
+    prior: {
+      last_available_slots: [{ starts_at: "2028-03-10T11:00:00" }],
+      active_availability_evidence: CT_EVIDENCE,
+      service_reason: "чистка",
+      first_name: "Ivan",
+      last_name: "Petrov",
+    },
+    selectSlotData: { selection_status: "selected", subject_id: "subject_99" as unknown as SubjectId, selected_slot_key: CT_SLOT_KEY, may_apply_booking: true },
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.equal(state.selected_slot_proof, null, "CT-2: proof must be null for subject_99");
+  assert.equal(state.proof.slot_known, false, "CT-2: slot_known must be false");
+  assert.equal(state.proof.ready_for_booking_apply, false, "CT-2: ready_for_booking_apply must be false");
+});
+
+test("CT-3: current-turn selectSlotData with subject_1 → proof created, slot_known=true, slot_evidence_status=verified", () => {
+  const state = computeBookingProcessState({
+    prior: {
+      last_available_slots: [{ starts_at: "2028-03-10T11:00:00" }],
+      active_availability_evidence: CT_EVIDENCE,
+      service_reason: "чистка",
+      first_name: "Ivan",
+      last_name: "Petrov",
+    },
+    selectSlotData: { selection_status: "selected", subject_id: "subject_1" as const, selected_slot_key: CT_SLOT_KEY, may_apply_booking: true },
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.ok(state.selected_slot_proof !== null, "CT-3: proof must be created");
+  assert.equal(state.selected_slot_proof?.subject_id, "subject_1", "CT-3: proof must have subject_1");
+  assert.equal(state.proof.slot_known, true, "CT-3: slot_known must be true");
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  assert.equal(visible.slot_evidence_status, "verified", "CT-3: slot_evidence_status must be verified");
+});
+
+test("CT-4: current-turn selectSlotData with subject_2 → proof created with subject_2 preserved", () => {
+  const state = computeBookingProcessState({
+    prior: {
+      last_available_slots: [{ starts_at: "2028-03-10T11:00:00" }],
+      active_availability_evidence: CT_EVIDENCE,
+    },
+    selectSlotData: { selection_status: "selected", subject_id: "subject_2" as const, selected_slot_key: CT_SLOT_KEY, may_apply_booking: true },
+    channelContact: undefined,
+  });
+  assert.equal(state.selected_slot_proof?.subject_id, "subject_2", "CT-4: proof.subject_id must be subject_2");
+  assert.equal(state.proof.slot_known, true, "CT-4: slot_known must be true");
+});
+
+test("CT-5: model-visible state when subject_id absent → slot_evidence_status not verified, ready_for_booking_apply not true", () => {
+  const state = computeBookingProcessState({
+    prior: {
+      last_available_slots: [{ starts_at: "2028-03-10T11:00:00" }],
+      active_availability_evidence: CT_EVIDENCE,
+    },
+    selectSlotData: { selection_status: "selected", selected_slot_key: CT_SLOT_KEY, may_apply_booking: true } as unknown as BookingSelectSlotSuccessData,
+    channelContact: undefined,
+  });
+  const visible = buildModelVisibleBookingProcessState({ state, priorProcessState: null, bookingStateGrounded: true });
+  assert.notEqual(visible.slot_evidence_status, "verified", "CT-5: must not be verified");
+  assert.notEqual(visible.proof?.ready_for_booking_apply, true, "CT-5: ready_for_booking_apply must not be true");
+});
+
+test("CT-6: slotKnown cannot be true when persisted proof subject is absent, even when slot key and call ID match", () => {
+  // Craft a state where slot key/call ID match perfectly but subject_id is absent
+  const proofNoSubject: SelectedSlotProof = {
+    availability_call_id: "av_ct",
+    slot_key: CT_SLOT_KEY,
+  } as unknown as SelectedSlotProof;
+  const state = computeBookingProcessState({
+    prior: {
+      selected_slot: { starts_at: "2028-03-10T11:00:00" },
+      active_availability_evidence: CT_EVIDENCE,
+      selected_slot_proof: proofNoSubject,
+      service_reason: "чистка",
+      first_name: "Ivan",
+      last_name: "Petrov",
+    },
+    channelContact: TRUSTED_CONTACT,
+  });
+  assert.equal(state.selected_slot_proof, null, "CT-6: proof must be cleared when subject_id absent");
+  assert.equal(state.proof.slot_known, false, "CT-6: slot_known must be false even with matching slot/call ID");
+  assert.equal(state.proof.ready_for_booking_apply, false, "CT-6: ready_for_booking_apply must be false");
 });

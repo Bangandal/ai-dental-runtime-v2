@@ -183,7 +183,7 @@ test("F: selected_slot is visible even when confidence is low (no prior state, n
         allowed_slot_keys: ["2026-08-05T17:30"],
       },
     },
-    selectSlotData: { selection_status: "selected", selected_slot_key: "2026-08-05T17:30", may_apply_booking: true },
+    selectSlotData: { selection_status: "selected", subject_id: "subject_1" as const, selected_slot_key: "2026-08-05T17:30", may_apply_booking: true },
   });
   const visible = buildModelVisibleBookingProcessState({
     state: stateWithSlots,
@@ -407,7 +407,7 @@ test("Slot-only-1: prior state with only last_available_slots, patient selects s
   };
   const state = computeBookingProcessState({
     prior,
-    selectSlotData: { selection_status: "selected", selected_slot_key: "2026-08-05T10:00", may_apply_booking: true },
+    selectSlotData: { selection_status: "selected", subject_id: "subject_1" as const, selected_slot_key: "2026-08-05T10:00", may_apply_booking: true },
   });
   // Even with high confidence (prior has slots → grounded), ask_for_service must be suppressed.
   const visible = buildModelVisibleBookingProcessState({

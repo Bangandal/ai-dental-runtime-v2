@@ -1,6 +1,6 @@
 import type { AvailabilityEvidence } from "./slotEvidence.ts";
 import { normalizeBookingRequestKey } from "./slotEvidence.ts";
-import { parseSubjectId, type SubjectId } from "./bookingSubjectsState.ts";
+import { parseStrictSubjectId, type SubjectId } from "./bookingSubjectsState.ts";
 
 export type BookingSelectSlotFailureReason =
   | "missing_slot"
@@ -38,8 +38,8 @@ export function executeBookingSelectSlot(
   activeEvidence: AvailabilityEvidence | null | undefined,
   subjects?: Array<{ id: SubjectId }> | null,
 ): BookingSelectSlotResult {
-  // 1. Parse subject_id using the shared subject parser
-  const subjectId = parseSubjectId(args.subject_id);
+  // 1. Parse subject_id — only subject_1..subject_4 accepted
+  const subjectId = parseStrictSubjectId(args.subject_id);
   if (!subjectId) {
     return { ok: false, reason: "subject_resolution_conflict" };
   }

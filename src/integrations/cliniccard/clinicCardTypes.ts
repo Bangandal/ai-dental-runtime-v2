@@ -1,5 +1,5 @@
 export type ClinicCardBookingMode = "disabled" | "shadow" | "live";
-export type ClinicCardVisitStatus = "PLANNED" | "CONFIRMED" | "VISITED";
+export type ClinicCardVisitStatus = "PLANNED" | "CONFIRMED" | "VISITED" | "UNKNOWN";
 
 export interface ClinicCardConfig {
   api_base_url: string;

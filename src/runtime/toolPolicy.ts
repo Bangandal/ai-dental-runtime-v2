@@ -7,6 +7,7 @@ export type ToolName =
   | "booking.confirm"
   | "cancel_hold"
   | "appointment.mutate"
+  | "appointment.lookup"
   | "booking.apply";
 
 export type RawToolName = string;
@@ -132,6 +133,8 @@ export const TOOL_POLICY_MATRIX: Record<ToolName, { class: ToolClass }> = {
   "booking.apply": { class: "write" },
   "cancel_hold": { class: "destructive" },
   "appointment.mutate": { class: "destructive" },
+  // appointment.lookup is a read-only ClinicCard lookup — no writes, identity-gated by executor.
+  "appointment.lookup": { class: "read" },
 };
 
 const RUNTIME_TOOLS = new Set<ToolName>(Object.keys(TOOL_POLICY_MATRIX) as ToolName[]);

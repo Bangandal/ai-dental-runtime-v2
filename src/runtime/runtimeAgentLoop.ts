@@ -2032,6 +2032,16 @@ function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): Pla
     };
   }
 
+  if (request.tool === "appointment.lookup") {
+    return {
+      confidence: "high",
+      tools_requested: ["appointment.lookup"],
+      reply_strategy: "answer_only",
+      turn_type: "faq",
+      booking_action: null,
+    };
+  }
+
   return {
     confidence: "high",
     tools_requested: ["kb.search"],
@@ -2101,7 +2111,15 @@ function buildExecutionContext(
     // Uses frozen executionSubjectId when provided (from booking.apply.subject_id resolution).
     first_name: typeof request.arguments.first_name === "string" ? request.arguments.first_name : undefined,
     last_name: typeof request.arguments.last_name === "string" ? request.arguments.last_name : undefined,
-    ...buildSubjectAwarePhoneFields(input, executionSubjectId),
+    // appointment.lookup always identifies the sender via channel_contact — never booking subjects.
+    // Typed phones and shared_from_subject are rejected by the executor's identity gate.
+    ...(request.tool === "appointment.lookup"
+      ? {
+          phone_number: input.channel_contact?.phone_number,
+          phone_source: input.channel_contact?.phone_source,
+          phone_trust: undefined,
+        }
+      : buildSubjectAwarePhoneFields(input, executionSubjectId)),
   } as ToolExecutionContext;
 }
 

@@ -107,7 +107,7 @@ function asTimeHHMM(value: unknown): string | null {
 function asVisitStatus(value: unknown): ClinicCardVisitStatus {
   return typeof value === "string" && VALID_VISIT_STATUSES.has(value)
     ? value as ClinicCardVisitStatus
-    : "PLANNED";
+    : "UNKNOWN";
 }
 
 function splitPatientName(name: string): { firstname: string; lastname: string } {

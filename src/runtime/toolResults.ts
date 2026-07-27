@@ -130,13 +130,40 @@ export interface AppointmentMutateNotImplementedResult extends ToolExecutionBase
   };
 }
 
+export type AppointmentLookupStatus =
+  | "found"
+  | "not_found"
+  | "no_upcoming_visits"
+  | "multiple_patients"
+  | "identity_not_verified"
+  | "clinic_not_allowed";
+
+export interface AppointmentLookupVisit {
+  visit_id: string;
+  date: string;
+  time_start: string;
+  time_end: string;
+  status: "PLANNED" | "CONFIRMED";
+}
+
+export interface AppointmentLookupSuccessResult extends ToolExecutionBase {
+  tool: "appointment.lookup";
+  status: "success";
+  data: {
+    lookup_status: AppointmentLookupStatus;
+    visits: AppointmentLookupVisit[];
+    reason?: string;
+  };
+}
+
 export type ToolSuccessResult =
   | KbSearchSuccessResult
   | AvailabilityCheckSuccessResult
   | HoldCreateSuccessResult
   | BookingConfirmSuccessResult
   | CancelHoldSuccessResult
-  | BookingApplySuccessResult;
+  | BookingApplySuccessResult
+  | AppointmentLookupSuccessResult;
 
 export interface ToolFailedResult extends ToolExecutionBase {
   tool: ToolName;

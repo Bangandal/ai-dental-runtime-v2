@@ -26,12 +26,13 @@ test("RuntimeAgentTurnResult requires final_patient_reply in type examples", () 
   assert.ok(result.final_patient_reply.length > 0);
 });
 
-test("active tool definitions include kb.search, availability.check, booking.select_slot, and booking.apply", () => {
-  assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check", "booking.select_slot", "booking.apply"]);
+test("active tool definitions include kb.search, availability.check, booking.select_slot, booking.apply, and appointment.lookup", () => {
+  assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check", "booking.select_slot", "booking.apply", "appointment.lookup"]);
   assert.equal("kb.search" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
   assert.equal("availability.check" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
   assert.equal("booking.select_slot" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
   assert.equal("booking.apply" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
+  assert.equal("appointment.lookup" in RUNTIME_AGENT_TOOL_DEFINITIONS, true);
   assert.equal("admin.notify" in RUNTIME_AGENT_TOOL_DEFINITIONS, false);
 });
 
@@ -45,7 +46,6 @@ test("future tools are listed but not active", () => {
     "hold.create",
     "booking.confirm",
     "cancel_hold",
-    "appointment.lookup",
   ]);
 
   for (const tool of FUTURE_RUNTIME_AGENT_TOOLS) {

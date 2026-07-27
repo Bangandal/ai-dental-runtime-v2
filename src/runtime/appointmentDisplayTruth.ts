@@ -1,5 +1,5 @@
 import type { RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
-import { hasCompleteBookingApplyProof } from "./bookingApplyGuard.ts";
+import { hasCompleteBookingApplyProof, findAuthoritativeBookingApplyResult } from "./bookingApplyGuard.ts";
 
 export interface AppointmentDisplayTruth {
   source: "booking.apply";
@@ -107,15 +107,13 @@ export function buildAppointmentDisplayTruth(
 ): AppointmentDisplayTruth | null {
   const tz = timezone ?? "Europe/Prague";
 
-  const bookingSuccess = toolResults.find(
-    (r) => r.tool === "booking.apply" && r.status === "success" && r.data !== null && r.data !== undefined,
-  );
-  if (!bookingSuccess) return null;
-
+  // Use the authoritative result: last with complete ClinicCard proof wins, so that a
+  // successful round-2 result overrides a synthetic blocked round-1 result in toolResults.
+  const bookingSuccess = findAuthoritativeBookingApplyResult(toolResults);
   // Require complete ClinicCard proof — partial results (missing cliniccard_visit_id,
   // may_claim_booked=false, status≠success, etc.) must not produce appointment display
   // truth that could mislead the model into confirming an unverified booking.
-  if (!hasCompleteBookingApplyProof(bookingSuccess)) return null;
+  if (!bookingSuccess || !hasCompleteBookingApplyProof(bookingSuccess)) return null;
 
   const data = bookingSuccess.data as Record<string, unknown>;
   if (typeof data !== "object" || Array.isArray(data)) return null;

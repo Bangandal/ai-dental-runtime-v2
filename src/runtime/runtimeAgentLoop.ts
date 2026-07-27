@@ -409,6 +409,27 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           },
         });
 
+        // Close any remaining round-1 call IDs (kb.search, availability.check, etc.) that
+        // were not handled above.  OpenAI requires every function call to have a matching
+        // tool result; skipping them via the normal tool loop would leave them open.
+        const srHandledCallIds = new Set([
+          ...round1SelectSlotRequests.map((r) => r.call_id),
+          bookingApplyRound1.call_id,
+        ]);
+        for (const req of toolRequests) {
+          if (!srHandledCallIds.has(req.call_id)) {
+            toolResults.push({
+              tool: req.tool,
+              call_id: req.call_id,
+              status: "denied",
+              error: {
+                code: "guard_s_same_round_protocol",
+                message: "Tool was not executed because booking.select_slot and booking.apply were returned in the same round",
+              },
+            });
+          }
+        }
+
         // Revoke old proof (selectSlotAttemptedThisTurn=true); install new if selection succeeded.
         bookingProcessState = computeBookingProcessState({
           prior: priorProcessState,

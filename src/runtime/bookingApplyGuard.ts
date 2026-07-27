@@ -48,9 +48,30 @@ export function hasSuccessfulBookingApplyProof(results: RuntimeAgentToolResult[]
   return results.some((r) => hasCompleteBookingApplyProof(r));
 }
 
+/**
+ * Finds the authoritative booking.apply result from a list of tool results.
+ *
+ * Priority:
+ *   1. Last result with a complete ClinicCard proof (visit_created, created_visit=true,
+ *      may_claim_booked=true, non-empty cliniccard_visit_id).
+ *   2. If no complete proof exists, the last booking.apply result.
+ *
+ * "Last" wins so that a successful round-2 result always overrides a blocked round-1
+ * synthetic result that appears earlier in the same toolResults accumulator.
+ * Fields are never mixed across results.
+ */
+export function findAuthoritativeBookingApplyResult(
+  results: RuntimeAgentToolResult[],
+): RuntimeAgentToolResult | undefined {
+  const withProof = results.filter((r) => hasCompleteBookingApplyProof(r));
+  if (withProof.length > 0) return withProof[withProof.length - 1];
+  const all = results.filter((r) => r.tool === "booking.apply");
+  return all.length > 0 ? all[all.length - 1] : undefined;
+}
+
 /** Builds structured action truth from booking.apply tool results for the model's second call. */
 export function buildBookingApplyActionTruth(results: RuntimeAgentToolResult[]): BookingApplyActionTruth | null {
-  const bookingResult = results.find((r) => r.tool === "booking.apply");
+  const bookingResult = findAuthoritativeBookingApplyResult(results);
   if (!bookingResult) return null;
 
   const d = bookingResult.data as Record<string, unknown> | null | undefined;
@@ -60,9 +81,9 @@ export function buildBookingApplyActionTruth(results: RuntimeAgentToolResult[]):
   const clinicCardVisitId = typeof d?.cliniccard_visit_id === "string" ? d.cliniccard_visit_id : null;
 
   const requiredNextAction = resolveRequiredNextAction(bookingStatus);
-  // allowed_claims must reflect full proof (all four fields), not may_claim_booked alone —
-  // a partial/malformed tool result could set may_claim_booked=true without the rest.
-  const hasFullProof = hasSuccessfulBookingApplyProof(results);
+  // allowed_claims must reflect full proof from the same result — never mix fields
+  // across results (e.g. booking_status from round-1 blocked result + claims from round-2).
+  const hasFullProof = hasCompleteBookingApplyProof(bookingResult);
 
   return {
     tool: "booking.apply",
@@ -105,7 +126,7 @@ export function buildBookingApplyEmergencyFallback(
   results: RuntimeAgentToolResult[],
   locale?: string | null,
 ): string {
-  const bookingResult = results.find((r) => r.tool === "booking.apply");
+  const bookingResult = findAuthoritativeBookingApplyResult(results);
   const status =
     typeof (bookingResult?.data as Record<string, unknown> | undefined)?.booking_status === "string"
       ? (bookingResult!.data as Record<string, unknown>).booking_status as string

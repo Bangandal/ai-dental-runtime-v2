@@ -31,6 +31,10 @@ import {
   createRuntimeAgentLoop,
   type RuntimeAgentCaller,
 } from "../src/runtime/runtimeAgentLoop.ts";
+import {
+  findAuthoritativeBookingApplyResult,
+  buildBookingApplyActionTruth,
+} from "../src/runtime/bookingApplyGuard.ts";
 import type { AuthoritativeAvailabilityAttempt } from "../src/runtime/availabilityActionTruth.ts";
 import type { RuntimeAgentToolResult } from "../src/runtime/openaiRuntimeAgent.ts";
 
@@ -2613,4 +2617,389 @@ test("PRT-6: Guard S fires, second call issues booking.apply — normal round-2 
   });
   assert.ok(secondCallSeen, "PRT-6: second model call must be made");
   assert.equal(executorCallCount, 1, `PRT-6: executor must be called exactly once via normal round-2 path (was ${executorCallCount})`);
+});
+
+// ── FINAL: Authoritative-result selection + Guard S completeness ───────────────
+// These tests verify the two remaining correctness blockers:
+//   Blocker 1: findAuthoritativeBookingApplyResult selects the last complete-proof
+//              result so round-2 success is never shadowed by round-1 blocked result.
+//   Blocker 2: Guard S closes all round-1 call IDs (kb.search, availability.check, etc.)
+//              with denied results so OpenAI receives a complete set of tool outputs.
+
+// Shared executor result used in FINAL-1, FINAL-2, FINAL-3.
+function makeFinal123ExecutorResult() {
+  return {
+    status: "success" as const,
+    data: {
+      booking_status: "visit_created",
+      created_visit: true,
+      may_claim_booked: true,
+      cliniccard_visit_id: "visit_final_1",
+      visit_start: "2028-03-10 10:00:00",
+      visit_end: "2028-03-10 10:30:00",
+    },
+  };
+}
+
+// Shared state repo used in FINAL-1..3: 10:00 slot in evidence, no proof yet.
+function makeFinal123StateRepo() {
+  return {
+    async loadState() {
+      return {
+        selected_slot: null,
+        last_available_slots: null,
+        active_availability_evidence: {
+          availability_call_id: "call_final",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00", "2028-03-10T14:00"],
+        },
+        selected_slot_proof: null,
+      };
+    },
+    async saveState() {},
+  };
+}
+
+// FINAL-1: booking_apply_action_truth in forced-finalization context is built from
+// the round-2 successful result, not the round-1 blocked result.
+test("FINAL-1: booking_apply_action_truth in forced-finalization caller context reflects round-2 success result, executorCallCount=1", async () => {
+  let executorCallCount = 0;
+  let capturedActionTruth: Record<string, unknown> | undefined;
+  let callCount = 0;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      callCount++;
+      const ctx = input.input.context as Record<string, unknown>;
+      const results = input.input.tool_results ?? [];
+
+      if (callCount === 1) {
+        // Round-1: Guard S triggers
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_f1", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_f1", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      if (callCount === 2) {
+        // Second call: receives Guard S results; re-requests booking.apply for now-verified slot
+        assert.ok(results.length >= 2, "FINAL-1: second call must receive Guard S results");
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.apply", call_id: "ba_f1_r2", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      // Forced finalization call: capture booking_apply_action_truth
+      capturedActionTruth = ctx.booking_apply_action_truth as Record<string, unknown> | undefined;
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Записал." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => {
+        executorCallCount++;
+        return makeFinal123ExecutorResult();
+      },
+    },
+    bookingProcessStateRepository: makeFinal123StateRepo(),
+  });
+
+  await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_f1", case_id: null,
+    user_message: "запиши на 10:00", locale: "ru", trace_id: "tr_f1",
+    channel_contact: { phone_number: "+420111000010", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCallCount, 1, "FINAL-1: executor must be called exactly once");
+  assert.ok(capturedActionTruth != null, "FINAL-1: booking_apply_action_truth must be present in forced-finalization context");
+  assert.equal(capturedActionTruth!.booking_status, "visit_created", "FINAL-1: booking_status must be visit_created");
+  assert.equal(capturedActionTruth!.created_visit, true, "FINAL-1: created_visit must be true");
+  assert.equal(capturedActionTruth!.may_claim_booked, true, "FINAL-1: may_claim_booked must be true");
+  assert.equal(capturedActionTruth!.cliniccard_visit_id, "visit_final_1", "FINAL-1: cliniccard_visit_id must be visit_final_1");
+  assert.equal(capturedActionTruth!.required_next_action, "none", "FINAL-1: required_next_action must be none");
+  const claims = capturedActionTruth!.allowed_claims as Record<string, unknown>;
+  assert.equal(claims?.can_say_booking_created, true, "FINAL-1: allowed_claims.can_say_booking_created must be true");
+  assert.equal(claims?.can_say_booking_confirmed, true, "FINAL-1: allowed_claims.can_say_booking_confirmed must be true");
+});
+
+// FINAL-2: appointment_display_truth in forced-finalization context is built from the
+// round-2 successful result, not from the round-1 blocked result (which has no visit_start).
+test("FINAL-2: appointment_display_truth in forced-finalization context reflects round-2 success: time_start=10:00, cliniccard_visit_id=visit_final_1", async () => {
+  let capturedDisplayTruth: Record<string, unknown> | undefined;
+  let callCount = 0;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      callCount++;
+      const ctx = input.input.context as Record<string, unknown>;
+      const results = input.input.tool_results ?? [];
+
+      if (callCount === 1) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_f2", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_f2", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      if (callCount === 2) {
+        void results;
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.apply", call_id: "ba_f2_r2", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      capturedDisplayTruth = ctx.appointment_display_truth as Record<string, unknown> | undefined;
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Записал." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => makeFinal123ExecutorResult(),
+    },
+    bookingProcessStateRepository: makeFinal123StateRepo(),
+  });
+
+  await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_f2", case_id: null,
+    user_message: "запиши на 10:00", locale: "ru", trace_id: "tr_f2",
+    channel_contact: { phone_number: "+420111000011", phone_source: "telegram_contact_button" },
+  });
+
+  assert.ok(capturedDisplayTruth != null, "FINAL-2: appointment_display_truth must be present in forced-finalization context");
+  assert.equal(capturedDisplayTruth!.time_start, "10:00", "FINAL-2: time_start must be 10:00 from round-2 result");
+  assert.equal(capturedDisplayTruth!.cliniccard_visit_id, "visit_final_1", "FINAL-2: cliniccard_visit_id must be visit_final_1 from round-2 result");
+});
+
+// FINAL-3: emergency fallback uses the real ClinicCard proof from round-2, not the
+// blocked round-1 result.  When forced-finalization throws, the fallback must reflect
+// visit_created ("Запись создана"), not slot_not_verified ("не могу подтвердить").
+test("FINAL-3: emergency fallback after failed forced-finalization reflects round-2 visit_created proof, not round-1 slot_not_verified", async () => {
+  let callCount = 0;
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      callCount++;
+      const results = input.input.tool_results ?? [];
+
+      if (callCount === 1) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.select_slot", call_id: "ss_f3", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_f3", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      if (callCount === 2) {
+        void results;
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "booking.apply", call_id: "ba_f3_r2", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      // Forced finalization: simulate exception (model call failure)
+      throw new Error("simulated forced-finalization failure");
+    }) as RuntimeAgentCaller,
+    executors: {
+      "booking.apply": async () => makeFinal123ExecutorResult(),
+    },
+    bookingProcessStateRepository: makeFinal123StateRepo(),
+  });
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_f3", case_id: null,
+    user_message: "запиши на 10:00", locale: "ru", trace_id: "tr_f3",
+    channel_contact: { phone_number: "+420111000012", phone_source: "telegram_contact_button" },
+  });
+
+  // Fallback must recognise the created record (from round-2 result)
+  assert.ok(result.final_patient_reply.includes("Запись создана"), `FINAL-3: fallback must say "Запись создана" (got: "${result.final_patient_reply}")`);
+  // Must not say it cannot confirm (that would use slot_not_verified path)
+  assert.ok(!result.final_patient_reply.includes("не могу подтвердить"), `FINAL-3: fallback must not say "не могу подтвердить" (got: "${result.final_patient_reply}")`);
+});
+
+// FINAL-4: Guard S closes a kb.search call ID that appears alongside select_slot + booking.apply
+// in round-1.  OpenAI requires every call ID to have a matching result; Guard S must deny it.
+test("FINAL-4: Guard S denies kb.search call ID (guard_s_same_round_protocol) when present alongside select_slot + booking.apply in round-1", async () => {
+  let kbExecutorCallCount = 0;
+  let secondCallToolResultIds: string[] = [];
+
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: null, last_available_slots: null,
+        active_availability_evidence: {
+          availability_call_id: "call_f4",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00"],
+        },
+        selected_slot_proof: null,
+      };
+    },
+    async saveState() {},
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "kb.search", call_id: "kb_1", arguments: { query: "услуги" } },
+            { tool: "booking.select_slot", call_id: "ss_f4", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_f4", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      secondCallToolResultIds = results.map((r: { call_id: string }) => r.call_id);
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Ок." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "kb.search": async () => {
+        kbExecutorCallCount++;
+        return { status: "success" as const, data: { results: [] } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_f4", case_id: null,
+    user_message: "запиши", locale: "ru", trace_id: "tr_f4",
+    channel_contact: { phone_number: "+420111000013", phone_source: "telegram_contact_button" },
+  });
+
+  // Second call must see all three call IDs
+  const idSet = new Set(secondCallToolResultIds);
+  assert.ok(idSet.has("kb_1"), "FINAL-4: second call must receive kb_1 result");
+  assert.ok(idSet.has("ss_f4"), "FINAL-4: second call must receive ss_f4 result");
+  assert.ok(idSet.has("ba_f4"), "FINAL-4: second call must receive ba_f4 result");
+  assert.equal(idSet.size, 3, `FINAL-4: second call must receive exactly 3 results (got ${idSet.size})`);
+
+  // kb.search result must be denied with guard_s_same_round_protocol
+  const kbResult = result.tool_results.find((r) => r.tool === "kb.search");
+  assert.ok(kbResult, "FINAL-4: kb.search result must be present in tool_results");
+  assert.equal(kbResult!.status, "denied", "FINAL-4: kb.search result status must be denied");
+  assert.equal((kbResult!.error as Record<string, unknown>)?.code, "guard_s_same_round_protocol", "FINAL-4: kb.search error code must be guard_s_same_round_protocol");
+
+  // kb.search executor must not be called
+  assert.equal(kbExecutorCallCount, 0, "FINAL-4: kb.search executor must not be called when Guard S fires");
+});
+
+// FINAL-5: Guard S denies availability.check call ID when it appears alongside
+// select_slot + booking.apply in round-1.
+test("FINAL-5: Guard S denies availability.check call ID (guard_s_same_round_protocol) when present alongside select_slot + booking.apply in round-1", async () => {
+  let avExecutorCallCount = 0;
+  let secondCallToolResultIds: string[] = [];
+
+  const stateRepo = {
+    async loadState() {
+      return {
+        selected_slot: null, last_available_slots: null,
+        active_availability_evidence: {
+          availability_call_id: "call_f5",
+          requested_date: "2028-03-10",
+          requested_time: null,
+          allowed_slot_keys: ["2028-03-10T10:00"],
+        },
+        selected_slot_proof: null,
+      };
+    },
+    async saveState() {},
+  };
+
+  const loop = createRuntimeAgentLoop({
+    model: "test-model",
+    now: new Date("2028-03-09T20:00:00Z"),
+    caller: (async (input) => {
+      const results = input.input.tool_results ?? [];
+      if (!results.length) {
+        return {
+          type: "tool_requests" as const,
+          tool_requests: [
+            { tool: "availability.check", call_id: "av_1", arguments: { subject_id: "subject_1", requested_date: "2028-03-10" } },
+            { tool: "booking.select_slot", call_id: "ss_f5", arguments: { subject_id: "subject_1", requested_date: "2028-03-10", requested_time: "10:00" } },
+            { tool: "booking.apply", call_id: "ba_f5", arguments: { subject_id: "subject_1", first_name: "Anna", last_name: "Ivanova", service: "чистка", requested_date: "2028-03-10", requested_time: "10:00" } },
+          ],
+        };
+      }
+      secondCallToolResultIds = results.map((r: { call_id: string }) => r.call_id);
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Ок." } };
+    }) as RuntimeAgentCaller,
+    executors: {
+      "availability.check": async () => {
+        avExecutorCallCount++;
+        return { status: "success" as const, data: { slots: [] } };
+      },
+    },
+    bookingProcessStateRepository: stateRepo,
+  });
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_f5", case_id: null,
+    user_message: "запиши", locale: "ru", trace_id: "tr_f5",
+    channel_contact: { phone_number: "+420111000014", phone_source: "telegram_contact_button" },
+  });
+
+  // Second call must see all three call IDs
+  const idSet = new Set(secondCallToolResultIds);
+  assert.ok(idSet.has("av_1"), "FINAL-5: second call must receive av_1 result");
+  assert.ok(idSet.has("ss_f5"), "FINAL-5: second call must receive ss_f5 result");
+  assert.ok(idSet.has("ba_f5"), "FINAL-5: second call must receive ba_f5 result");
+  assert.equal(idSet.size, 3, `FINAL-5: second call must receive exactly 3 results (got ${idSet.size})`);
+
+  // availability.check result must be denied
+  const avResult = result.tool_results.find((r) => r.tool === "availability.check");
+  assert.ok(avResult, "FINAL-5: availability.check result must be present in tool_results");
+  assert.equal(avResult!.status, "denied", "FINAL-5: availability.check result status must be denied");
+  assert.equal((avResult!.error as Record<string, unknown>)?.code, "guard_s_same_round_protocol", "FINAL-5: availability.check error code must be guard_s_same_round_protocol");
+
+  // availability.check executor must not be called
+  assert.equal(avExecutorCallCount, 0, "FINAL-5: availability.check executor must not be called when Guard S fires");
+});
+
+// FINAL-6: Without complete ClinicCard proof, findAuthoritativeBookingApplyResult returns
+// the LAST booking.apply, not the first.  allowed_claims must be false (no durable proof).
+test("FINAL-6: findAuthoritativeBookingApplyResult selects last booking.apply when no complete proof; allowed_claims false", () => {
+  const results: RuntimeAgentToolResult[] = [
+    {
+      tool: "booking.apply",
+      call_id: "ba_first",
+      status: "success",
+      data: { booking_status: "slot_not_verified", created_visit: false, may_claim_booked: false, required_next_action: "retry_booking_apply" },
+    },
+    {
+      tool: "booking.apply",
+      call_id: "ba_last",
+      status: "success",
+      data: { booking_status: "missing_phone", created_visit: false, may_claim_booked: false, required_next_action: "ask_for_phone" },
+    },
+  ];
+
+  const authoritative = findAuthoritativeBookingApplyResult(results);
+  assert.ok(authoritative, "FINAL-6: authoritative result must be found");
+  assert.equal(authoritative!.call_id, "ba_last", "FINAL-6: must select last booking.apply when no complete proof");
+
+  const truth = buildBookingApplyActionTruth(results);
+  assert.ok(truth, "FINAL-6: action truth must be built");
+  assert.equal(truth!.booking_status, "missing_phone", "FINAL-6: booking_status must come from the last result");
+  assert.equal(truth!.allowed_claims.can_say_booking_created, false, "FINAL-6: can_say_booking_created must be false without complete proof");
+  assert.equal(truth!.allowed_claims.can_say_booking_confirmed, false, "FINAL-6: can_say_booking_confirmed must be false without complete proof");
 });

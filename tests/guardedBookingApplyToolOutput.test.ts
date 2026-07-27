@@ -96,6 +96,14 @@ const AVAILABILITY_REQUEST: RuntimeAgentToolRequest = {
   arguments: { service_interest: "чистка зубов", requested_date: "2026-08-05" },
 };
 
+// booking.select_slot for subject_1 at 2026-08-05 14:00 — used in round-1 instead of avail.check
+// so the state repo's evidence/proof is preserved (avail.check would clear it)
+const SELECT_SLOT_REQUEST_AUG5: RuntimeAgentToolRequest = {
+  tool: "booking.select_slot",
+  call_id: "call_ss_aug5",
+  arguments: { subject_id: "subject_1", requested_date: "2026-08-05", requested_time: "14:00" },
+};
+
 const BASE_TURN_INPUT = {
   clinic_id: "clinic_1",
   contact_id: "contact_pr142",
@@ -113,8 +121,19 @@ function makeCallerSequence(outputs: Awaited<ReturnType<RuntimeAgentCaller>>[]):
 }
 
 function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }
@@ -317,20 +336,18 @@ test("D: round 2 booking.apply — slots available but no trusted phone → guar
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     caller: makeCallerSequence([
-      // Round 1: availability.check
-      { type: "tool_requests", conversation_id: "conv_d", tool_requests: [AVAILABILITY_REQUEST] },
+      // Round 1: select_slot (preserves prior state proof; avail.check would clear it)
+      { type: "tool_requests", conversation_id: "conv_d", tool_requests: [SELECT_SLOT_REQUEST_AUG5] },
       // Round 2: model requests booking.apply (no phone in context)
       { type: "tool_requests", conversation_id: "conv_d", tool_requests: [BOOKING_APPLY_FULL] },
       // Guarded finalization: model asks for contact button
       { type: "final_response", conversation_id: "conv_d", final_response: { final_patient_reply: "Для записи нужен ваш контакт." } },
     ]),
     executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 },
-      }),
       "booking.apply": async () => { executorCalled = true; return { status: "success" as const, data: {} }; },
     },
+    // Prior state provides evidence + proof so Guard G passes; phone guard fires instead
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_d", channel_contact: undefined });
@@ -344,7 +361,9 @@ test("D: round 2 booking.apply — slots available but no trusted phone → guar
 
 // ── Test E: Round 2 invalid slot ──────────────────────────────────────────────
 
-test("E: round 2 booking.apply — requested_time not in available slots → guarded invalid_slot, conversation preserved", async () => {
+test("E: round 2 booking.apply after avail.check (no select_slot) → guarded slot_not_verified, conversation preserved", async () => {
+  // With the proof requirement, avail.check alone does not authorize booking.apply.
+  // avail.check clears the prior proof, so Guard G fires before Guard H in round-2.
   let executorCalled = false;
 
   const BOOKING_WRONG_TIME: RuntimeAgentToolRequest = {
@@ -365,10 +384,10 @@ test("E: round 2 booking.apply — requested_time not in available slots → gua
     caller: makeCallerSequence([
       // Round 1: availability.check returns slot at 14:00
       { type: "tool_requests", conversation_id: "conv_e", tool_requests: [AVAILABILITY_REQUEST] },
-      // Round 2: model requests booking.apply at 15:00 (invalid)
+      // Round 2: model requests booking.apply at 15:00 — proof cleared by avail.check, Guard G fires
       { type: "tool_requests", conversation_id: "conv_e", tool_requests: [BOOKING_WRONG_TIME] },
-      // Guarded finalization: model tells patient to choose from available times
-      { type: "final_response", conversation_id: "conv_e", final_response: { final_patient_reply: "Это время недоступно. Выберите одно из доступных." } },
+      // Guarded finalization: model tells patient to call booking.select_slot first
+      { type: "final_response", conversation_id: "conv_e", final_response: { final_patient_reply: "Выберите слот через select_slot." } },
     ]),
     executors: {
       "availability.check": async () => ({
@@ -382,9 +401,9 @@ test("E: round 2 booking.apply — requested_time not in available slots → gua
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_e", channel_contact: TRUSTED_CONTACT });
 
   assert.equal(executorCalled, false, "E: executor must NOT be called");
-  assertGuardedResult(result, "invalid_slot", "E");
+  assertGuardedResult(result, "slot_not_verified", "E");
   assertConversationClean(result, "conv_e", "E");
-  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_invalid_slot_round2");
+  assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_missing_slot_proof_round2");
 });
 
 // ── Test F: Existing full-proof disabled mode regression ──────────────────────
@@ -502,16 +521,14 @@ test("B-phone-2: round 2 missing_trusted_phone (slots available) → ui.telegram
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     caller: makeCallerSequence([
-      { type: "tool_requests", conversation_id: "conv_bp2", tool_requests: [AVAILABILITY_REQUEST] },
+      // Round 1: select_slot (preserves proof; avail.check would clear it)
+      { type: "tool_requests", conversation_id: "conv_bp2", tool_requests: [SELECT_SLOT_REQUEST_AUG5] },
       { type: "tool_requests", conversation_id: "conv_bp2", tool_requests: [BOOKING_APPLY_FULL] },
       { type: "final_response", conversation_id: "conv_bp2", final_response: { final_patient_reply: "Нужен контакт." } },
     ]),
-    executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: { slots: [SLOT], total_slots: 1, free_slots_count: 1 },
-      }),
-    },
+    executors: {},
+    // Prior state provides evidence + proof so Guard G passes; phone guard fires
+    bookingProcessStateRepository: makeSlotStateRepo("2026-08-05T14:00:00"),
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_bp2", channel_contact: undefined });
@@ -622,6 +639,8 @@ test("PR144-A (no-tool loop): first-call final_response with ask_for_phone state
         first_name: "Тест",
         last_name: "Пациент",
         selected_slot: { starts_at: "2026-08-05T14:00:00", slot_id: "s1" },
+        active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
         next_action: "ask_for_phone" as const,
         phone_trusted: undefined,
         proof: { service_known: true, name_known: true, slot_known: true, trusted_phone_known: false, ready_for_booking_apply: false },
@@ -752,6 +771,8 @@ test("PR144-E: no ClinicCard writes when contact button is attached via maybeAtt
         first_name: "Тест",
         last_name: "Пациент",
         selected_slot: { starts_at: "2026-08-05T14:00:00", slot_id: "s1" },
+        active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
         phone_trusted: undefined,
         proof: { service_known: true, name_known: true, slot_known: true, trusted_phone_known: false, ready_for_booking_apply: false },
       }),

@@ -29,8 +29,19 @@ import type { RuntimeAgentToolResult } from "../src/runtime/openaiRuntimeAgent.t
 import { buildBookingApplyActionTruth } from "../src/runtime/bookingApplyGuard.ts";
 
 function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }

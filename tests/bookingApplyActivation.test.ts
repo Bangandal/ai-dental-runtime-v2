@@ -72,8 +72,19 @@ function makeAdapter(overrides: Partial<ClinicCardAdapter> = {}): ClinicCardAdap
 }
 
 function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }
@@ -103,8 +114,8 @@ function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Part
 
 // ── A: Active tools ───────────────────────────────────────────────────────────
 
-test("A: ACTIVE_RUNTIME_AGENT_TOOLS is exactly [kb.search, availability.check, booking.apply]", () => {
-  assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check", "booking.apply"]);
+test("A: ACTIVE_RUNTIME_AGENT_TOOLS is exactly [kb.search, availability.check, booking.select_slot, booking.apply]", () => {
+  assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check", "booking.select_slot", "booking.apply"]);
 });
 
 // ── B: Booking disabled — action truth has can_say_booking_created=false ──────
@@ -162,11 +173,11 @@ test("C: no channel_contact → global preflight fires; contact button returned;
   const { loop, pushCaller } = makeLoopWithBooking(LIVE_ENV, {
     createPatient: async () => { writeCalls.push("createPatient"); return { ok: true, data: { id: 1, name: "", phone: null } }; },
     createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
-  }, "2026-07-20T09:00:00");
+  }, "2027-08-15T12:00:00", new Date("2027-08-15T07:00:00Z"));
 
   pushCaller(async () => ({
     type: "tool_requests",
-    tool_requests: [{ tool: "booking.apply", call_id: "call_c", arguments: { subject_id: "subject_1", first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2026-07-20", requested_time: "09:00" } }],
+    tool_requests: [{ tool: "booking.apply", call_id: "call_c", arguments: { subject_id: "subject_1", first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2027-08-15", requested_time: "12:00" } }],
   }));
   // Second caller: guarded finalization — model asks for phone after seeing guarded result
   pushCaller(async () => ({
@@ -518,7 +529,7 @@ test("proof: runtimeAgentLoop.ts injects booking_apply_action_truth into second 
 
 // ── PR #180 R4: Emergency fallback gated by complete ClinicCard proof ──────────
 
-const SLOT_REPO_EF = { async loadState() { return { selected_slot: { starts_at: "2026-07-20T11:00:00" } }; }, async saveState() {} };
+const SLOT_REPO_EF = { async loadState() { return { selected_slot: { starts_at: "2027-08-15T11:00:00" }, last_available_slots: [{ starts_at: "2027-08-15T11:00:00" }], active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2027-08-15", requested_time: null, allowed_slot_keys: ["2027-08-15T11:00"] }, selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2027-08-15T11:00" } }; }, async saveState() {} };
 const BASE_TURN_EF = { clinic_id: "clinic_1", contact_id: "contact_1", case_id: null, user_message: "запишите", trace_id: "trace_ef", channel_contact: { phone_number: "+380991350135", phone_source: "telegram_contact_button" as const } };
 
 function makeExceptionLoop(executorData: Record<string, unknown>) {
@@ -527,7 +538,7 @@ function makeExceptionLoop(executorData: Record<string, unknown>) {
     model: "test-model",
     caller: async () => {
       calls++;
-      if (calls === 1) return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply" as const, call_id: "ba_ef", arguments: { subject_id: "subject_1", first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] };
+      if (calls === 1) return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply" as const, call_id: "ba_ef", arguments: { subject_id: "subject_1", first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }] };
       throw new Error("Second caller exception");
     },
     executors: { "booking.apply": async () => ({ status: "success" as const, data: executorData }) },
@@ -541,7 +552,7 @@ function makeMalformedLoop(executorData: Record<string, unknown>) {
     model: "test-model",
     caller: async () => {
       calls++;
-      if (calls === 1) return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply" as const, call_id: "ba_ef_m", arguments: { subject_id: "subject_1", first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2026-07-20", requested_time: "11:00" } }] };
+      if (calls === 1) return { type: "tool_requests" as const, tool_requests: [{ tool: "booking.apply" as const, call_id: "ba_ef_m", arguments: { subject_id: "subject_1", first_name: "Тест", last_name: "Пациент", service: "чистка", requested_date: "2027-08-15", requested_time: "11:00" } }] };
       return { type: "final_response" as const, final_response: { final_patient_reply: "ok", safety_notes: ["malformed_openai_response"] } };
     },
     executors: { "booking.apply": async () => ({ status: "success" as const, data: executorData }) },

@@ -59,16 +59,13 @@ export function buildNoSlotsPreflightReply(locale?: string | null): string {
 // ── Missing slot date/time guard ──────────────────────────────────────────────
 
 /**
- * Returns true when booking.apply args don't include both requested_date AND
- * requested_time.
+ * Returns true when booking.apply args are missing requested_date / requested_time,
+ * OR when either field is present but fails strict format validation (non-two-digit hour,
+ * seconds suffix, impossible calendar date, etc.). Guards G and H delegate all format
+ * checking here — they skip when this returns true.
  */
 export function bookingApplyArgsMissingSlot(args: Record<string, unknown>): boolean {
-  return (
-    typeof args.requested_date !== "string" ||
-    !args.requested_date.trim() ||
-    typeof args.requested_time !== "string" ||
-    !args.requested_time.trim()
-  );
+  return !validateBookingRequestFormat(args).ok;
 }
 
 const MISSING_SLOT_REPLIES: Record<string, string> = {
@@ -132,129 +129,52 @@ export function buildMissingServiceReply(locale?: string | null): string {
   return MISSING_SERVICE_REPLIES[resolveLocaleKey(locale)];
 }
 
-// ── Slot validity check ───────────────────────────────────────────────────────
-
-// Same regex as availabilityPresentationTruth.ts — keep in sync.
-function extractHHMM(startsAt: string): string | null {
-  const match = startsAt.match(/T(\d{2}:\d{2})(?::\d{2})?/);
-  return match ? match[1] : null;
-}
-
-/**
- * Returns true when booking.apply requested date+time doesn't match any slot from
- * availability.check results. Validates full date+time (not just time) to prevent
- * cross-date booking when the same time exists on a different date.
- * Only fires when availability returned ≥1 slot — the 0-slot case is handled by
- * shouldInterceptNoSlotsBeforeBookingApply upstream.
- */
-export function shouldInterceptInvalidSlotDateTime(params: {
-  pendingToolRequests: RuntimeAgentToolRequest[];
-  completedToolResults: RuntimeAgentToolResult[];
-}): boolean {
-  if (!hasBookingApplyPending(params.pendingToolRequests)) return false;
-
-  const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
-  if (!req) return false;
-  const requestedDate =
-    typeof req.arguments.requested_date === "string" ? req.arguments.requested_date.trim() : null;
-  const requestedTime =
-    typeof req.arguments.requested_time === "string" ? req.arguments.requested_time.trim() : null;
-  if (!requestedDate || !requestedTime) return false; // missing date/time handled upstream
-
-  // Collect all allowed "YYYY-MM-DDTHH:MM" from successful availability results
-  const allowedSlots = new Set<string>();
-  for (const r of params.completedToolResults) {
-    if (r.tool !== "availability.check" || r.status !== "success") continue;
-    const data = r.data as { slots?: Array<{ starts_at?: string }> } | null | undefined;
-    if (!Array.isArray(data?.slots)) continue;
-    for (const slot of data.slots) {
-      if (typeof slot.starts_at === "string") {
-        const date = slot.starts_at.slice(0, 10);
-        const hhmm = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(11, 16);
-        if (date && hhmm) allowedSlots.add(`${date}T${hhmm}`);
-      }
-    }
-  }
-
-  if (allowedSlots.size === 0) return false; // no slots to validate against
-
-  // Normalize to HH:MM (model may emit "12:00:00" format)
-  const normalizedTime = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
-  return !allowedSlots.has(`${requestedDate}T${normalizedTime}`);
-}
-
-const INVALID_SLOT_REPLIES: Record<string, string> = {
-  ru: "Это время недоступно. Выберите, пожалуйста, одно из доступных времён записи.",
-  cs: "Tento čas není dostupný. Vyberte prosím jeden z dostupných termínů.",
-  en: "That time is not available. Please choose one of the available appointment slots.",
-};
-
-export function buildInvalidSlotReply(locale?: string | null): string {
-  return INVALID_SLOT_REPLIES[resolveLocaleKey(locale)];
-}
-
-// ── Slot proof guard ──────────────────────────────────────────────────────────
+// ── Slot validity / proof guards ──────────────────────────────────────────────
 
 import type { AvailableSlot } from "./bookingProcessState.ts";
+import type { AvailabilityEvidence, SelectedSlotProof } from "./slotEvidence.ts";
+import { validateBookingSlotEvidence, validateBookingRequestFormat } from "./slotEvidence.ts";
+
+/** Shared params for both slot evidence guards. */
+interface SlotEvidenceGuardParams {
+  pendingToolRequests: RuntimeAgentToolRequest[];
+  activeAvailabilityEvidence: AvailabilityEvidence | null | undefined;
+  selectedSlot?: AvailableSlot | null;
+  selectedSlotProof?: SelectedSlotProof | null;
+}
 
 /**
- * Returns true when booking.apply is pending but there is no verified slot proof:
- * no successful availability.check in the current turn AND no selectedSlot from
- * booking process state that matches the requested date and time, AND the requested
- * time is not in the last_available_slots previously shown to the patient.
+ * Returns true when booking.apply is pending and there is no authoritative evidence
+ * or no verified selected-slot proof to authorize the booking slot.
  *
- * Only fires when completedToolResults contains no successful availability.check —
- * when avail.check results are present, shouldInterceptInvalidSlotTime handles
- * time mismatches. Missing date/time is handled upstream by bookingApplyArgsMissingSlot.
+ * Covers:
+ *   - no availability.check attempted (or failed) this turn AND no persisted evidence
+ *   - persisted evidence exists but selected_slot_proof is absent or mismatched
+ *
+ * Does NOT fire when the slot is simply wrong (i.e. exists in evidence but doesn't
+ * match the request) — that case is handled by shouldInterceptInvalidSlotDateTime.
  */
-export function shouldInterceptMissingSlotProof(params: {
-  pendingToolRequests: RuntimeAgentToolRequest[];
-  completedToolResults: RuntimeAgentToolResult[];
-  selectedSlot?: AvailableSlot | null;
-  lastAvailableSlots?: AvailableSlot[] | null;
-}): boolean {
+export function shouldInterceptMissingSlotProof(params: SlotEvidenceGuardParams): boolean {
   if (!hasBookingApplyPending(params.pendingToolRequests)) return false;
-
   const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
   if (!req) return false;
 
-  const requestedDate =
-    typeof req.arguments.requested_date === "string" ? req.arguments.requested_date.trim() : null;
-  const requestedTime =
-    typeof req.arguments.requested_time === "string" ? req.arguments.requested_time.trim() : null;
+  // Missing or malformed date/time is handled upstream by bookingApplyArgsMissingSlot (Guard D).
+  if (!validateBookingRequestFormat(req.arguments).ok) return false;
 
-  // Missing date/time handled upstream by bookingApplyArgsMissingSlot
-  if (!requestedDate || !requestedTime) return false;
-
-  // If successful avail.check results exist in this turn, let shouldInterceptInvalidSlotTime
-  // handle the mismatch case — don't double-intercept.
-  const hasSuccessfulAvailCheck = params.completedToolResults.some(
-    (r) => r.tool === "availability.check" && r.status === "success",
+  const result = validateBookingSlotEvidence({
+    bookingApplyRequest: req,
+    activeAvailabilityEvidence: params.activeAvailabilityEvidence,
+    selectedSlot: params.selectedSlot,
+    selectedSlotProof: params.selectedSlotProof,
+  });
+  if (result.ok) return false;
+  // Fire for evidence/proof-absence reasons; leave slot-mismatch to shouldInterceptInvalidSlotDateTime.
+  return (
+    result.reason === "no_authoritative_availability_evidence" ||
+    result.reason === "selected_slot_proof_missing" ||
+    result.reason === "selected_slot_proof_mismatch"
   );
-  if (hasSuccessfulAvailCheck) return false;
-
-  const normalizedReq = requestedTime.length > 5 ? requestedTime.slice(0, 5) : requestedTime;
-
-  // No avail.check in this turn — check if selectedSlot from state covers the request.
-  const slot = params.selectedSlot;
-  if (slot?.starts_at) {
-    const slotDate = slot.starts_at.slice(0, 10);
-    const slotTime = extractHHMM(slot.starts_at) ?? slot.starts_at.slice(11, 16);
-    if (slotDate === requestedDate && slotTime === normalizedReq) return false;
-  }
-
-  // Defense in depth: if requested time was in the last availability.check results
-  // shown to the patient (stored in bookingProcessState), treat it as verified.
-  // This handles cases where selected_slot wasn't set (e.g. patient wrote "15 00"
-  // with a space and text matching missed it) but the slot was genuinely offered.
-  const lastSlots = params.lastAvailableSlots ?? [];
-  if (lastSlots.some((s) => {
-    const sDate = s.starts_at.slice(0, 10);
-    const sTime = extractHHMM(s.starts_at) ?? s.starts_at.slice(11, 16);
-    return sDate === requestedDate && sTime === normalizedReq;
-  })) return false;
-
-  return true;
 }
 
 const MISSING_SLOT_PROOF_REPLIES: Record<string, string> = {
@@ -265,4 +185,41 @@ const MISSING_SLOT_PROOF_REPLIES: Record<string, string> = {
 
 export function buildMissingSlotProofReply(locale?: string | null): string {
   return MISSING_SLOT_PROOF_REPLIES[resolveLocaleKey(locale)];
+}
+
+/**
+ * Returns true when booking.apply requests a full date+time that is NOT present in the
+ * authoritative availability evidence (current-turn or persisted).
+ *
+ * Covers:
+ *   - slot exists in evidence but the requested date+time doesn't match any allowed key
+ *   - cross-date booking attempt where the time matches but the date differs
+ *
+ * Does NOT fire when evidence is entirely absent — that case is caught first by
+ * shouldInterceptMissingSlotProof.
+ */
+export function shouldInterceptInvalidSlotDateTime(params: SlotEvidenceGuardParams): boolean {
+  if (!hasBookingApplyPending(params.pendingToolRequests)) return false;
+  const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
+  if (!req) return false;
+
+  // No evidence → can't detect invalid slot (Guard G handles missing-evidence case).
+  if (!params.activeAvailabilityEvidence) return false;
+
+  // Missing or malformed date/time is handled upstream by bookingApplyArgsMissingSlot (Guard D).
+  const fmt = validateBookingRequestFormat(req.arguments);
+  if (!fmt.ok) return false;
+
+  // Evidence exists — slot must be in the allowed keys regardless of proof state.
+  return !params.activeAvailabilityEvidence.allowed_slot_keys.includes(fmt.slot_key);
+}
+
+const INVALID_SLOT_REPLIES: Record<string, string> = {
+  ru: "Это время недоступно. Выберите, пожалуйста, одно из доступных времён записи.",
+  cs: "Tento čas není dostupný. Vyberte prosím jeden z dostupných termínů.",
+  en: "That time is not available. Please choose one of the available appointment slots.",
+};
+
+export function buildInvalidSlotReply(locale?: string | null): string {
+  return INVALID_SLOT_REPLIES[resolveLocaleKey(locale)];
 }

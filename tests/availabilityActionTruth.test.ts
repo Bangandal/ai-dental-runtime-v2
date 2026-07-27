@@ -159,11 +159,10 @@ describe("Booking process state — stale slot invalidation", () => {
     assert.equal(state.selected_slot, null);
   });
 
-  test("4: fresh successful result replaces prior slots; prior selected_slot is cleared; re-detection uses only fresh slots", () => {
+  test("4: fresh successful result replaces prior slots; prior selected_slot is cleared", () => {
     const state = computeBookingProcessState({
       prior: PRIOR_WITH_SLOTS,
       toolResults: [SUCCESS_WITH_SLOTS],
-      patientMessage: "давайте 09:00",
     });
     assert.equal(state.last_available_slots?.length, 2, "must have 2 fresh slots");
     assert.equal(
@@ -171,18 +170,13 @@ describe("Booking process state — stale slot invalidation", () => {
       "2026-07-17T09:00:00",
       "must be fresh July 17 slot",
     );
-    assert.ok(state.selected_slot !== null, "09:00 slot must be detected from fresh slots");
-    assert.ok(
-      state.selected_slot?.starts_at.includes("2026-07-17"),
-      "selected slot must be from fresh July 17 result, not stale July 1 prior",
-    );
+    assert.equal(state.selected_slot, null, "selected_slot must be cleared on new availability attempt");
   });
 
   test("5: no availability attempt preserves prior availability state unchanged", () => {
     const state = computeBookingProcessState({
       prior: PRIOR_WITH_SLOTS,
       toolResults: [],
-      patientMessage: "Меня зовут Иван Петров",
     });
     assert.equal(state.last_available_slots?.length, 2, "prior slots must be preserved");
     assert.equal(

@@ -24,6 +24,7 @@ import type {
   ChannelContact,
   RuntimeAgentCallerOutput,
 } from "../src/runtime/openaiRuntimeAgent.ts";
+import type { BookingProcessState } from "../src/runtime/bookingProcessState.ts";
 
 // ── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,43 @@ const UNTRUSTED_CONTACT: ChannelContact = {
   phone_number: "+420600111222",
   phone_source: "manual_input",
 };
+
+// booking.select_slot — used in integration tests as round-1 instead of availability.check.
+// Prior state provides the evidence; select_slot refreshes the proof without clearing evidence.
+const SELECT_SLOT_REQUEST: RuntimeAgentToolRequest = {
+  tool: "booking.select_slot",
+  call_id: "call_ss_1",
+  arguments: { subject_id: "subject_1", requested_date: "2026-07-09", requested_time: "12:00" },
+};
+
+// Builds a static repository that seeds prior booking state with a valid slot proof.
+// Mirrors the makeSlotStateRepo pattern used in bookingApplyPreflight.test.ts.
+function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "call_avail_1";
+  return {
+    async loadState(): Promise<Partial<BookingProcessState>> {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: {
+          availability_call_id: callId,
+          requested_date: date,
+          requested_time: null,
+          allowed_slot_keys: [slotKey],
+        },
+        selected_slot_proof: {
+          subject_id: "subject_1" as const,
+          availability_call_id: callId,
+          slot_key: slotKey,
+        },
+      };
+    },
+    async saveState() {},
+  };
+}
 
 // ── Unit: hasTrustedPhone ─────────────────────────────────────────────────────
 
@@ -246,14 +284,15 @@ const BASE_TURN_INPUT = {
 // Test 2: round-2 booking.apply with missing phone → guarded tool result submitted,
 // model produces final reply, conversation preserved.
 test("runtimeAgentLoop: guard intercepts when round-2 requests booking.apply without trusted phone", async () => {
-  // Round 1: model calls availability.check
-  // Round 2: model calls booking.apply (no phone in context)
-  // Round 3 (guarded): model produces final reply after seeing guarded missing_trusted_phone result
+  // Prior state: avail evidence + selected slot + proof (from a previous turn).
+  // Round 1: model calls booking.select_slot to refresh slot selection.
+  // Round 2: model calls booking.apply (no phone in context) → phone guard fires.
+  // Round 3 (guarded): model produces final reply after seeing guarded missing_trusted_phone result.
   const caller = makeCallerSequence([
     {
       type: "tool_requests",
       conversation_id: "conv_existing_123",
-      tool_requests: [AVAILABILITY_REQUEST],
+      tool_requests: [SELECT_SLOT_REQUEST],
     },
     {
       type: "tool_requests",
@@ -271,12 +310,8 @@ test("runtimeAgentLoop: guard intercepts when round-2 requests booking.apply wit
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     caller,
-    executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: AVAILABILITY_SUCCESS.data,
-      }),
-    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    executors: {},
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, channel_contact: undefined });
@@ -308,7 +343,7 @@ test("runtimeAgentLoop: guard submits guarded missing_trusted_phone result in CS
     {
       type: "tool_requests",
       conversation_id: "conv_cs_1",
-      tool_requests: [AVAILABILITY_REQUEST],
+      tool_requests: [SELECT_SLOT_REQUEST],
     },
     {
       type: "tool_requests",
@@ -326,12 +361,8 @@ test("runtimeAgentLoop: guard submits guarded missing_trusted_phone result in CS
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     caller,
-    executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: AVAILABILITY_SUCCESS.data,
-      }),
-    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    executors: {},
   });
 
   const result = await loop.runTurn({ ...BASE_TURN_INPUT, conversation_id: "conv_cs_1", locale: "cs", channel_contact: undefined });
@@ -365,11 +396,11 @@ test("runtimeAgentLoop: trusted phone present — Guard B executes booking.apply
     (caller as unknown as { _calls: number })._calls = calls + 1;
 
     if (calls === 0) {
-      // Round 1: request availability.check
+      // Round 1: model calls booking.select_slot (prior evidence provides availability proof).
       return {
         type: "tool_requests",
         conversation_id: "conv_trusted_2",
-        tool_requests: [AVAILABILITY_REQUEST],
+        tool_requests: [SELECT_SLOT_REQUEST],
       };
     }
     if (calls === 1) {
@@ -393,11 +424,8 @@ test("runtimeAgentLoop: trusted phone present — Guard B executes booking.apply
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     caller,
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
     executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: AVAILABILITY_SUCCESS.data,
-      }),
       "booking.apply": async () => {
         bookingApplyExecuted = true;
         return {
@@ -454,7 +482,7 @@ test("runtimeAgentLoop: trusted phone + cliniccard_write_failed → finalization
   const caller: RuntimeAgentCaller = async (input) => {
     const calls = (caller as unknown as { _calls: number })._calls ?? 0;
     (caller as unknown as { _calls: number })._calls = calls + 1;
-    if (calls === 0) return { type: "tool_requests", conversation_id: "conv_fail_1", tool_requests: [AVAILABILITY_REQUEST] };
+    if (calls === 0) return { type: "tool_requests", conversation_id: "conv_fail_1", tool_requests: [SELECT_SLOT_REQUEST] };
     if (calls === 1) return { type: "tool_requests", conversation_id: "conv_fail_1", tool_requests: [BOOKING_APPLY_REQUEST] };
     finalizationInputContext = input.input.context as Record<string, unknown>;
     return {
@@ -471,8 +499,8 @@ test("runtimeAgentLoop: trusted phone + cliniccard_write_failed → finalization
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     caller,
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
     executors: {
-      "availability.check": async () => ({ status: "success" as const, data: AVAILABILITY_SUCCESS.data }),
       "booking.apply": async () => ({
         status: "success" as const,
         data: {
@@ -505,15 +533,16 @@ test("runtimeAgentLoop: trusted phone + cliniccard_write_failed → finalization
 // Test 4: "Роман, ансамблев" as name candidate — guard fires when model produces booking.apply
 // (model behavior mocked: model treats "Роман, ансамблев" as name and tries booking.apply)
 test("runtimeAgentLoop: 'Роман, ансамблев' treated as name candidate — guard intercepts booking.apply", async () => {
-  // This mirrors the exact live smoke transcript sequence:
+  // Prior state: avail evidence + selected slot + proof (from previous turn).
+  // This mirrors the live smoke transcript sequence where the slot was selected in a prior turn.
   // turn 5 input: "Роман, ансамблев"
-  // round 1: model calls availability.check (checking the already-known slot)
-  // round 2: model calls booking.apply with first_name=Роман last_name=Ансамблев
+  // round 1: model calls booking.select_slot (confirms the already-known slot)
+  // round 2: model calls booking.apply with first_name=Роман last_name=Ансамблев → phone guard fires
   const caller = makeCallerSequence([
     {
       type: "tool_requests",
       conversation_id: "conv_live_smoke",
-      tool_requests: [{ tool: "availability.check", call_id: "c1", arguments: { service_interest: "chistka", requested_date: "2026-07-09" } }],
+      tool_requests: [{ tool: "booking.select_slot", call_id: "c1", arguments: { subject_id: "subject_1", requested_date: "2026-07-09", requested_time: "12:00" } }],
     },
     {
       type: "tool_requests",
@@ -534,12 +563,8 @@ test("runtimeAgentLoop: 'Роман, ансамблев' treated as name candida
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     caller,
-    executors: {
-      "availability.check": async () => ({
-        status: "success" as const,
-        data: AVAILABILITY_SUCCESS.data,
-      }),
-    },
+    bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00"),
+    executors: {},
   });
 
   const result = await loop.runTurn({

@@ -400,7 +400,7 @@ describe("PR #135 — H: booking.apply phone and past-time guard regression", ()
       now: new Date("2026-07-04T10:00:00.000Z"),
       timezone: "Europe/Prague",
       bookingProcessStateRepository: {
-        async loadState() { return { selected_slot: { starts_at: "2026-07-11T14:00:00" } }; },
+        async loadState() { return { selected_slot: { starts_at: "2026-07-11T14:00:00" }, last_available_slots: [{ starts_at: "2026-07-11T14:00:00" }], active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-07-11", requested_time: null, allowed_slot_keys: ["2026-07-11T14:00"] }, selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-07-11T14:00" } }; },
         async saveState() {},
       },
     });

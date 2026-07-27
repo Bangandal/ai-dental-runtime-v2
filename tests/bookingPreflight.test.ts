@@ -288,7 +288,7 @@ describe("runtimeAgentLoop — booking.apply phone preflight (round 1)", () => {
       now: new Date("2026-07-03T20:25:00.000Z"),
       timezone: "Europe/Prague",
       bookingProcessStateRepository: {
-        async loadState() { return { selected_slot: { starts_at: "2026-07-04T13:00:00" } }; },
+        async loadState() { return { selected_slot: { starts_at: "2026-07-04T13:00:00" }, last_available_slots: [{ starts_at: "2026-07-04T13:00:00" }], active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-07-04", requested_time: null, allowed_slot_keys: ["2026-07-04T13:00"] }, selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-07-04T13:00" } }; },
         async saveState() {},
       },
     });

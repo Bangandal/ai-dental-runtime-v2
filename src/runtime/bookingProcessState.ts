@@ -1,6 +1,10 @@
 import type { RuntimeAgentToolResult, ChannelContact } from "./openaiRuntimeAgent.ts";
 import { hasTrustedPhone } from "./bookingContactGuard.ts";
 import type { AuthoritativeAvailabilityAttempt } from "./availabilityActionTruth.ts";
+import type { AvailabilityEvidence, SelectedSlotProof } from "./slotEvidence.ts";
+import { slotToKey, normalizeSlotKey, buildAllowedSlotKeysFromResult } from "./slotEvidence.ts";
+import type { BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";
+import { parseStrictSubjectId } from "./bookingSubjectsState.ts";
 
 export interface AvailableSlot {
   starts_at: string;
@@ -23,6 +27,10 @@ export interface BookingProcessState {
   preferred_time_text?: string;
   last_available_slots?: AvailableSlot[];
   selected_slot?: AvailableSlot | null;
+  /** Authoritative evidence from the last successful availability.check, keyed by full datetime. */
+  active_availability_evidence?: AvailabilityEvidence | null;
+  /** Proof linking selected_slot to active_availability_evidence. Required for slot_known=true. */
+  selected_slot_proof?: SelectedSlotProof | null;
   phone_trusted?: boolean;
   phone_source?: string;
   next_action?: BookingNextAction;
@@ -35,10 +43,13 @@ export interface BookingProcessState {
   };
 }
 
+export type SlotEvidenceStatus = "verified" | "missing" | "stale";
+
 export type BookingStateConfidence = "high" | "low";
 
 export interface ModelVisibleBookingProcessState extends Partial<BookingProcessState> {
   next_action_confidence: BookingStateConfidence;
+  slot_evidence_status?: SlotEvidenceStatus;
 }
 
 export interface BookingProcessStateLoadDebug {
@@ -147,6 +158,12 @@ function sanitizeProofForModel(
   return sanitized;
 }
 
+function resolveSlotEvidenceStatus(state: BookingProcessState): SlotEvidenceStatus {
+  if (!state.selected_slot) return "missing";
+  if (state.proof.slot_known) return "verified";
+  return "stale";
+}
+
 export function buildModelVisibleBookingProcessState(opts: {
   state: BookingProcessState;
   priorProcessState: Partial<BookingProcessState> | null;
@@ -156,13 +173,13 @@ export function buildModelVisibleBookingProcessState(opts: {
   const confidence: BookingStateConfidence = bookingStateGrounded ? "high" : "low";
 
   const visibleNextAction = resolveVisibleNextAction(state, priorProcessState, bookingStateGrounded);
+  const slotEvidenceStatus = resolveSlotEvidenceStatus(state);
 
   if (confidence === "low") {
-    // Only expose slot-related fields (inherently grounded) and sanitized proof.
-    // Omit next_action so the model relies on conversation memory instead.
     return {
       last_available_slots: state.last_available_slots,
       selected_slot: state.selected_slot,
+      slot_evidence_status: slotEvidenceStatus,
       proof: sanitizeProofForModel(state.proof),
       next_action_confidence: "low",
     };
@@ -170,146 +187,14 @@ export function buildModelVisibleBookingProcessState(opts: {
 
   return {
     ...state,
+    // Strip internal evidence fields — model sees slot_evidence_status instead.
+    active_availability_evidence: undefined,
+    selected_slot_proof: undefined,
+    slot_evidence_status: slotEvidenceStatus,
     proof: sanitizeProofForModel(state.proof),
     next_action: visibleNextAction,
     next_action_confidence: "high",
   };
-}
-
-// ── Slot extraction ────────────────────────────────────────────────────────────
-
-function normalizeHHMM(raw: string): string {
-  const match = raw.match(/^(\d{1,2}):(\d{2})/);
-  if (!match) return raw;
-  const h = match[1].padStart(2, "0");
-  const m = match[2];
-  return `${h}:${m}`;
-}
-
-/**
- * Extracts a time string like "17:30" from patient text.
- * Handles formats: "17:30", "17.30", "1730", preceded by whitespace/punctuation.
- */
-export function extractSlotTime(text: string): string | null {
-  // Standard HH:MM (e.g. "17:30", "в 17:30", "отлично 17:30")
-  const colonMatch = text.match(/\b(\d{1,2}):(\d{2})\b/);
-  if (colonMatch) return normalizeHHMM(`${colonMatch[1]}:${colonMatch[2]}`);
-
-  // Dot separator (e.g. "17.30")
-  const dotMatch = text.match(/\b(\d{1,2})\.(\d{2})\b/);
-  if (dotMatch) return normalizeHHMM(`${dotMatch[1]}:${dotMatch[2]}`);
-
-  // Space separator (e.g. "15 00", "на 15 00") — patient omits colon
-  const spaceMatch = text.match(/\b(\d{1,2}) (\d{2})\b/);
-  if (spaceMatch) return normalizeHHMM(`${spaceMatch[1]}:${spaceMatch[2]}`);
-
-  return null;
-}
-
-/**
- * Extracts HH:MM from a starts_at ISO string (e.g. "2026-08-05T14:00:00" → "14:00").
- */
-function extractSlotHHMM(startsAt: string): string | null {
-  const match = startsAt.match(/T(\d{2}:\d{2})(?::\d{2})?/);
-  if (match) return match[1];
-  // Short form "HH:MM"
-  const short = startsAt.match(/^(\d{2}:\d{2})$/);
-  return short ? short[1] : null;
-}
-
-/**
- * Detects ordinal references ("первый", "второй", "последний", etc.)
- * and maps them to a 0-based index into the slots array.
- *
- * Uses Unicode-aware word boundaries ((?<!\p{L}) / (?!\p{L})) so that weekday
- * words are not confused with ordinals:
- *   "во вторник" → NOT slot[1]   (вторник ≠ второй)
- *   "в четверг"  → NOT slot[3]   (четверг ≠ четвёртый)
- *   "в пятницу"  → NOT slot[4]   (пятница ≠ пятый)
- */
-function detectOrdinalIndex(text: string, slotCount: number): number | null {
-  const lower = text.toLowerCase();
-
-  /** Returns true if any of the exact word forms appears in `lower`, bounded by non-letter chars. */
-  function matchAny(forms: string[]): boolean {
-    const escaped = forms.map((f) => f.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const pattern = `(?<!\\p{L})(${escaped.join("|")})(?!\\p{L})`;
-    return new RegExp(pattern, "ui").test(lower);
-  }
-
-  const ordinals: { forms: string[]; index: number }[] = [
-    {
-      forms: ["первый", "первого", "первому", "первым", "первом", "первое", "первая", "первых", "1-й", "first"],
-      index: 0,
-    },
-    {
-      // "второй"/"второго"/etc. — NOT "вторник" (Tuesday, different word)
-      forms: ["второй", "второго", "второму", "вторым", "втором", "второе", "вторая", "вторых", "2-й", "second"],
-      index: 1,
-    },
-    {
-      forms: ["третий", "третьего", "третьему", "третьим", "третьем", "третье", "третья", "третьих", "3-й", "third"],
-      index: 2,
-    },
-    {
-      // "четвёртый"/"четвертый"/etc. — NOT "четверг" (Thursday, different word)
-      forms: [
-        "четвёртый", "четвертый",
-        "четвёртого", "четвертого",
-        "четвёртому", "четвертому",
-        "четвёртым", "четвертым",
-        "четвёртом", "четвертом",
-        "четвёртое", "четвертое",
-        "четвёртая", "четвертая",
-        "четвёртых", "четвертых",
-        "4-й", "fourth",
-      ],
-      index: 3,
-    },
-    {
-      // "пятый"/"пятого"/etc. — NOT "пятница" (Friday, different word)
-      forms: ["пятый", "пятого", "пятому", "пятым", "пятом", "пятое", "пятая", "пятых", "5-й", "fifth"],
-      index: 4,
-    },
-  ];
-
-  for (const { forms, index } of ordinals) {
-    if (matchAny(forms) && index < slotCount) {
-      return index;
-    }
-  }
-
-  // "последний" / "last" → last slot
-  if (matchAny(["последний", "последнего", "последнему", "последним", "последнем", "last"]) && slotCount > 0) {
-    return slotCount - 1;
-  }
-
-  return null;
-}
-
-/**
- * Given patient text and a list of previously offered slots, returns the matching slot
- * or null if no match found (including ordinal references like "первый", "последний").
- */
-export function detectSelectedSlot(patientText: string, availableSlots: AvailableSlot[]): AvailableSlot | null {
-  if (!availableSlots.length) return null;
-
-  // Try ordinal reference first
-  const ordinalIndex = detectOrdinalIndex(patientText, availableSlots.length);
-  if (ordinalIndex !== null) {
-    return availableSlots[ordinalIndex] ?? null;
-  }
-
-  // Try exact time match
-  const extracted = extractSlotTime(patientText);
-  if (!extracted) return null;
-
-  const match = availableSlots.find((slot) => {
-    const slotHHMM = extractSlotHHMM(slot.starts_at);
-    return slotHHMM === extracted;
-  });
-
-  return match ?? null;
 }
 
 // ── Slot extraction from tool results ─────────────────────────────────────────
@@ -353,12 +238,20 @@ export interface ComputeBookingProcessStateInput {
    * Production always passes authoritativeAvailabilityAttempt from the loop.
    */
   toolResults?: RuntimeAgentToolResult[];
-  /** Raw patient message for selected_slot detection. */
-  patientMessage?: string;
   /** Channel contact for trusted phone resolution. */
   channelContact?: ChannelContact;
-  /** Override selected_slot from explicit booking.apply args (round 2). */
-  bookingApplySlot?: { date: string; time: string } | null;
+  /**
+   * Successful booking.select_slot result from this turn.
+   * When present, creates selected_slot and selected_slot_proof from the validated key.
+   * Ignored when a new availability.check was performed this turn (evidence was refreshed).
+   */
+  selectSlotData?: BookingSelectSlotSuccessData | null;
+  /**
+   * True when the current turn contained at least one booking.select_slot request,
+   * regardless of whether it succeeded. A selection attempt revokes the prior proof
+   * before any new proof is installed — a failed attempt must never restore the old proof.
+   */
+  selectSlotAttemptedThisTurn?: boolean;
   /** Override service from explicit booking.apply args. */
   bookingApplyService?: string | null;
   /** Override name from explicit booking.apply args. */
@@ -369,14 +262,11 @@ export interface ComputeBookingProcessStateInput {
 export function computeBookingProcessState(input: ComputeBookingProcessStateInput): BookingProcessState {
   const p = input.prior ?? {};
 
-  // ── Resolve available slots ──
-  // When authoritativeAvailabilityAttempt is present (always in production, passed from loop):
-  //   use it — guarantees the same pair as availability_action_truth and presentation_truth.
-  // When absent (backwards-compat for direct test calls without requests):
-  //   fall back to finding the last availability.check by position in toolResults.
+  // ── Resolve available slots and build availability evidence ──
   let availabilityAttemptPresent: boolean;
   let availabilitySuccessPresent: boolean;
   let newSlots: AvailableSlot[];
+  let activeAvailabilityEvidence: AvailabilityEvidence | null | undefined;
 
   if (input.authoritativeAvailabilityAttempt !== undefined) {
     const { attempted, pair } = input.authoritativeAvailabilityAttempt;
@@ -385,8 +275,30 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
     newSlots = availabilitySuccessPresent && pair !== null
       ? extractSlotsFromToolResults([pair.result])
       : [];
+
+    if (!attempted) {
+      // No availability.check this turn — preserve prior evidence.
+      activeAvailabilityEvidence = p.active_availability_evidence;
+    } else if (pair === null || pair.result.status !== "success") {
+      // Attempt failed or result unmatched — clear evidence (new attempt supersedes old).
+      activeAvailabilityEvidence = null;
+    } else {
+      // Successful authoritative pair — build fresh evidence.
+      activeAvailabilityEvidence = {
+        availability_call_id: pair.request.call_id!,
+        requested_date:
+          typeof pair.request.arguments.requested_date === "string"
+            ? pair.request.arguments.requested_date
+            : "",
+        requested_time:
+          typeof pair.request.arguments.requested_time === "string"
+            ? pair.request.arguments.requested_time
+            : null,
+        allowed_slot_keys: buildAllowedSlotKeysFromResult(pair.result),
+      };
+    }
   } else {
-    // Fallback: positional last-result scan (used only by test callers that omit requests)
+    // Backwards-compat: positional last-result scan (test callers that omit authoritativeAvailabilityAttempt).
     let lastAvailResult: RuntimeAgentToolResult | undefined;
     if (input.toolResults) {
       for (const r of input.toolResults) {
@@ -398,6 +310,8 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
     newSlots = availabilitySuccessPresent && lastAvailResult
       ? extractSlotsFromToolResults([lastAvailResult])
       : [];
+    // Preserve prior evidence when no authoritativeAvailabilityAttempt was supplied.
+    activeAvailabilityEvidence = p.active_availability_evidence;
   }
 
   const lastAvailableSlots: AvailableSlot[] = availabilityAttemptPresent
@@ -418,37 +332,84 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   const phoneTrusted = hasTrustedPhone(input.channelContact);
   const phoneSource = input.channelContact?.phone_source;
 
-  // ── Detect selected_slot from patient message ──
-  // Any availability.check attempt clears the prior selected_slot — stale selection
-  // from an earlier date is no longer valid. Re-detection below uses only fresh slots.
-  let selectedSlot: AvailableSlot | null = availabilityAttemptPresent
+  // ── Resolve selected_slot and proof ──
+  // Both availability.check and a selection attempt revoke the prior slot and proof.
+  // A failed booking.select_slot must never restore the old proof — revoke first, install only on success.
+  const clearPriorSelection = availabilityAttemptPresent || !!(input.selectSlotAttemptedThisTurn);
+  let selectedSlot: AvailableSlot | null = clearPriorSelection
     ? null
     : (p.selected_slot ?? null);
+  let selectedSlotProof: SelectedSlotProof | null | undefined = clearPriorSelection
+    ? null
+    : (p.selected_slot_proof ?? null);
 
-  if (
-    input.patientMessage &&
-    lastAvailableSlots.length > 0 &&
-    !selectedSlot
-  ) {
-    const detected = detectSelectedSlot(input.patientMessage, lastAvailableSlots);
-    if (detected !== null) {
-      selectedSlot = detected;
+  let selectionEstablishedThisTurn = false;
+
+  // booking.select_slot result: creates slot + proof from the validated key.
+  // Only applied when no new availability.check was performed (which would stale the evidence).
+  // subject_id must pass strict validation; missing or out-of-range values are fail-closed.
+  if (!availabilityAttemptPresent && input.selectSlotData && activeAvailabilityEvidence) {
+    const key = input.selectSlotData.selected_slot_key;
+    const proofSubjectId = parseStrictSubjectId(input.selectSlotData.subject_id);
+    if (
+      proofSubjectId !== null &&
+      key !== null &&
+      activeAvailabilityEvidence.allowed_slot_keys.includes(key)
+    ) {
+      const matchedSlot = lastAvailableSlots.find((s) => slotToKey(s) === key)
+        ?? { starts_at: `${key}:00` };
+      selectedSlot = matchedSlot;
+      selectedSlotProof = {
+        subject_id: proofSubjectId,
+        availability_call_id: activeAvailabilityEvidence.availability_call_id,
+        slot_key: key,
+      };
+      selectionEstablishedThisTurn = true;
+    }
+    // When subject_id is absent or invalid: no proof, no slot, selectionEstablishedThisTurn stays false.
+  }
+
+  // ── Validate persisted proof ──
+  // Proof is created only via booking.select_slot. Persisted proof is validated (not reconstructed).
+  if (!selectionEstablishedThisTurn && selectedSlotProof && selectedSlot && activeAvailabilityEvidence) {
+    // Validate persisted proof — clear it if the chain is broken, keep it if intact.
+    // subject_id must pass the same strict check as new proofs (subject_1..subject_4 only).
+    const proofSubjectId = parseStrictSubjectId(selectedSlotProof.subject_id);
+    const key = slotToKey(selectedSlot);
+    const proofValid =
+      proofSubjectId !== null &&
+      key !== null &&
+      selectedSlotProof.slot_key === key &&
+      selectedSlotProof.availability_call_id === activeAvailabilityEvidence.availability_call_id &&
+      activeAvailabilityEvidence.allowed_slot_keys.includes(selectedSlotProof.slot_key);
+    if (!proofValid) {
+      selectedSlotProof = null;
     }
   }
-
-  // Explicit slot from booking.apply args wins over detected slot
-  if (input.bookingApplySlot) {
-    const matched = lastAvailableSlots.find((s) => {
-      const hhmm = extractSlotHHMM(s.starts_at);
-      return hhmm === input.bookingApplySlot!.time;
-    });
-    if (matched) selectedSlot = matched;
-  }
+  // If selectedSlotProof is null and selectionEstablishedThisTurn is false, proof stays null.
 
   // ── Compute proof ──
   const serviceKnown = !!serviceReason;
   const nameKnown = !!(firstName && lastName);
-  const slotKnown = !!selectedSlot;
+
+  // slot_known requires full provenance chain:
+  //   selected_slot exists
+  //   + selected_slot_proof exists with valid subject_id (defense in depth — proof paths above also check)
+  //   + active_availability_evidence exists
+  //   + call IDs agree
+  //   + slot key exists in allowed keys
+  const slotKey = selectedSlot ? slotToKey(selectedSlot) : null;
+  const slotKnown = !!(
+    selectedSlot &&
+    selectedSlotProof &&
+    parseStrictSubjectId(selectedSlotProof.subject_id) !== null &&
+    activeAvailabilityEvidence &&
+    selectedSlotProof.availability_call_id === activeAvailabilityEvidence.availability_call_id &&
+    slotKey !== null &&
+    slotKey === selectedSlotProof.slot_key &&
+    activeAvailabilityEvidence.allowed_slot_keys.includes(selectedSlotProof.slot_key)
+  );
+
   const trustedPhoneKnown = phoneTrusted;
   const readyForBookingApply = serviceKnown && nameKnown && slotKnown && trustedPhoneKnown;
 
@@ -465,18 +426,7 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
   } else if (readyForBookingApply) {
     nextAction = "ready_for_booking_apply";
   } else {
-    // Has preferred_time_text but no confirmed slot yet
     nextAction = "ask_for_slot";
-  }
-
-  // If patient gave a time that doesn't match any slot, override
-  if (
-    input.patientMessage &&
-    lastAvailableSlots.length > 0 &&
-    !selectedSlot &&
-    extractSlotTime(input.patientMessage) !== null
-  ) {
-    nextAction = "choose_from_available_slots";
   }
 
   return {
@@ -484,12 +434,12 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
     first_name: firstName,
     last_name: lastName,
     preferred_time_text: p.preferred_time_text,
-    // Any availability attempt explicitly stores its outcome ([] for failure, fresh slots for success).
-    // When no attempt was made this turn, preserve prior state.
     last_available_slots: availabilityAttemptPresent
       ? lastAvailableSlots
       : p.last_available_slots,
     selected_slot: selectedSlot,
+    active_availability_evidence: activeAvailabilityEvidence,
+    selected_slot_proof: selectedSlotProof,
     phone_trusted: phoneTrusted,
     phone_source: phoneSource,
     next_action: nextAction,

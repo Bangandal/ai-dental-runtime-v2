@@ -20,8 +20,19 @@ import { buildBookingApplyActionTruth } from "../src/runtime/bookingApplyGuard.t
 import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
 
 function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }
@@ -143,12 +154,12 @@ test("second-call exception with booking_apply_action_truth: booking fallback st
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
       };
     }
     throw Object.assign(new Error("openai_internal_error"), { code: "internal_error", request_id: "req_xyz" });
   };
-  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") });
+  const agent = createRuntimeAgentLoop({ model: "gpt-test", caller, executors: bookingApplyExecutors("booking_write_disabled"), bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"), now: new Date("2027-08-15T07:00:00Z") });
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.equal((result.debug as any).reason, "agent_second_call_exception_booking_fallback");

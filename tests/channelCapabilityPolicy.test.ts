@@ -149,7 +149,7 @@ test("E: booking.apply guard intercepts missing trusted phone — returns ask_fo
     // now = 08:00 UTC = 10:00 Prague; slot is 14:00 Prague — clearly future
     now: new Date("2026-07-15T08:00:00Z"),
     bookingProcessStateRepository: {
-      async loadState() { return { selected_slot: { starts_at: "2026-07-15T14:00:00" } }; },
+      async loadState() { return { selected_slot: { starts_at: "2026-07-15T14:00:00" }, last_available_slots: [{ starts_at: "2026-07-15T14:00:00" }], active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-07-15", requested_time: null, allowed_slot_keys: ["2026-07-15T14:00"] }, selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-07-15T14:00" } }; },
       async saveState() {},
     },
   });
@@ -202,7 +202,7 @@ test("F: phone guard block does not produce booking confirmation in reply", asyn
     executors: {},
     now: new Date("2026-07-15T08:00:00Z"),
     bookingProcessStateRepository: {
-      async loadState() { return { selected_slot: { starts_at: "2026-07-15T14:00:00" } }; },
+      async loadState() { return { selected_slot: { starts_at: "2026-07-15T14:00:00" }, last_available_slots: [{ starts_at: "2026-07-15T14:00:00" }], active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-07-15", requested_time: null, allowed_slot_keys: ["2026-07-15T14:00"] }, selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-07-15T14:00" } }; },
       async saveState() {},
     },
   });

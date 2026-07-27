@@ -28,8 +28,19 @@ import type { ToolExecutorRegistry } from "../src/runtime/toolExecutor.ts";
 import type { ConversationMemoryRepository } from "../src/runtime/runtimeRepositories.ts";
 
 function makeSlotStateRepo(starts_at: string) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }
@@ -112,7 +123,7 @@ test("multi-round fallback with a prior booking.apply result still uses the book
     if (round === 1) {
       return {
         type: "tool_requests",
-        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2026-07-20", requested_time: "10:00" } }],
+        tool_requests: [{ tool: "booking.apply", call_id: "c1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
         conversation_id: "conv_r1",
       };
     }
@@ -129,7 +140,7 @@ test("multi-round fallback with a prior booking.apply result still uses the book
       data: { booking_action: "booking_apply", booking_status: "booking_write_disabled", created_visit: false, may_claim_booked: false, cliniccard_visit_id: null, reason: "booking_write_disabled", proof: null },
     }),
   };
-  const result = await createRuntimeAgentLoop({ model: "m", caller, executors, bookingProcessStateRepository: makeSlotStateRepo("2026-07-20T10:00:00") }).runTurn({
+  const result = await createRuntimeAgentLoop({ model: "m", caller, executors, bookingProcessStateRepository: makeSlotStateRepo("2027-08-15T10:00:00"), now: new Date("2027-08-15T07:00:00Z") }).runTurn({
     clinic_id: "clinic_1", contact_id: "contact_1", case_id: "case_1", user_message: "test", locale: "ru",
     truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
     // Trusted phone required so the round-1 global phone preflight (PR #133) does not

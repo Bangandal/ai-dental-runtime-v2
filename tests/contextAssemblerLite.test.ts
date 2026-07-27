@@ -146,7 +146,7 @@ test("CA-5: phone guard still intercepts booking.apply when channel_contact abse
     caller,
     executors: {},
     bookingProcessStateRepository: {
-      async loadState() { return { selected_slot: { starts_at: "2099-01-15T10:00:00" } }; },
+      async loadState() { return { selected_slot: { starts_at: "2099-01-15T10:00:00" }, last_available_slots: [{ starts_at: "2099-01-15T10:00:00" }], active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2099-01-15", requested_time: null, allowed_slot_keys: ["2099-01-15T10:00"] }, selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2099-01-15T10:00" } }; },
       async saveState() {},
     },
   });

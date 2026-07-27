@@ -85,6 +85,8 @@ test("B: prior state with service+name+slot known → ask_for_phone exposed with
     first_name: "Иван",
     last_name: "Иванов",
     selected_slot: { starts_at: "2026-08-05T14:00:00" },
+    active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+    selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
   };
   const state = computeBookingProcessState({ prior });
   const visible = buildModelVisibleBookingProcessState({
@@ -169,14 +171,20 @@ test("E: loadState RPC error calls onDebug with rpc_error reason", async () => {
 // ── Test F: selected_slot still visible even at low confidence ─────────────────
 
 test("F: selected_slot is visible even when confidence is low (no prior state, no booking tool results)", () => {
-  // Simulate a turn where: patient says "17:30", last_available_slots came from a
-  // previous turn's tool result (stored in state), but prior state was null for grounding.
-  // selected_slot should still be exposed at low confidence because it is slot-derived data.
+  // Slot set via booking.select_slot tool. Prior includes active_availability_evidence so
+  // selectSlotData can create proof. priorProcessState=null → low confidence for grounding.
   const stateWithSlots = computeBookingProcessState({
-    prior: { last_available_slots: [{ starts_at: "2026-08-05T17:30:00" }] },
-    patientMessage: "17:30",
+    prior: {
+      last_available_slots: [{ starts_at: "2026-08-05T17:30:00" }],
+      active_availability_evidence: {
+        availability_call_id: "call_avail_f",
+        requested_date: "2026-08-05",
+        requested_time: null,
+        allowed_slot_keys: ["2026-08-05T17:30"],
+      },
+    },
+    selectSlotData: { selection_status: "selected", subject_id: "subject_1" as const, selected_slot_key: "2026-08-05T17:30", may_apply_booking: true },
   });
-  // priorProcessState is null → low confidence (slots came from prior state, not a real prior)
   const visible = buildModelVisibleBookingProcessState({
     state: stateWithSlots,
     priorProcessState: null, // truly low-confidence
@@ -325,7 +333,6 @@ test("Blocker1-C: urgent pain + availability.check → does NOT expose ask_for_s
   const state = computeBookingProcessState({
     prior: null, // no prior persisted service
     toolResults: avResult,
-    patientMessage: "болит зуб хочу записаться",
   });
   const visible = buildModelVisibleBookingProcessState({
     state,
@@ -391,10 +398,16 @@ test("Slot-only-1: prior state with only last_available_slots, patient selects s
   // But service/name are NOT in prior. ask_for_service must still be suppressed.
   const prior: Partial<BookingProcessState> = {
     last_available_slots: [{ starts_at: "2026-08-05T10:00:00" }, { starts_at: "2026-08-05T14:00:00" }],
+    active_availability_evidence: {
+      availability_call_id: "call_avail_so1",
+      requested_date: "2026-08-05",
+      requested_time: null,
+      allowed_slot_keys: ["2026-08-05T10:00", "2026-08-05T14:00"],
+    },
   };
   const state = computeBookingProcessState({
     prior,
-    patientMessage: "10:00",
+    selectSlotData: { selection_status: "selected", subject_id: "subject_1" as const, selected_slot_key: "2026-08-05T10:00", may_apply_booking: true },
   });
   // Even with high confidence (prior has slots → grounded), ask_for_service must be suppressed.
   const visible = buildModelVisibleBookingProcessState({
@@ -406,8 +419,8 @@ test("Slot-only-1: prior state with only last_available_slots, patient selects s
     "ask_for_service must never be exposed — even when state is grounded via slot-only prior");
   assert.notEqual(visible.next_action, "ask_for_name",
     "ask_for_name must never be exposed");
-  // selected_slot should be detected and visible
-  assert.ok(visible.selected_slot != null, "selected_slot must be detected");
+  // selected_slot should be set and visible
+  assert.ok(visible.selected_slot != null, "selected_slot must be set");
 });
 
 test("Slot-only-2: prior state with selected_slot but no service/name → next_action NOT ask_for_service or ask_for_name", () => {
@@ -481,6 +494,8 @@ test("Guard-5: when service+name+slot all grounded in prior state and phone miss
     first_name: "Оксана",
     last_name: "Ковальчук",
     selected_slot: { starts_at: "2026-08-05T14:00:00" },
+    active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+    selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
   };
   const state = computeBookingProcessState({ prior }); // phone_trusted=false (no channel_contact)
   const visible = buildModelVisibleBookingProcessState({

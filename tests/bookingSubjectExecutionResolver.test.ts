@@ -242,9 +242,20 @@ describe("PR#180-6: phone_ownership_intent propagated in all return paths", () =
 
 // Guard G (slot proof) fires before Guard J (subject resolution) and Guard I (pending phone).
 // Bypass it by supplying a bookingProcessStateRepository with a matching selected_slot.
-function makeSlotRepo(starts_at: string) {
+function makeSlotRepo(starts_at: string, subjectId: SubjectId = "subject_1" as SubjectId) {
+  const date = starts_at.slice(0, 10);
+  const hhmm = starts_at.slice(11, 16);
+  const slotKey = `${date}T${hhmm}`;
+  const callId = "legacy_test_call";
   return {
-    async loadState() { return { selected_slot: { starts_at } }; },
+    async loadState() {
+      return {
+        selected_slot: { starts_at },
+        last_available_slots: [{ starts_at }],
+        active_availability_evidence: { availability_call_id: callId, requested_date: date, requested_time: null, allowed_slot_keys: [slotKey] },
+        selected_slot_proof: { subject_id: subjectId, availability_call_id: callId, slot_key: slotKey },
+      };
+    },
     async saveState() {},
   };
 }
@@ -283,7 +294,7 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
           return { status: "success" as const, data: { created_visit: true, booking_status: "visit_created", may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
         },
       },
-      bookingProcessStateRepository: makeSlotRepo("2027-08-15T10:00:00"),
+      bookingProcessStateRepository: makeSlotRepo("2027-08-15T10:00:00", "subject_2" as SubjectId),
       now: new Date("2027-08-15T07:00:00Z"),
     });
     const state = makeState("subject_1" as SubjectId, [
@@ -303,11 +314,12 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
     const loop = createRuntimeAgentLoop({
       model: "gpt-4o",
       caller: makeCallerSequence([
-        // Call 1 (round 1): model asks for availability
+        // Call 1 (round 1): select_slot for subject_1 — creates proof from prior evidence
+        // (avail.check would clear the prior proof; select_slot preserves it)
         makeToolRequests([{
-          tool: "availability.check",
-          call_id: "avail_1",
-          arguments: { requested_date: "2027-08-15", requested_time: "10:00" },
+          tool: "booking.select_slot",
+          call_id: "ss_r1",
+          arguments: { subject_id: "subject_1", requested_date: "2027-08-15", requested_time: "10:00" },
         }]),
         // Call 2 (round 2): model asks to book for subject_1
         makeToolRequests([{
@@ -323,16 +335,13 @@ describe("PR#180-9: subject_id in booking.apply args selects phone from correct 
         makeFinalResponse("Записала Риму."),
       ]),
       executors: {
-        "availability.check": async () => ({
-          tool: "availability.check" as const,
-          status: "success" as const,
-          data: { slots: [{ slot_id: "s1", starts_at: "2027-08-15T10:00:00", ends_at: "2027-08-15T10:30:00" }] },
-        }),
         "booking.apply": async (ctx) => {
           executedPhone = ctx.phone_number;
           return { status: "success" as const, data: { created_visit: true, booking_status: "visit_created", may_claim_booked: true, cliniccard_visit_id: "mock-visit-id" } };
         },
       },
+      // Prior state provides evidence + subject_1 proof so select_slot and booking.apply both succeed
+      bookingProcessStateRepository: makeSlotRepo("2027-08-15T10:00:00", "subject_1" as SubjectId),
       now: new Date("2027-08-15T07:00:00Z"),
     });
     const s1WithPhone = makeSubject("subject_1" as SubjectId, "sender", {

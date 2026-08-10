@@ -131,29 +131,46 @@ export interface AppointmentMutateNotImplementedResult extends ToolExecutionBase
 }
 
 export type AppointmentLookupStatus =
-  | "found"
-  | "not_found"
-  | "no_upcoming_visits"
-  | "multiple_patients"
   | "identity_not_verified"
-  | "clinic_not_allowed";
+  | "subject_resolution_conflict"
+  | "patient_not_found"
+  | "multiple_patients"
+  | "no_upcoming_appointments"
+  | "single_match"
+  | "multiple_matches"
+  | "config_missing"
+  | "clinic_not_allowed"
+  | "cliniccard_read_failed";
 
-export interface AppointmentLookupVisit {
-  visit_id: string;
+export type AppointmentLookupRequiredNextAction =
+  | "none"
+  | "ask_which_appointment"
+  | "ask_for_trusted_contact"
+  | "clarify_subject"
+  | "admin_handoff"
+  | "technical_fallback";
+
+export interface AppointmentLookupAppointment {
+  cliniccard_visit_id: string;
   date: string;
   time_start: string;
   time_end: string;
   status: "PLANNED" | "CONFIRMED";
 }
 
+export interface AppointmentLookupResult {
+  appointment_action: "appointment_lookup";
+  lookup_status: AppointmentLookupStatus;
+  may_claim_found: boolean;
+  required_next_action: AppointmentLookupRequiredNextAction;
+  appointments: AppointmentLookupAppointment[];
+  searched_range: { date_from: string; date_to: string };
+}
+
 export interface AppointmentLookupSuccessResult extends ToolExecutionBase {
   tool: "appointment.lookup";
   status: "success";
-  data: {
-    lookup_status: AppointmentLookupStatus;
-    visits: AppointmentLookupVisit[];
-    reason?: string;
-  };
+  data: AppointmentLookupResult;
 }
 
 export type ToolSuccessResult =

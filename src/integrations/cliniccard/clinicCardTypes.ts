@@ -1,5 +1,13 @@
 export type ClinicCardBookingMode = "disabled" | "shadow" | "live";
-export type ClinicCardVisitStatus = "PLANNED" | "CONFIRMED" | "VISITED" | "UNKNOWN";
+
+/** Statuses that can be written to ClinicCard (createVisit). UNKNOWN must never be written. */
+export type ClinicCardWritableVisitStatus = "PLANNED" | "CONFIRMED" | "VISITED";
+
+/** All statuses that can appear in read responses, including unknown raw values. */
+export type ClinicCardNormalizedVisitStatus = ClinicCardWritableVisitStatus | "UNKNOWN";
+
+/** Alias for backward-compat. Prefer ClinicCardNormalizedVisitStatus for reads, ClinicCardWritableVisitStatus for writes. */
+export type ClinicCardVisitStatus = ClinicCardNormalizedVisitStatus;
 
 export interface ClinicCardConfig {
   api_base_url: string;
@@ -27,7 +35,7 @@ export interface ClinicCardVisit {
   date: string;
   time_start: string;
   time_end: string;
-  status: ClinicCardVisitStatus;
+  status: ClinicCardNormalizedVisitStatus;
   note?: string | null;
 }
 
@@ -52,7 +60,7 @@ export interface ClinicCardCreateVisitInput {
   date: string;
   time_start: string;
   time_end: string;
-  status: ClinicCardVisitStatus;
+  status: ClinicCardWritableVisitStatus;
   note?: string;
 }
 

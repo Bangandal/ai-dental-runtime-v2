@@ -98,6 +98,7 @@ export type PolicyDenyReason =
   | "service_required"
   | "cancel_hold_requires_active_hold"
   | "cancel_hold_requires_explicit_rejection_or_cancellation"
+  | "appointment_lookup_requires_confidence"
   | "appointment_mutation_not_implemented";
 
 export interface ToolDecision {
@@ -269,6 +270,15 @@ export function applyToolPolicy(
       );
       if (!hasExplicitCancellationSignal) {
         denied.push({ tool, allowed: false, reason: "cancel_hold_requires_explicit_rejection_or_cancellation" });
+        continue;
+      }
+      allowed.push(tool);
+      continue;
+    }
+
+    if (tool === "appointment.lookup") {
+      if (isLowConfidence) {
+        denied.push({ tool, allowed: false, reason: "appointment_lookup_requires_confidence" });
         continue;
       }
       allowed.push(tool);

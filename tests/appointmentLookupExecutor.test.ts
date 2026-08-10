@@ -3,7 +3,8 @@ import test from "node:test";
 import { createAppointmentLookupExecutor } from "../src/integrations/cliniccard/appointmentLookupExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import type { ClinicCardConfig, ClinicCardPatient, ClinicCardVisit } from "../src/integrations/cliniccard/clinicCardTypes.ts";
-import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
+import type { ToolExecutionContext, LookupBookingSubjectsView } from "../src/runtime/toolExecutor.ts";
+import type { AppointmentLookupSuccessResult } from "../src/runtime/toolResults.ts";
 
 const LIVE_ENV: Record<string, string> = {
   CLINICCARD_API_BASE_URL: "https://cliniccard.example",
@@ -15,6 +16,7 @@ const LIVE_ENV: Record<string, string> = {
   CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
 };
 
+// 2026-07-27T10:00:00Z = 12:00 CEST (UTC+2) in Prague
 const NOW = new Date("2026-07-27T10:00:00Z");
 
 function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
@@ -23,6 +25,7 @@ function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecuti
     contact_id: "contact_1",
     phone_number: "+420777123456",
     phone_source: "telegram_contact_button",
+    lookup_subject_id: "subject_1",
     now: NOW,
     ...overrides,
   };
@@ -60,16 +63,24 @@ function makeAdapter(overrides: Partial<ClinicCardAdapter> = {}): ClinicCardAdap
   };
 }
 
+function asLookup(result: unknown): AppointmentLookupSuccessResult {
+  const r = result as AppointmentLookupSuccessResult;
+  assert.equal(r.status, "success");
+  return r;
+}
+
+// ── LOOK-1..15: Clinic gate, identity gate, patient resolution, filtering ──
+
 // LOOK-1: clinic not in allowlist → clinic_not_allowed
 test("LOOK-1: clinic_id not in CLINICCARD_LIVE_CLINIC_ALLOWLIST returns clinic_not_allowed", async () => {
   const executor = createAppointmentLookupExecutor({
     env: { ...LIVE_ENV, CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_other" },
     adapterFactory: () => makeAdapter(),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "clinic_not_allowed");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "clinic_not_allowed");
+  assert.deepEqual(r.data.appointments, []);
+  assert.equal(r.data.may_claim_found, false);
 });
 
 // LOOK-2: missing clinic_id → clinic_not_allowed
@@ -78,10 +89,9 @@ test("LOOK-2: missing clinic_id returns clinic_not_allowed", async () => {
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter(),
   });
-  const result = await executor(makeContext({ clinic_id: undefined }));
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "clinic_not_allowed");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext({ clinic_id: undefined })));
+  assert.equal(r.data.lookup_status, "clinic_not_allowed");
+  assert.deepEqual(r.data.appointments, []);
 });
 
 // LOOK-3: no phone → identity_not_verified
@@ -90,10 +100,9 @@ test("LOOK-3: no phone returns identity_not_verified", async () => {
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter(),
   });
-  const result = await executor(makeContext({ phone_number: undefined, phone_source: undefined }));
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "identity_not_verified");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext({ phone_number: undefined, phone_source: undefined })));
+  assert.equal(r.data.lookup_status, "identity_not_verified");
+  assert.deepEqual(r.data.appointments, []);
 });
 
 // LOOK-4: typed phone → identity_not_verified (stricter than booking.apply)
@@ -102,10 +111,9 @@ test("LOOK-4: typed phone source denied — identity_not_verified", async () => 
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter(),
   });
-  const result = await executor(makeContext({ phone_source: "typed" }));
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "identity_not_verified");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext({ phone_source: "typed" })));
+  assert.equal(r.data.lookup_status, "identity_not_verified");
+  assert.deepEqual(r.data.appointments, []);
 });
 
 // LOOK-5: manual_input phone → identity_not_verified
@@ -114,22 +122,21 @@ test("LOOK-5: manual_input phone source denied — identity_not_verified", async
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter(),
   });
-  const result = await executor(makeContext({ phone_source: "manual_input" }));
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "identity_not_verified");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext({ phone_source: "manual_input" })));
+  assert.equal(r.data.lookup_status, "identity_not_verified");
+  assert.deepEqual(r.data.appointments, []);
 });
 
-// LOOK-6: patient not found → not_found with empty visits
-test("LOOK-6: findPatientByPhone returns empty array → not_found", async () => {
+// LOOK-6: patient not found → patient_not_found with empty appointments
+test("LOOK-6: findPatientByPhone returns empty array → patient_not_found", async () => {
   const executor = createAppointmentLookupExecutor({
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter({ findPatientByPhone: async () => ({ ok: true, data: [] }) }),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "not_found");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "patient_not_found");
+  assert.deepEqual(r.data.appointments, []);
+  assert.equal(r.data.may_claim_found, false);
 });
 
 // LOOK-7: multiple patients → multiple_patients
@@ -143,36 +150,34 @@ test("LOOK-7: findPatientByPhone returns multiple patients → multiple_patients
       }),
     }),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "multiple_patients");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "multiple_patients");
+  assert.deepEqual(r.data.appointments, []);
 });
 
-// LOOK-8: patient found, no visits → no_upcoming_visits
-test("LOOK-8: patient found but no upcoming PLANNED/CONFIRMED visits → no_upcoming_visits", async () => {
+// LOOK-8: patient found, no visits → no_upcoming_appointments
+test("LOOK-8: patient found but no upcoming PLANNED/CONFIRMED visits → no_upcoming_appointments", async () => {
   const executor = createAppointmentLookupExecutor({
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [] }) }),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "no_upcoming_visits");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "no_upcoming_appointments");
+  assert.deepEqual(r.data.appointments, []);
+  assert.equal(r.data.may_claim_found, false);
 });
 
-// LOOK-9: found one PLANNED visit → found with visit details
-test("LOOK-9: found one PLANNED visit → found with privacy-safe visit object", async () => {
+// LOOK-9: found one PLANNED visit → single_match with privacy-safe visit object
+test("LOOK-9: found one PLANNED visit → single_match with cliniccard_visit_id, no PII", async () => {
   const executor = createAppointmentLookupExecutor({
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter(),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "found");
-  assert.equal(result.data.visits.length, 1);
-  const v = result.data.visits[0];
-  assert.equal(v.visit_id, "99");
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "single_match");
+  assert.equal(r.data.appointments.length, 1);
+  const v = r.data.appointments[0];
+  assert.equal(v.cliniccard_visit_id, "99");
   assert.equal(v.date, "2026-08-15");
   assert.equal(v.time_start, "10:00");
   assert.equal(v.time_end, "10:30");
@@ -191,10 +196,9 @@ test("LOOK-10: CONFIRMED visit is actionable — included in results", async () 
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [confirmedVisit] }) }),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "found");
-  assert.equal(result.data.visits[0].status, "CONFIRMED");
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "single_match");
+  assert.equal(r.data.appointments[0].status, "CONFIRMED");
 });
 
 // LOOK-11: VISITED status is NOT actionable — excluded
@@ -204,10 +208,9 @@ test("LOOK-11: VISITED status is not actionable — excluded from results", asyn
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [visitedVisit] }) }),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "no_upcoming_visits");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "no_upcoming_appointments");
+  assert.deepEqual(r.data.appointments, []);
 });
 
 // LOOK-12: UNKNOWN status is NOT actionable — excluded
@@ -217,10 +220,9 @@ test("LOOK-12: UNKNOWN status is not actionable — excluded from results", asyn
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [unknownVisit] }) }),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "no_upcoming_visits");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "no_upcoming_appointments");
+  assert.deepEqual(r.data.appointments, []);
 });
 
 // LOOK-13: visits from other patients are excluded
@@ -230,10 +232,9 @@ test("LOOK-13: visits belonging to other patient_id are excluded", async () => {
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [otherPatientVisit] }) }),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "no_upcoming_visits");
-  assert.deepEqual(result.data.visits, []);
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "no_upcoming_appointments");
+  assert.deepEqual(r.data.appointments, []);
 });
 
 // LOOK-14: visits are sorted by date and time ascending
@@ -245,13 +246,12 @@ test("LOOK-14: multiple visits are sorted by date then time ascending", async ()
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [v1, v2, v3] }) }),
   });
-  const result = await executor(makeContext());
-  assert.equal(result.status, "success");
-  assert.equal(result.data.lookup_status, "found");
-  assert.equal(result.data.visits.length, 3);
-  assert.equal(result.data.visits[0].visit_id, "3"); // 2026-08-15 09:00
-  assert.equal(result.data.visits[1].visit_id, "2"); // 2026-08-15 10:00
-  assert.equal(result.data.visits[2].visit_id, "1"); // 2026-09-01 14:00
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "multiple_matches");
+  assert.equal(r.data.appointments.length, 3);
+  assert.equal(r.data.appointments[0].cliniccard_visit_id, "3"); // 2026-08-15 09:00
+  assert.equal(r.data.appointments[1].cliniccard_visit_id, "2"); // 2026-08-15 10:00
+  assert.equal(r.data.appointments[2].cliniccard_visit_id, "1"); // 2026-09-01 14:00
 });
 
 // LOOK-15: whatsapp_sender and existing_cliniccard_patient are trusted
@@ -261,11 +261,299 @@ test("LOOK-15: whatsapp_sender and existing_cliniccard_patient are trusted ident
     adapterFactory: () => makeAdapter(),
   });
 
-  const whatsappResult = await executor(makeContext({ phone_source: "whatsapp_sender" }));
-  assert.equal(whatsappResult.status, "success");
-  assert.equal(whatsappResult.data.lookup_status, "found");
+  const whatsappResult = asLookup(await executor(makeContext({ phone_source: "whatsapp_sender" })));
+  assert.equal(whatsappResult.data.lookup_status, "single_match");
 
-  const clinicCardResult = await executor(makeContext({ phone_source: "existing_cliniccard_patient" }));
-  assert.equal(clinicCardResult.status, "success");
-  assert.equal(clinicCardResult.data.lookup_status, "found");
+  const clinicCardResult = asLookup(await executor(makeContext({ phone_source: "existing_cliniccard_patient" })));
+  assert.equal(clinicCardResult.data.lookup_status, "single_match");
+});
+
+// ── LOOK-16..34: Regression tests for FIX-LOOK spec ──
+
+// LOOK-16: missing subject_id → subject_resolution_conflict
+test("LOOK-16: missing subject_id returns subject_resolution_conflict", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const r = asLookup(await executor(makeContext({ lookup_subject_id: undefined })));
+  assert.equal(r.data.lookup_status, "subject_resolution_conflict");
+  assert.equal(r.data.required_next_action, "clarify_subject");
+  assert.deepEqual(r.data.appointments, []);
+});
+
+// LOOK-17: invalid subject_id "subject_5" → subject_resolution_conflict
+test("LOOK-17: subject_id outside subject_1..4 range returns subject_resolution_conflict", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const r = asLookup(await executor(makeContext({ lookup_subject_id: "subject_5" })));
+  assert.equal(r.data.lookup_status, "subject_resolution_conflict");
+  assert.equal(r.data.required_next_action, "clarify_subject");
+});
+
+// LOOK-18: subject_id "subject_2" with no registry → subject_resolution_conflict
+test("LOOK-18: subject_id subject_2 without booking_subjects registry returns subject_resolution_conflict", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const r = asLookup(await executor(makeContext({
+    lookup_subject_id: "subject_2",
+    lookup_booking_subjects: undefined,
+  })));
+  assert.equal(r.data.lookup_status, "subject_resolution_conflict");
+});
+
+// LOOK-19: subject_id "subject_3" registry exists but subject_3 missing → subject_resolution_conflict
+test("LOOK-19: subject_id subject_3 not present in registry returns subject_resolution_conflict", async () => {
+  const partialRegistry: LookupBookingSubjectsView = {
+    subjects: [
+      { id: "subject_1", booking_contact: { phone_number: "+420777123456", source: "telegram_contact_button" } },
+      { id: "subject_2", booking_contact: { phone_number: "+420777654321", source: "telegram_contact_button" } },
+    ],
+  };
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const r = asLookup(await executor(makeContext({
+    lookup_subject_id: "subject_3",
+    lookup_booking_subjects: partialRegistry,
+  })));
+  assert.equal(r.data.lookup_status, "subject_resolution_conflict");
+});
+
+// LOOK-20: subject_2 phone source is "shared_from_subject" → identity_not_verified
+// (must NOT borrow subject_1's phone via shared_from_subject reference)
+test("LOOK-20: subject_2 with shared_from_subject source returns identity_not_verified, not borrowing subject_1 phone", async () => {
+  const registryWithShared: LookupBookingSubjectsView = {
+    subjects: [
+      { id: "subject_1", booking_contact: { phone_number: "+420777123456", source: "telegram_contact_button" } },
+      { id: "subject_2", booking_contact: { phone_number: "+420777123456", source: "shared_from_subject", owner_subject_id: "subject_1" } },
+    ],
+  };
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const r = asLookup(await executor(makeContext({
+    lookup_subject_id: "subject_2",
+    lookup_booking_subjects: registryWithShared,
+  })));
+  assert.equal(r.data.lookup_status, "identity_not_verified");
+  assert.equal(r.data.required_next_action, "ask_for_trusted_contact");
+});
+
+// LOOK-21: subject_2 with their own telegram_contact_button → proceeds to lookup
+test("LOOK-21: subject_2 with trusted telegram_contact_button source proceeds to appointment lookup", async () => {
+  const registryOk: LookupBookingSubjectsView = {
+    subjects: [
+      { id: "subject_1", booking_contact: { phone_number: "+420777123456", source: "telegram_contact_button" } },
+      { id: "subject_2", booking_contact: { phone_number: "+420777654321", source: "telegram_contact_button" } },
+    ],
+  };
+  const subject2Patient: ClinicCardPatient = { id: 55, name: "Maria Kovalenko", phone: "+420777654321" };
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter({
+      findPatientByPhone: async () => ({ ok: true, data: [subject2Patient] }),
+    }),
+  });
+  const r = asLookup(await executor(makeContext({
+    lookup_subject_id: "subject_2",
+    lookup_booking_subjects: registryOk,
+    phone_number: "+420777123456",
+    phone_source: "telegram_contact_button",
+  })));
+  // Must NOT return identity_not_verified — subject_2 has its own trusted contact
+  assert.notEqual(r.data.lookup_status, "identity_not_verified");
+  assert.notEqual(r.data.lookup_status, "subject_resolution_conflict");
+});
+
+// LOOK-22: date_from bad format → failed result
+test("LOOK-22: date_from with wrong format returns failed status", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const result = await executor(makeContext({ lookup_date_from: "27-07-2026" }));
+  assert.equal(result.status, "failed");
+  assert.ok((result as { error?: { code: string } }).error?.code === "invalid_date_range");
+});
+
+// LOOK-23: date_from impossible calendar date → failed result
+test("LOOK-23: date_from Feb 30 (impossible date) returns failed status", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const result = await executor(makeContext({ lookup_date_from: "2026-02-30" }));
+  assert.equal(result.status, "failed");
+  assert.ok((result as { error?: { code: string } }).error?.code === "invalid_date_range");
+});
+
+// LOOK-24: date_to before date_from → failed result
+test("LOOK-24: date_to before date_from returns failed status", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const result = await executor(makeContext({
+    lookup_date_from: "2026-08-01",
+    lookup_date_to: "2026-07-01",
+  }));
+  assert.equal(result.status, "failed");
+  assert.ok((result as { error?: { code: string } }).error?.code === "invalid_date_range");
+});
+
+// LOOK-25: date range > 365 days → failed result
+test("LOOK-25: date range exceeding 365 days returns failed status", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const result = await executor(makeContext({
+    lookup_date_from: "2026-01-01",
+    lookup_date_to: "2027-01-02", // 366 days
+  }));
+  assert.equal(result.status, "failed");
+  assert.ok((result as { error?: { code: string } }).error?.code === "invalid_date_range");
+});
+
+// LOOK-26: default searched_range uses clinic-local today (not UTC midnight)
+// NOW = 2026-07-27T10:00:00Z = 2026-07-27T12:00:00 Prague (CEST)
+// → date_from should be "2026-07-27", date_to = "2027-01-23" (180 days later)
+test("LOOK-26: default searched_range is clinic-local today, not UTC midnight", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [] }) }),
+  });
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.searched_range.date_from, "2026-07-27");
+  assert.equal(r.data.searched_range.date_to, "2027-01-23");
+});
+
+// LOOK-27: same-day visit already past (time_start < current clinic-local time) → excluded
+// NOW = 2026-07-27T10:00:00Z = 12:00 Prague; time_start "11:00" is before 12:00
+test("LOOK-27: same-day visit with time_start before current clinic-local time is excluded", async () => {
+  const pastTodayVisit: ClinicCardVisit = {
+    ...FUTURE_VISIT,
+    date: "2026-07-27",
+    time_start: "11:00",
+    time_end: "11:30",
+  };
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [pastTodayVisit] }) }),
+  });
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "no_upcoming_appointments");
+  assert.deepEqual(r.data.appointments, []);
+});
+
+// LOOK-28: same-day visit in the future (time_start > current clinic-local time) → included
+// NOW = 2026-07-27T10:00:00Z = 12:00 Prague; time_start "14:00" is after 12:00
+test("LOOK-28: same-day visit with time_start after current clinic-local time is included", async () => {
+  const futureTodayVisit: ClinicCardVisit = {
+    ...FUTURE_VISIT,
+    date: "2026-07-27",
+    time_start: "14:00",
+    time_end: "14:30",
+  };
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [futureTodayVisit] }) }),
+  });
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "single_match");
+  assert.equal(r.data.appointments.length, 1);
+  assert.equal(r.data.appointments[0].date, "2026-07-27");
+});
+
+// LOOK-29: may_claim_found is false when patient_not_found
+test("LOOK-29: may_claim_found is false when patient_not_found", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter({ findPatientByPhone: async () => ({ ok: true, data: [] }) }),
+  });
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "patient_not_found");
+  assert.equal(r.data.may_claim_found, false);
+});
+
+// LOOK-30: may_claim_found is true, required_next_action is "none" for single_match
+test("LOOK-30: single_match has may_claim_found=true and required_next_action=none", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "single_match");
+  assert.equal(r.data.may_claim_found, true);
+  assert.equal(r.data.required_next_action, "none");
+});
+
+// LOOK-31: multiple_matches has may_claim_found=true, required_next_action=ask_which_appointment
+test("LOOK-31: multiple_matches has may_claim_found=true and required_next_action=ask_which_appointment", async () => {
+  const v1: ClinicCardVisit = { ...FUTURE_VISIT, id: 1, date: "2026-08-15" };
+  const v2: ClinicCardVisit = { ...FUTURE_VISIT, id: 2, date: "2026-09-01" };
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [v1, v2] }) }),
+  });
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "multiple_matches");
+  assert.equal(r.data.may_claim_found, true);
+  assert.equal(r.data.required_next_action, "ask_which_appointment");
+});
+
+// LOOK-32: explicit date args appear in searched_range
+test("LOOK-32: explicit date_from and date_to are echoed back in searched_range", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter({ listVisits: async () => ({ ok: true, data: [] }) }),
+  });
+  const r = asLookup(await executor(makeContext({
+    lookup_date_from: "2026-09-01",
+    lookup_date_to: "2026-12-31",
+  })));
+  assert.equal(r.data.searched_range.date_from, "2026-09-01");
+  assert.equal(r.data.searched_range.date_to, "2026-12-31");
+});
+
+// LOOK-33: config_missing when required env vars absent
+test("LOOK-33: missing CLINICCARD_API_BASE_URL returns config_missing", async () => {
+  const noConfigEnv: Record<string, string> = {
+    CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
+    CLINICCARD_TIMEZONE: "Europe/Prague",
+  };
+  const executor = createAppointmentLookupExecutor({
+    env: noConfigEnv,
+    adapterFactory: () => makeAdapter(),
+  });
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "config_missing");
+  assert.deepEqual(r.data.appointments, []);
+  assert.equal(r.data.may_claim_found, false);
+});
+
+// LOOK-34: appointment object exposes cliniccard_visit_id (not visit_id) and no PII
+test("LOOK-34: appointment object uses cliniccard_visit_id field and contains no PII fields", async () => {
+  const executor = createAppointmentLookupExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () => makeAdapter(),
+  });
+  const r = asLookup(await executor(makeContext()));
+  assert.equal(r.data.lookup_status, "single_match");
+  const appt = r.data.appointments[0];
+  // Must have cliniccard_visit_id
+  assert.ok("cliniccard_visit_id" in appt, "cliniccard_visit_id must be present");
+  // Must NOT have old field name
+  assert.ok(!("visit_id" in appt), "visit_id must not be present");
+  // No PII fields
+  assert.ok(!("patient_id" in appt), "patient_id must not be exposed");
+  assert.ok(!("doctor_id" in appt), "doctor_id must not be exposed");
+  assert.ok(!("note" in appt), "note must not be exposed");
 });

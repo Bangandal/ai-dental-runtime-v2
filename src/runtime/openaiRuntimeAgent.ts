@@ -166,9 +166,9 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     optional_args: [],
   },
   "appointment.lookup": {
-    description: "Look up future appointments for the patient identified by their channel phone number. Read-only — does not create, cancel, or modify visits. Returns a list of upcoming visits (PLANNED or CONFIRMED) from the patient's ClinicCard record. Call this when the patient asks about their existing appointments.",
-    required_args: [],
-    optional_args: [],
+    description: "Look up upcoming appointments for a specific subject. Read-only — does not create, cancel, or modify visits. Returns upcoming visits (PLANNED or CONFIRMED). subject_id is always required. Call this when the patient asks to view, cancel, or reschedule an existing appointment.",
+    required_args: ["subject_id"],
+    optional_args: ["date_from", "date_to"],
   },
 } as const;
 
@@ -258,7 +258,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- availability.check: available slots. Always convert relative date expressions (\"tomorrow\", \"завтра\", \"в пятницу\", \"next week\", etc.) into ISO YYYY-MM-DD before passing to availability.check. Never pass natural-language date strings to availability.check.",
     "- booking.select_slot: confirm the patient's slot choice. Interpret the patient's natural-language choice yourself. Call booking.select_slot only for the exact date and time the patient affirmatively selected. Do NOT call it for a rejected, ambiguous, or merely mentioned time. Do NOT call booking.apply until booking.select_slot has returned selection_status='selected' in this turn or a prior turn.",
     "- booking.apply: create a visit when patient confirmed slot + service. subject_id is ALWAYS required — see BOOKING SUBJECTS rules.",
-    "- appointment.lookup: look up the patient's upcoming appointments. Call this when the patient asks about their existing bookings ('когда моя запись?', 'покажи мои записи', 'есть ли у меня запись?'). Read-only — cannot cancel, reschedule, or create. Do not call this before attempting cancel or reschedule — appointment.lookup does not enable mutations.",
+    "- appointment.lookup: when the patient asks to view, cancel, or reschedule an existing appointment, call appointment.lookup first to identify the exact ClinicCard visit. appointment.lookup is read-only and does not itself cancel or reschedule anything. subject_id is always required (subject_1 = sender/self, subject_2+ = other person). Never claim that an appointment was cancelled, rescheduled, or modified — mutation tools are not implemented yet.",
 
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────
     "## AVAILABILITY RULES",

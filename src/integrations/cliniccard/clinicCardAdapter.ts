@@ -6,7 +6,8 @@ import type {
   ClinicCardPayment,
   ClinicCardResult,
   ClinicCardVisit,
-  ClinicCardVisitStatus,
+  ClinicCardNormalizedVisitStatus,
+  ClinicCardWritableVisitStatus,
 } from "./clinicCardTypes.ts";
 
 export interface ClinicCardFetch {
@@ -34,10 +35,17 @@ export interface ClinicCardAdapter {
   listPayments(from: string, to: string): Promise<ClinicCardResult<ClinicCardPayment[]>>;
 }
 
-const VALID_VISIT_STATUSES: ReadonlySet<string> = new Set<ClinicCardVisitStatus>([
+const VALID_WRITABLE_VISIT_STATUSES: ReadonlySet<string> = new Set<ClinicCardWritableVisitStatus>([
   "PLANNED",
   "CONFIRMED",
   "VISITED",
+]);
+
+const VALID_NORMALIZED_VISIT_STATUSES: ReadonlySet<string> = new Set<ClinicCardNormalizedVisitStatus>([
+  "PLANNED",
+  "CONFIRMED",
+  "VISITED",
+  "UNKNOWN",
 ]);
 
 function isBlank(value: unknown): boolean {
@@ -104,10 +112,10 @@ function asTimeHHMM(value: unknown): string | null {
   return match ? match[1] : null;
 }
 
-function asVisitStatus(value: unknown): ClinicCardVisitStatus {
-  return typeof value === "string" && VALID_VISIT_STATUSES.has(value)
-    ? value as ClinicCardVisitStatus
-    : "PLANNED";
+function asVisitStatus(value: unknown): ClinicCardNormalizedVisitStatus {
+  return typeof value === "string" && VALID_NORMALIZED_VISIT_STATUSES.has(value)
+    ? value as ClinicCardNormalizedVisitStatus
+    : "UNKNOWN";
 }
 
 function splitPatientName(name: string): { firstname: string; lastname: string } {
@@ -240,7 +248,7 @@ function validateCreateVisitInput(input: ClinicCardCreateVisitInput): ClinicCard
   if (isBlank(input.date)) return validationError("createVisit: date is required and must not be blank");
   if (isBlank(input.time_start)) return validationError("createVisit: time_start is required and must not be blank");
   if (isBlank(input.time_end)) return validationError("createVisit: time_end is required and must not be blank");
-  if (!VALID_VISIT_STATUSES.has(input.status)) {
+  if (!VALID_WRITABLE_VISIT_STATUSES.has(input.status)) {
     return validationError(`createVisit: status must be one of PLANNED, CONFIRMED, VISITED`);
   }
   return null;

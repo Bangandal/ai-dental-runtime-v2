@@ -2032,6 +2032,16 @@ function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): Pla
     };
   }
 
+  if (request.tool === "appointment.lookup") {
+    return {
+      confidence: "high",
+      tools_requested: ["appointment.lookup"],
+      reply_strategy: "answer_only",
+      turn_type: "faq",
+      booking_action: null,
+    };
+  }
+
   return {
     confidence: "high",
     tools_requested: ["kb.search"],
@@ -2101,7 +2111,30 @@ function buildExecutionContext(
     // Uses frozen executionSubjectId when provided (from booking.apply.subject_id resolution).
     first_name: typeof request.arguments.first_name === "string" ? request.arguments.first_name : undefined,
     last_name: typeof request.arguments.last_name === "string" ? request.arguments.last_name : undefined,
-    ...buildSubjectAwarePhoneFields(input, executionSubjectId),
+    // appointment.lookup: pass subject_id, booking_subjects, and date args to context.
+    // Phone for subject_1 (or no registry) comes from channel_contact.
+    // For subject_2+, the executor resolves the subject's phone from lookup_booking_subjects.
+    // Typed and shared_from_subject are rejected by the executor's identity gate.
+    ...(request.tool === "appointment.lookup"
+      ? {
+          phone_number: input.channel_contact?.phone_number,
+          phone_source: input.channel_contact?.phone_source,
+          phone_trust: undefined,
+          lookup_subject_id: typeof request.arguments.subject_id === "string" ? request.arguments.subject_id : undefined,
+          lookup_date_from: typeof request.arguments.date_from === "string" ? request.arguments.date_from : undefined,
+          lookup_date_to: typeof request.arguments.date_to === "string" ? request.arguments.date_to : undefined,
+          lookup_booking_subjects: input.booking_subjects
+            ? {
+                subjects: (input.booking_subjects.subjects as Array<{ id: string; booking_contact: { phone_number: string; source: string; owner_subject_id?: string | null } | null }>).map((s) => ({
+                  id: s.id,
+                  booking_contact: s.booking_contact
+                    ? { phone_number: s.booking_contact.phone_number, source: s.booking_contact.source, owner_subject_id: (s.booking_contact as Record<string, unknown>).owner_subject_id as string | null ?? null }
+                    : null,
+                })),
+              }
+            : null,
+        }
+      : buildSubjectAwarePhoneFields(input, executionSubjectId)),
   } as ToolExecutionContext;
 }
 

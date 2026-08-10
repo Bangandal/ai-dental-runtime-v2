@@ -68,13 +68,12 @@ export type RuntimeAgentToolName =
   | "booking.select_slot"
   | "booking.apply";
 
-export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.select_slot", "booking.apply"] as const;
+export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.select_slot", "booking.apply", "appointment.lookup"] as const;
 
 export const FUTURE_RUNTIME_AGENT_TOOLS = [
   "hold.create",
   "booking.confirm",
   "cancel_hold",
-  "appointment.lookup",
 ] as const;
 
 export interface RuntimeAgentToolRequest {
@@ -166,6 +165,11 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     required_args: ["subject_id", "first_name", "last_name", "service", "requested_date", "requested_time"],
     optional_args: [],
   },
+  "appointment.lookup": {
+    description: "Look up upcoming appointments for a specific subject. Read-only — does not create, cancel, or modify visits. Returns upcoming visits (PLANNED or CONFIRMED). subject_id is always required. Call this when the patient asks to view, cancel, or reschedule an existing appointment.",
+    required_args: ["subject_id"],
+    optional_args: ["date_from", "date_to"],
+  },
 } as const;
 
 export interface RuntimeAgentSystemInstructionOptions {
@@ -254,6 +258,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- availability.check: available slots. Always convert relative date expressions (\"tomorrow\", \"завтра\", \"в пятницу\", \"next week\", etc.) into ISO YYYY-MM-DD before passing to availability.check. Never pass natural-language date strings to availability.check.",
     "- booking.select_slot: confirm the patient's slot choice. Interpret the patient's natural-language choice yourself. Call booking.select_slot only for the exact date and time the patient affirmatively selected. Do NOT call it for a rejected, ambiguous, or merely mentioned time. Do NOT call booking.apply until booking.select_slot has returned selection_status='selected' in this turn or a prior turn.",
     "- booking.apply: create a visit when patient confirmed slot + service. subject_id is ALWAYS required — see BOOKING SUBJECTS rules.",
+    "- appointment.lookup: when the patient asks to view, cancel, or reschedule an existing appointment, call appointment.lookup first to identify the exact ClinicCard visit. appointment.lookup is read-only and does not itself cancel or reschedule anything. subject_id is always required (subject_1 = sender/self, subject_2+ = other person). Never claim that an appointment was cancelled, rescheduled, or modified — mutation tools are not implemented yet.",
 
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────
     "## AVAILABILITY RULES",

@@ -44,9 +44,9 @@ test("calls injected client.responses.create with expected payload and active to
   assert.equal(payload.input[0].content[0].type, "input_text");
   const parsedPayload = JSON.parse(payload.input[0].content[0].text);
   assert.equal(parsedPayload.message, "Need help");
-  assert.equal(payload.tools.length, 4);
+  assert.equal(payload.tools.length, 5);
   const toolNames = payload.tools.map((t: Record<string, unknown>) => t.name);
-  assert.deepEqual(toolNames.sort(), ["availability_check", "booking_apply", "booking_select_slot", "kb_search"]);
+  assert.deepEqual(toolNames.sort(), ["appointment_lookup", "availability_check", "booking_apply", "booking_select_slot", "kb_search"]);
   assert.equal(result.type, "final_response");
 });
 
@@ -61,7 +61,6 @@ test("does not include future or admin tools", async () => {
   assert.equal(names.includes("hold.create"), false);
   assert.equal(names.includes("booking.confirm"), false);
   assert.equal(names.includes("cancel_hold"), false);
-  assert.equal(names.includes("appointment.lookup"), false);
   assert.equal(names.includes("admin.notify"), false);
 });
 

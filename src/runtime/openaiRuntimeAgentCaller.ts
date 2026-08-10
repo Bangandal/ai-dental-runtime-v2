@@ -24,6 +24,7 @@ const INTERNAL_TO_OPENAI_TOOL_NAME: Record<(typeof ACTIVE_RUNTIME_AGENT_TOOLS)[n
   "availability.check": "availability_check",
   "booking.select_slot": "booking_select_slot",
   "booking.apply": "booking_apply",
+  "appointment.lookup": "appointment_lookup",
 };
 const OPENAI_TO_INTERNAL_TOOL_NAME = Object.fromEntries(
   Object.entries(INTERNAL_TO_OPENAI_TOOL_NAME).map(([internalName, openAIName]) => [openAIName, internalName]),

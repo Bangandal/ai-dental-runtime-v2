@@ -123,14 +123,13 @@ test("reschedule/cancel planner actions do not allow unimplemented tools", () =>
   const parsed = parsePlannerOutput({
     turn_type: "reschedule",
     booking_action: "reschedule_confirm",
-    tools_requested: ["reschedule.confirm", "appointment.lookup", "appointment.cancel"],
+    tools_requested: ["reschedule.confirm", "appointment.cancel"],
   });
 
   const result = applyToolPolicy(parsed.planner, baseTruth);
   assert.equal(result.tools_allowed.length, 0);
   assert.equal(result.tools_denied[0]?.reason, "invalid_tool_requested");
   assert.equal(result.tools_denied[1]?.reason, "invalid_tool_requested");
-  assert.equal(result.tools_denied[2]?.reason, "invalid_tool_requested");
 });
 test("valid turn_type=reschedule parses ok", () => {
   const result = parsePlannerOutput({ turn_type: "reschedule" });

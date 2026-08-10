@@ -31,6 +31,26 @@ export interface ToolExecutionContext {
   phone_source?: string;
   /** Trust level of the phone — "unverified" for patient-typed numbers, absent/undefined for trusted sources. */
   phone_trust?: "unverified";
+  /** subject_id argument from appointment.lookup tool call. */
+  lookup_subject_id?: string;
+  /** date_from argument from appointment.lookup (YYYY-MM-DD). */
+  lookup_date_from?: string;
+  /** date_to argument from appointment.lookup (YYYY-MM-DD). */
+  lookup_date_to?: string;
+  /** Minimal booking subjects view for appointment.lookup subject resolution. */
+  lookup_booking_subjects?: LookupBookingSubjectsView | null;
+}
+
+/** Minimal booking subjects view passed to appointment.lookup executor for subject resolution. */
+export interface LookupBookingSubjectsView {
+  subjects: Array<{
+    id: string;
+    booking_contact: {
+      phone_number: string;
+      source: string;
+      owner_subject_id?: string | null;
+    } | null;
+  }>;
 }
 
 export type ToolExecutor = (

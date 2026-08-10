@@ -7,6 +7,7 @@ export type ToolName =
   | "booking.confirm"
   | "cancel_hold"
   | "appointment.mutate"
+  | "appointment.lookup"
   | "booking.apply";
 
 export type RawToolName = string;
@@ -97,6 +98,7 @@ export type PolicyDenyReason =
   | "service_required"
   | "cancel_hold_requires_active_hold"
   | "cancel_hold_requires_explicit_rejection_or_cancellation"
+  | "appointment_lookup_requires_confidence"
   | "appointment_mutation_not_implemented";
 
 export interface ToolDecision {
@@ -132,6 +134,8 @@ export const TOOL_POLICY_MATRIX: Record<ToolName, { class: ToolClass }> = {
   "booking.apply": { class: "write" },
   "cancel_hold": { class: "destructive" },
   "appointment.mutate": { class: "destructive" },
+  // appointment.lookup is a read-only ClinicCard lookup — no writes, identity-gated by executor.
+  "appointment.lookup": { class: "read" },
 };
 
 const RUNTIME_TOOLS = new Set<ToolName>(Object.keys(TOOL_POLICY_MATRIX) as ToolName[]);
@@ -266,6 +270,15 @@ export function applyToolPolicy(
       );
       if (!hasExplicitCancellationSignal) {
         denied.push({ tool, allowed: false, reason: "cancel_hold_requires_explicit_rejection_or_cancellation" });
+        continue;
+      }
+      allowed.push(tool);
+      continue;
+    }
+
+    if (tool === "appointment.lookup") {
+      if (isLowConfidence) {
+        denied.push({ tool, allowed: false, reason: "appointment_lookup_requires_confidence" });
         continue;
       }
       allowed.push(tool);

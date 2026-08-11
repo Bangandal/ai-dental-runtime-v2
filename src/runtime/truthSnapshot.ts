@@ -1,4 +1,5 @@
 import type { PlannerOutput, TruthSnapshot, TurnType } from "./toolPolicy.ts";
+import { detectExplicitCancellationRequest } from "./cancellationIntentGuard.ts";
 
 export interface TruthSnapshotInput {
   active_hold?: {
@@ -16,6 +17,7 @@ export interface TruthSnapshotInput {
   service_interest?: string | null;
   planner?: PlannerOutput;
   now?: Date;
+  message?: string | null;
   current_turn_flags?: {
     contradiction_in_turn?: boolean;
     explicit_slot_rejection?: boolean;
@@ -87,9 +89,12 @@ export function buildTruthSnapshot(input: TruthSnapshotInput): TruthSnapshot {
     input.current_turn_flags?.explicit_slot_rejection,
   );
 
-  const explicitCancellationRequest = Boolean(
-    input.current_turn_flags?.explicit_cancellation_request,
-  );
+  const explicitCancellationRequest =
+    input.current_turn_flags?.explicit_cancellation_request !== undefined
+      ? Boolean(input.current_turn_flags.explicit_cancellation_request)
+      : typeof input.message === "string"
+        ? detectExplicitCancellationRequest(input.message)
+        : false;
 
   const schedulingIntentPresent =
     input.current_turn_flags?.scheduling_intent_present

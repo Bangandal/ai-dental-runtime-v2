@@ -2302,6 +2302,7 @@ function resolveTruthSnapshot(
   return buildTruthSnapshot({
     planner,
     now,
+    message: input.user_message ?? null,
     current_turn_flags: {
       scheduling_intent_present: request.tool === "availability.check" || request.tool === "booking.apply",
       date_or_time_present: typeof request.arguments.requested_date === "string"

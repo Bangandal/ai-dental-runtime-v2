@@ -127,11 +127,13 @@ test("reschedule.confirm is an unimplemented tool and appointment.cancel is now 
     tools_requested: ["reschedule.confirm", "appointment.cancel"],
   });
 
-  const result = applyToolPolicy(parsed.planner, baseTruth);
+  // appointment.cancel requires explicit_cancellation_request=true in truth snapshot
+  const cancelTruth = { ...baseTruth, explicit_cancellation_request: true };
+  const result = applyToolPolicy(parsed.planner, cancelTruth);
   // reschedule.confirm is unknown → denied with invalid_tool_requested
   assert.equal(result.tools_denied[0]?.tool, "reschedule.confirm");
   assert.equal(result.tools_denied[0]?.reason, "invalid_tool_requested");
-  // appointment.cancel is now implemented → allowed at high/medium confidence
+  // appointment.cancel is now implemented → allowed when explicit_cancellation_request=true
   assert.equal(result.tools_allowed.includes("appointment.cancel"), true);
 });
 test("valid turn_type=reschedule parses ok", () => {

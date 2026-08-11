@@ -190,8 +190,9 @@ export function createAppointmentCancelExecutor(
     const visitDate = proofAppointment.date;
     const verifyResult = await adapter.listVisits(visitDate, visitDate);
     if (!verifyResult.ok) {
-      // ClinicCard delete succeeded but we cannot verify — treat as cancelled with reduced confidence.
-      return buildResult("cancelled", true, true, requestedVisitId, "none");
+      // Read-back verification failed — the delete may have succeeded, but we cannot
+      // confirm it authoritatively. Do NOT claim cancellation without proof.
+      return buildResult("verification_failed", false, false, requestedVisitId, "technical_fallback");
     }
 
     const visitStillPresent = verifyResult.data.some(

@@ -369,9 +369,9 @@ test("CANCEL-17: proof lookup_status=single_match but appointments array is empt
   assert.equal(deleteCalled, false);
 });
 
-// ── CANCEL-18: post-write listVisits API fails → still returns cancelled ────
+// ── CANCEL-18: post-write listVisits API fails → verification_failed (proof invariant) ────
 
-test("CANCEL-18: deleteVisit succeeds, listVisits verification fails with API error → cancelled (trusted delete)", async () => {
+test("CANCEL-18: deleteVisit succeeds, listVisits verification fails with API error → verification_failed (cannot claim without proof)", async () => {
   const executor = createAppointmentCancelExecutor({
     env: LIVE_ENV,
     adapterFactory: () => makeAdapter({
@@ -380,11 +380,12 @@ test("CANCEL-18: deleteVisit succeeds, listVisits verification fails with API er
     }),
   });
   const r = asCancel(await executor(makeContext()));
-  // Delete succeeded; verification unavailable — trust the delete and return cancelled.
-  assert.equal(r.data.cancel_status, "cancelled");
-  assert.equal(r.data.cancelled, true);
-  assert.equal(r.data.may_claim_cancelled, true);
-  assert.equal(r.data.cancelled_visit_id, VISIT_ID);
+  // Delete may have succeeded, but read-back verification failed.
+  // The proof invariant: cannot claim cancellation without authoritative post-write confirmation.
+  assert.equal(r.data.cancel_status, "verification_failed");
+  assert.equal(r.data.cancelled, false);
+  assert.equal(r.data.may_claim_cancelled, false);
+  assert.equal(r.data.required_next_action, "technical_fallback");
 });
 
 // ── CANCEL-19: subject_id=subject_2 without booking_subjects registry ───────

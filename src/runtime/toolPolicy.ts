@@ -101,6 +101,7 @@ export type PolicyDenyReason =
   | "cancel_hold_requires_explicit_rejection_or_cancellation"
   | "appointment_lookup_requires_confidence"
   | "appointment_cancel_requires_confidence"
+  | "appointment_cancel_requires_explicit_patient_request"
   | "appointment_mutation_not_implemented";
 
 export interface ToolDecision {
@@ -292,6 +293,10 @@ export function applyToolPolicy(
     if (tool === "appointment.cancel") {
       if (isLowConfidence) {
         denied.push({ tool, allowed: false, reason: "appointment_cancel_requires_confidence" });
+        continue;
+      }
+      if (!truth.explicit_cancellation_request) {
+        denied.push({ tool, allowed: false, reason: "appointment_cancel_requires_explicit_patient_request" });
         continue;
       }
       allowed.push(tool);

@@ -285,6 +285,92 @@ test("PROD-6: 'Стоит ли отменить запись?' + erroneous model
   assert.equal(mutationCount(), 0, "deliberative Russian cancel must block all mutations");
 });
 
+// ── Uncertainty regression tests (CLASSIFIER-22..32) ─────────────────────────
+
+test("CLASSIFIER-22: 'I\\'m not sure if I want to cancel my appointment.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("I'm not sure if I want to cancel my appointment."), false);
+});
+
+test("CLASSIFIER-23: 'I\\'m unsure whether I want to cancel my appointment.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("I'm unsure whether I want to cancel my appointment."), false);
+});
+
+test("CLASSIFIER-24: 'I don\\'t know whether to cancel my appointment.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("I don't know whether to cancel my appointment."), false);
+});
+
+test("CLASSIFIER-25: 'I haven\\'t decided whether to cancel my appointment.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("I haven't decided whether to cancel my appointment."), false);
+});
+
+test("CLASSIFIER-26: 'Не уверен, что хочу отменить запись.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("Не уверен, что хочу отменить запись."), false);
+});
+
+test("CLASSIFIER-27: 'Я не уверена, что хочу отменить запись.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("Я не уверена, что хочу отменить запись."), false);
+});
+
+test("CLASSIFIER-28: 'Не знаю, нужно отменить запись или нет.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("Не знаю, нужно отменить запись или нет."), false);
+});
+
+test("CLASSIFIER-29: 'Я ещё не решил отменять запись или нет.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("Я ещё не решил отменять запись или нет."), false);
+});
+
+test("CLASSIFIER-30: 'Nejsem si jistý, jestli chci zrušit návštěvu.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("Nejsem si jistý, jestli chci zrušit návštěvu."), false);
+});
+
+test("CLASSIFIER-31: 'Nevím, jestli chci zrušit návštěvu.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("Nevím, jestli chci zrušit návštěvu."), false);
+});
+
+test("CLASSIFIER-32: 'Ještě jsem se nerozhodl, zda návštěvu zrušit.' → false", () => {
+  assert.equal(detectExplicitCancellationRequest("Ještě jsem se nerozhodl, zda návštěvu zrušit."), false);
+});
+
+// ── Production-path uncertainty regression tests ──────────────────────────────
+
+// PROD-8: English uncertainty → classifier blocks erroneous model cancel → 0 mutations
+test("PROD-8: 'I\\'m not sure if I want to cancel my appointment.' + erroneous model cancel → 0 mutations", async () => {
+  const { executor: cancelExecutor, mutationCount } = makeCancelExecutor();
+
+  const agent = createRuntimeAgentLoop({
+    model: "gpt-test",
+    caller: makeCallSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "appointment.cancel", call_id: "c1", arguments: { subject_id: "subject_1", visit_id: "visit_1" } }] },
+      { type: "final_response", final_response: { final_patient_reply: "Let me help clarify your options." } },
+    ]),
+    executors: {
+      "appointment.cancel": cancelExecutor,
+    },
+  });
+
+  await agent.runTurn(makeProductionInput("I'm not sure if I want to cancel my appointment."));
+  assert.equal(mutationCount(), 0, "uncertainty message must block all mutations");
+});
+
+// PROD-9: Russian uncertainty → classifier blocks erroneous model cancel → 0 mutations
+test("PROD-9: 'Не уверен, что хочу отменить запись.' + erroneous model cancel → 0 mutations", async () => {
+  const { executor: cancelExecutor, mutationCount } = makeCancelExecutor();
+
+  const agent = createRuntimeAgentLoop({
+    model: "gpt-test",
+    caller: makeCallSequence([
+      { type: "tool_requests", tool_requests: [{ tool: "appointment.cancel", call_id: "c1", arguments: { subject_id: "subject_1", visit_id: "visit_1" } }] },
+      { type: "final_response", final_response: { final_patient_reply: "Позвольте объяснить ваши варианты." } },
+    ]),
+    executors: {
+      "appointment.cancel": cancelExecutor,
+    },
+  });
+
+  await agent.runTurn(makeProductionInput("Не уверен, что хочу отменить запись."));
+  assert.equal(mutationCount(), 0, "uncertainty Russian message must block all mutations");
+});
+
 // PROD-7: Unambiguous Russian imperative + same-subject lookup proof → exactly 1 mutation
 // subject_1 is used because gate D in the cancel executor requires a registry for subject_2+
 test("PROD-7: 'Отмените мою запись' + valid same-subject lookup → exactly 1 mutation", async () => {

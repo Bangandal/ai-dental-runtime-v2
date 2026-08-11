@@ -1,5 +1,30 @@
 const FAIL_CLOSED_PATTERNS: RegExp[] = [
-  // Russian negation
+  // ── Uncertainty / indecision (must precede affirmative patterns) ──────────
+  // English uncertainty
+  /i'?m\s+not\s+sure/iu,
+  /i\s+am\s+not\s+sure/iu,
+  /not\s+sure\s+(?:if|whether)/iu,
+  /i'?m\s+unsure/iu,
+  /i\s+am\s+unsure/iu,
+  /unsure\s+(?:if|whether)/iu,
+  /don'?t\s+know\s+(?:if|whether)/iu,
+  /do\s+not\s+know\s+(?:if|whether)/iu,
+  /haven'?t\s+decided/iu,
+  /have\s+not\s+decided/iu,
+  /not\s+decided/iu,
+  // Russian uncertainty
+  /не\s+уверен/iu,
+  /не\s+знаю/iu,
+  /не\s+решил/iu,
+  /ещё\s+не\s+решил/iu,
+  /отменять\s+или\s+нет/iu,
+  /отменить\s+или\s+нет/iu,
+  // Czech uncertainty
+  /nejsem\s+si\s+(?:jist[ýá]|jist)\b/iu,
+  /nevím,?\s+(?:jestli|zda)/iu,
+  /nerozhodl/iu,
+
+  // ── Russian negation ──────────────────────────────────────────────────────
   /не\s+отмен/iu,
   /не\s+надо\s+отмен/iu,
   // Russian deliberative / hypothetical / informational

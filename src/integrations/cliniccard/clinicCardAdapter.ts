@@ -33,6 +33,7 @@ export interface ClinicCardAdapter {
   listVisits(from: string, to: string): Promise<ClinicCardResult<ClinicCardVisit[]>>;
   createVisit(input: ClinicCardCreateVisitInput): Promise<ClinicCardResult<ClinicCardVisit>>;
   listPayments(from: string, to: string): Promise<ClinicCardResult<ClinicCardPayment[]>>;
+  deleteVisit(visit_id: string): Promise<ClinicCardResult<void>>;
 }
 
 const VALID_WRITABLE_VISIT_STATUSES: ReadonlySet<string> = new Set<ClinicCardWritableVisitStatus>([
@@ -241,6 +242,11 @@ function validateCreatePatientInput(input: ClinicCardCreatePatientInput): Clinic
   return null;
 }
 
+function validateDeleteVisitInput(visit_id: string): ClinicCardResult<never> | null {
+  if (isBlank(visit_id)) return validationError("deleteVisit: visit_id is required and must not be blank");
+  return null;
+}
+
 function validateCreateVisitInput(input: ClinicCardCreateVisitInput): ClinicCardResult<never> | null {
   if (isMissingId(input.patient_id)) return validationError("createVisit: patient_id must be a positive number");
   if (isMissingId(input.doctor_id)) return validationError("createVisit: doctor_id must be a positive number");
@@ -363,6 +369,14 @@ export function createClinicCardAdapter(
         "GET",
         `/api/payments?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
       );
+    },
+
+    async deleteVisit(visit_id) {
+      const err = validateDeleteVisitInput(visit_id);
+      if (err) return err as ClinicCardResult<void>;
+      const result = await request<unknown>("DELETE", "/api/visits", { visit_id });
+      if (!result.ok) return result;
+      return { ok: true, data: undefined };
     },
   };
 }

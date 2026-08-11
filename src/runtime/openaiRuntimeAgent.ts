@@ -65,10 +65,11 @@ export type RuntimeAgentToolName =
   | "booking.confirm"
   | "cancel_hold"
   | "appointment.lookup"
+  | "appointment.cancel"
   | "booking.select_slot"
   | "booking.apply";
 
-export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.select_slot", "booking.apply", "appointment.lookup"] as const;
+export const ACTIVE_RUNTIME_AGENT_TOOLS = ["kb.search", "availability.check", "booking.select_slot", "booking.apply", "appointment.lookup", "appointment.cancel"] as const;
 
 export const FUTURE_RUNTIME_AGENT_TOOLS = [
   "hold.create",
@@ -170,6 +171,11 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     required_args: ["subject_id"],
     optional_args: ["date_from", "date_to"],
   },
+  "appointment.cancel": {
+    description: "Cancel a specific ClinicCard visit that was confirmed by appointment.lookup in the current turn. MUST only be called in the turn AFTER appointment.lookup returned lookup_status='single_match'. subject_id must match the lookup subject. visit_id must exactly match the cliniccard_visit_id from the lookup result. Never call this without a same-turn single_match lookup proof. Never call cancel for multiple subjects in one turn.",
+    required_args: ["subject_id", "visit_id"],
+    optional_args: [],
+  },
 } as const;
 
 export interface RuntimeAgentSystemInstructionOptions {
@@ -258,7 +264,8 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "- availability.check: available slots. Always convert relative date expressions (\"tomorrow\", \"завтра\", \"в пятницу\", \"next week\", etc.) into ISO YYYY-MM-DD before passing to availability.check. Never pass natural-language date strings to availability.check.",
     "- booking.select_slot: confirm the patient's slot choice. Interpret the patient's natural-language choice yourself. Call booking.select_slot only for the exact date and time the patient affirmatively selected. Do NOT call it for a rejected, ambiguous, or merely mentioned time. Do NOT call booking.apply until booking.select_slot has returned selection_status='selected' in this turn or a prior turn.",
     "- booking.apply: create a visit when patient confirmed slot + service. subject_id is ALWAYS required — see BOOKING SUBJECTS rules.",
-    "- appointment.lookup: when the patient asks to view, cancel, or reschedule an existing appointment, call appointment.lookup first to identify the exact ClinicCard visit. appointment.lookup is read-only and does not itself cancel or reschedule anything. subject_id is always required (subject_1 = sender/self, subject_2+ = other person). Never claim that an appointment was cancelled, rescheduled, or modified — mutation tools are not implemented yet.",
+    "- appointment.lookup: when the patient asks to view, cancel, or reschedule an existing appointment, call appointment.lookup first to identify the exact ClinicCard visit. appointment.lookup is read-only and does not itself cancel or reschedule anything. subject_id is always required (subject_1 = sender/self, subject_2+ = other person).",
+    "- appointment.cancel: cancel a ClinicCard visit. TWO-ROUND PROTOCOL — round 1: call appointment.lookup; round 2 (after lookup returns single_match): call appointment.cancel with the SAME subject_id and visit_id from the lookup result's cliniccard_visit_id. NEVER call appointment.cancel without a same-turn single_match lookup proof. NEVER claim cancelled unless may_claim_cancelled=true in the result. If cancel_status is anything other than 'cancelled', explain to the patient what happened and what they should do next.",
 
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────
     "## AVAILABILITY RULES",
@@ -302,6 +309,19 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "APPOINTMENT DISPLAY TRUTH: use ONLY appointment_display_truth.date/time_start/weekday/service/cliniccard_visit_id for confirmation wording. Do NOT calculate or derive weekday yourself — trust appointment_display_truth over your own reasoning. Never invent weekday labels not in appointment_display_truth.",
     "AVAILABILITY PRESENTATION TRUTH: When availability_presentation_truth is present in context, list ONLY values from allowed_slot_starts. Respect max_slots_to_present (≤5). Range summaries and approximate times are forbidden — never use '13:00–18:00', 'с 13 до 18', 'после обеда', 'примерно в 14', or any form of range or approximation. Never invent times not in allowed_slot_starts.",
     "selected_slot and last_available_slots in booking_process_state are reliable (from tool results). Do not re-ask for info visible in recent_history regardless of booking_process_state flags.",
+
+    // ── CANCEL FLOW ──────────────────────────────────────────────────────────
+    "## CANCEL FLOW",
+    "When appointment_cancel_action_truth is present, follow it strictly:",
+    "- may_claim_cancelled=true → confirm cancellation naturally: 'Ваша запись отменена.' Do NOT say 'удалена', 'удалено', or use admin language. Use the patient's language.",
+    "- may_claim_cancelled=false + cancel_status='lookup_not_verified' → explain that you need to look up the appointment first; call appointment.lookup before retrying.",
+    "- may_claim_cancelled=false + cancel_status='appointment_not_found' → explain no upcoming appointment was found.",
+    "- may_claim_cancelled=false + cancel_status='multiple_matches' → ask which appointment to cancel (list them from the lookup result).",
+    "- may_claim_cancelled=false + cancel_status='identity_not_verified' → cannot verify identity; do not cancel.",
+    "- may_claim_cancelled=false + cancel_status='clinic_not_allowed' | 'live_mode_required' → explain cancellation is not available online; direct patient to contact the clinic.",
+    "- may_claim_cancelled=false + cancel_status='verification_failed' | 'cliniccard_write_failed' → technical issue; advise patient to contact clinic.",
+    "- may_claim_cancelled=false + cancel_status='appointment_not_actionable' → appointment cannot be cancelled in current state; direct to clinic.",
+    "NEVER claim cancellation happened unless may_claim_cancelled=true. NEVER use the word 'cancelled' or 'отменена' unless may_claim_cancelled=true.",
 
     // ── OUTPUT ────────────────────────────────────────────────────────────────
     "## OUTPUT",

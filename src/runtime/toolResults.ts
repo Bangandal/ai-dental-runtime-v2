@@ -101,7 +101,7 @@ export interface BookingApplyResult {
   booking_status: BookingApplyStatus;
   created_visit: boolean;
   may_claim_booked: boolean;
-  cliniccard_visit_id: string | null;
+  cancelled_visit_id: string | null;
   cliniccard_patient_id?: number;
   date?: string;
   time_start?: string;
@@ -173,6 +173,43 @@ export interface AppointmentLookupSuccessResult extends ToolExecutionBase {
   data: AppointmentLookupResult;
 }
 
+export type AppointmentCancelStatus =
+  | "cancelled"
+  | "lookup_not_verified"
+  | "appointment_not_found"
+  | "appointment_not_actionable"
+  | "subject_resolution_conflict"
+  | "identity_not_verified"
+  | "multiple_matches"
+  | "clinic_not_allowed"
+  | "live_mode_required"
+  | "cliniccard_write_failed"
+  | "verification_failed";
+
+export type AppointmentCancelRequiredNextAction =
+  | "none"
+  | "refresh_lookup"
+  | "ask_which_appointment"
+  | "ask_for_trusted_contact"
+  | "clarify_subject"
+  | "admin_handoff"
+  | "technical_fallback";
+
+export interface AppointmentCancelResult {
+  appointment_action: "appointment_cancel";
+  cancel_status: AppointmentCancelStatus;
+  cancelled: boolean;
+  may_claim_cancelled: boolean;
+  cancelled_visit_id: string | null;
+  required_next_action: AppointmentCancelRequiredNextAction;
+}
+
+export interface AppointmentCancelSuccessResult extends ToolExecutionBase {
+  tool: "appointment.cancel";
+  status: "success";
+  data: AppointmentCancelResult;
+}
+
 export type ToolSuccessResult =
   | KbSearchSuccessResult
   | AvailabilityCheckSuccessResult
@@ -180,7 +217,8 @@ export type ToolSuccessResult =
   | BookingConfirmSuccessResult
   | CancelHoldSuccessResult
   | BookingApplySuccessResult
-  | AppointmentLookupSuccessResult;
+  | AppointmentLookupSuccessResult
+  | AppointmentCancelSuccessResult;
 
 export interface ToolFailedResult extends ToolExecutionBase {
   tool: ToolName;

@@ -6,6 +6,7 @@ import { createKbSearchExecutor } from "./kbSearchExecutor.ts";
 import { createClinicCardAvailabilityExecutor } from "../integrations/cliniccard/clinicCardAvailabilityExecutor.ts";
 import { createBookingApplyExecutor } from "../integrations/cliniccard/bookingApplyExecutor.ts";
 import { createAppointmentLookupExecutor } from "../integrations/cliniccard/appointmentLookupExecutor.ts";
+import { createAppointmentCancelExecutor } from "../integrations/cliniccard/appointmentCancelExecutor.ts";
 import type { ToolExecutor } from "./toolExecutor.ts";
 import type { OpenAIRuntimeAgent } from "./openaiRuntimeAgent.ts";
 import type { BookingProcessStateRepository } from "./bookingProcessState.ts";
@@ -23,6 +24,7 @@ export interface CreateDentalRuntimeAgentDeps {
   clinicCardAvailabilityExecutor?: ToolExecutor;
   bookingApplyExecutor?: ToolExecutor;
   appointmentLookupExecutor?: ToolExecutor;
+  appointmentCancelExecutor?: ToolExecutor;
 }
 
 export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): OpenAIRuntimeAgent {
@@ -38,12 +40,14 @@ export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): Op
   const availabilityExecutor = deps.clinicCardAvailabilityExecutor ?? createClinicCardAvailabilityExecutor();
   const bookingExecutor = deps.bookingApplyExecutor ?? createBookingApplyExecutor();
   const lookupExecutor = deps.appointmentLookupExecutor ?? createAppointmentLookupExecutor();
+  const cancelExecutor = deps.appointmentCancelExecutor ?? createAppointmentCancelExecutor();
 
   const executors = {
     "kb.search": kbExecutor,
     "availability.check": availabilityExecutor,
     "booking.apply": bookingExecutor,
     "appointment.lookup": lookupExecutor,
+    "appointment.cancel": cancelExecutor,
   };
 
   return createRuntimeAgentLoop({

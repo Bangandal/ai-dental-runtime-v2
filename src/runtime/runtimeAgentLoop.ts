@@ -18,7 +18,7 @@ import { applyToolPolicy, type PlannerOutput, type ToolName, type TruthSnapshot 
 import { executeAllowedTools, type ToolExecutorRegistry, type ToolExecutionContext } from "./toolExecutor.ts";
 import { buildTruthSnapshot } from "./truthSnapshot.ts";
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
-import type { ToolExecutionResult } from "./toolResults.ts";
+import type { ToolExecutionResult, AppointmentLookupResult, AppointmentCancelResult } from "./toolResults.ts";
 import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
@@ -1510,6 +1510,152 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           };
         }
 
+        // ── ROUND-2 APPOINTMENT.CANCEL PATH ─────────────────────────────────
+        // Separate from booking.apply: cancel fires when model calls appointment.cancel
+        // in round 2 after a same-turn appointment.lookup returned single_match.
+        const allRound2CancelRequests = secondOutput.tool_requests.filter((r) => r.tool === "appointment.cancel");
+        const pendingCancel = allRound2CancelRequests[0] ?? null;
+
+        if (pendingCancel) {
+          const guardedCancelData: AppointmentCancelResult = {
+            appointment_action: "appointment_cancel",
+            cancel_status: "subject_resolution_conflict",
+            cancelled: false,
+            may_claim_cancelled: false,
+            cancelled_visit_id: null,
+            required_next_action: "clarify_subject",
+          };
+
+          if (allRound2CancelRequests.length > 1) {
+            // Multiple cancel requests — 0 writes, guarded result for each.
+            debug.reason = "appointment_cancel_preflight_multiple_cancel_round2";
+            for (const req of allRound2CancelRequests) {
+              toolResults.push({ tool: "appointment.cancel", call_id: req.call_id, status: "success", data: guardedCancelData });
+            }
+          } else {
+            // Extract same-turn lookup proof from round-1 toolResults.
+            const lookupProofEntry = toolResults.find(
+              (r) => r.tool === "appointment.lookup" && r.status === "success",
+            );
+            const lookupProof = (lookupProofEntry?.data as AppointmentLookupResult | null) ?? null;
+
+            // If booking.apply already wrote a visit this turn, block cancel (one write per turn).
+            const hasExistingVisitWrite = toolResults.some(
+              (r) => r.tool === "booking.apply" && r.status === "success" &&
+                (r.data as { created_visit?: boolean } | null)?.created_visit === true,
+            );
+
+            // Build cancel execution context (same phone/subject resolution as appointment.lookup).
+            const lookupBookingSubjectsView = input.booking_subjects
+              ? {
+                  subjects: (input.booking_subjects.subjects as Array<{ id: string; booking_contact: { phone_number: string; source: string; owner_subject_id?: string | null } | null }>).map((s) => ({
+                    id: s.id,
+                    booking_contact: s.booking_contact
+                      ? { phone_number: s.booking_contact.phone_number, source: s.booking_contact.source, owner_subject_id: (s.booking_contact as Record<string, unknown>).owner_subject_id as string | null ?? null }
+                      : null,
+                  })),
+                }
+              : null;
+
+            const cancelPlanner = buildPlannerFromAgentToolRequest(pendingCancel);
+            const cancelTruth = resolveTruthSnapshot(input, pendingCancel, cancelPlanner, turnNow);
+
+            const cancelExecCtx: ToolExecutionContext = {
+              trace_id: input.trace_id,
+              clinic_id: input.clinic_id,
+              contact_id: input.contact_id ?? undefined,
+              case_id: input.case_id ?? undefined,
+              locale: input.locale,
+              now: turnNow,
+              planner: cancelPlanner,
+              truth_snapshot: cancelTruth,
+              phone_number: input.channel_contact?.phone_number,
+              phone_source: input.channel_contact?.phone_source,
+              phone_trust: undefined,
+              lookup_booking_subjects: lookupBookingSubjectsView,
+              cancel_subject_id: typeof pendingCancel.arguments.subject_id === "string" ? pendingCancel.arguments.subject_id : undefined,
+              cancel_visit_id: typeof pendingCancel.arguments.visit_id === "string" ? pendingCancel.arguments.visit_id : undefined,
+              cancel_lookup_proof: hasExistingVisitWrite ? null : lookupProof,
+            };
+
+            const cancelExecutor = deps.executors?.["appointment.cancel"];
+            const cancelExecResult = cancelExecutor
+              ? await cancelExecutor(cancelExecCtx)
+              : undefined;
+            const cancelToolResult: RuntimeAgentToolResult = cancelExecResult
+              ? convertToolExecutionResult(pendingCancel, cancelExecResult)
+              : {
+                  tool: "appointment.cancel",
+                  call_id: pendingCancel.call_id,
+                  status: "success",
+                  data: {
+                    appointment_action: "appointment_cancel",
+                    cancel_status: "lookup_not_verified" as const,
+                    cancelled: false,
+                    may_claim_cancelled: false,
+                    cancelled_visit_id: null,
+                    required_next_action: "technical_fallback" as const,
+                  },
+                };
+
+            toolResults.push(cancelToolResult);
+          }
+
+          // Third model call — provide cancel result as resolved_context + action truth.
+          const cancelActionTruth = (() => {
+            const r = toolResults.findLast?.((r) => r.tool === "appointment.cancel" && r.status === "success")
+              ?? toolResults.slice().reverse().find((r) => r.tool === "appointment.cancel" && r.status === "success");
+            return r?.data ?? null;
+          })();
+
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+
+          let cancelFinalOutput: RuntimeAgentCallerOutput | undefined;
+          try {
+            cancelFinalOutput = await deps.caller({
+              model: deps.model,
+              conversation_id: null,
+              system_instruction: systemInstruction,
+              input: {
+                message: input.user_message,
+                context: {
+                  ...callerContext,
+                  resolved_context: toolResults,
+                  ...(cancelActionTruth ? { appointment_cancel_action_truth: cancelActionTruth } : {}),
+                },
+              },
+            });
+          } catch (error) {
+            debug.caller_exception = buildCallerExceptionDiagnostics(error, {
+              stage: "forced_finalization",
+              locale: input.locale,
+              conversationId: null,
+              toolResults,
+              bookingApplyActionTruth: null,
+            });
+          }
+
+          if (cancelFinalOutput !== undefined && cancelFinalOutput.type === "final_response" && isMalformedFinalResponse(cancelFinalOutput)) {
+            debug.reason = "malformed_cancel_finalization_fallback";
+          }
+
+          const cancelFallback = buildMultiRoundFallbackReply(input.locale);
+          const cancelFinalReply =
+            cancelFinalOutput?.type === "final_response" && !isMalformedFinalResponse(cancelFinalOutput)
+              ? cancelFinalOutput.final_response.final_patient_reply
+              : cancelFallback;
+
+          return {
+            final_patient_reply: cancelFinalReply,
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: processedToolRequests,
+            tool_results: toolResults,
+            debug,
+          };
+        }
+
         // When round 2 requests more tools but useful results from round 1 exist,
         // attempt one forced finalization call (round 3). Protocol rules:
         // - conversation_id is null: fresh context so we don't continue a thread
@@ -2039,6 +2185,17 @@ function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): Pla
       reply_strategy: "answer_only",
       turn_type: "faq",
       booking_action: null,
+    };
+  }
+
+  if (request.tool === "appointment.cancel") {
+    return {
+      confidence: "high",
+      tools_requested: ["appointment.cancel"],
+      reply_strategy: "answer_only",
+      turn_type: "cancel",
+      booking_action: "cancel_request",
+      explicit_patient_confirmation: true,
     };
   }
 

@@ -2,6 +2,7 @@ import type { PlannerOutput, PolicyResult, ToolName, TruthSnapshot } from "./too
 import {
   makeFailedToolResult,
   makeNotImplementedToolResult,
+  type AppointmentLookupResult,
   type ToolExecutionPlan,
   type ToolExecutionResult,
 } from "./toolResults.ts";
@@ -39,6 +40,12 @@ export interface ToolExecutionContext {
   lookup_date_to?: string;
   /** Minimal booking subjects view for appointment.lookup subject resolution. */
   lookup_booking_subjects?: LookupBookingSubjectsView | null;
+  /** subject_id argument from appointment.cancel tool call. */
+  cancel_subject_id?: string;
+  /** cliniccard_visit_id argument from appointment.cancel tool call. */
+  cancel_visit_id?: string;
+  /** Authoritative lookup result from the same turn's appointment.lookup — required for cancel proof gate. */
+  cancel_lookup_proof?: AppointmentLookupResult | null;
 }
 
 /** Minimal booking subjects view passed to appointment.lookup executor for subject resolution. */

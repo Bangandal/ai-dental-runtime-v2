@@ -44,9 +44,9 @@ test("calls injected client.responses.create with expected payload and active to
   assert.equal(payload.input[0].content[0].type, "input_text");
   const parsedPayload = JSON.parse(payload.input[0].content[0].text);
   assert.equal(parsedPayload.message, "Need help");
-  assert.equal(payload.tools.length, 5);
+  assert.equal(payload.tools.length, 6);
   const toolNames = payload.tools.map((t: Record<string, unknown>) => t.name);
-  assert.deepEqual(toolNames.sort(), ["appointment_lookup", "availability_check", "booking_apply", "booking_select_slot", "kb_search"]);
+  assert.deepEqual(toolNames.sort(), ["appointment_cancel", "appointment_lookup", "availability_check", "booking_apply", "booking_select_slot", "kb_search"]);
   assert.equal(result.type, "final_response");
 });
 

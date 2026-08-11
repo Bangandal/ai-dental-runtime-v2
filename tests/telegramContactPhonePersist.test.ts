@@ -246,10 +246,10 @@ test("booking.apply is now active — included in ACTIVE_RUNTIME_AGENT_TOOLS (PR
 
 // ── test 7: ACTIVE_RUNTIME_AGENT_TOOLS invariant ─────────────────────────────
 
-test('ACTIVE_RUNTIME_AGENT_TOOLS equals ["kb.search", "availability.check", "booking.select_slot", "booking.apply", "appointment.lookup"]', () => {
+test('ACTIVE_RUNTIME_AGENT_TOOLS equals ["kb.search", "availability.check", "booking.select_slot", "booking.apply", "appointment.lookup", "appointment.cancel"]', () => {
   assert.deepEqual(
     [...ACTIVE_RUNTIME_AGENT_TOOLS].sort(),
-    ["appointment.lookup", "availability.check", "booking.apply", "booking.select_slot", "kb.search"],
+    ["appointment.cancel", "appointment.lookup", "availability.check", "booking.apply", "booking.select_slot", "kb.search"],
   );
 });
 

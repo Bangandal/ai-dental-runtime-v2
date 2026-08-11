@@ -119,17 +119,20 @@ test("low-confidence fallback cannot allow write tools through policy", () => {
   assert.equal(result.tools_denied[1]?.reason, "low_confidence_execution_gate");
 });
 
-test("reschedule/cancel planner actions do not allow unimplemented tools", () => {
+test("reschedule.confirm is an unimplemented tool and appointment.cancel is now implemented", () => {
   const parsed = parsePlannerOutput({
-    turn_type: "reschedule",
-    booking_action: "reschedule_confirm",
+    turn_type: "cancel",
+    confidence: "high",
+    booking_action: "cancel_request",
     tools_requested: ["reschedule.confirm", "appointment.cancel"],
   });
 
   const result = applyToolPolicy(parsed.planner, baseTruth);
-  assert.equal(result.tools_allowed.length, 0);
+  // reschedule.confirm is unknown → denied with invalid_tool_requested
+  assert.equal(result.tools_denied[0]?.tool, "reschedule.confirm");
   assert.equal(result.tools_denied[0]?.reason, "invalid_tool_requested");
-  assert.equal(result.tools_denied[1]?.reason, "invalid_tool_requested");
+  // appointment.cancel is now implemented → allowed at high/medium confidence
+  assert.equal(result.tools_allowed.includes("appointment.cancel"), true);
 });
 test("valid turn_type=reschedule parses ok", () => {
   const result = parsePlannerOutput({ turn_type: "reschedule" });

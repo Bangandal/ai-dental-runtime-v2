@@ -114,8 +114,8 @@ function makeLoopWithBooking(env: Record<string, string>, adapterOverrides: Part
 
 // ── A: Active tools ───────────────────────────────────────────────────────────
 
-test("A: ACTIVE_RUNTIME_AGENT_TOOLS is exactly [kb.search, availability.check, booking.select_slot, booking.apply, appointment.lookup]", () => {
-  assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check", "booking.select_slot", "booking.apply", "appointment.lookup"]);
+test("A: ACTIVE_RUNTIME_AGENT_TOOLS is exactly [kb.search, availability.check, booking.select_slot, booking.apply, appointment.lookup, appointment.cancel]", () => {
+  assert.deepEqual(ACTIVE_RUNTIME_AGENT_TOOLS, ["kb.search", "availability.check", "booking.select_slot", "booking.apply", "appointment.lookup", "appointment.cancel"]);
 });
 
 // ── B: Booking disabled — action truth has can_say_booking_created=false ──────

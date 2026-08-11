@@ -1,29 +1,82 @@
-const NEGATION_PATTERNS: RegExp[] = [
+const FAIL_CLOSED_PATTERNS: RegExp[] = [
+  // Russian negation
   /не\s+отмен/iu,
-  /don'?t\s+cancel/iu,
-  /what\s+if/iu,
-  /если\s+(бы\s+)?отмен/iu,
-  /можно\s+(ли\s+)?отмен/iu,
+  /не\s+надо\s+отмен/iu,
+  // Russian deliberative / hypothetical / informational
+  /стоит\s+ли\s+отмен/iu,
+  /нужно\s+ли\s+отмен/iu,
+  /следует\s+ли\s+отмен/iu,
+  /думаю\s+(?:об?\s+|насчёт\s+)?отмен/iu,
+  /может\s+(?:быть\s+)?отмен/iu,
+  /если\s+(?:я\s+|бы\s+)?отмен/iu,
+  /можно\s+(?:ли\s+)?отмен/iu,
   /нельзя\s+отмен/iu,
-  /can\s+(it\s+|an?\s+appointment\s+)?be\s+cancel/iu,
+  /рассматриваю/iu,
+  /взвешиваю/iu,
+  // English negation
+  /don'?t\s+cancel/iu,
+  /do\s+not\s+cancel/iu,
+  // English deliberative / hypothetical / informational
+  /should\s+i\s+cancel/iu,
+  /can\s+i\s+cancel/iu,
+  /could\s+i\s+cancel/iu,
+  /am\s+i\s+able\s+to\s+cancel/iu,
+  /is\s+it\s+possible\s+to\s+cancel/iu,
+  /would\s+it\s+be\b/iu,
+  /i\s+might\s+cancel/iu,
+  /thinking\s+about\s+cancell?/iu,
+  /consider(?:ing)?\s+cancell?/iu,
+  /what\s+if/iu,
+  /if\s+i\s+cancel/iu,
+  /can\s+(?:it\s+|an?\s+appointment\s+)?be\s+cancel/iu,
+  // Czech negation
+  /nezrušuj/iu,
+  /nechci\s+rušit/iu,
+  // Czech deliberative
+  /mám\s+zrušit/iu,
+  /mohu\s+zrušit/iu,
+  /přemýšlím\s+o\s+zrušení/iu,
+  /uvažuji\s+o\s+zrušení/iu,
+  /mohl\s+bych\s+zrušit/iu,
 ];
 
 const AFFIRMATIVE_PATTERNS: RegExp[] = [
+  // Russian imperatives / explicit desire
   /(?<!\p{L})отмени(?:те)?(?!\p{L})/iu,
   /хочу\s+отменить/iu,
   /нужно\s+отменить/iu,
   /прошу\s+отменить/iu,
-  /отменить\s+(мою\s+)?(запись|приём|прием|визит)/iu,
+  /пожалуйста\s+отмен/iu,
+  /отказываюсь\s+от\s+записи/iu,
+  /снимите\s+запись/iu,
+  /уберите\s+запись/iu,
+  // English imperative / explicit desire (narrow — no bare \bcancel\b)
   /please\s+cancel/iu,
-  /cancel\s+(my|the)\s+(appointment|visit|booking|slot)/iu,
-  /i\s+(want|need)\s+to\s+cancel/iu,
-  /\bzruš(te)?\b/iu,
-  /\bcancel\b/iu,
+  /cancel\s+(?:my|the)\s+(?:appointment|visit|booking|slot)/iu,
+  /i\s+(?:want|need)\s+to\s+cancel/iu,
+  /cancel\s+it\b/iu,
+  // Czech imperatives / explicit desire
+  /zrušte\b/iu,
+  /chci\s+zrušit/iu,
+  /prosím\s+zruš/iu,
 ];
 
 export function detectExplicitCancellationRequest(message: string): boolean {
-  if (NEGATION_PATTERNS.some((re) => re.test(message))) {
+  const normalized = message.trim();
+  if (!normalized) return false;
+
+  if (FAIL_CLOSED_PATTERNS.some((re) => re.test(normalized))) {
     return false;
   }
-  return AFFIRMATIVE_PATTERNS.some((re) => re.test(message));
+
+  if (AFFIRMATIVE_PATTERNS.some((re) => re.test(normalized))) {
+    return true;
+  }
+
+  // Short standalone imperative (≤ 3 words): "cancel", "Cancel!", etc.
+  if (normalized.split(/\s+/).length <= 3 && /^\s*cancel\s*[.!?]?\s*$/iu.test(normalized)) {
+    return true;
+  }
+
+  return false;
 }

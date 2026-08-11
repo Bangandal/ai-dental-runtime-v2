@@ -1,9 +1,11 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyRequest, type FastifyReply } from "fastify";
 import OpenAI from "openai";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 import { readRuntimeServerEnv } from "./index.ts";
-import { registerRuntimeRoutes } from "./runtime/runtimeServerBootstrap.ts";
+import { registerRuntimeRoutes, createRuntimeOrchestrationDeps } from "./runtime/runtimeServerBootstrap.ts";
+import { readWhatsAppConfig } from "./runtime/whatsappConfig.ts";
+import { registerWhatsAppWebhookRoute, type WhatsAppWebhookRouteDeps } from "./runtime/whatsappWebhookRoute.ts";
 import type { RpcCaller } from "./runtime/runtimeRepositories.ts";
 import type { EmbeddingClient } from "./runtime/supabaseKnowledgeRepository.ts";
 import { createFileRuntimeTurnLogger, createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtime/runtimeTurnLogger.ts";
@@ -20,12 +22,64 @@ export interface BuildRuntimeAppDeps {
   isProduction?: boolean;
   debugEnabled?: boolean;
   telegram?: import("./runtime/runtimeServerBootstrap.ts").TelegramBootstrapConfig;
+  whatsapp?: import("./runtime/whatsappConfig.ts").WhatsAppBootstrapConfig;
 }
 
 export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
   const app = Fastify();
 
   app.get("/health", async () => ({ ok: true }));
+
+  // WhatsApp requires raw bytes for Meta signature verification.
+  // Register a raw-body content type parser in a scoped plugin so only
+  // /webhooks/whatsapp routes capture raw bytes — other routes are unaffected.
+  if (deps.whatsapp) {
+    const wa = deps.whatsapp;
+    app.register(async (scope) => {
+      // Capture raw bytes before JSON parse (scoped — does not affect other routes)
+      scope.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+        (req as unknown as Record<string, unknown>).rawBody = body as Buffer;
+        try {
+          done(null, JSON.parse((body as Buffer).toString("utf-8")));
+        } catch {
+          done(new Error("Invalid JSON"));
+        }
+      });
+
+      // Shared orchestration deps (repositories, classifiers) built once
+      const oDeps = createRuntimeOrchestrationDeps(deps);
+      const waDeps: WhatsAppWebhookRouteDeps = {
+        ...oDeps,
+        accessToken: wa.accessToken,
+        phoneNumberId: wa.phoneNumberId,
+        verifyToken: wa.verifyToken,
+        appSecret: wa.appSecret,
+        graphApiVersion: wa.graphApiVersion,
+        clinicId: wa.clinicId,
+      };
+
+      // Adapter: bridges Fastify scope to WhatsAppRouteApp interface
+      const waRouteApp = {
+        get(path: string, handler: (req: { query: Record<string, string | string[] | undefined> }, reply: FastifyReply) => Promise<void>) {
+          scope.get(path, async (request: FastifyRequest, reply: FastifyReply) => {
+            await handler({ query: request.query as Record<string, string | string[] | undefined> }, reply);
+          });
+        },
+        post(path: string, handler: (req: { body: unknown; rawBody: Buffer | null; headers: Record<string, string | string[] | undefined> }, reply: FastifyReply) => Promise<void>) {
+          scope.post(path, async (request: FastifyRequest, reply: FastifyReply) => {
+            const rawBody = (request as unknown as Record<string, unknown>).rawBody;
+            await handler({
+              body: request.body,
+              rawBody: Buffer.isBuffer(rawBody) ? rawBody : null,
+              headers: request.headers as Record<string, string | string[] | undefined>,
+            }, reply);
+          });
+        },
+      };
+
+      registerWhatsAppWebhookRoute(waRouteApp, waDeps);
+    });
+  }
 
   registerRuntimeRoutes(app, {
     openaiClient: deps.openaiClient,
@@ -101,6 +155,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
   const apiKey = env.RUNTIME_API_KEY?.trim() || undefined;
   const debugEnabled = env.RUNTIME_DEBUG_RESPONSE?.trim() === "true";
   const telegramConfig = readTelegramConfig(env, isProduction);
+  const whatsappConfig = readWhatsAppConfig(env);
 
   const app = buildRuntimeApp({
     openaiClient,
@@ -113,6 +168,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
     isProduction,
     debugEnabled,
     telegram: telegramConfig,
+    whatsapp: whatsappConfig,
   });
 
   await app.listen({ port, host });

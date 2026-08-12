@@ -97,15 +97,18 @@ export function registerWhatsAppWebhookRoute(
       };
 
       let traceId = "";
-      const result = await runRuntimeTurnOrchestrated(turn.runtimeBody, deps, { trustedChannelContact }).catch(
+      const result = await runRuntimeTurnOrchestrated(turn.runtimeBody, deps, {
+        trustedChannelContact,
+        requireInboundRegistration: true,
+      }).catch(
         (): { outcome: "error"; fallbackPayload: { final_patient_reply: string; trace_id: string } } => ({
           outcome: "error",
           fallbackPayload: { final_patient_reply: "", trace_id: "" },
         }),
       );
 
-      if (result.outcome === "duplicate") {
-        // Already processed this message ID — skip silently
+      if (result.outcome === "duplicate" || result.outcome === "inbound_registration_failed") {
+        // Already processed or registration failed (concurrent race loser) — skip silently, no patient reply
         continue;
       }
 

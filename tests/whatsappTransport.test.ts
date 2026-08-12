@@ -1418,3 +1418,123 @@ test("RPC-DEDUP-3: same WhatsApp message ID twice → runtime exactly 1, outboun
   assert.equal(serviceWrapper.runCount, 1, "runtime executes exactly once (not at most once)");
   assert.equal(sendCount, 1, "outbound send occurs exactly once (not at most once)");
 });
+
+// ── RACE-1: orchestrator requireInboundRegistration=true + registration error → runTurn=0 ──
+
+test("RACE-1: requireInboundRegistration=true + registerInboundEvent error → inbound_registration_failed, runTurn=0", async () => {
+  const serviceWrapper = makeMockRuntimeTurnService();
+
+  const errorRepo: import("../src/runtime/supabaseTurnPersistenceRepository.ts").TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_ID_UUID, clinic_id: CLINIC_ID_UUID } };
+    },
+    async registerInboundEvent() {
+      return { ok: false, error: { code: "inbound_event_persist_failed", message: "unique_violation", retryable: false } };
+    },
+    async saveMessage() { return { ok: true, data: { message_id: "msg-1" } }; },
+    async mergeConversationState() { return { ok: true, data: { ok: true } }; },
+  };
+
+  const turn = normalizeWhatsAppPayload(makeTextPayload({ messageId: "wamid.race1" }), CLINIC_ID);
+  assert.equal(turn.ok, true);
+  if (!turn.ok) return;
+  const body = turn.turns[0]!.runtimeBody;
+  const trustedCC = { phone_number: "+420111222333", phone_source: "whatsapp_sender" as const };
+
+  const result = await runRuntimeTurnOrchestrated(body, {
+    runtimeTurnService: serviceWrapper.service,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: errorRepo,
+  }, { trustedChannelContact: trustedCC, requireInboundRegistration: true });
+
+  assert.equal(result.outcome, "inbound_registration_failed");
+  assert.equal(serviceWrapper.runCount, 0, "runtime must NOT execute when registration fails");
+});
+
+// ── RACE-2: concurrent webhook race — winner accepted, loser registration error → runtime exactly 1 ──
+
+test("RACE-2: concurrent duplicate race — winner accepted, loser registration error → runtime exactly 1, send exactly 1", async () => {
+  const { app, postHandlers } = makeRouteApp();
+  let sendCount = 0;
+  const mockFetch = async (_url: string): Promise<Response> => {
+    sendCount++;
+    return new Response(JSON.stringify({ messages: [{ id: "wamid.race2.reply" }] }), { status: 200 });
+  };
+
+  let inboundCallCount = 0;
+  const raceRepo: import("../src/runtime/supabaseTurnPersistenceRepository.ts").TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_ID_UUID, clinic_id: CLINIC_ID_UUID } };
+    },
+    async registerInboundEvent() {
+      inboundCallCount++;
+      if (inboundCallCount === 1) {
+        return { ok: true, data: { inbound_event_id: "event-1", is_duplicate: false, accepted: true } };
+      }
+      // Concurrent race loser: unique_violation
+      return { ok: false, error: { code: "inbound_event_persist_failed", message: "unique_violation", retryable: false } };
+    },
+    async saveMessage() { return { ok: true, data: { message_id: "msg-race2" } }; },
+    async mergeConversationState() { return { ok: true, data: { ok: true } }; },
+  };
+  const serviceWrapper = makeMockRuntimeTurnService();
+
+  const deps = {
+    accessToken: ACCESS_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: VERIFY_TOKEN,
+    appSecret: null,
+    graphApiVersion: GRAPH_VERSION,
+    clinicId: CLINIC_ID,
+    runtimeTurnService: serviceWrapper.service,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: raceRepo,
+    fetch: mockFetch,
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+  registerWhatsAppWebhookRoute(app, deps);
+  const handler = postHandlers.get("/webhooks/whatsapp");
+  assert.ok(handler);
+
+  const payload = makeTextPayload({ messageId: "wamid.race2" });
+  const { reply: r1 } = makeReplyCapture();
+  const { reply: r2 } = makeReplyCapture();
+
+  await handler({ body: payload, rawBody: null, headers: {} }, r1);
+  await handler({ body: payload, rawBody: null, headers: {} }, r2);
+
+  assert.equal(serviceWrapper.runCount, 1, "runtime executes exactly 1 total across both deliveries");
+  assert.equal(sendCount, 1, "outbound send exactly 1 total across both deliveries");
+});
+
+// ── RACE-3: requireInboundRegistration absent → registration error does NOT block runtime ──
+
+test("RACE-3: requireInboundRegistration absent → registration error does not block runtime (existing non-WhatsApp behavior)", async () => {
+  const serviceWrapper = makeMockRuntimeTurnService();
+
+  const errorRepo: import("../src/runtime/supabaseTurnPersistenceRepository.ts").TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_ID_UUID, clinic_id: CLINIC_ID_UUID } };
+    },
+    async registerInboundEvent() {
+      return { ok: false, error: { code: "inbound_event_persist_failed", message: "db_error", retryable: true } };
+    },
+    async saveMessage() { return { ok: true, data: { message_id: "msg-1" } }; },
+    async mergeConversationState() { return { ok: true, data: { ok: true } }; },
+  };
+
+  const turn = normalizeWhatsAppPayload(makeTextPayload({ messageId: "wamid.race3" }), CLINIC_ID);
+  assert.equal(turn.ok, true);
+  if (!turn.ok) return;
+  const body = turn.turns[0]!.runtimeBody;
+
+  // No requireInboundRegistration — existing lenient behavior for non-WhatsApp paths
+  const result = await runRuntimeTurnOrchestrated(body, {
+    runtimeTurnService: serviceWrapper.service,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: errorRepo,
+  });
+
+  assert.equal(result.outcome, "success");
+  assert.equal(serviceWrapper.runCount, 1, "runtime executes even when registration fails without requireInboundRegistration");
+});

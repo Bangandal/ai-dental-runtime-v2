@@ -69,6 +69,7 @@ export interface RuntimeTurnOrchestratorDeps {
 export type RuntimeTurnOrchestratorResult =
   | { outcome: "success"; payload: RuntimeTurnHttpSuccessResponse }
   | { outcome: "duplicate" }
+  | { outcome: "inbound_registration_failed" }
   | { outcome: "invalid_request"; message: string }
   | { outcome: "clinic_not_found" }
   | { outcome: "error"; fallbackPayload: RuntimeTurnHttpSuccessResponse };
@@ -79,7 +80,7 @@ const RUNTIME_FALLBACK_REPLY =
 export async function runRuntimeTurnOrchestrated(
   body: RuntimeTurnHttpRequestBody,
   deps: RuntimeTurnOrchestratorDeps,
-  opts?: { trustedChannelContact?: ChannelContact },
+  opts?: { trustedChannelContact?: ChannelContact; requireInboundRegistration?: boolean },
 ): Promise<RuntimeTurnOrchestratorResult> {
   const startTime = Date.now();
 
@@ -182,6 +183,12 @@ export async function runRuntimeTurnOrchestrated(
         trace_id: traceId,
       }).catch(() => ({ ok: false } as const));
 
+      // When requireInboundRegistration=true (WhatsApp), fail closed on any registration error.
+      // This covers concurrent unique-violation races where the loser gets ok=false.
+      if (opts?.requireInboundRegistration && !inboundResult.ok) {
+        return { outcome: "inbound_registration_failed" };
+      }
+
       // Use authoritative RPC flags: is_duplicate=true or accepted=false means this event was already registered.
       // A non-null inbound_event_id on a duplicate must NOT allow the runtime turn to execute.
       if (inboundResult.ok && (inboundResult.data.is_duplicate === true || inboundResult.data.accepted === false)) {
@@ -211,6 +218,10 @@ export async function runRuntimeTurnOrchestrated(
     } else {
       persistenceDebug.inbound_event = { ok: false, skipped: true, reason: "contact_unavailable" };
       persistenceDebug.save_user_message = { ok: false, skipped: true, reason: "contact_unavailable" };
+      // When requireInboundRegistration=true, contact unavailability also blocks business execution.
+      if (opts?.requireInboundRegistration) {
+        return { outcome: "inbound_registration_failed" };
+      }
     }
   }
 

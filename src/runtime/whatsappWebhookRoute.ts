@@ -1,4 +1,4 @@
-import { normalizeWhatsAppPayload, verifyWhatsAppSignature } from "./whatsappWebhookAdapter.ts";
+import { normalizeWhatsAppPayload, normalizeWhatsAppPhone, verifyWhatsAppSignature } from "./whatsappWebhookAdapter.ts";
 import { sendWhatsAppMessage } from "./whatsappSender.ts";
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 
@@ -58,8 +58,13 @@ export function registerWhatsAppWebhookRoute(
 
   // POST — incoming webhook events
   app.post("/webhooks/whatsapp", async (request, reply) => {
-    // Signature verification (when app secret is configured and raw bytes are available)
-    if (deps.appSecret && request.rawBody !== null) {
+    // BLOCKER 2: Fail closed when app secret is configured.
+    if (deps.appSecret) {
+      // Raw body unavailable — cannot verify signature, must reject.
+      if (request.rawBody === null) {
+        reply.code(400).send({ error: "Raw body unavailable for signature verification" });
+        return;
+      }
       const sigHeader = asHeaderString(request.headers["x-hub-signature-256"]);
       const sigResult = verifyWhatsAppSignature({
         rawBody: request.rawBody,
@@ -82,7 +87,17 @@ export function registerWhatsAppWebhookRoute(
 
     // Process each text message turn independently
     for (const turn of normalized.turns) {
-      const result = await runRuntimeTurnOrchestrated(turn.runtimeBody, deps).catch(
+      // BLOCKER 1: Pass trusted WhatsApp sender identity as internal channel_contact.
+      // This parameter is NOT accepted from the public /runtime/turn HTTP body.
+      const trustedChannelContact = {
+        phone_number: normalizeWhatsAppPhone(turn.waId),
+        phone_source: "whatsapp_sender" as const,
+        phone_consent: false as const,
+        phone_collected_at: new Date().toISOString(),
+      };
+
+      let traceId = "";
+      const result = await runRuntimeTurnOrchestrated(turn.runtimeBody, deps, { trustedChannelContact }).catch(
         (): { outcome: "error"; fallbackPayload: { final_patient_reply: string; trace_id: string } } => ({
           outcome: "error",
           fallbackPayload: { final_patient_reply: "", trace_id: "" },
@@ -98,8 +113,10 @@ export function registerWhatsAppWebhookRoute(
 
       if (result.outcome === "success") {
         replyText = result.payload.final_patient_reply || null;
+        traceId = result.payload.trace_id;
       } else if (result.outcome === "error") {
         replyText = result.fallbackPayload.final_patient_reply || null;
+        traceId = result.fallbackPayload.trace_id;
       }
       // invalid_request / clinic_not_found — no patient reply
 
@@ -109,17 +126,29 @@ export function registerWhatsAppWebhookRoute(
       }
 
       // Outbound — failure here must NOT re-invoke the runtime
-      await sendWhatsAppMessage({
+      const sendResult = await sendWhatsAppMessage({
         accessToken: deps.accessToken,
         phoneNumberId: deps.phoneNumberId,
         graphApiVersion: deps.graphApiVersion,
         to: turn.waId,
         text: replyText,
         fetch: deps.fetch,
-      }).catch(() => {
-        // Delivery failure recorded implicitly — runtime already completed.
-        // Do NOT retry runtime. Safe retry architecture is a follow-up concern.
-      });
+      }).catch((err: unknown): import("./whatsappSender.ts").WhatsAppSendResult => ({
+        ok: false,
+        error: err instanceof Error ? err.message : "send_exception",
+      }));
+
+      // BLOCKER 5: Record delivery outcome. Never log secrets or patient text.
+      void deps.runtimeTurnLogger?.logDelivery({
+        ts: new Date().toISOString(),
+        trace_id: traceId,
+        channel: "whatsapp",
+        ok: sendResult.ok,
+        retry_count: 0,
+        provider_message_id: sendResult.ok ? sendResult.messageId : undefined,
+        status: undefined,
+        error_code: sendResult.ok ? undefined : (sendResult.error ? "whatsapp_send_failed" : undefined),
+      }).catch(() => undefined);
     }
 
     // Always ack 200 to Meta to prevent webhook redelivery

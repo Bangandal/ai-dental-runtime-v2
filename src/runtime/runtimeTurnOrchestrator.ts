@@ -79,6 +79,7 @@ const RUNTIME_FALLBACK_REPLY =
 export async function runRuntimeTurnOrchestrated(
   body: RuntimeTurnHttpRequestBody,
   deps: RuntimeTurnOrchestratorDeps,
+  opts?: { trustedChannelContact?: ChannelContact },
 ): Promise<RuntimeTurnOrchestratorResult> {
   const startTime = Date.now();
 
@@ -293,7 +294,7 @@ export async function runRuntimeTurnOrchestrated(
         runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
         runtimeContextDebug.topic_memory = runtimeContextResult.data.topic_memory ?? null;
 
-        const channelContactForCase = runtimeContextResult.data.channel_contact;
+        const channelContactForCase = runtimeContextResult.data.channel_contact ?? opts?.trustedChannelContact ?? null;
         const existingProvidedPhone = runtimeContextResult.data.provided_phone ?? null;
 
         // Always try to extract a typed phone from the current message.
@@ -411,6 +412,13 @@ export async function runRuntimeTurnOrchestrated(
       runtimeContextDebug.loaded = false;
       runtimeContextDebug.error = { code: "runtime_context_exception", message: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  // BLOCKER 1: Use trustedChannelContact when no persisted channel_contact was available.
+  // This is an internal-only trusted boundary: passed by WhatsApp transport via opts,
+  // not accepted from the public /runtime/turn HTTP request body.
+  if (!runtimeTurnInput.channel_contact && opts?.trustedChannelContact) {
+    runtimeTurnInput.channel_contact = opts.trustedChannelContact;
   }
 
   if (loadedCaseContext && !(runtimeTurnInput.business_context as Record<string, unknown>).runtime_context) {

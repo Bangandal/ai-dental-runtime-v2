@@ -155,7 +155,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
   const apiKey = env.RUNTIME_API_KEY?.trim() || undefined;
   const debugEnabled = env.RUNTIME_DEBUG_RESPONSE?.trim() === "true";
   const telegramConfig = readTelegramConfig(env, isProduction);
-  const whatsappConfig = readWhatsAppConfig(env);
+  const whatsappConfig = readWhatsAppConfig(env, isProduction);
 
   const app = buildRuntimeApp({
     openaiClient,

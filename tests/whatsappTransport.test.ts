@@ -8,9 +8,12 @@ import {
   normalizeWhatsAppPhone,
 } from "../src/runtime/whatsappWebhookAdapter.ts";
 import { registerWhatsAppWebhookRoute } from "../src/runtime/whatsappWebhookRoute.ts";
-import { loadWhatsAppConfig } from "../src/runtime/whatsappConfig.ts";
+import { loadWhatsAppConfig, readWhatsAppConfigResult } from "../src/runtime/whatsappConfig.ts";
 import type { RuntimeTurnOrchestratorResult } from "../src/runtime/runtimeTurnOrchestrator.ts";
+import { runRuntimeTurnOrchestrated } from "../src/runtime/runtimeTurnOrchestrator.ts";
 import type { WhatsAppRouteApp, WhatsAppGetRequest, WhatsAppPostRequest, WhatsAppWebhookReply } from "../src/runtime/whatsappWebhookRoute.ts";
+import type { RuntimeTurnInput } from "../src/runtime/runtimeTurnService.ts";
+import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -635,4 +638,657 @@ test("clinic_code in normalized body equals configured WHATSAPP_CLINIC_ID", () =
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(result.turns[0]!.runtimeBody.clinic_code, "my_clinic");
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WA-FIX tests — blocker regression suite
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Helpers for WA-FIX integration tests ─────────────────────────────────────
+
+const CLINIC_ID_UUID = "11111111-1111-1111-8111-111111111111";
+const CONTACT_ID_UUID = "22222222-2222-1222-8222-222222222222";
+
+function makeMockClinicIdentityResolver() {
+  return {
+    resolveClinicIdentity: async (_input: { clinic_identifier: string }) => ({
+      ok: true as const,
+      data: { clinic_id: CLINIC_ID_UUID, clinic_code: CLINIC_ID },
+    }),
+  };
+}
+
+function makeMockTurnPersistenceRepo(opts: { duplicateOnSecondCall?: boolean } = {}): {
+  repo: TurnPersistenceRepository;
+  inboundCallCount: number;
+} {
+  const state = { inboundCallCount: 0 };
+  const repo: TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_ID_UUID, clinic_id: CLINIC_ID_UUID } };
+    },
+    async registerInboundEvent() {
+      state.inboundCallCount += 1;
+      const isDuplicate = opts.duplicateOnSecondCall && state.inboundCallCount > 1;
+      return { ok: true, data: { inbound_event_id: isDuplicate ? null : "evt-1" } };
+    },
+    async saveMessage() {
+      return { ok: true, data: { message_id: "msg-1" } };
+    },
+    async mergeConversationState() {
+      return { ok: true, data: { ok: true } };
+    },
+  };
+  return { repo, get inboundCallCount() { return state.inboundCallCount; } };
+}
+
+function makeMockRuntimeTurnService(): {
+  service: import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService;
+  capturedInputs: RuntimeTurnInput[];
+  runCount: number;
+} {
+  const capturedInputs: RuntimeTurnInput[] = [];
+  let runCount = 0;
+  const service: import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService = {
+    async runTurn(input: RuntimeTurnInput) {
+      runCount++;
+      capturedInputs.push(input);
+      return {
+        final_patient_reply: "Ваш вопрос принят.",
+        tool_requests: [],
+        tool_results: [],
+        debug: {},
+      };
+    },
+  };
+  return { service, capturedInputs, get runCount() { return runCount; } };
+}
+
+function makeMockDeliveryLogger(): {
+  logger: import("../src/runtime/runtimeTurnLogger.ts").RuntimeTurnLogger;
+  deliveryEvents: import("../src/runtime/runtimeTurnLogger.ts").TelegramDeliveryLogEvent[];
+} {
+  const deliveryEvents: import("../src/runtime/runtimeTurnLogger.ts").TelegramDeliveryLogEvent[] = [];
+  return {
+    logger: {
+      async logTurn() {},
+      async logError() {},
+      async logDelivery(event) { deliveryEvents.push(event); },
+    },
+    deliveryEvents,
+  };
+}
+
+function makeDepsWithOrchestrator(opts: {
+  reply?: string;
+  duplicateOnSecondCall?: boolean;
+  runtimeService?: import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService;
+  logger?: import("../src/runtime/runtimeTurnLogger.ts").RuntimeTurnLogger;
+  fetchFn?: typeof globalThis.fetch;
+  appSecret?: string | null;
+}) {
+  const { repo } = makeMockTurnPersistenceRepo({ duplicateOnSecondCall: opts.duplicateOnSecondCall });
+  const serviceWrapper = makeMockRuntimeTurnService();
+  const runtimeTurnService = opts.runtimeService ?? serviceWrapper.service;
+
+  return {
+    accessToken: ACCESS_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: VERIFY_TOKEN,
+    appSecret: opts.appSecret ?? null,
+    graphApiVersion: GRAPH_VERSION,
+    clinicId: CLINIC_ID,
+    runtimeTurnService,
+    runtimeTurnLogger: opts.logger,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: repo,
+    fetch: opts.fetchFn ?? (async () => new Response(
+      JSON.stringify({ messages: [{ id: "wamid.reply123" }] }),
+      { status: 200 },
+    )),
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+}
+
+// ── WA-FIX-1: First WhatsApp turn → trusted channel_contact reaches runtime ──
+
+test("WA-FIX-1: first WhatsApp turn passes trusted channel_contact.phone_source=whatsapp_sender to runtime", async () => {
+  const captured: RuntimeTurnInput[] = [];
+  const runtimeTurnService: import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService = {
+    async runTurn(input) {
+      captured.push(input);
+      return { final_patient_reply: "OK", tool_requests: [], tool_results: [] };
+    },
+  };
+
+  // Use runRuntimeTurnOrchestrated directly with trustedChannelContact (no persisted state)
+  const body = normalizeWhatsAppPayload(makeTextPayload({ waId: "420111222333" }), CLINIC_ID);
+  assert.equal(body.ok, true);
+  if (!body.ok) return;
+  const turn = body.turns[0]!;
+
+  const trustedChannelContact = {
+    phone_number: normalizeWhatsAppPhone(turn.waId),
+    phone_source: "whatsapp_sender" as const,
+    phone_consent: false as const,
+    phone_collected_at: new Date().toISOString(),
+  };
+
+  const { repo } = makeMockTurnPersistenceRepo();
+
+  await runRuntimeTurnOrchestrated(
+    turn.runtimeBody,
+    {
+      runtimeTurnService,
+      clinicIdentityResolver: makeMockClinicIdentityResolver(),
+      turnPersistenceRepository: repo,
+      // No runtimeContextRepository → no persisted channel_contact
+    },
+    { trustedChannelContact },
+  );
+
+  assert.equal(captured.length, 1, "runtimeTurnService.runTurn called once");
+  const input = captured[0]!;
+  assert.equal(input.channel_contact?.phone_source, "whatsapp_sender", "trusted phone_source=whatsapp_sender");
+  assert.equal(input.channel_contact?.phone_number, "+420111222333", "trusted phone_number from wa_id");
+});
+
+// ── WA-FIX-2: Typed phone cannot override trusted sender identity ─────────────
+
+test("WA-FIX-2: patient text containing different phone cannot override trusted WhatsApp sender identity", async () => {
+  const captured: RuntimeTurnInput[] = [];
+  const runtimeTurnService: import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService = {
+    async runTurn(input) {
+      captured.push(input);
+      return { final_patient_reply: "OK", tool_requests: [], tool_results: [] };
+    },
+  };
+
+  const senderWaId = "420111222333";
+  const body = normalizeWhatsAppPayload(
+    makeTextPayload({ waId: senderWaId, text: "My number is +420999888777" }),
+    CLINIC_ID,
+  );
+  assert.equal(body.ok, true);
+  if (!body.ok) return;
+  const turn = body.turns[0]!;
+
+  const trustedChannelContact = {
+    phone_number: normalizeWhatsAppPhone(turn.waId),
+    phone_source: "whatsapp_sender" as const,
+    phone_consent: false as const,
+    phone_collected_at: new Date().toISOString(),
+  };
+
+  const { repo } = makeMockTurnPersistenceRepo();
+
+  await runRuntimeTurnOrchestrated(
+    turn.runtimeBody,
+    {
+      runtimeTurnService,
+      clinicIdentityResolver: makeMockClinicIdentityResolver(),
+      turnPersistenceRepository: repo,
+    },
+    { trustedChannelContact },
+  );
+
+  assert.equal(captured.length, 1);
+  const input = captured[0]!;
+  // Trusted identity must remain the WhatsApp sender, not the typed number
+  assert.equal(input.channel_contact?.phone_number, "+420111222333");
+  assert.equal(input.channel_contact?.phone_source, "whatsapp_sender");
+  // The typed phone goes to provided_phone (unverified), NOT to channel_contact
+  assert.notEqual(input.channel_contact?.phone_number, "+420999888777");
+});
+
+// ── WA-FIX-3: Production + WhatsApp enabled + missing APP_SECRET → config failure
+
+test("WA-FIX-3: production mode + WhatsApp enabled + missing WHATSAPP_APP_SECRET → config failure", () => {
+  const result = readWhatsAppConfigResult(
+    {
+      WHATSAPP_ACCESS_TOKEN: "tok",
+      WHATSAPP_PHONE_NUMBER_ID: "123",
+      WHATSAPP_VERIFY_TOKEN: "vt",
+      WHATSAPP_GRAPH_API_VERSION: "v19.0",
+      WHATSAPP_CLINIC_ID: "clinic_1",
+      // WHATSAPP_APP_SECRET absent
+    },
+    true, // isProduction
+  );
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "partial_config");
+  assert.ok(result.missing.includes("WHATSAPP_APP_SECRET"), "APP_SECRET required in production");
+});
+
+// ── WA-FIX-4: appSecret configured + rawBody null → reject before runtime ────
+
+test("WA-FIX-4: appSecret configured + rawBody null → rejected before runtime, zero runtime calls", async () => {
+  const { app, postHandlers } = makeRouteApp();
+  let runtimeCalls = 0;
+  const deps = {
+    ...makeDepsWithOrchestrator({ appSecret: APP_SECRET }),
+    runtimeTurnService: {
+      runTurn: async () => { runtimeCalls++; return { final_patient_reply: "", tool_requests: [], tool_results: [] }; },
+    } as import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService,
+    appSecret: APP_SECRET,
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+  registerWhatsAppWebhookRoute(app, deps);
+  const handler = postHandlers.get("/webhooks/whatsapp");
+  assert.ok(handler);
+
+  const { reply, getState } = makeReplyCapture();
+  await handler({
+    body: makeTextPayload(),
+    rawBody: null, // rawBody unavailable
+    headers: {},
+  }, reply);
+
+  assert.equal(getState().statusCode, 400, "must reject with 400 when rawBody null");
+  assert.equal(runtimeCalls, 0, "runtime must not be invoked");
+});
+
+// ── WA-FIX-5: Partial WhatsApp config → fail fast ────────────────────────────
+
+test("WA-FIX-5: partial WhatsApp config (only ACCESS_TOKEN) → fail fast", () => {
+  assert.throws(
+    () => {
+      // readWhatsAppConfig throws on partial config
+      const env = { WHATSAPP_ACCESS_TOKEN: "tok" };
+      // simulate what readWhatsAppConfig does: call readWhatsAppConfigResult and throw
+      const result = readWhatsAppConfigResult(env);
+      if (!result.ok && result.reason === "partial_config") {
+        throw new Error(`Missing: ${result.missing.join(", ")}`);
+      }
+    },
+    /Missing/,
+    "partial config must throw",
+  );
+});
+
+// ── WA-FIX-6: WHATSAPP_GRAPH_API_VERSION missing → fail fast, no hardcoded default
+
+test("WA-FIX-6: WHATSAPP_GRAPH_API_VERSION missing → config fails, no hardcoded fallback", () => {
+  const result = readWhatsAppConfigResult({
+    WHATSAPP_ACCESS_TOKEN: "tok",
+    WHATSAPP_PHONE_NUMBER_ID: "123",
+    WHATSAPP_VERIFY_TOKEN: "vt",
+    WHATSAPP_CLINIC_ID: "clinic_1",
+    // WHATSAPP_GRAPH_API_VERSION absent
+  });
+  assert.equal(result.ok, false);
+  if (result.ok) return;
+  assert.equal(result.reason, "partial_config");
+  assert.ok(result.missing.includes("WHATSAPP_GRAPH_API_VERSION"), "version var must be required");
+});
+
+// ── WA-FIX-7: Same message ID twice → runtime executes at most once ──────────
+
+test("WA-FIX-7: same WhatsApp message ID delivered twice → runtime executes exactly once", async () => {
+  const serviceWrapper = makeMockRuntimeTurnService();
+  const { repo } = makeMockTurnPersistenceRepo({ duplicateOnSecondCall: true });
+
+  const turn = normalizeWhatsAppPayload(makeTextPayload({ messageId: "wamid.dedup123" }), CLINIC_ID);
+  assert.equal(turn.ok, true);
+  if (!turn.ok) return;
+  const body = turn.turns[0]!.runtimeBody;
+  const trustedCC = { phone_number: "+420111222333", phone_source: "whatsapp_sender" as const };
+
+  const depsMixed = {
+    runtimeTurnService: serviceWrapper.service,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: repo,
+  };
+
+  // First delivery
+  await runRuntimeTurnOrchestrated(body, depsMixed, { trustedChannelContact: trustedCC });
+  // Second delivery (same message_id → registerInboundEvent returns null → duplicate)
+  await runRuntimeTurnOrchestrated(body, depsMixed, { trustedChannelContact: trustedCC });
+
+  assert.equal(serviceWrapper.runCount, 1, "runtime must execute exactly once");
+});
+
+// ── WA-FIX-8: Same message ID twice → outbound send at most once ─────────────
+
+test("WA-FIX-8: same WhatsApp message ID twice via route → outbound send at most once", async () => {
+  const { app, postHandlers } = makeRouteApp();
+  let sendCount = 0;
+  const mockFetch = async (_url: string): Promise<Response> => {
+    sendCount++;
+    return new Response(JSON.stringify({ messages: [{ id: "wamid.reply" }] }), { status: 200 });
+  };
+
+  const { repo } = makeMockTurnPersistenceRepo({ duplicateOnSecondCall: true });
+  const serviceWrapper = makeMockRuntimeTurnService();
+
+  const deps = {
+    accessToken: ACCESS_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: VERIFY_TOKEN,
+    appSecret: null,
+    graphApiVersion: GRAPH_VERSION,
+    clinicId: CLINIC_ID,
+    runtimeTurnService: serviceWrapper.service,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: repo,
+    fetch: mockFetch,
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+  registerWhatsAppWebhookRoute(app, deps);
+  const handler = postHandlers.get("/webhooks/whatsapp");
+  assert.ok(handler);
+
+  const payload = makeTextPayload({ messageId: "wamid.dedup456" });
+  const { reply: r1 } = makeReplyCapture();
+  const { reply: r2 } = makeReplyCapture();
+
+  await handler({ body: payload, rawBody: null, headers: {} }, r1);
+  await handler({ body: payload, rawBody: null, headers: {} }, r2);
+
+  assert.equal(serviceWrapper.runCount, 1, "runtime executes at most once");
+  assert.ok(sendCount <= 1, "outbound send occurs at most once");
+});
+
+// ── WA-FIX-9: Outbound success → delivery observer receives ok=true ───────────
+
+test("WA-FIX-9: successful runtime + successful WhatsApp send → delivery observer ok=true with provider_message_id", async () => {
+  const { app, postHandlers } = makeRouteApp();
+  const { logger, deliveryEvents } = makeMockDeliveryLogger();
+
+  const mockFetch = async (): Promise<Response> =>
+    new Response(JSON.stringify({ messages: [{ id: "wamid.provider123" }] }), { status: 200 });
+
+  const deps = {
+    ...makeDepsWithOrchestrator({ fetchFn: mockFetch }),
+    runtimeTurnLogger: logger,
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+  registerWhatsAppWebhookRoute(app, deps);
+  const handler = postHandlers.get("/webhooks/whatsapp");
+  assert.ok(handler);
+
+  const { reply } = makeReplyCapture();
+  await handler({ body: makeTextPayload(), rawBody: null, headers: {} }, reply);
+
+  // Wait a tick for async logDelivery
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  const waDelivery = deliveryEvents.find((e) => e.channel === "whatsapp");
+  assert.ok(waDelivery, "delivery event should be recorded");
+  assert.equal(waDelivery?.ok, true, "delivery ok must be true");
+  assert.equal(waDelivery?.provider_message_id, "wamid.provider123", "provider_message_id captured");
+});
+
+// ── WA-FIX-10: Outbound HTTP error → runtime count = 1, delivery failure recorded
+
+test("WA-FIX-10: runtime executes once, Graph API non-2xx → delivery failure recorded, runtime count = 1", async () => {
+  const { app, postHandlers } = makeRouteApp();
+  const { logger, deliveryEvents } = makeMockDeliveryLogger();
+  const serviceWrapper = makeMockRuntimeTurnService();
+
+  const mockFetch = async (): Promise<Response> =>
+    new Response("error", { status: 500 });
+
+  const { repo } = makeMockTurnPersistenceRepo();
+  const deps = {
+    accessToken: ACCESS_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: VERIFY_TOKEN,
+    appSecret: null,
+    graphApiVersion: GRAPH_VERSION,
+    clinicId: CLINIC_ID,
+    runtimeTurnService: serviceWrapper.service,
+    runtimeTurnLogger: logger,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: repo,
+    fetch: mockFetch,
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+  registerWhatsAppWebhookRoute(app, deps);
+  const handler = postHandlers.get("/webhooks/whatsapp");
+  assert.ok(handler);
+
+  const { reply } = makeReplyCapture();
+  await handler({ body: makeTextPayload(), rawBody: null, headers: {} }, reply);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(serviceWrapper.runCount, 1, "runtime executes exactly once");
+  const waDelivery = deliveryEvents.find((e) => e.channel === "whatsapp");
+  assert.ok(waDelivery, "delivery event recorded");
+  assert.equal(waDelivery?.ok, false, "delivery ok=false on HTTP error");
+});
+
+// ── WA-FIX-11: Outbound timeout → runtime exactly once, delivery failure recorded
+
+test("WA-FIX-11: outbound timeout → runtime exactly once, delivery failure recorded", async () => {
+  const { app, postHandlers } = makeRouteApp();
+  const { logger, deliveryEvents } = makeMockDeliveryLogger();
+  const serviceWrapper = makeMockRuntimeTurnService();
+
+  const mockFetch = async (): Promise<Response> => {
+    throw Object.assign(new Error("The operation was aborted"), { name: "AbortError" });
+  };
+
+  const { repo } = makeMockTurnPersistenceRepo();
+  const deps = {
+    accessToken: ACCESS_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: VERIFY_TOKEN,
+    appSecret: null,
+    graphApiVersion: GRAPH_VERSION,
+    clinicId: CLINIC_ID,
+    runtimeTurnService: serviceWrapper.service,
+    runtimeTurnLogger: logger,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: repo,
+    fetch: mockFetch,
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+  registerWhatsAppWebhookRoute(app, deps);
+  const handler = postHandlers.get("/webhooks/whatsapp");
+  assert.ok(handler);
+
+  const { reply } = makeReplyCapture();
+  await handler({ body: makeTextPayload(), rawBody: null, headers: {} }, reply);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.equal(serviceWrapper.runCount, 1, "runtime executes exactly once");
+  const waDelivery = deliveryEvents.find((e) => e.channel === "whatsapp");
+  assert.ok(waDelivery, "delivery failure event recorded");
+  assert.equal(waDelivery?.ok, false, "delivery ok=false on timeout");
+});
+
+// ── WA-FIX-12: Actual Fastify signed webhook → raw-body HMAC works end-to-end
+
+test("WA-FIX-12: actual Fastify app with signed JSON request → raw-body HMAC accepted end-to-end", async () => {
+  const Fastify = (await import("fastify")).default;
+  const app = Fastify();
+
+  // Scoped raw-body content type parser (mirrors main.ts)
+  await app.register(async (scope) => {
+    scope.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+      (req as unknown as Record<string, unknown>).rawBody = body as Buffer;
+      try {
+        done(null, JSON.parse((body as Buffer).toString("utf-8")));
+      } catch {
+        done(new Error("Invalid JSON"));
+      }
+    });
+
+    let runtimeCalls = 0;
+    const waRouteApp: import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppRouteApp = {
+      get(path, handler) {
+        scope.get(path, async (req, reply) => {
+          await handler({ query: req.query as Record<string, string | string[] | undefined> }, reply);
+        });
+      },
+      post(path, handler) {
+        scope.post(path, async (req, reply) => {
+          const rawBody = (req as unknown as Record<string, unknown>).rawBody;
+          await handler({
+            body: req.body,
+            rawBody: Buffer.isBuffer(rawBody) ? rawBody : null,
+            headers: req.headers as Record<string, string | string[] | undefined>,
+          }, reply);
+        });
+      },
+    };
+
+    const { repo } = makeMockTurnPersistenceRepo();
+    const deps = {
+      accessToken: ACCESS_TOKEN,
+      phoneNumberId: PHONE_NUMBER_ID,
+      verifyToken: VERIFY_TOKEN,
+      appSecret: APP_SECRET,
+      graphApiVersion: GRAPH_VERSION,
+      clinicId: CLINIC_ID,
+      runtimeTurnService: {
+        runTurn: async () => { runtimeCalls++; return { final_patient_reply: "ok", tool_requests: [], tool_results: [] }; },
+      } as import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService,
+      clinicIdentityResolver: makeMockClinicIdentityResolver(),
+      turnPersistenceRepository: repo,
+      fetch: async () => new Response(JSON.stringify({ messages: [{ id: "wamid.r" }] }), { status: 200 }),
+    } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+    registerWhatsAppWebhookRoute(waRouteApp, deps);
+    (scope as unknown as Record<string, unknown>)._runtimeCalls = () => runtimeCalls;
+  });
+
+  await app.ready();
+
+  const bodyStr = JSON.stringify(makeTextPayload());
+  const sig = signPayload(bodyStr, APP_SECRET);
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/webhooks/whatsapp",
+    payload: bodyStr,
+    headers: {
+      "content-type": "application/json",
+      "x-hub-signature-256": sig,
+    },
+  });
+
+  assert.equal(response.statusCode, 200, "signed request must be accepted");
+  await app.close();
+});
+
+// ── WA-FIX-13: Invalid signature via actual Fastify → zero runtime calls ─────
+
+test("WA-FIX-13: invalid signature via actual Fastify route → rejected before runtime", async () => {
+  const Fastify = (await import("fastify")).default;
+  const app = Fastify();
+
+  let runtimeCalls = 0;
+
+  await app.register(async (scope) => {
+    scope.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+      (req as unknown as Record<string, unknown>).rawBody = body as Buffer;
+      try { done(null, JSON.parse((body as Buffer).toString("utf-8"))); }
+      catch { done(new Error("Invalid JSON")); }
+    });
+
+    const waRouteApp: import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppRouteApp = {
+      get(path, handler) { scope.get(path, async (req, reply) => handler({ query: req.query as Record<string, string | string[] | undefined> }, reply)); },
+      post(path, handler) {
+        scope.post(path, async (req, reply) => {
+          const rawBody = (req as unknown as Record<string, unknown>).rawBody;
+          await handler({ body: req.body, rawBody: Buffer.isBuffer(rawBody) ? rawBody : null, headers: req.headers as Record<string, string | string[] | undefined> }, reply);
+        });
+      },
+    };
+
+    const { repo } = makeMockTurnPersistenceRepo();
+    const deps = {
+      accessToken: ACCESS_TOKEN,
+      phoneNumberId: PHONE_NUMBER_ID,
+      verifyToken: VERIFY_TOKEN,
+      appSecret: APP_SECRET,
+      graphApiVersion: GRAPH_VERSION,
+      clinicId: CLINIC_ID,
+      runtimeTurnService: {
+        runTurn: async () => { runtimeCalls++; return { final_patient_reply: "ok", tool_requests: [], tool_results: [] }; },
+      } as import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService,
+      clinicIdentityResolver: makeMockClinicIdentityResolver(),
+      turnPersistenceRepository: repo,
+      fetch: async () => new Response("{}", { status: 200 }),
+    } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+    registerWhatsAppWebhookRoute(waRouteApp, deps);
+  });
+
+  await app.ready();
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/webhooks/whatsapp",
+    payload: JSON.stringify(makeTextPayload()),
+    headers: {
+      "content-type": "application/json",
+      "x-hub-signature-256": "sha256=invalidsignature",
+    },
+  });
+
+  assert.equal(response.statusCode, 401, "invalid signature must be rejected");
+  assert.equal(runtimeCalls, 0, "runtime must not be invoked on invalid signature");
+  await app.close();
+});
+
+// ── WA-FIX-14: Empty runtime reply → zero outbound sends ─────────────────────
+
+test("WA-FIX-14: empty final_patient_reply from runtime → zero outbound WhatsApp sends", async () => {
+  const { app, postHandlers } = makeRouteApp();
+  let sendCount = 0;
+  const mockFetch = async (): Promise<Response> => { sendCount++; return new Response("{}", { status: 200 }); };
+
+  const emptyService: import("../src/runtime/runtimeTurnService.ts").RuntimeTurnService = {
+    async runTurn() {
+      return { final_patient_reply: "", tool_requests: [], tool_results: [] };
+    },
+  };
+
+  const { repo } = makeMockTurnPersistenceRepo();
+  const deps = {
+    accessToken: ACCESS_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: VERIFY_TOKEN,
+    appSecret: null,
+    graphApiVersion: GRAPH_VERSION,
+    clinicId: CLINIC_ID,
+    runtimeTurnService: emptyService,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: repo,
+    fetch: mockFetch,
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+  registerWhatsAppWebhookRoute(app, deps);
+  const handler = postHandlers.get("/webhooks/whatsapp");
+  assert.ok(handler);
+
+  const { reply } = makeReplyCapture();
+  await handler({ body: makeTextPayload(), rawBody: null, headers: {} }, reply);
+
+  assert.equal(sendCount, 0, "zero sends for empty reply");
+});
+
+// ── WA-FIX-15: Telegram transport non-regression ─────────────────────────────
+
+test("WA-FIX-15: Telegram transport non-regression — normalizeTelegramUpdate still works", async () => {
+  const { normalizeTelegramUpdate } = await import("../src/runtime/telegramWebhookAdapter.ts");
+  const result = normalizeTelegramUpdate(
+    {
+      update_id: 999,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 200, username: "patient" },
+        text: "Запишите меня",
+      },
+    },
+    "clinic_1",
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.type, "text");
+  assert.equal(result.body.channel, "telegram");
 });

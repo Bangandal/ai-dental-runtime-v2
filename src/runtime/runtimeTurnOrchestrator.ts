@@ -182,8 +182,9 @@ export async function runRuntimeTurnOrchestrated(
         trace_id: traceId,
       }).catch(() => ({ ok: false } as const));
 
-      // null inbound_event_id indicates the event was already registered (duplicate update/message).
-      if (inboundResult.ok && inboundResult.data.inbound_event_id === null) {
+      // Use authoritative RPC flags: is_duplicate=true or accepted=false means this event was already registered.
+      // A non-null inbound_event_id on a duplicate must NOT allow the runtime turn to execute.
+      if (inboundResult.ok && (inboundResult.data.is_duplicate === true || inboundResult.data.accepted === false)) {
         return { outcome: "duplicate" };
       }
 

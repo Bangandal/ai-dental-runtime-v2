@@ -366,9 +366,10 @@ function makePersistenceHarness(opts: {
     async registerInboundEvent(input) {
       inboundEventCalls.push(input);
       if (opts.dedupeReturnsNull) {
-        return { ok: true, data: { inbound_event_id: null } };
+        // Real RPC duplicate shape: is_duplicate=true, accepted=false, existing event ID
+        return { ok: true, data: { inbound_event_id: "evt_dup_existing", is_duplicate: true, accepted: false } };
       }
-      return { ok: true, data: { inbound_event_id: "evt_123" } };
+      return { ok: true, data: { inbound_event_id: "evt_123", is_duplicate: false, accepted: true } };
     },
     async saveMessage(input) {
       saveMessageCalls.push(input);

@@ -670,7 +670,11 @@ function makeMockTurnPersistenceRepo(opts: { duplicateOnSecondCall?: boolean } =
     async registerInboundEvent() {
       state.inboundCallCount += 1;
       const isDuplicate = opts.duplicateOnSecondCall && state.inboundCallCount > 1;
-      return { ok: true, data: { inbound_event_id: isDuplicate ? null : "evt-1" } };
+      if (isDuplicate) {
+        // Real RPC shape for duplicates: is_duplicate=true, accepted=false, existing inbound_event_id
+        return { ok: true, data: { inbound_event_id: "evt-existing-uuid", is_duplicate: true, accepted: false } };
+      }
+      return { ok: true, data: { inbound_event_id: "evt-1", is_duplicate: false, accepted: true } };
     },
     async saveMessage() {
       return { ok: true, data: { message_id: "msg-1" } };
@@ -942,10 +946,10 @@ test("WA-FIX-7: same WhatsApp message ID delivered twice → runtime executes ex
 
   // First delivery
   await runRuntimeTurnOrchestrated(body, depsMixed, { trustedChannelContact: trustedCC });
-  // Second delivery (same message_id → registerInboundEvent returns null → duplicate)
+  // Second delivery (same message_id → registerInboundEvent returns is_duplicate=true, accepted=false → duplicate)
   await runRuntimeTurnOrchestrated(body, depsMixed, { trustedChannelContact: trustedCC });
 
-  assert.equal(serviceWrapper.runCount, 1, "runtime must execute exactly once");
+  assert.equal(serviceWrapper.runCount, 1, "runtime must execute exactly once (not at most once)");
 });
 
 // ── WA-FIX-8: Same message ID twice → outbound send at most once ─────────────
@@ -985,8 +989,8 @@ test("WA-FIX-8: same WhatsApp message ID twice via route → outbound send at mo
   await handler({ body: payload, rawBody: null, headers: {} }, r1);
   await handler({ body: payload, rawBody: null, headers: {} }, r2);
 
-  assert.equal(serviceWrapper.runCount, 1, "runtime executes at most once");
-  assert.ok(sendCount <= 1, "outbound send occurs at most once");
+  assert.equal(serviceWrapper.runCount, 1, "runtime executes exactly once (not at most once)");
+  assert.equal(sendCount, 1, "outbound send occurs exactly once (not at most once)");
 });
 
 // ── WA-FIX-9: Outbound success → delivery observer receives ok=true ───────────
@@ -1291,4 +1295,126 @@ test("WA-FIX-15: Telegram transport non-regression — normalizeTelegramUpdate s
   if (!result.ok) return;
   assert.equal(result.type, "text");
   assert.equal(result.body.channel, "telegram");
+});
+
+// ── RPC contract alignment tests ─────────────────────────────────────────────
+
+test("RPC-DEDUP-1: supabaseTurnPersistenceRepository preserves is_duplicate and accepted from RPC row faithfully", async () => {
+  // Simulate the Supabase RPC caller returning a real duplicate row shape
+  const duplicateRow = {
+    inbound_event_id: "33333333-3333-4333-8333-333333333333",
+    is_duplicate: true,
+    accepted: false,
+  };
+  const mockRpc = async (_fn: string, _args: unknown) => ({
+    data: [duplicateRow],
+    error: null,
+  });
+  const { createSupabaseTurnPersistenceRepository } = await import("../src/runtime/supabaseTurnPersistenceRepository.ts");
+  const repo = createSupabaseTurnPersistenceRepository({ rpc: mockRpc as never });
+  const result = await repo.registerInboundEvent({
+    clinic_id: "clinic-uuid",
+    contact_id: "contact-uuid",
+    channel: "whatsapp",
+    dedupe_key: "whatsapp:420111222333:msg:wamid.dup1",
+    source_message_id: "wamid.dup1",
+    source_update_id: "wamid.dup1",
+    payload: {},
+    trace_id: "trace-dup1",
+  });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  // Flags must be preserved exactly — not inferred from null ID
+  assert.equal(result.data.inbound_event_id, "33333333-3333-4333-8333-333333333333", "inbound_event_id must be preserved");
+  assert.equal(result.data.is_duplicate, true, "is_duplicate must be true");
+  assert.equal(result.data.accepted, false, "accepted must be false");
+});
+
+test("RPC-DEDUP-2: orchestrator treats is_duplicate=true + accepted=false + non-null ID as duplicate → runTurn=0", async () => {
+  // Real RPC duplicate response: non-null event ID + is_duplicate=true, accepted=false
+  const serviceWrapper = makeMockRuntimeTurnService();
+  const duplicateRepo: import("../src/runtime/supabaseTurnPersistenceRepository.ts").TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_ID_UUID, clinic_id: CLINIC_ID_UUID } };
+    },
+    async registerInboundEvent() {
+      return {
+        ok: true,
+        data: {
+          inbound_event_id: "existing-event-uuid-nonull",
+          is_duplicate: true,
+          accepted: false,
+        },
+      };
+    },
+    async saveMessage() { return { ok: true, data: { message_id: "msg-x" } }; },
+    async mergeConversationState() { return { ok: true, data: { ok: true } }; },
+  };
+  const turn = normalizeWhatsAppPayload(makeTextPayload({ messageId: "wamid.dup2" }), CLINIC_ID);
+  assert.equal(turn.ok, true);
+  if (!turn.ok) return;
+  const body = turn.turns[0]!.runtimeBody;
+  const trustedCC = { phone_number: "+420111222333", phone_source: "whatsapp_sender" as const };
+  const deps = {
+    runtimeTurnService: serviceWrapper.service,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: duplicateRepo,
+  };
+  const result = await runRuntimeTurnOrchestrated(body, deps, { trustedChannelContact: trustedCC });
+  assert.equal(serviceWrapper.runCount, 0, "runtime must NOT execute when is_duplicate=true, accepted=false, even with non-null event ID");
+  assert.ok(result.outcome === "duplicate", "outcome must be duplicate");
+});
+
+test("RPC-DEDUP-3: same WhatsApp message ID twice → runtime exactly 1, outbound send exactly 1 (real RPC shapes)", async () => {
+  const { app, postHandlers } = makeRouteApp();
+  let sendCount = 0;
+  const mockFetch = async (_url: string): Promise<Response> => {
+    sendCount++;
+    return new Response(JSON.stringify({ messages: [{ id: "wamid.reply.dedup3" }] }), { status: 200 });
+  };
+
+  // Real RPC shapes: first call accepted, second call duplicate with existing UUID
+  let inboundCallCount = 0;
+  const realShapeRepo: import("../src/runtime/supabaseTurnPersistenceRepository.ts").TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_ID_UUID, clinic_id: CLINIC_ID_UUID } };
+    },
+    async registerInboundEvent() {
+      inboundCallCount++;
+      if (inboundCallCount === 1) {
+        return { ok: true, data: { inbound_event_id: "new-evt-uuid", is_duplicate: false, accepted: true } };
+      }
+      return { ok: true, data: { inbound_event_id: "new-evt-uuid", is_duplicate: true, accepted: false } };
+    },
+    async saveMessage() { return { ok: true, data: { message_id: "msg-dedup3" } }; },
+    async mergeConversationState() { return { ok: true, data: { ok: true } }; },
+  };
+  const serviceWrapper = makeMockRuntimeTurnService();
+
+  const deps = {
+    accessToken: ACCESS_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: VERIFY_TOKEN,
+    appSecret: null,
+    graphApiVersion: GRAPH_VERSION,
+    clinicId: CLINIC_ID,
+    runtimeTurnService: serviceWrapper.service,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: realShapeRepo,
+    fetch: mockFetch,
+  } as unknown as import("../src/runtime/whatsappWebhookRoute.ts").WhatsAppWebhookRouteDeps;
+
+  registerWhatsAppWebhookRoute(app, deps);
+  const handler = postHandlers.get("/webhooks/whatsapp");
+  assert.ok(handler);
+
+  const payload = makeTextPayload({ messageId: "wamid.real-dedup-test" });
+  const { reply: r1 } = makeReplyCapture();
+  const { reply: r2 } = makeReplyCapture();
+
+  await handler({ body: payload, rawBody: null, headers: {} }, r1);
+  await handler({ body: payload, rawBody: null, headers: {} }, r2);
+
+  assert.equal(serviceWrapper.runCount, 1, "runtime executes exactly once (not at most once)");
+  assert.equal(sendCount, 1, "outbound send occurs exactly once (not at most once)");
 });

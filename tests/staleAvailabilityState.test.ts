@@ -314,6 +314,7 @@ test("B: slot exactly at current clinic-local minute → expired", () => {
   });
 
   assert.deepEqual(visible.last_available_slots, [], "Slot at exactly current minute must be expired");
+  assert.notEqual(visible.next_action, "choose_from_available_slots", "choose_from_available_slots suppressed when no visible slots");
 });
 
 // C: Stale TTL + slot is tomorrow (future date) → still hidden — TTL is not just past-date cleanup
@@ -571,6 +572,10 @@ test("I: production-path — July stale state on Aug 12 clock → first model ca
   assert.deepEqual(slots ?? [], [], "July stale slots must not reach model on Aug 12");
 
   assert.equal(bookingCtx.slot_evidence_status, "stale", "slot_evidence_status must be stale");
+
+  const proof = bookingCtx.proof as Record<string, unknown> | undefined;
+  assert.notEqual(proof?.slot_known, true, "proof.slot_known must not be true when evidence is stale");
+  assert.notEqual(proof?.ready_for_booking_apply, true, "proof.ready_for_booking_apply must not be true when evidence is stale");
 });
 
 // STALE-PROD: Production path — computeBookingProcessState stamps checked_at on fresh evidence
@@ -623,4 +628,59 @@ test("STALE-PROD: production path stamps checked_at; evidence is fresh then stal
     false,
     "Evidence must be stale after TTL expires",
   );
+});
+
+// J: Fresh evidence + all slots now past → last_available_slots=[], choose_from_available_slots suppressed
+test("J: fresh evidence + all slots now past → empty last_available_slots, choose_from_available_slots suppressed", () => {
+  // All slots are at or before NOW (2026-08-12T10:00Z = 12:00 Prague)
+  const pastEvidence: AvailabilityEvidence = {
+    availability_call_id: "call-J",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T09:00", "2026-08-12T10:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence: pastEvidence,
+    slots: [{ starts_at: "2026-08-12T09:00:00" }, { starts_at: "2026-08-12T10:00:00" }],
+    nextAction: "choose_from_available_slots",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.deepEqual(visible.last_available_slots, [], "All past slots must be filtered out");
+  assert.notEqual(visible.next_action, "choose_from_available_slots", "choose_from_available_slots must be suppressed when no visible slots remain");
+});
+
+// K: Fresh evidence + one past + one future → future slot visible, choose_from_available_slots remains
+test("K: fresh evidence + one past + one future slot → future visible, choose_from_available_slots remains", () => {
+  // 09:00 Prague = 07:00 UTC (past relative to NOW=10:00 UTC); 14:00 Prague = 12:00 UTC (future)
+  const mixedEvidence: AvailabilityEvidence = {
+    availability_call_id: "call-K",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T09:00", "2026-08-12T14:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence: mixedEvidence,
+    slots: [{ starts_at: "2026-08-12T09:00:00" }, { starts_at: "2026-08-12T14:00:00" }],
+    nextAction: "choose_from_available_slots",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.equal(visible.last_available_slots?.length, 1, "Only the future slot must survive filtering");
+  assert.equal(visible.last_available_slots?.[0]?.starts_at, "2026-08-12T14:00:00", "The 14:00 slot must be visible");
+  assert.equal(visible.next_action, "choose_from_available_slots", "choose_from_available_slots must remain when at least one slot is visible");
 });

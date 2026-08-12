@@ -329,9 +329,11 @@ export function buildModelVisibleBookingProcessState(opts: {
     }
 
     // Suppress slot-dependent next_actions when selected_slot is no longer usable.
+    // Also suppress choose_from_available_slots when all visible slots have been filtered out.
     const freshNextAction =
-      slotExpiredOrUnbound &&
-      (visibleNextAction === "ready_for_booking_apply" || visibleNextAction === "ask_for_phone")
+      (slotExpiredOrUnbound &&
+        (visibleNextAction === "ready_for_booking_apply" || visibleNextAction === "ask_for_phone")) ||
+      (visibleSlots.length === 0 && visibleNextAction === "choose_from_available_slots")
         ? undefined
         : visibleNextAction;
 

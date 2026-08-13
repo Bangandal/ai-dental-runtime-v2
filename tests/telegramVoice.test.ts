@@ -371,25 +371,17 @@ test("TG-OGA-1: getFile .oga path + webhook mime_type=audio/ogg → OpenAI recei
   await handler({ body: makeVoiceUpdate({ mimeType: "audio/ogg" }), headers: {} }, reply);
 
   assert.equal(getState().statusCode, 200);
-  assert.equal(runCount.n, 1, "runtime must be called");
+  assert.equal(runCount.n, 1, "runtime must be called exactly once");
   assert.equal(capturedInputs[0]?.user_message, "запишите на завтра", "transcript reaches runtime");
-  // Key assertion: filename must be .ogg, not .oga
-  if (captureTranscriptionRequest.filename) {
-    assert.ok(
-      captureTranscriptionRequest.filename.endsWith(".ogg"),
-      `OpenAI multipart filename must be .ogg, got: ${captureTranscriptionRequest.filename}`,
-    );
-    assert.ok(
-      !captureTranscriptionRequest.filename.endsWith(".oga"),
-      `.oga must NOT be sent to OpenAI, got: ${captureTranscriptionRequest.filename}`,
-    );
-  }
+  assert.equal(captureTranscriptionRequest.filename, "audio.ogg", "OpenAI multipart filename must be audio.ogg, not .oga");
+  assert.equal(captureTranscriptionRequest.mimeType, "audio/ogg", "OpenAI multipart MIME must be audio/ogg");
 });
 
 // TG-OGA-2: getFile path has no extension, webhook mime_type=audio/ogg → canonical .ogg
 test("TG-OGA-2: getFile path with no extension + webhook mime_type=audio/ogg → canonical audio.ogg filename", async () => {
   const runCount = { n: 0 };
-  const captureTranscriptionRequest: { filename?: string } = {};
+  const captureTranscriptionRequest: { filename?: string; mimeType?: string } = {};
+  const { reply, getState } = makeReply();
 
   const { app, postHandlers } = makeRouteApp();
   const deps = makeFullRouteDeps({
@@ -403,22 +395,18 @@ test("TG-OGA-2: getFile path with no extension + webhook mime_type=audio/ogg →
   registerTelegramWebhookRoute(app, deps);
 
   const handler = postHandlers.get("/webhooks/telegram")!;
-  const { getState } = makeReply();
-  await handler({ body: makeVoiceUpdate({ mimeType: "audio/ogg" }), headers: {} }, makeReply().reply);
+  await handler({ body: makeVoiceUpdate({ mimeType: "audio/ogg" }), headers: {} }, reply);
 
-  assert.equal(runCount.n, 1, "runtime must be called");
-  if (captureTranscriptionRequest.filename) {
-    assert.ok(
-      captureTranscriptionRequest.filename.endsWith(".ogg"),
-      `Expected .ogg filename, got: ${captureTranscriptionRequest.filename}`,
-    );
-  }
+  assert.equal(getState().statusCode, 200, "route must return 200");
+  assert.equal(runCount.n, 1, "runtime must be called exactly once");
+  assert.equal(captureTranscriptionRequest.filename, "audio.ogg", "OpenAI multipart filename must be audio.ogg");
 });
 
 // TG-OGA-3: MIME with codec suffix (WhatsApp-style "audio/ogg; codecs=opus") → strips to audio/ogg → audio.ogg
 test("TG-OGA-3: mime_type=audio/ogg; codecs=opus → codec suffix stripped → canonical audio.ogg filename", async () => {
-  const captureTranscriptionRequest: { filename?: string } = {};
+  const captureTranscriptionRequest: { filename?: string; mimeType?: string } = {};
   const runCount = { n: 0 };
+  const { reply, getState } = makeReply();
 
   const { app, postHandlers } = makeRouteApp();
   const deps = makeFullRouteDeps({
@@ -432,13 +420,10 @@ test("TG-OGA-3: mime_type=audio/ogg; codecs=opus → codec suffix stripped → c
   registerTelegramWebhookRoute(app, deps);
 
   const handler = postHandlers.get("/webhooks/telegram")!;
-  await handler({ body: makeVoiceUpdate({ mimeType: "audio/ogg; codecs=opus" }), headers: {} }, makeReply().reply);
+  await handler({ body: makeVoiceUpdate({ mimeType: "audio/ogg; codecs=opus" }), headers: {} }, reply);
 
-  assert.equal(runCount.n, 1, "runtime must be called");
-  if (captureTranscriptionRequest.filename) {
-    assert.ok(
-      captureTranscriptionRequest.filename === "audio.ogg",
-      `Expected audio.ogg, got: ${captureTranscriptionRequest.filename}`,
-    );
-  }
+  assert.equal(getState().statusCode, 200, "route must return 200");
+  assert.equal(runCount.n, 1, "runtime must be called exactly once");
+  assert.equal(captureTranscriptionRequest.filename, "audio.ogg", "OpenAI multipart filename must be audio.ogg");
+  assert.equal(captureTranscriptionRequest.mimeType, "audio/ogg", "OpenAI multipart MIME must be stripped to audio/ogg");
 });

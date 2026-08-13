@@ -156,6 +156,14 @@ export function registerTelegramWebhookRoute(
         fetchFn,
       );
       if (!mediaResult.ok) {
+        console.error(JSON.stringify({
+          event: "telegram_voice_preprocessing_failure",
+          channel: "telegram",
+          stage: "media_download",
+          error_code: mediaResult.error_code,
+          mime_type: normalized.mime_type ?? "audio/ogg",
+          byte_count: 0,
+        }));
         void sendTelegramMessage({
           botToken: deps.botToken,
           chatId: normalized.chat_id,
@@ -166,13 +174,16 @@ export function registerTelegramWebhookRoute(
         return;
       }
 
+      // Prefer MIME declared by Telegram in the webhook over file_path-derived MIME.
+      // Telegram getFile may return .oga paths; "audio/ogg" from the webhook is authoritative.
+      const effectiveMimeType = normalized.mime_type || mediaResult.mime_type || "audio/ogg";
+
       const transcription = await transcribeAudio(
         {
           channel: "telegram",
           message_id: normalized.message_id,
           external_user_id: normalized.external_user_id,
-          mime_type: mediaResult.mime_type ?? "audio/ogg",
-          filename: mediaResult.filename,
+          mime_type: effectiveMimeType,
           duration_seconds: normalized.duration_seconds,
           bytes: mediaResult.bytes!,
         },
@@ -181,6 +192,14 @@ export function registerTelegramWebhookRoute(
         fetchFn,
       );
       if (!transcription.ok || !transcription.text) {
+        console.error(JSON.stringify({
+          event: "telegram_voice_preprocessing_failure",
+          channel: "telegram",
+          stage: "transcription",
+          error_code: transcription.error_code,
+          mime_type: effectiveMimeType,
+          byte_count: mediaResult.bytes!.length,
+        }));
         void sendTelegramMessage({
           botToken: deps.botToken,
           chatId: normalized.chat_id,
@@ -200,7 +219,7 @@ export function registerTelegramWebhookRoute(
         meta: {
           ...normalized.meta,
           input_modality: "voice",
-          original_mime_type: mediaResult.mime_type ?? "audio/ogg",
+          original_mime_type: effectiveMimeType,
         },
       };
 

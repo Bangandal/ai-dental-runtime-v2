@@ -27,7 +27,6 @@ export interface TelegramMessage {
   text?: string;
   contact?: TelegramContact;
   voice?: TelegramVoice;
-  audio?: TelegramVoice;
 }
 
 export interface TelegramFrom {
@@ -104,7 +103,7 @@ export type TelegramNormalizeResult =
   | { ok: true; type: "text"; body: TelegramTurnBody }
   | { ok: true; type: "contact"; capture: TelegramContactCapture; chat_id: string; external_user_id: string; update_id: string; message_id: string; clinic_code: string }
   | { ok: true; type: "contact_foreign"; chat_id: string; external_user_id: string; message_id: string; clinic_code: string }
-  | { ok: true; type: "voice"; file_id: string; mime_type: string; duration_seconds: number; message_id: string; chat_id: string; external_user_id: string; clinic_code: string; meta: TelegramVoiceMeta }
+  | { ok: true; type: "voice"; file_id: string; mime_type?: string; duration_seconds: number; message_id: string; chat_id: string; external_user_id: string; clinic_code: string; meta: TelegramVoiceMeta }
   | { ok: false; reason: "no_message" | "no_text" | "no_contact_phone" | "edited_message" | "no_from" };
 
 export function normalizeTelegramUpdate(
@@ -124,8 +123,8 @@ export function normalizeTelegramUpdate(
     return { ok: false, reason: "no_from" };
   }
 
-  // Voice/audio message
-  const voiceMsg = message.voice ?? message.audio;
+  // Voice message (native Telegram voice note only; message.audio falls through to no_text)
+  const voiceMsg = message.voice;
   if (voiceMsg !== undefined) {
     const fileId = voiceMsg.file_id;
     if (!fileId) {
@@ -135,7 +134,7 @@ export function normalizeTelegramUpdate(
       ok: true,
       type: "voice",
       file_id: fileId,
-      mime_type: voiceMsg.mime_type ?? "audio/ogg",
+      mime_type: voiceMsg.mime_type,
       duration_seconds: voiceMsg.duration,
       message_id: String(message.message_id),
       chat_id: String(message.chat.id),

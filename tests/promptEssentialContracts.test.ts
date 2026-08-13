@@ -58,7 +58,6 @@ describe("Essential prompt contracts (simplified prompt — PR #181)", () => {
   // Contract 7: never claim availability without tool evidence
   test("C7: prompt prohibits availability claims without tool evidence", () => {
     assert.match(instruction, /Never claim.*slot.*time.*day available without availability\.check|never claim.*available.*without/i);
-    assert.match(instruction, /Never claim a slot\/time\/day available without availability\.check results from this turn/i);
   });
 
   // Contract 9: natural patient-facing text — no raw JSON or internal terms

@@ -41,19 +41,23 @@ function makeReply() {
   return { reply, getState: () => state };
 }
 
-function makeVoiceUpdate(opts: { messageId?: number; duration?: number; mimeType?: string; fileId?: string } = {}) {
+// mimeType: undefined → default "audio/ogg"; null → omit mime_type entirely (test absent MIME)
+function makeVoiceUpdate(opts: { messageId?: number; duration?: number; mimeType?: string | null; fileId?: string } = {}) {
+  const voice: { file_id: string; file_unique_id: string; duration: number; mime_type?: string } = {
+    file_id: opts.fileId ?? "file_abc123",
+    file_unique_id: "unique_abc123",
+    duration: opts.duration ?? 5,
+  };
+  if (opts.mimeType !== null) {
+    voice.mime_type = opts.mimeType ?? "audio/ogg";
+  }
   return {
     update_id: 12345,
     message: {
       message_id: opts.messageId ?? 42,
       from: { id: 99001, username: "testuser", first_name: "Test" },
       chat: { id: 99001, type: "private" },
-      voice: {
-        file_id: opts.fileId ?? "file_abc123",
-        file_unique_id: "unique_abc123",
-        duration: opts.duration ?? 5,
-        mime_type: opts.mimeType ?? "audio/ogg",
-      },
+      voice,
     },
   };
 }
@@ -426,4 +430,65 @@ test("TG-OGA-3: mime_type=audio/ogg; codecs=opus → codec suffix stripped → c
   assert.equal(runCount.n, 1, "runtime must be called exactly once");
   assert.equal(captureTranscriptionRequest.filename, "audio.ogg", "OpenAI multipart filename must be audio.ogg");
   assert.equal(captureTranscriptionRequest.mimeType, "audio/ogg", "OpenAI multipart MIME must be stripped to audio/ogg");
+});
+
+// TG-OGA-4: webhook mime_type OMITTED, getFile returns .mp3 path
+// → normalized.mime_type=undefined → falls through to mediaResult.mime_type=audio/mpeg
+// → effectiveMimeType="audio/mpeg", canonical filename="audio.mp3"
+test("TG-OGA-4: absent webhook mime_type + getFile .mp3 path → effectiveMimeType=audio/mpeg, filename=audio.mp3", async () => {
+  const capturedInputs: RuntimeTurnInput[] = [];
+  const runCount = { n: 0 };
+  const captureTranscriptionRequest: { filename?: string; mimeType?: string } = {};
+  const { reply, getState } = makeReply();
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    capturedInputs,
+    runCount,
+    fetchOverride: makeFetchForVoice({
+      transcript: "запись на консультацию",
+      getFileFilePath: "audio/song.mp3",
+      captureTranscriptionRequest,
+    }),
+  });
+  registerTelegramWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/telegram")!;
+  // mimeType: null → voice object has no mime_type field
+  await handler({ body: makeVoiceUpdate({ mimeType: null }), headers: {} }, reply);
+
+  assert.equal(getState().statusCode, 200, "route must return 200");
+  assert.equal(runCount.n, 1, "runtime must be called exactly once");
+  assert.equal(capturedInputs[0]?.user_message, "запись на консультацию", "transcript reaches runtime");
+  assert.equal(captureTranscriptionRequest.filename, "audio.mp3", "canonical filename must be audio.mp3 for audio/mpeg");
+  assert.equal(captureTranscriptionRequest.mimeType, "audio/mpeg", "effective MIME must be audio/mpeg from .mp3 file path");
+});
+
+// TG-OGA-5: webhook mime_type OMITTED, getFile returns .ogg path
+// → normalized.mime_type=undefined → falls through to mediaResult.mime_type=audio/ogg
+// → effectiveMimeType="audio/ogg", canonical filename="audio.ogg"
+test("TG-OGA-5: absent webhook mime_type + getFile .ogg path → effectiveMimeType=audio/ogg, filename=audio.ogg", async () => {
+  const runCount = { n: 0 };
+  const captureTranscriptionRequest: { filename?: string; mimeType?: string } = {};
+  const { reply, getState } = makeReply();
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    runCount,
+    fetchOverride: makeFetchForVoice({
+      transcript: "осмотр в пятницу",
+      getFileFilePath: "voice/file_xyz.ogg",
+      captureTranscriptionRequest,
+    }),
+  });
+  registerTelegramWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/telegram")!;
+  // mimeType: null → voice object has no mime_type field
+  await handler({ body: makeVoiceUpdate({ mimeType: null }), headers: {} }, reply);
+
+  assert.equal(getState().statusCode, 200, "route must return 200");
+  assert.equal(runCount.n, 1, "runtime must be called exactly once");
+  assert.equal(captureTranscriptionRequest.filename, "audio.ogg", "canonical filename must be audio.ogg");
+  assert.equal(captureTranscriptionRequest.mimeType, "audio/ogg", "effective MIME must be audio/ogg from .ogg file path");
 });

@@ -232,7 +232,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## TRIAGE",
     "RED-FLAG (bleeding, facial swelling, fever, trauma, severe/acute pain): empathy and urgency first. No booking intake as main response. No callback promises unless a handoff or admin notification side effect was actually created or queued.",
     "NON-RED-FLAG tooth pain / toothache + booking intent: service = 'осмотр из-за боли'. Do not ask the patient to name a formal service.",
-    "ASAP / affirmation ('как можно скорее', 'срочно', 'когда можно', 'ASAP', 'да давай', 'давай', 'да'): call availability.check for today or nearest available day. Do NOT restart intake or ask for service again.",
+    "ASAP ('как можно скорее', 'срочно', 'когда можно', 'ASAP', 'да давай'): call availability.check for today or nearest available day. Bare 'да'/'давай' after a date-specific offer: continue that date, not today.",
     "Human/admin request ('хочу поговорить с человеком', 'позовите администратора'): acknowledge, ask what to pass to clinic. Do not continue with booking intake. No notification claims unless a notification or handoff side effect was actually created or queued.",
 
     // ── DIALOGUE HISTORY ──────────────────────────────────────────────────────

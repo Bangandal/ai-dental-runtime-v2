@@ -6,6 +6,8 @@ import {
 } from "./telegramWebhookAdapter.ts";
 import { sendTelegramMessage, sendTelegramMessageWithRetry, buildContactRequestReplyMarkup, buildRemoveKeyboardMarkup, type TelegramDeliveryOutcome } from "./telegramSender.ts";
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
+import { resolveTelegramMedia } from "./telegramMediaResolver.ts";
+import { transcribeAudio } from "./audioTranscription.ts";
 
 export interface TelegramWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
   botToken: string;
@@ -15,6 +17,7 @@ export interface TelegramWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
   fetch?: typeof globalThis.fetch;
   onTelegramDelivery?: (outcome: TelegramDeliveryOutcome & { trace_id: string }) => void;
   telegramRetryBackoffMs?: number;
+  openaiApiKey?: string;
 }
 
 export interface TelegramWebhookRequest {
@@ -137,6 +140,105 @@ export function registerTelegramWebhookRoute(
       } catch {
         // swallow observability failure
       }
+      reply.code(200).send({ ok: true });
+      return;
+    }
+
+    // Voice/audio message — transcribe then run as text turn.
+    if (normalized.type === "voice") {
+      const apiKey = deps.openaiApiKey ?? process.env.OPENAI_API_KEY ?? "";
+      const fetchFn = deps.fetch ?? globalThis.fetch;
+
+      const mediaResult = await resolveTelegramMedia(
+        normalized.file_id,
+        deps.botToken,
+        undefined,
+        fetchFn,
+      );
+      if (!mediaResult.ok) {
+        void sendTelegramMessage({
+          botToken: deps.botToken,
+          chatId: normalized.chat_id,
+          text: "Не удалось обработать голосовое сообщение. Попробуйте ещё раз или напишите текстом.",
+          fetch: fetchFn,
+        });
+        reply.code(200).send({ ok: true });
+        return;
+      }
+
+      const transcription = await transcribeAudio(
+        {
+          channel: "telegram",
+          message_id: normalized.message_id,
+          external_user_id: normalized.external_user_id,
+          mime_type: mediaResult.mime_type ?? "audio/ogg",
+          filename: mediaResult.filename,
+          duration_seconds: normalized.duration_seconds,
+          bytes: mediaResult.bytes!,
+        },
+        apiKey,
+        undefined,
+        fetchFn,
+      );
+      if (!transcription.ok || !transcription.text) {
+        void sendTelegramMessage({
+          botToken: deps.botToken,
+          chatId: normalized.chat_id,
+          text: "Не удалось обработать голосовое сообщение. Попробуйте ещё раз или напишите текстом.",
+          fetch: fetchFn,
+        });
+        reply.code(200).send({ ok: true });
+        return;
+      }
+
+      const voiceTurnBody = {
+        clinic_code: normalized.clinic_code,
+        channel: "telegram" as const,
+        external_user_id: normalized.external_user_id,
+        chat_id: normalized.chat_id,
+        text: transcription.text,
+        meta: {
+          ...normalized.meta,
+          input_modality: "voice",
+          original_mime_type: mediaResult.mime_type ?? "audio/ogg",
+        },
+      };
+
+      const voiceResult = await runRuntimeTurnOrchestrated(voiceTurnBody, deps);
+
+      if (voiceResult.outcome === "duplicate") {
+        reply.code(200).send({ ok: true });
+        return;
+      }
+
+      if (voiceResult.outcome === "success" || voiceResult.outcome === "error") {
+        const replyText =
+          voiceResult.outcome === "success"
+            ? voiceResult.payload.final_patient_reply
+            : voiceResult.fallbackPayload.final_patient_reply;
+        const traceId =
+          voiceResult.outcome === "success"
+            ? voiceResult.payload.trace_id
+            : voiceResult.fallbackPayload.trace_id;
+        const uiTelegram = voiceResult.outcome === "success" ? voiceResult.payload.ui?.telegram : undefined;
+        const replyMarkup = uiTelegram?.request_contact === true
+          ? buildContactRequestReplyMarkup(uiTelegram.button_text)
+          : undefined;
+        const delivery = await sendTelegramMessageWithRetry({
+          botToken: deps.botToken,
+          chatId: normalized.chat_id,
+          text: replyText,
+          replyMarkup,
+          fetch: fetchFn,
+          retryBackoffMs: deps.telegramRetryBackoffMs,
+        });
+        try {
+          deps.onTelegramDelivery?.({ ...delivery, trace_id: traceId });
+        } catch {
+          // swallow observability failure
+        }
+      }
+
       reply.code(200).send({ ok: true });
       return;
     }

@@ -31,18 +31,32 @@ export interface WhatsAppContact {
   wa_id?: string;
 }
 
+export interface WhatsAppAudio {
+  id?: string;
+  mime_type?: string;
+}
+
 export interface WhatsAppMessage {
   from?: string;
   id?: string;
   timestamp?: string;
   type?: string;
   text?: { body?: string };
+  audio?: WhatsAppAudio;
 }
 
 // ── Normalized result types ───────────────────────────────────────────────────
 
+export interface WhatsAppAudioTurn {
+  waId: string;
+  mediaId: string;
+  mime_type: string;
+  messageId: string;
+  timestamp: string | null;
+}
+
 export type WhatsAppNormalizeResult =
-  | { ok: true; turns: WhatsAppTurn[] }
+  | { ok: true; turns: WhatsAppTurn[]; audioTurns: WhatsAppAudioTurn[] }
   | { ok: false; reason: "not_whatsapp_object" | "no_entries" | "malformed" };
 
 export interface WhatsAppTurn {
@@ -108,6 +122,7 @@ export function normalizeWhatsAppPayload(
   }
 
   const turns: WhatsAppTurn[] = [];
+  const audioTurns: WhatsAppAudioTurn[] = [];
 
   for (const entry of p.entry) {
     if (!Array.isArray(entry.changes)) continue;
@@ -121,17 +136,31 @@ export function normalizeWhatsAppPayload(
       for (const message of messages) {
         if (!message || typeof message !== "object") continue;
 
-        // Only process text messages — skip all other types silently
-        if (message.type !== "text") continue;
-
-        const body = message.text?.body?.trim();
-        if (!body) continue;
-
         const waId = message.from;
         if (!waId || typeof waId !== "string") continue;
 
         const messageId = message.id;
         if (!messageId || typeof messageId !== "string") continue;
+
+        if (message.type === "audio") {
+          const mediaId = message.audio?.id;
+          if (!mediaId || typeof mediaId !== "string") continue;
+          const mime_type = message.audio?.mime_type ?? "audio/ogg";
+          audioTurns.push({
+            waId,
+            mediaId,
+            mime_type,
+            messageId,
+            timestamp: message.timestamp ?? null,
+          });
+          continue;
+        }
+
+        // Only process text messages — skip all other types silently
+        if (message.type !== "text") continue;
+
+        const body = message.text?.body?.trim();
+        if (!body) continue;
 
         const phone = normalizeWhatsAppPhone(waId);
 
@@ -156,5 +185,5 @@ export function normalizeWhatsAppPayload(
     }
   }
 
-  return { ok: true, turns };
+  return { ok: true, turns, audioTurns };
 }

@@ -29,6 +29,7 @@ export interface TelegramBootstrapConfig {
 
 export interface RuntimeServerBootstrapDeps {
   openaiClient: OpenAIResponsesClient;
+  openaiApiKey?: string;
   model: string;
   embeddingModel: string;
   rpc: RpcCaller;
@@ -160,6 +161,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
       defaultClinicCode,
       isProduction: deps.isProduction ?? false,
       onTelegramDelivery: createDeliveryObserver(logger),
+      openaiApiKey: deps.openaiApiKey,
     });
   }
 }

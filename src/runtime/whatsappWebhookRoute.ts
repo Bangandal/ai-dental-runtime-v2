@@ -1,6 +1,8 @@
 import { normalizeWhatsAppPayload, normalizeWhatsAppPhone, verifyWhatsAppSignature } from "./whatsappWebhookAdapter.ts";
 import { sendWhatsAppMessage } from "./whatsappSender.ts";
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
+import { downloadWhatsAppMedia } from "./whatsappMediaDownloader.ts";
+import { transcribeAudio } from "./audioTranscription.ts";
 
 export interface WhatsAppWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
   accessToken: string;
@@ -10,6 +12,7 @@ export interface WhatsAppWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
   graphApiVersion: string;
   clinicId: string;
   fetch?: typeof globalThis.fetch;
+  openaiApiKey?: string;
 }
 
 export interface WhatsAppGetRequest {
@@ -151,6 +154,133 @@ export function registerWhatsAppWebhookRoute(
         provider_message_id: sendResult.ok ? sendResult.messageId : undefined,
         status: undefined,
         error_code: sendResult.ok ? undefined : (sendResult.error ? "whatsapp_send_failed" : undefined),
+      }).catch(() => undefined);
+    }
+
+    // Process each audio message turn independently
+    // HMAC has already been verified above — audio processing is safe.
+    for (const audioTurn of normalized.audioTurns) {
+      const fetchFn = deps.fetch ?? globalThis.fetch;
+      const apiKey = deps.openaiApiKey ?? process.env.OPENAI_API_KEY ?? "";
+
+      const downloadResult = await downloadWhatsAppMedia(
+        audioTurn.mediaId,
+        deps.accessToken,
+        undefined,
+        deps.graphApiVersion,
+        fetchFn,
+      );
+      if (!downloadResult.ok) {
+        await sendWhatsAppMessage({
+          accessToken: deps.accessToken,
+          phoneNumberId: deps.phoneNumberId,
+          graphApiVersion: deps.graphApiVersion,
+          to: audioTurn.waId,
+          text: "Не удалось обработать голосовое сообщение. Попробуйте ещё раз или напишите текстом.",
+          fetch: fetchFn,
+        }).catch(() => undefined);
+        continue;
+      }
+
+      const transcription = await transcribeAudio(
+        {
+          channel: "whatsapp",
+          message_id: audioTurn.messageId,
+          external_user_id: audioTurn.waId,
+          mime_type: audioTurn.mime_type,
+          bytes: downloadResult.bytes!,
+        },
+        apiKey,
+        undefined,
+        fetchFn,
+      );
+      if (!transcription.ok || !transcription.text) {
+        await sendWhatsAppMessage({
+          accessToken: deps.accessToken,
+          phoneNumberId: deps.phoneNumberId,
+          graphApiVersion: deps.graphApiVersion,
+          to: audioTurn.waId,
+          text: "Не удалось обработать голосовое сообщение. Попробуйте ещё раз или напишите текстом.",
+          fetch: fetchFn,
+        }).catch(() => undefined);
+        continue;
+      }
+
+      const phone = normalizeWhatsAppPhone(audioTurn.waId);
+      const audioRuntimeBody = {
+        clinic_code: deps.clinicId,
+        channel: "whatsapp" as const,
+        external_user_id: audioTurn.waId,
+        chat_id: audioTurn.waId,
+        text: transcription.text,
+        meta: {
+          message_id: audioTurn.messageId,
+          wa_id: audioTurn.waId,
+          phone_number: phone,
+          phone_source: "whatsapp_sender",
+          timestamp: audioTurn.timestamp,
+          input_modality: "voice",
+          original_mime_type: audioTurn.mime_type,
+        },
+      };
+
+      // wa_id is platform-derived — same trust model as text messages
+      const trustedChannelContact = {
+        phone_number: phone,
+        phone_source: "whatsapp_sender" as const,
+        phone_consent: false as const,
+        phone_collected_at: new Date().toISOString(),
+      };
+
+      let audioTraceId = "";
+      const audioResult = await runRuntimeTurnOrchestrated(audioRuntimeBody, deps, {
+        trustedChannelContact,
+        requireInboundRegistration: true,
+      }).catch(
+        (): { outcome: "error"; fallbackPayload: { final_patient_reply: string; trace_id: string } } => ({
+          outcome: "error",
+          fallbackPayload: { final_patient_reply: "", trace_id: "" },
+        }),
+      );
+
+      if (audioResult.outcome === "duplicate" || audioResult.outcome === "inbound_registration_failed") {
+        continue;
+      }
+
+      let audioReplyText: string | null = null;
+      if (audioResult.outcome === "success") {
+        audioReplyText = audioResult.payload.final_patient_reply || null;
+        audioTraceId = audioResult.payload.trace_id;
+      } else if (audioResult.outcome === "error") {
+        audioReplyText = audioResult.fallbackPayload.final_patient_reply || null;
+        audioTraceId = audioResult.fallbackPayload.trace_id;
+      }
+
+      if (!audioReplyText || !audioReplyText.trim()) {
+        continue;
+      }
+
+      const audioSendResult = await sendWhatsAppMessage({
+        accessToken: deps.accessToken,
+        phoneNumberId: deps.phoneNumberId,
+        graphApiVersion: deps.graphApiVersion,
+        to: audioTurn.waId,
+        text: audioReplyText,
+        fetch: fetchFn,
+      }).catch((err: unknown): import("./whatsappSender.ts").WhatsAppSendResult => ({
+        ok: false,
+        error: err instanceof Error ? err.message : "send_exception",
+      }));
+
+      void deps.runtimeTurnLogger?.logDelivery({
+        ts: new Date().toISOString(),
+        trace_id: audioTraceId,
+        channel: "whatsapp",
+        ok: audioSendResult.ok,
+        retry_count: 0,
+        provider_message_id: audioSendResult.ok ? audioSendResult.messageId : undefined,
+        status: undefined,
+        error_code: audioSendResult.ok ? undefined : (audioSendResult.error ? "whatsapp_send_failed" : undefined),
       }).catch(() => undefined);
     }
 

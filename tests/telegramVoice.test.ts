@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createHmac } from "node:crypto";
 
 import {
   normalizeTelegramUpdate,
@@ -12,11 +11,14 @@ import type {
   TelegramWebhookReply,
   TelegramWebhookRouteDeps,
 } from "../src/runtime/telegramWebhookRoute.ts";
-import type { RuntimeTurnOrchestratorResult } from "../src/runtime/runtimeTurnOrchestrator.ts";
+import type { RuntimeTurnInput } from "../src/runtime/runtimeTurnService.ts";
+import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 
 const BOT_TOKEN = "test-bot-token";
 const CLINIC_CODE = "clinic_1";
 const OPENAI_API_KEY = "sk-test";
+const CLINIC_ID_UUID = "11111111-1111-1111-8111-111111111111";
+const CONTACT_ID_UUID = "22222222-2222-2222-8222-222222222222";
 
 // ── Mock helpers ──────────────────────────────────────────────────────────────
 
@@ -68,6 +70,43 @@ function makeTextUpdate(text: string, messageId = 100) {
   };
 }
 
+function makeMockClinicIdentityResolver() {
+  return {
+    async resolveClinicIdentity(_opts: unknown) {
+      return {
+        ok: true as const,
+        data: { clinic_id: CLINIC_ID_UUID, clinic_code: CLINIC_CODE },
+      };
+    },
+  };
+}
+
+function makeMockTurnPersistenceRepo(opts: { duplicateOnSecondCall?: boolean } = {}): {
+  repo: TurnPersistenceRepository;
+} {
+  const state = { inboundCallCount: 0 };
+  const repo: TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_ID_UUID, clinic_id: CLINIC_ID_UUID } };
+    },
+    async registerInboundEvent() {
+      state.inboundCallCount += 1;
+      const isDuplicate = opts.duplicateOnSecondCall && state.inboundCallCount > 1;
+      if (isDuplicate) {
+        return { ok: true, data: { inbound_event_id: "evt-dup", is_duplicate: true, accepted: false } };
+      }
+      return { ok: true, data: { inbound_event_id: "evt-1", is_duplicate: false, accepted: true } };
+    },
+    async saveMessage() {
+      return { ok: true, data: { message_id: "msg-1" } };
+    },
+    async mergeConversationState() {
+      return { ok: true, data: { ok: true } };
+    },
+  };
+  return { repo };
+}
+
 // Builds a fetch mock that handles Telegram getFile + download + OpenAI transcription
 function makeFetchForVoice(opts: {
   transcript?: string;
@@ -117,47 +156,28 @@ function makeFetchForVoice(opts: {
   };
 }
 
-function makeOrchestrator(opts: {
-  outcome?: "success" | "error" | "duplicate";
-  reply?: string;
-} = {}): { invokeCount: number; fn: TelegramWebhookRouteDeps["runtimeTurnService"] } {
-  const state = { invokeCount: 0 };
-  // We need to inject into deps.runRuntimeTurnOrchestrated indirectly through deps mock
-  // Actually we'll mock the whole deps
-  return { invokeCount: state.invokeCount, fn: undefined as unknown as TelegramWebhookRouteDeps["runtimeTurnService"] };
-}
-
-// Build minimal route deps with mocked orchestrator
-function makeRouteDeps(opts: {
-  orchestratorResult?: Partial<RuntimeTurnOrchestratorResult>;
-  invokeTracker?: { count: number; lastBody?: unknown };
+// Build full route deps with orchestrator-compatible mocks
+function makeFullRouteDeps(opts: {
+  capturedInputs?: RuntimeTurnInput[];
+  runCount?: { n: number };
   fetchOverride?: typeof globalThis.fetch;
-} = {}): TelegramWebhookRouteDeps & { _orchestratorInvoked: () => number } {
-  const tracker = opts.invokeTracker ?? { count: 0 };
+  duplicateOnSecondCall?: boolean;
+} = {}): TelegramWebhookRouteDeps {
+  const capturedInputs = opts.capturedInputs ?? [];
+  const runCount = opts.runCount ?? { n: 0 };
+  const { repo } = makeMockTurnPersistenceRepo({ duplicateOnSecondCall: opts.duplicateOnSecondCall });
 
-  const mockOrchestrator = async (body: unknown): Promise<RuntimeTurnOrchestratorResult> => {
-    tracker.count++;
-    (tracker as { lastBody?: unknown }).lastBody = body;
-    if (opts.orchestratorResult) {
-      return opts.orchestratorResult as RuntimeTurnOrchestratorResult;
-    }
-    return {
-      outcome: "success" as const,
-      payload: {
-        trace_id: "t1",
+  const runtimeTurnService: TelegramWebhookRouteDeps["runtimeTurnService"] = {
+    async runTurn(input: RuntimeTurnInput) {
+      runCount.n++;
+      capturedInputs.push(input);
+      return {
         final_patient_reply: "Записал вас на завтра.",
-        reply_text: "Записал вас на завтра.",
-        side_effects: [],
-      },
-    };
-  };
-
-  // We need a fake runtimeTurnService that satisfies the interface
-  // but we'll actually intercept runRuntimeTurnOrchestrated by patching the module
-  // Instead, build deps where the orchestrator is replaced at the route-call level
-  // The simplest approach: test normalizeTelegramUpdate directly for voice detection,
-  // then test the end-to-end by exercising the route with a mock fetch that controls
-  // whether getFile/download/transcribe succeed.
+        tool_requests: [],
+        tool_results: [],
+      };
+    },
+  } as unknown as TelegramWebhookRouteDeps["runtimeTurnService"];
 
   return {
     botToken: BOT_TOKEN,
@@ -166,9 +186,10 @@ function makeRouteDeps(opts: {
     isProduction: false,
     openaiApiKey: OPENAI_API_KEY,
     fetch: opts.fetchOverride ?? makeFetchForVoice(),
-    runtimeTurnService: null as unknown as TelegramWebhookRouteDeps["runtimeTurnService"],
-    _orchestratorInvoked: () => tracker.count,
-  } as unknown as TelegramWebhookRouteDeps & { _orchestratorInvoked: () => number };
+    runtimeTurnService,
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: repo,
+  } as unknown as TelegramWebhookRouteDeps;
 }
 
 // ── Adapter unit tests ────────────────────────────────────────────────────────
@@ -242,35 +263,68 @@ test("TG-VOICE-3: text update still reaches normalized.type='text'", () => {
   assert.equal(result.body.channel, "telegram");
 });
 
-// TG-VOICE-1: route-level — voice → getFile → download → transcribe → runtime invoked with text
-// We test this by running the route handler with a tracking mock injected into runRuntimeTurnOrchestrated.
-// Since we can't easily monkey-patch the import, we test the lower level by verifying
-// normalization picks up voice AND integration via the route handler with fetch interception.
-test("TG-VOICE-1: voice message → normalized type=voice by adapter", () => {
-  const update = makeVoiceUpdate({ fileId: "voice_file_xyz", duration: 7 });
-  const result = normalizeTelegramUpdate(update, CLINIC_CODE);
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assert.equal(result.type, "voice");
-  if (result.type !== "voice") return;
-  assert.equal(result.file_id, "voice_file_xyz");
-  assert.equal(result.duration_seconds, 7);
+// TG-VOICE-1: REAL route integration test
+// Telegram voice webhook → getFile → download → transcribe → RuntimeTurnOrchestrator
+// → runtime receives user_message = transcript + meta.input_modality = "voice"
+test("TG-VOICE-1: voice webhook → getFile → download → transcription → runtime receives transcript as text", async () => {
+  const capturedInputs: RuntimeTurnInput[] = [];
+  const runCount = { n: 0 };
+  const transcript = "привет";
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    capturedInputs,
+    runCount,
+    fetchOverride: makeFetchForVoice({ transcript }),
+  });
+  registerTelegramWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/telegram")!;
+  assert.ok(handler, "handler must be registered");
+
+  const { reply, getState } = makeReply();
+  await handler(
+    { body: makeVoiceUpdate(), headers: {} },
+    reply,
+  );
+
+  assert.equal(getState().statusCode, 200);
+  assert.equal(runCount.n, 1, "runtimeTurnService.runTurn must be called exactly once");
+  const input = capturedInputs[0]!;
+  assert.equal(input.user_message, transcript, "runtime receives transcript as user_message");
+  assert.equal(
+    (input.business_context as Record<string, unknown>)?.meta?.input_modality,
+    "voice",
+    "meta.input_modality must be 'voice'",
+  );
 });
 
-// TG-VOICE-2: dedup is handled at the message_id level — adapter uses same message_id field
-test("TG-VOICE-2: voice message uses message_id for dedup (same field as text)", () => {
-  const update = makeVoiceUpdate({ messageId: 77 });
-  const result = normalizeTelegramUpdate(update, CLINIC_CODE);
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assert.equal(result.type, "voice");
-  if (result.type !== "voice") return;
-  assert.equal(result.message_id, "77");
-  // A second normalize of the same update produces the same message_id
-  const result2 = normalizeTelegramUpdate(update, CLINIC_CODE);
-  assert.equal(result2.ok, true);
-  if (!result2.ok) return;
-  assert.equal(result2.type, "voice");
-  if (result2.type !== "voice") return;
-  assert.equal(result2.message_id, "77");
+// TG-VOICE-2: REAL route integration test — same voice message twice → runtime called at most once
+test("TG-VOICE-2: same voice update sent twice → runtimeTurnService.runTurn called exactly once (dedup)", async () => {
+  const capturedInputs: RuntimeTurnInput[] = [];
+  const runCount = { n: 0 };
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    capturedInputs,
+    runCount,
+    fetchOverride: makeFetchForVoice({ transcript: "запись на завтра" }),
+    duplicateOnSecondCall: true,
+  });
+  registerTelegramWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/telegram")!;
+  assert.ok(handler);
+
+  const voiceUpdate = makeVoiceUpdate({ messageId: 77 });
+
+  const { reply: reply1, getState: getState1 } = makeReply();
+  await handler({ body: voiceUpdate, headers: {} }, reply1);
+  assert.equal(getState1().statusCode, 200);
+
+  const { reply: reply2, getState: getState2 } = makeReply();
+  await handler({ body: voiceUpdate, headers: {} }, reply2);
+  assert.equal(getState2().statusCode, 200);
+
+  assert.equal(runCount.n, 1, "runtimeTurnService.runTurn must be called exactly once despite two webhook deliveries");
 });

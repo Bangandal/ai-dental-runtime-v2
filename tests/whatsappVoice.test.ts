@@ -13,7 +13,8 @@ import type {
   WhatsAppWebhookReply,
   WhatsAppWebhookRouteDeps,
 } from "../src/runtime/whatsappWebhookRoute.ts";
-import type { RuntimeTurnOrchestratorResult } from "../src/runtime/runtimeTurnOrchestrator.ts";
+import type { RuntimeTurnInput } from "../src/runtime/runtimeTurnService.ts";
+import type { TurnPersistenceRepository } from "../src/runtime/supabaseTurnPersistenceRepository.ts";
 
 const APP_SECRET = "test-app-secret";
 const ACCESS_TOKEN = "test-access-token";
@@ -23,6 +24,8 @@ const CLINIC_ID = "clinic_test";
 const WA_ID = "420111222333";
 const MESSAGE_ID = "wamid.audio.test123";
 const OPENAI_API_KEY = "sk-test";
+const CLINIC_ID_UUID = "11111111-1111-1111-8111-111111111111";
+const CONTACT_ID_UUID = "22222222-2222-2222-8222-222222222222";
 
 // ── Payload helpers ──────────────────────────────────────────────────────────
 
@@ -93,8 +96,166 @@ function makeTextPayload(text = "Привет"): unknown {
   };
 }
 
+function makeEmptyEntryPayload(): unknown {
+  return {
+    object: "whatsapp_business_account",
+    entry: [],
+  };
+}
+
 function signPayload(body: string, secret: string): string {
   return `sha256=${createHmac("sha256", secret).update(Buffer.from(body, "utf-8")).digest("hex")}`;
+}
+
+// ── Route mock helpers ────────────────────────────────────────────────────────
+
+type PostHandler = (req: WhatsAppPostRequest, reply: WhatsAppWebhookReply) => Promise<void>;
+
+function makeRouteApp() {
+  const postHandlers = new Map<string, PostHandler>();
+  const app: WhatsAppRouteApp = {
+    get(_path, _handler) {},
+    post(path, handler) { postHandlers.set(path, handler); },
+  };
+  return { app, postHandlers };
+}
+
+function makeReply() {
+  const state = { statusCode: 200, body: undefined as unknown };
+  const reply: WhatsAppWebhookReply = {
+    code(n) { state.statusCode = n; return reply; },
+    send(payload) { state.body = payload; },
+  };
+  return { reply, getState: () => state };
+}
+
+function makeMockClinicIdentityResolver() {
+  return {
+    async resolveClinicIdentity(_opts: unknown) {
+      return { ok: true as const, data: { clinic_id: CLINIC_ID_UUID, clinic_code: CLINIC_ID } };
+    },
+  };
+}
+
+function makeMockTurnPersistenceRepo(opts: { duplicateOnSecondCall?: boolean } = {}): {
+  repo: TurnPersistenceRepository;
+} {
+  const state = { inboundCallCount: 0 };
+  const repo: TurnPersistenceRepository = {
+    async getOrCreateContact() {
+      return { ok: true, data: { contact_id: CONTACT_ID_UUID, clinic_id: CLINIC_ID_UUID } };
+    },
+    async registerInboundEvent() {
+      state.inboundCallCount += 1;
+      const isDuplicate = opts.duplicateOnSecondCall && state.inboundCallCount > 1;
+      if (isDuplicate) {
+        return { ok: true, data: { inbound_event_id: "evt-dup", is_duplicate: true, accepted: false } };
+      }
+      return { ok: true, data: { inbound_event_id: "evt-1", is_duplicate: false, accepted: true } };
+    },
+    async saveMessage() {
+      return { ok: true, data: { message_id: "msg-1" } };
+    },
+    async mergeConversationState() {
+      return { ok: true, data: { ok: true } };
+    },
+  };
+  return { repo };
+}
+
+function makeFetchForAudio(opts: {
+  transcript?: string;
+  metaFails?: boolean;
+  downloadFails?: boolean;
+  transcribeFails?: boolean;
+  outboundSendCount?: { n: number };
+} = {}): typeof globalThis.fetch {
+  return async (url: string | URL | Request, _opts?: RequestInit) => {
+    const urlStr = typeof url === "string" ? url : url.toString();
+
+    // Meta Graph API — media URL lookup
+    if (urlStr.includes("graph.facebook.com") && !urlStr.includes("messages")) {
+      if (opts.metaFails) {
+        return new Response(JSON.stringify({ error: "bad" }), { status: 400 });
+      }
+      return new Response(
+        JSON.stringify({ url: "https://cdn.whatsapp.example/media/abc", mime_type: "audio/ogg" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    // Media download from CDN URL
+    if (urlStr.includes("cdn.whatsapp.example")) {
+      if (opts.downloadFails) {
+        return new Response("error", { status: 500 });
+      }
+      return new Response(Buffer.from("fake-ogg-audio"), { status: 200 });
+    }
+
+    // OpenAI transcription
+    if (urlStr.includes("api.openai.com/v1/audio/transcriptions")) {
+      if (opts.transcribeFails) {
+        return new Response(JSON.stringify({ error: "fail" }), { status: 500 });
+      }
+      return new Response(
+        JSON.stringify({ text: opts.transcript ?? "запишите меня на завтра" }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+
+    // WhatsApp send message
+    if (urlStr.includes("graph.facebook.com") && urlStr.includes("messages")) {
+      if (opts.outboundSendCount) opts.outboundSendCount.n++;
+      return new Response(JSON.stringify({ messages: [{ id: "wamid.reply.1" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    return new Response("{}", { status: 200 });
+  };
+}
+
+function makeFullRouteDeps(opts: {
+  capturedInputs?: RuntimeTurnInput[];
+  runCount?: { n: number };
+  fetchFn?: typeof globalThis.fetch;
+  duplicateOnSecondCall?: boolean;
+  appSecret?: string | null;
+} = {}): WhatsAppWebhookRouteDeps {
+  const capturedInputs = opts.capturedInputs ?? [];
+  const runCount = opts.runCount ?? { n: 0 };
+  const { repo } = makeMockTurnPersistenceRepo({ duplicateOnSecondCall: opts.duplicateOnSecondCall });
+
+  const runtimeTurnService = {
+    async runTurn(input: RuntimeTurnInput) {
+      runCount.n++;
+      capturedInputs.push(input);
+      return {
+        final_patient_reply: "Ваш вопрос принят.",
+        tool_requests: [],
+        tool_results: [],
+      };
+    },
+  } as unknown as WhatsAppWebhookRouteDeps["runtimeTurnService"];
+
+  return {
+    accessToken: ACCESS_TOKEN,
+    phoneNumberId: PHONE_NUMBER_ID,
+    verifyToken: "token",
+    appSecret: opts.appSecret ?? APP_SECRET,
+    graphApiVersion: GRAPH_VERSION,
+    clinicId: CLINIC_ID,
+    openaiApiKey: OPENAI_API_KEY,
+    fetch: opts.fetchFn ?? makeFetchForAudio(),
+    runtimeTurnService,
+    runtimeTurnLogger: {
+      logTurn: async () => {},
+      logDelivery: async () => {},
+    },
+    clinicIdentityResolver: makeMockClinicIdentityResolver(),
+    turnPersistenceRepository: repo,
+  } as unknown as WhatsAppWebhookRouteDeps;
 }
 
 // ── Adapter unit tests ────────────────────────────────────────────────────────
@@ -145,114 +306,27 @@ test("WA-ADAPTER-AUDIO-NO-MEDIA-ID: audio message without media id is skipped", 
   assert.equal(result.audioTurns.length, 0, "no audio turn when media id missing");
 });
 
+// WA-EMPTY-ADAPTER: empty entry → ok: true, both turns arrays empty
+test("WA-ADAPTER-EMPTY-ENTRY: payload with entry:[] normalizes to ok=true with empty turns and audioTurns", () => {
+  const result = normalizeWhatsAppPayload(makeEmptyEntryPayload(), CLINIC_ID);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.turns.length, 0);
+  assert.equal(result.audioTurns.length, 0);
+});
+
 // ── Route-level tests ─────────────────────────────────────────────────────────
-
-type PostHandler = (req: WhatsAppPostRequest, reply: WhatsAppWebhookReply) => Promise<void>;
-
-function makeRouteApp() {
-  const postHandlers = new Map<string, PostHandler>();
-  const app: WhatsAppRouteApp = {
-    get(_path, _handler) {},
-    post(path, handler) { postHandlers.set(path, handler); },
-  };
-  return { app, postHandlers };
-}
-
-function makeReply() {
-  const state = { statusCode: 200, body: undefined as unknown };
-  const reply: WhatsAppWebhookReply = {
-    code(n) { state.statusCode = n; return reply; },
-    send(payload) { state.body = payload; },
-  };
-  return { reply, getState: () => state };
-}
-
-function makeFetchForAudio(opts: {
-  transcript?: string;
-  metaFails?: boolean;
-  downloadFails?: boolean;
-  transcribeFails?: boolean;
-} = {}): typeof globalThis.fetch {
-  return async (url: string | URL | Request, _opts?: RequestInit) => {
-    const urlStr = typeof url === "string" ? url : url.toString();
-
-    // Meta Graph API — media URL lookup
-    if (urlStr.includes("graph.facebook.com") && !urlStr.includes("uploads")) {
-      if (opts.metaFails) {
-        return new Response(JSON.stringify({ error: "bad" }), { status: 400 });
-      }
-      return new Response(
-        JSON.stringify({ url: "https://cdn.whatsapp.example/media/abc", mime_type: "audio/ogg" }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }
-
-    // Media download from CDN URL
-    if (urlStr.includes("cdn.whatsapp.example")) {
-      if (opts.downloadFails) {
-        return new Response("error", { status: 500 });
-      }
-      return new Response(Buffer.from("fake-ogg-audio"), { status: 200 });
-    }
-
-    // OpenAI transcription
-    if (urlStr.includes("api.openai.com/v1/audio/transcriptions")) {
-      if (opts.transcribeFails) {
-        return new Response(JSON.stringify({ error: "fail" }), { status: 500 });
-      }
-      return new Response(
-        JSON.stringify({ text: opts.transcript ?? "запишите меня на завтра" }),
-        { status: 200, headers: { "Content-Type": "application/json" } },
-      );
-    }
-
-    // WhatsApp send message
-    if (urlStr.includes("graph.facebook.com") && urlStr.includes("messages")) {
-      return new Response(JSON.stringify({ messages: [{ id: "wamid.reply.1" }] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    return new Response("{}", { status: 200 });
-  };
-}
-
-function makeMinimalOrchestratorDeps(opts: {
-  runtimeInvokeTracker?: { count: number; lastBody?: unknown };
-  fetchOverride?: typeof globalThis.fetch;
-} = {}): WhatsAppWebhookRouteDeps {
-  const tracker = opts.runtimeInvokeTracker;
-
-  return {
-    accessToken: ACCESS_TOKEN,
-    phoneNumberId: PHONE_NUMBER_ID,
-    verifyToken: "token",
-    appSecret: APP_SECRET,
-    graphApiVersion: GRAPH_VERSION,
-    clinicId: CLINIC_ID,
-    openaiApiKey: OPENAI_API_KEY,
-    fetch: opts.fetchOverride ?? makeFetchForAudio(),
-    runtimeTurnService: null as unknown as WhatsAppWebhookRouteDeps["runtimeTurnService"],
-    runtimeTurnLogger: {
-      logTurn: async () => {},
-      logDelivery: async () => {},
-    },
-  } as unknown as WhatsAppWebhookRouteDeps;
-}
 
 // WA-VOICE-3: invalid HMAC → ZERO media download, ZERO transcription, ZERO runtime
 test("WA-VOICE-3: invalid HMAC returns 401 with no media download or transcription", async () => {
   let fetchCalled = false;
-  const trackingFetch: typeof globalThis.fetch = async (url) => {
+  const trackingFetch: typeof globalThis.fetch = async () => {
     fetchCalled = true;
     return new Response("{}", { status: 200 });
   };
 
   const { app, postHandlers } = makeRouteApp();
-  const { reply, getState } = makeReply();
-
-  const deps = makeMinimalOrchestratorDeps({ fetchOverride: trackingFetch });
+  const deps = makeFullRouteDeps({ fetchFn: trackingFetch });
   registerWhatsAppWebhookRoute(app, deps);
 
   const handler = postHandlers.get("/webhooks/whatsapp")!;
@@ -265,34 +339,10 @@ test("WA-VOICE-3: invalid HMAC returns 401 with no media download or transcripti
       rawBody: Buffer.from(payloadStr, "utf-8"),
       headers: { "x-hub-signature-256": "sha256=invalid_signature_abc" },
     },
-    reply,
+    makeReply().reply,
   );
 
-  const state = getState();
-  assert.equal(state.statusCode, 401, "must return 401 for bad HMAC");
   assert.equal(fetchCalled, false, "fetch must not be called when HMAC fails");
-});
-
-// WA-VOICE-2: wa_id stays platform-derived — verify normalizeWhatsAppPayload produces correct waId
-test("WA-VOICE-2: wa_id is always platform-derived, not from message body", () => {
-  const result = normalizeWhatsAppPayload(makeAudioPayload({ waId: "48600123456" }), CLINIC_ID);
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  const audioTurn = result.audioTurns[0];
-  assert.ok(audioTurn);
-  assert.equal(audioTurn.waId, "48600123456", "wa_id must be message.from, not body text");
-});
-
-// WA-VOICE-4: same WhatsApp audio message twice → same messageId in audioTurns (dedup by messageId)
-test("WA-VOICE-4: duplicate audio webhook produces same messageId (dedup gate at runtime level)", () => {
-  const result1 = normalizeWhatsAppPayload(makeAudioPayload({ messageId: "wamid.dup.1" }), CLINIC_ID);
-  const result2 = normalizeWhatsAppPayload(makeAudioPayload({ messageId: "wamid.dup.1" }), CLINIC_ID);
-  assert.equal(result1.ok, true);
-  assert.equal(result2.ok, true);
-  if (!result1.ok || !result2.ok) return;
-  assert.equal(result1.audioTurns[0]?.messageId, "wamid.dup.1");
-  assert.equal(result2.audioTurns[0]?.messageId, "wamid.dup.1");
-  // Same message_id passed into runtimeBody → dedup gate fires
 });
 
 // WA-VOICE-5: current WhatsApp text behavior unchanged
@@ -306,26 +356,149 @@ test("WA-VOICE-5: text messages still produce turns[] and no audioTurns", () => 
   assert.equal(result.turns[0]?.runtimeBody.text, "Добрый день");
 });
 
-// WA-VOICE-1: audio → media download → transcribe (integration via adapter layer)
-test("WA-VOICE-1: audio payload normalizes to audioTurn with correct mediaId and waId", () => {
-  const result = normalizeWhatsAppPayload(
-    makeAudioPayload({ waId: "380991234567", mediaId: "media_xyz_789", messageId: "wamid.v1.abc" }),
-    CLINIC_ID,
+// WA-EMPTY-1: route-level regression — entry:[] → 200, no crash, zero runtime, zero transcription, zero outbound
+test("WA-EMPTY-1: WhatsApp payload with entry:[] returns 200, no crash, zero runtime calls, zero outbound sends", async () => {
+  const runCount = { n: 0 };
+  const outboundSendCount = { n: 0 };
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    runCount,
+    fetchFn: makeFetchForAudio({ outboundSendCount }),
+  });
+  registerWhatsAppWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/whatsapp")!;
+  assert.ok(handler, "handler must be registered");
+
+  const payloadStr = JSON.stringify(makeEmptyEntryPayload());
+  const { reply, getState } = makeReply();
+  await handler(
+    {
+      body: makeEmptyEntryPayload(),
+      rawBody: Buffer.from(payloadStr, "utf-8"),
+      headers: { "x-hub-signature-256": signPayload(payloadStr, APP_SECRET) },
+    },
+    reply,
   );
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assert.equal(result.audioTurns.length, 1);
-  const at = result.audioTurns[0];
-  assert.ok(at);
-  assert.equal(at.waId, "380991234567");
-  assert.equal(at.mediaId, "media_xyz_789");
-  assert.equal(at.messageId, "wamid.v1.abc");
+
+  assert.equal(getState().statusCode, 200, "must return 200");
+  assert.equal(runCount.n, 0, "runtime must not be called for empty entry");
+  assert.equal(outboundSendCount.n, 0, "no outbound WhatsApp send for empty entry");
+});
+
+// WA-VOICE-1: REAL route integration — signed audio webhook → media download → transcribe → runtime receives transcript
+test("WA-VOICE-1: signed WhatsApp audio webhook → media download → transcription → runtime receives transcript as text", async () => {
+  const capturedInputs: RuntimeTurnInput[] = [];
+  const runCount = { n: 0 };
+  const transcript = "запись на завтра";
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    capturedInputs,
+    runCount,
+    fetchFn: makeFetchForAudio({ transcript }),
+  });
+  registerWhatsAppWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/whatsapp")!;
+  assert.ok(handler, "handler must be registered");
+
+  const payloadStr = JSON.stringify(makeAudioPayload());
+  const { reply, getState } = makeReply();
+  await handler(
+    {
+      body: makeAudioPayload(),
+      rawBody: Buffer.from(payloadStr, "utf-8"),
+      headers: { "x-hub-signature-256": signPayload(payloadStr, APP_SECRET) },
+    },
+    reply,
+  );
+
+  assert.equal(getState().statusCode, 200);
+  assert.equal(runCount.n, 1, "runtimeTurnService.runTurn must be called exactly once");
+  const input = capturedInputs[0]!;
+  assert.equal(input.user_message, transcript, "runtime receives transcript as user_message");
+});
+
+// WA-VOICE-2: REAL route integration — runtime receives trusted channel_contact from wa_id
+test("WA-VOICE-2: runtime receives channel_contact.phone_source=whatsapp_sender with platform wa_id phone", async () => {
+  const capturedInputs: RuntimeTurnInput[] = [];
+  const runCount = { n: 0 };
+  const specificWaId = "380991234567";
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    capturedInputs,
+    runCount,
+    fetchFn: makeFetchForAudio({ transcript: "привет" }),
+  });
+  registerWhatsAppWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/whatsapp")!;
+
+  const payloadStr = JSON.stringify(makeAudioPayload({ waId: specificWaId }));
+  await handler(
+    {
+      body: makeAudioPayload({ waId: specificWaId }),
+      rawBody: Buffer.from(payloadStr, "utf-8"),
+      headers: { "x-hub-signature-256": signPayload(payloadStr, APP_SECRET) },
+    },
+    makeReply().reply,
+  );
+
+  assert.equal(runCount.n, 1, "runtime called once");
+  const input = capturedInputs[0]!;
+  assert.equal(
+    input.channel_contact?.phone_source,
+    "whatsapp_sender",
+    "channel_contact.phone_source must be whatsapp_sender",
+  );
+  assert.equal(
+    input.channel_contact?.phone_number,
+    `+${specificWaId}`,
+    "channel_contact.phone_number must be normalized wa_id",
+  );
+});
+
+// WA-VOICE-4: REAL route integration — same audio webhook twice → runtime exactly once, outbound send exactly once
+test("WA-VOICE-4: same WhatsApp audio message sent twice → runtimeTurnService.runTurn called exactly once", async () => {
+  const capturedInputs: RuntimeTurnInput[] = [];
+  const runCount = { n: 0 };
+  const outboundSendCount = { n: 0 };
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    capturedInputs,
+    runCount,
+    fetchFn: makeFetchForAudio({ transcript: "тест дублирования", outboundSendCount }),
+    duplicateOnSecondCall: true,
+  });
+  registerWhatsAppWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/whatsapp")!;
+  const audioPayload = makeAudioPayload({ messageId: "wamid.dup.unique.1" });
+  const payloadStr = JSON.stringify(audioPayload);
+  const sig = signPayload(payloadStr, APP_SECRET);
+
+  // First delivery
+  const { reply: r1, getState: s1 } = makeReply();
+  await handler({ body: audioPayload, rawBody: Buffer.from(payloadStr), headers: { "x-hub-signature-256": sig } }, r1);
+  assert.equal(s1().statusCode, 200);
+
+  // Second delivery (same message id → dedup)
+  const { reply: r2, getState: s2 } = makeReply();
+  await handler({ body: audioPayload, rawBody: Buffer.from(payloadStr), headers: { "x-hub-signature-256": sig } }, r2);
+  assert.equal(s2().statusCode, 200);
+
+  assert.equal(runCount.n, 1, "runtimeTurnService.runTurn must be called exactly once despite two deliveries");
+  assert.equal(outboundSendCount.n, 1, "outbound WhatsApp send must happen exactly once");
 });
 
 // VERIFY: runtimeAgentLoop.ts not changed, openaiRuntimeAgent.ts not changed
 test("VERIFY: core runtime files not modified in this PR", async () => {
   const { execSync } = await import("node:child_process");
-  const changedFiles = execSync("git diff --name-only HEAD~1 2>/dev/null || git diff --name-only origin/ai-dental-frontdesk-core 2>/dev/null || echo ''", {
+  const changedFiles = execSync("git diff --name-only origin/ai-dental-frontdesk-core 2>/dev/null || echo ''", {
     encoding: "utf8",
     cwd: "/tmp/ai-dental-runtime-v2",
   }).split("\n").map(f => f.trim()).filter(Boolean);

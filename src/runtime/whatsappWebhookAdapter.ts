@@ -118,7 +118,7 @@ export function normalizeWhatsAppPayload(
   }
 
   if (!Array.isArray(p.entry) || p.entry.length === 0) {
-    return { ok: true, turns: [] };
+    return { ok: true, turns: [], audioTurns: [] };
   }
 
   const turns: WhatsAppTurn[] = [];

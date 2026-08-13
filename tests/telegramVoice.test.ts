@@ -113,16 +113,19 @@ function makeFetchForVoice(opts: {
   getFileFails?: boolean;
   downloadFails?: boolean;
   transcribeFails?: boolean;
+  getFileFilePath?: string;
+  captureTranscriptionRequest?: { filename?: string; mimeType?: string };
 } = {}): typeof globalThis.fetch {
-  return async (url: string | URL | Request, _opts?: RequestInit) => {
+  return async (url: string | URL | Request, reqOpts?: RequestInit) => {
     const urlStr = typeof url === "string" ? url : url.toString();
 
     if (urlStr.includes("/getFile")) {
       if (opts.getFileFails) {
         return new Response(JSON.stringify({ ok: false }), { status: 400 });
       }
+      const filePath = opts.getFileFilePath ?? "voice/audio.ogg";
       return new Response(
-        JSON.stringify({ ok: true, result: { file_id: "file_abc123", file_path: "voice/audio.ogg", file_size: 1000 } }),
+        JSON.stringify({ ok: true, result: { file_id: "file_abc123", file_path: filePath, file_size: 1000 } }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     }
@@ -137,6 +140,18 @@ function makeFetchForVoice(opts: {
     if (urlStr.includes("api.openai.com/v1/audio/transcriptions")) {
       if (opts.transcribeFails) {
         return new Response(JSON.stringify({ error: "bad" }), { status: 500 });
+      }
+      // Capture filename from multipart body for assertions
+      if (opts.captureTranscriptionRequest && reqOpts?.body instanceof FormData) {
+        const fd = reqOpts.body as FormData;
+        const fileEntry = fd.get("file");
+        if (fileEntry && typeof (fileEntry as unknown as { name?: string }).name === "string") {
+          opts.captureTranscriptionRequest.filename = (fileEntry as unknown as { name: string }).name;
+        }
+        const blob = fileEntry instanceof Blob ? fileEntry : null;
+        if (blob) {
+          opts.captureTranscriptionRequest.mimeType = blob.type;
+        }
       }
       return new Response(
         JSON.stringify({ text: opts.transcript ?? "запишите меня на завтра" }),
@@ -327,4 +342,103 @@ test("TG-VOICE-2: same voice update sent twice → runtimeTurnService.runTurn ca
   assert.equal(getState2().statusCode, 200);
 
   assert.equal(runCount.n, 1, "runtimeTurnService.runTurn must be called exactly once despite two webhook deliveries");
+});
+
+// ── .oga regression tests ─────────────────────────────────────────────────────
+
+// TG-OGA-1: getFile returns .oga path, webhook mime_type=audio/ogg
+// → effective MIME from webhook wins, canonical .ogg filename sent to OpenAI
+test("TG-OGA-1: getFile .oga path + webhook mime_type=audio/ogg → OpenAI receives audio.ogg filename", async () => {
+  const capturedInputs: RuntimeTurnInput[] = [];
+  const runCount = { n: 0 };
+  const captureTranscriptionRequest: { filename?: string; mimeType?: string } = {};
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    capturedInputs,
+    runCount,
+    fetchOverride: makeFetchForVoice({
+      transcript: "запишите на завтра",
+      getFileFilePath: "voice/file_123.oga",
+      captureTranscriptionRequest,
+    }),
+  });
+  registerTelegramWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/telegram")!;
+  const { reply, getState } = makeReply();
+  // Webhook declares mime_type=audio/ogg (Telegram's actual field)
+  await handler({ body: makeVoiceUpdate({ mimeType: "audio/ogg" }), headers: {} }, reply);
+
+  assert.equal(getState().statusCode, 200);
+  assert.equal(runCount.n, 1, "runtime must be called");
+  assert.equal(capturedInputs[0]?.user_message, "запишите на завтра", "transcript reaches runtime");
+  // Key assertion: filename must be .ogg, not .oga
+  if (captureTranscriptionRequest.filename) {
+    assert.ok(
+      captureTranscriptionRequest.filename.endsWith(".ogg"),
+      `OpenAI multipart filename must be .ogg, got: ${captureTranscriptionRequest.filename}`,
+    );
+    assert.ok(
+      !captureTranscriptionRequest.filename.endsWith(".oga"),
+      `.oga must NOT be sent to OpenAI, got: ${captureTranscriptionRequest.filename}`,
+    );
+  }
+});
+
+// TG-OGA-2: getFile path has no extension, webhook mime_type=audio/ogg → canonical .ogg
+test("TG-OGA-2: getFile path with no extension + webhook mime_type=audio/ogg → canonical audio.ogg filename", async () => {
+  const runCount = { n: 0 };
+  const captureTranscriptionRequest: { filename?: string } = {};
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    runCount,
+    fetchOverride: makeFetchForVoice({
+      transcript: "осмотр в пятницу",
+      getFileFilePath: "voice/file_abc",  // no extension
+      captureTranscriptionRequest,
+    }),
+  });
+  registerTelegramWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/telegram")!;
+  const { getState } = makeReply();
+  await handler({ body: makeVoiceUpdate({ mimeType: "audio/ogg" }), headers: {} }, makeReply().reply);
+
+  assert.equal(runCount.n, 1, "runtime must be called");
+  if (captureTranscriptionRequest.filename) {
+    assert.ok(
+      captureTranscriptionRequest.filename.endsWith(".ogg"),
+      `Expected .ogg filename, got: ${captureTranscriptionRequest.filename}`,
+    );
+  }
+});
+
+// TG-OGA-3: MIME with codec suffix (WhatsApp-style "audio/ogg; codecs=opus") → strips to audio/ogg → audio.ogg
+test("TG-OGA-3: mime_type=audio/ogg; codecs=opus → codec suffix stripped → canonical audio.ogg filename", async () => {
+  const captureTranscriptionRequest: { filename?: string } = {};
+  const runCount = { n: 0 };
+
+  const { app, postHandlers } = makeRouteApp();
+  const deps = makeFullRouteDeps({
+    runCount,
+    fetchOverride: makeFetchForVoice({
+      transcript: "консультация",
+      getFileFilePath: "voice/file_wa.oga",
+      captureTranscriptionRequest,
+    }),
+  });
+  registerTelegramWebhookRoute(app, deps);
+
+  const handler = postHandlers.get("/webhooks/telegram")!;
+  await handler({ body: makeVoiceUpdate({ mimeType: "audio/ogg; codecs=opus" }), headers: {} }, makeReply().reply);
+
+  assert.equal(runCount.n, 1, "runtime must be called");
+  if (captureTranscriptionRequest.filename) {
+    assert.ok(
+      captureTranscriptionRequest.filename === "audio.ogg",
+      `Expected audio.ogg, got: ${captureTranscriptionRequest.filename}`,
+    );
+  }
 });

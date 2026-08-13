@@ -71,7 +71,9 @@ export async function transcribeAudio(
     DEFAULT_TRANSCRIPTION_MODEL;
 
   const ext = mimeToExtension(normalizedMime);
-  const filename = audio.filename ?? `audio.${ext}`;
+  // Always use canonical filename derived from MIME — never trust the provider filename
+  // (e.g. Telegram getFile returns .oga which OpenAI does not accept; canonical is .ogg).
+  const filename = `audio.${ext}`;
 
   const formData = new FormData();
   formData.append("model", modelToUse);

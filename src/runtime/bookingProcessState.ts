@@ -100,6 +100,83 @@ const SAFE_VISIBLE_NEXT_ACTIONS = new Set<BookingNextAction>([
   "ready_for_booking_apply",
 ]);
 
+export const AVAILABILITY_MODEL_VISIBILITY_TTL_MS = 15 * 60 * 1000;
+
+/** Fails closed: evidence without checked_at is treated as stale. */
+export function isAvailabilityEvidenceFresh(
+  evidence: AvailabilityEvidence | null | undefined,
+  now: Date,
+): boolean {
+  if (!evidence?.checked_at) return false;
+  const age = now.getTime() - new Date(evidence.checked_at).getTime();
+  return age >= 0 && age <= AVAILABILITY_MODEL_VISIBILITY_TTL_MS;
+}
+
+function filterFutureSlots(slots: AvailableSlot[], now: Date, timezone: string): AvailableSlot[] {
+  const fmt = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const minKey = fmt.format(now).replace(" ", "T").substring(0, 16);
+  return slots.filter((s) => {
+    const key = slotToKey(s);
+    return key !== null && key > minKey; // slot at exactly current minute = expired
+  });
+}
+
+/**
+ * Returns true when selected_slot is still usable: strictly in the future and bound
+ * to the active evidence allowed_slot_keys. Slot at exactly the current clinic-local
+ * minute is considered expired (consistent with filterFutureSlots semantics).
+ */
+function isSelectedSlotUsable(
+  selectedSlot: AvailableSlot | null | undefined,
+  evidence: AvailabilityEvidence | null | undefined,
+  now: Date,
+  timezone: string,
+): boolean {
+  if (!selectedSlot) return false;
+  const key = slotToKey(selectedSlot);
+  if (key === null) return false;
+
+  const fmt = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const minKey = fmt.format(now).replace(" ", "T").substring(0, 16);
+  if (key <= minKey) return false; // expired
+
+  if (evidence && !evidence.allowed_slot_keys.includes(key)) return false; // unbound
+
+  return true;
+}
+
+function filterAllowedSlots(slots: AvailableSlot[], allowedKeys: string[]): AvailableSlot[] {
+  const allowed = new Set(allowedKeys);
+  return slots.filter((s) => {
+    const key = slotToKey(s);
+    return key !== null && allowed.has(key);
+  });
+}
+
+function filterVisibleSlots(state: BookingProcessState, now: Date, timezone: string): AvailableSlot[] {
+  const slots = state.last_available_slots ?? [];
+  if (slots.length === 0) return [];
+  const evidence = state.active_availability_evidence;
+  const future = filterFutureSlots(slots, now, timezone);
+  return evidence ? filterAllowedSlots(future, evidence.allowed_slot_keys) : future;
+}
+
 /**
  * Resolves which next_action (if any) to expose to the model.
  *
@@ -168,11 +245,113 @@ export function buildModelVisibleBookingProcessState(opts: {
   state: BookingProcessState;
   priorProcessState: Partial<BookingProcessState> | null;
   bookingStateGrounded: boolean;
+  /**
+   * Wall-clock time for this turn. When provided, enables stale-evidence sanitization
+   * and future-slot filtering. Omit only in legacy test callers that don't inject time.
+   * Production (runtimeAgentLoop) always provides this via turnNow.
+   */
+  now?: Date;
+  /** Clinic timezone for future-slot filtering. Defaults to "Europe/Prague" when now is provided. */
+  timezone?: string;
 }): ModelVisibleBookingProcessState {
-  const { state, priorProcessState, bookingStateGrounded } = opts;
+  const { state, priorProcessState, bookingStateGrounded, now, timezone } = opts;
   const confidence: BookingStateConfidence = bookingStateGrounded ? "high" : "low";
 
   const visibleNextAction = resolveVisibleNextAction(state, priorProcessState, bookingStateGrounded);
+
+  // Stale-evidence sanitization and future-slot filtering only when now is provided.
+  // Legacy test callers that omit now retain the original pass-through behavior.
+  if (now !== undefined) {
+    const tz = timezone ?? "Europe/Prague";
+    const evidenceFresh = isAvailabilityEvidenceFresh(state.active_availability_evidence, now);
+    const hasSlotData = (state.last_available_slots?.length ?? 0) > 0 || state.selected_slot != null;
+
+    if (!evidenceFresh && hasSlotData) {
+      // Stale: sanitize model-visible copy — never mutate persisted state.
+      const staleSanitizedProof = sanitizeProofForModel({
+        ...state.proof,
+        slot_known: false,
+        ready_for_booking_apply: false,
+      });
+      const staleNextAction: BookingNextAction | undefined =
+        visibleNextAction === "choose_from_available_slots" ||
+        visibleNextAction === "ready_for_booking_apply" ||
+        visibleNextAction === "ask_for_phone"
+          ? undefined
+          : visibleNextAction;
+
+      if (confidence === "low") {
+        return {
+          last_available_slots: [],
+          selected_slot: undefined,
+          slot_evidence_status: "stale",
+          proof: staleSanitizedProof,
+          next_action_confidence: "low",
+        };
+      }
+
+      return {
+        ...state,
+        active_availability_evidence: undefined,
+        selected_slot_proof: undefined,
+        last_available_slots: [],
+        selected_slot: undefined,
+        slot_evidence_status: "stale",
+        proof: staleSanitizedProof,
+        next_action: staleNextAction,
+        next_action_confidence: "high",
+      };
+    }
+
+    // Evidence is fresh (or no slot data) — filter to future slots present in allowed_slot_keys.
+    const visibleSlots = filterVisibleSlots(state, now, tz);
+
+    // Even within TTL, independently verify that selected_slot hasn't passed and is
+    // bound to the evidence allowed_slot_keys. A slot selected 5 min ago may already
+    // be in the past if the patient spent time in the conversation.
+    const slotExpiredOrUnbound =
+      state.selected_slot != null &&
+      !isSelectedSlotUsable(state.selected_slot, state.active_availability_evidence, now, tz);
+
+    const slotEvidenceStatus = slotExpiredOrUnbound ? "stale" : resolveSlotEvidenceStatus(state);
+    const freshProof = slotExpiredOrUnbound
+      ? sanitizeProofForModel({ ...state.proof, slot_known: false, ready_for_booking_apply: false })
+      : sanitizeProofForModel(state.proof);
+
+    if (confidence === "low") {
+      return {
+        last_available_slots: visibleSlots,
+        selected_slot: slotExpiredOrUnbound ? undefined : state.selected_slot,
+        slot_evidence_status: slotEvidenceStatus,
+        proof: freshProof,
+        next_action_confidence: "low",
+      };
+    }
+
+    // Suppress slot-dependent next_actions when selected_slot is no longer usable.
+    // Also suppress choose_from_available_slots when all visible slots have been filtered out.
+    const freshNextAction =
+      (slotExpiredOrUnbound &&
+        (visibleNextAction === "ready_for_booking_apply" || visibleNextAction === "ask_for_phone")) ||
+      (visibleSlots.length === 0 && visibleNextAction === "choose_from_available_slots")
+        ? undefined
+        : visibleNextAction;
+
+    return {
+      ...state,
+      // Strip internal evidence fields — model sees slot_evidence_status instead.
+      active_availability_evidence: undefined,
+      selected_slot_proof: undefined,
+      last_available_slots: visibleSlots,
+      selected_slot: slotExpiredOrUnbound ? undefined : state.selected_slot,
+      slot_evidence_status: slotEvidenceStatus,
+      proof: freshProof,
+      next_action: freshNextAction,
+      next_action_confidence: "high",
+    };
+  }
+
+  // Legacy path: no now provided — original pass-through behavior.
   const slotEvidenceStatus = resolveSlotEvidenceStatus(state);
 
   if (confidence === "low") {
@@ -257,6 +436,8 @@ export interface ComputeBookingProcessStateInput {
   /** Override name from explicit booking.apply args. */
   bookingApplyFirstName?: string | null;
   bookingApplyLastName?: string | null;
+  /** Wall-clock time for this turn. Used to stamp checked_at on new availability evidence. Defaults to new Date(). */
+  now?: Date;
 }
 
 export function computeBookingProcessState(input: ComputeBookingProcessStateInput): BookingProcessState {
@@ -295,6 +476,7 @@ export function computeBookingProcessState(input: ComputeBookingProcessStateInpu
             ? pair.request.arguments.requested_time
             : null,
         allowed_slot_keys: buildAllowedSlotKeysFromResult(pair.result),
+        checked_at: (input.now ?? new Date()).toISOString(),
       };
     }
   } else {

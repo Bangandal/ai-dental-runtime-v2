@@ -7,6 +7,8 @@ export interface AvailabilityEvidence {
   requested_time: string | null;
   /** Unique YYYY-MM-DDTHH:MM keys from the authoritative successful availability.check result. */
   allowed_slot_keys: string[];
+  /** ISO timestamp when the availability.check was performed. Missing on legacy evidence → treated as stale. */
+  checked_at?: string;
 }
 
 export interface SelectedSlotProof {

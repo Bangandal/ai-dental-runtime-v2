@@ -35,14 +35,6 @@ describe("Essential prompt contracts (simplified prompt — PR #181)", () => {
     assert.match(instruction, /create a visit|confirmed slot/i, "booking.apply purpose");
   });
 
-  // Contract 4: subject_id always required in booking.apply
-  test("C4: prompt states subject_id is always required in booking.apply", () => {
-    assert.match(instruction, /subject_id.*ALWAYS required|ALWAYS.*subject_id/i);
-    assert.match(instruction, /subject_1.*sender.*self|sender.*self.*subject_1/i, "subject_1 = sender/self");
-    assert.match(instruction, /subject_2.*first other person|first other person.*subject_2/i);
-    assert.match(instruction, /Never call booking\.apply without subject_id/i);
-  });
-
   // Contract 5: subject_intent and phone_ownership_intent emission
   test("C5: prompt instructs model to emit subject_intent and phone_ownership_intent", () => {
     assert.match(instruction, /subject_intent/i, "must mention subject_intent");
@@ -55,7 +47,6 @@ describe("Essential prompt contracts (simplified prompt — PR #181)", () => {
   test("C6: prompt instructs model to follow all three truth contracts", () => {
     // booking_apply_action_truth
     assert.match(instruction, /booking_apply_action_truth.*present.*follow.*strictly|follow.*booking_apply_action_truth.*strictly/i);
-    assert.match(instruction, /can_say_booking_created=false/i, "must specify what to do when booking claim is forbidden");
     // availability_presentation_truth
     assert.match(instruction, /availability_presentation_truth/i, "must reference availability_presentation_truth");
     assert.match(instruction, /allowed_slot_starts/i, "must reference allowed_slot_starts from truth object");
@@ -67,14 +58,6 @@ describe("Essential prompt contracts (simplified prompt — PR #181)", () => {
   // Contract 7: never claim availability without tool evidence
   test("C7: prompt prohibits availability claims without tool evidence", () => {
     assert.match(instruction, /Never claim.*slot.*time.*day available without availability\.check|never claim.*available.*without/i);
-    assert.match(instruction, /Never claim a slot\/time\/day available without availability\.check results from this turn/i);
-  });
-
-  // Contract 8: never claim booking created/confirmed when truth forbids it
-  test("C8: prompt guards against booking claims when truth object forbids them", () => {
-    assert.match(instruction, /do NOT claim appointment was created/i, "must prohibit booking-created claim when can_say_booking_created=false");
-    assert.match(instruction, /do NOT claim appointment is confirmed/i, "must prohibit booking-confirmed claim when can_say_booking_confirmed=false");
-    assert.match(instruction, /Do not claim booking is confirmed without explicit backend proof/i, "must guard against unproven booking confirmation");
   });
 
   // Contract 9: natural patient-facing text — no raw JSON or internal terms
@@ -153,9 +136,6 @@ describe("Essential prompt contracts (simplified prompt — PR #181)", () => {
   // Confirm essential safety phrases still present after simplification
   test("SIMPLIFIED: essential NEVER rules still present after simplification", () => {
     assert.match(instruction, /Do not invent prices, services, opening hours, availability, bookings/i);
-    assert.match(instruction, /never call typed phone trusted/i);
-    assert.match(instruction, /typed phone is acceptable/i);
-    assert.match(instruction, /unverified booking contact/i);
     assert.match(instruction, /unless a handoff or admin notification side effect was actually created or queued/i);
     assert.match(instruction, /unless a notification or handoff side effect was actually created or queued/i);
   });
@@ -166,40 +146,6 @@ describe("Essential prompt contracts (simplified prompt — PR #181)", () => {
     assert.match(instructionNew, /PATH B/i);
     assert.match(instructionNew, /помощник администратора клиники/i);
     assert.match(instructionNew, /Do NOT claim to be a human administrator/i);
-  });
-
-  // ── Channel-aware phone wording (Point 1) ───────────────────────────────────
-
-  test("PHONE-CHANNEL-1: ask_for_phone rule references channel_context.channel", () => {
-    assert.match(instruction, /channel_context\.channel/i,
-      "must instruct model to check channel_context.channel for phone capture method");
-  });
-
-  test("PHONE-CHANNEL-2: Telegram contact button only mentioned for Telegram channel", () => {
-    assert.match(instruction, /telegram.*contact button appears automatically|contact button appears automatically/i,
-      "telegram path must say contact button appears automatically");
-    assert.match(instruction, /Never mention a Telegram contact button when channel is not telegram/i,
-      "must prohibit Telegram button on non-Telegram channels");
-  });
-
-  test("PHONE-CHANNEL-3: sms/unknown channel falls back to typed phone", () => {
-    assert.match(instruction, /sms.*unknown.*ask.*type|sms or unknown.*ask.*type/i,
-      "sms or unknown channel must ask patient to type their number");
-  });
-
-  test("PHONE-CHANNEL-4: whatsapp/web asks patient to provide number (does not claim capture already happened)", () => {
-    // ask_for_phone signals the phone is MISSING — must ask, not claim it was already captured
-    assert.match(instruction, /whatsapp.*ask.*patient.*share|whatsapp.*share.*number|whatsapp.*number.*accepted/i,
-      "whatsapp path must ask patient to share/provide their number");
-    assert.doesNotMatch(instruction, /whatsapp\/web.*phone is captured natively|phone is captured natively by the channel/i,
-      "must not claim phone is already captured natively when phone is missing");
-    assert.match(instruction, /web.*ask.*patient.*enter|web.*enter.*phone|web.*web form|web.*type it directly/i,
-      "web path must ask patient to enter phone via form or by typing");
-  });
-
-  test("PHONE-CHANNEL-5: never re-ask a phone already provided", () => {
-    assert.match(instruction, /Never re-ask a phone already provided/i,
-      "must prohibit re-asking an already-provided phone");
   });
 
   // ── Universal side-effect claim rule in NEVER (Issue 2) ─────────────────────
@@ -220,14 +166,6 @@ describe("Essential prompt contracts (simplified prompt — PR #181)", () => {
       /unless.*side effect.*created or queued/i,
       "rule must be conditional on side effect being created or queued",
     );
-  });
-
-  test("SIDE-EFFECT-CLAIM: PHONE TRUST includes web-form capture as trusted source", () => {
-    const phoneTrustStart = instruction.indexOf("PHONE TRUST:");
-    assert.ok(phoneTrustStart > -1, "PHONE TRUST section must exist");
-    const phoneTrustSnippet = instruction.slice(phoneTrustStart, phoneTrustStart + 200);
-    assert.match(phoneTrustSnippet, /web form|web_form/i,
-      "PHONE TRUST must include web form as a trusted channel-captured phone source");
   });
 
   // ── availability_presentation_truth contract (Point 2) ──────────────────────

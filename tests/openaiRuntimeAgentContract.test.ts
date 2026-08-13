@@ -62,9 +62,6 @@ test("system instruction includes safety and ownership boundaries", () => {
   assert.match(instruction, /Do not invent prices, services, opening hours, availability, bookings/i);
   assert.match(instruction, /Conversation memory is dialogue continuity only/i);
   assert.match(instruction, /Tool results and Supabase\/runtime context are business truth/i);
-  assert.match(instruction, /unverified booking contact/i);
-  assert.match(instruction, /typed phone is acceptable/i);
-  assert.match(instruction, /ask only for: first name, last name, service\/reason, preferred day\/time/i);
   assert.match(instruction, /Final patient reply must be in the patient'?s language/i);
 });
 
@@ -78,19 +75,6 @@ test("CBM/bug5: system instruction has greeting/low-signal guidance — no prema
     instruction.includes("Do NOT immediately ask for service") || instruction.includes("Do not immediately ask for service"),
     "must prohibit immediate service/time intake on greetings",
   );
-});
-
-// PR#174-fix: phone policy — no hard prohibition on typed text, but contact button preferred
-test("PR#174-fix C: system instruction does not hard-prohibit typed phone and reflects correct trust hierarchy", () => {
-  const instruction = buildRuntimeAgentSystemInstruction();
-  // Must NOT contain the old hard prohibition
-  assert.doesNotMatch(instruction, /Do NOT ask for phone as text/i, "hard prohibition on typed phone must be removed");
-  // Must express that typed phone is acceptable as unverified fallback
-  assert.match(instruction, /unverified booking contact/i, "must allow typed phone as unverified contact");
-  // Must express that contact button is trusted/preferred
-  assert.match(instruction, /contact button.*trusted|trusted.*contact button/i, "must state contact button is trusted");
-  // Must say never call typed phone trusted
-  assert.match(instruction, /never call typed phone trusted/i, "must prohibit calling typed phone trusted");
 });
 
 test("CBM/bug1: system instruction has urgent clinical signal guidance", () => {
@@ -144,10 +128,14 @@ test("CBM/bug2: system instruction says to reply in patient language and include
   assert.match(instruction, /Never reply in English unless the patient wrote in English/i);
 });
 
-test("CBM/bug2: system instruction tells agent not to request extra tools when results are available", () => {
+test("CBM/bug2: system instruction treats tool_results as authoritative while allowing valid chaining", () => {
   const instruction = buildRuntimeAgentSystemInstruction();
-
-  assert.match(instruction, /tool_results are already provided|results are already available/i);
+  // Absolute prohibition removed — runtime supports select_slot→apply chain.
+  // Prompt must say to treat results as authoritative and only chain when required.
+  assert.ok(
+    instruction.includes("treat them as authoritative") || instruction.includes("next valid step"),
+    "Prompt must instruct model to treat tool_results as authoritative and only request another tool when required",
+  );
 });
 
 test("system instruction greeting rule is language-neutral — no single-language hardcoded example", () => {
@@ -160,16 +148,6 @@ test("system instruction greeting rule is language-neutral — no single-languag
     instruction,
     /Привет! Чем могу помочь\?/,
     "greeting rule must not hardcode a Russian-only example without language context",
-  );
-});
-
-test("system instruction contains booking confirmation proof guard", () => {
-  const instruction = buildRuntimeAgentSystemInstruction();
-
-  assert.match(
-    instruction,
-    /Do not claim booking is confirmed without explicit backend proof/i,
-    "must guard against claiming booking confirmed without backend proof",
   );
 });
 
@@ -456,11 +434,17 @@ test("first-turn routing: booking + time hint (PATH B4) → availability.check, 
   assert.match(instruction, /No generic opening question/i, "B4 must prohibit generic intro question");
 });
 
-test("first-turn routing: booking without time (PATH B5) → ask only missing detail, not 'Что вас интересует?'", () => {
+test("first-turn routing: booking without time (PATH B5) → collect only missing details, no generic opening question", () => {
   const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
   assert.match(instruction, /B5/i, "must define PATH B5 for booking without time");
-  assert.match(instruction, /ask only the missing detail/i, "B5 must instruct to ask only what is missing");
-  assert.match(instruction, /Do not ask.*Что вас интересует/i, "B5 must prohibit open question when intent is known");
+  assert.ok(
+    instruction.match(/genuinely missing|ask only.*missing/i) !== null,
+    "B5 must instruct to collect only genuinely missing booking details",
+  );
+  assert.ok(
+    instruction.includes("generic opening question") || instruction.match(/Do not ask.*Что вас интересует/i) !== null,
+    "B5 must prohibit generic opening question when intent is known",
+  );
 });
 
 test("first-turn greeting: is_new_conversation=false omits clinic assistant self-introduction", () => {

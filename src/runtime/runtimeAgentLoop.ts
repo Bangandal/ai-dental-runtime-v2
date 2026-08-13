@@ -139,6 +139,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       let bookingProcessState = computeBookingProcessState({
         prior: priorProcessState,
         channelContact: input.channel_contact,
+        now: turnNow,
       });
 
       // First call: grounded only if prior state has meaningful booking data.
@@ -149,6 +150,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         state: bookingProcessState,
         priorProcessState,
         bookingStateGrounded: firstCallGrounded,
+        now: turnNow,
+        timezone,
       });
 
       let firstOutput: RuntimeAgentCallerOutput;
@@ -436,6 +439,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           channelContact: input.channel_contact,
           selectSlotData: srSuccessData,
           selectSlotAttemptedThisTurn: true,
+          now: turnNow,
         });
 
         // Persist updated state (best-effort — non-blocking).
@@ -822,6 +826,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           selectSlotData: selectSlotSuccessData,
           // Any select_slot attempt (success or failure) revokes the prior proof.
           selectSlotAttemptedThisTurn: selectSlotRequestCount > 0,
+          now: turnNow,
         });
         // Persist updated state (best-effort — non-blocking).
         if (deps.bookingProcessStateRepository) {
@@ -857,6 +862,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         state: bookingProcessState,
         priorProcessState,
         bookingStateGrounded: secondCallGrounded,
+        now: turnNow,
+        timezone,
       });
 
       const secondCallContext = {

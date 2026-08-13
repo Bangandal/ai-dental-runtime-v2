@@ -625,8 +625,12 @@ test("PR144-A: maybeAttachPhoneRequestUI attaches button when next_action=ask_fo
 });
 
 test("PR144-A (no-tool loop): first-call final_response with ask_for_phone state returns ui.telegram.request_contact=true", async () => {
+  // Inject deterministic time so stale-evidence TTL is evaluated at a fixed point.
+  // Evidence checked_at is 5 minutes before testNow → always fresh.
+  const testNow = new Date("2026-08-05T08:00:00.000Z");
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    now: testNow,
     caller: async () => ({
       type: "final_response" as const,
       conversation_id: "conv_144_a",
@@ -639,7 +643,7 @@ test("PR144-A (no-tool loop): first-call final_response with ask_for_phone state
         first_name: "Тест",
         last_name: "Пациент",
         selected_slot: { starts_at: "2026-08-05T14:00:00", slot_id: "s1" },
-        active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+        active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"], checked_at: new Date(testNow.getTime() - 5 * 60 * 1000).toISOString() },
         selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
         next_action: "ask_for_phone" as const,
         phone_trusted: undefined,
@@ -752,8 +756,10 @@ test("PR144-D: guarded booking.apply missing-phone path still returns ui.telegra
 test("PR144-E: no ClinicCard writes when contact button is attached via maybeAttachPhoneRequestUI", async () => {
   let clinicCardWriteCalled = false;
 
+  const testNow = new Date("2026-08-05T08:00:00.000Z");
   const loop = createRuntimeAgentLoop({
     model: "test-model",
+    now: testNow,
     caller: async () => ({
       type: "final_response" as const,
       conversation_id: "conv_144_e",
@@ -771,7 +777,7 @@ test("PR144-E: no ClinicCard writes when contact button is attached via maybeAtt
         first_name: "Тест",
         last_name: "Пациент",
         selected_slot: { starts_at: "2026-08-05T14:00:00", slot_id: "s1" },
-        active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"] },
+        active_availability_evidence: { availability_call_id: "legacy_test_call", requested_date: "2026-08-05", requested_time: null, allowed_slot_keys: ["2026-08-05T14:00"], checked_at: new Date(testNow.getTime() - 5 * 60 * 1000).toISOString() },
         selected_slot_proof: { subject_id: "subject_1" as const, availability_call_id: "legacy_test_call", slot_key: "2026-08-05T14:00" },
         phone_trusted: undefined,
         proof: { service_known: true, name_known: true, slot_known: true, trusted_phone_known: false, ready_for_booking_apply: false },

@@ -9,11 +9,17 @@
     "cliniccard:availability-probe": "node scripts/cliniccard-availability-probe.ts"
   },
   "dependencies": {
+    "@elevenlabs/elevenlabs-js": "^2.63.0",
+    "@fastify/formbody": "^9.0.0",
+    "@fastify/websocket": "^11.3.0",
     "@supabase/supabase-js": "^2.50.0",
     "fastify": "^5.0.0",
-    "openai": "^6.0.0"
+    "openai": "^6.0.0",
+    "twilio": "^6.1.0",
+    "ws": "^8.21.3"
   },
   "devDependencies": {
+    "@types/ws": "^8.18.1",
     "tsx": "^4.22.4"
   }
 }

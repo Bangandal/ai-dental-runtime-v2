@@ -175,3 +175,41 @@ test("PROMPT-21: prompt does NOT document 'disabled' as an availability_action_t
     "Prompt must not document 'disabled' as an availability outcome — not in AvailabilityOutcome type",
   );
 });
+
+test("PROMPT-22: system prompt does NOT prohibit tool calls merely because tool_results are present", () => {
+  assert.ok(
+    !PROMPT.includes("do not request additional tools"),
+    "Prompt must not absolutely prohibit tool calls when tool_results are present"
+  );
+  assert.ok(
+    PROMPT.includes("next valid step") || PROMPT.includes("another tool only when required"),
+    "Prompt must allow tool requests when required for a valid next step"
+  );
+});
+
+test("PROMPT-23: affirmation after date-specific offer preserves offered date", () => {
+  assert.ok(
+    PROMPT.match(/affirmation|offered.*check|preserving.*date|context date/i) !== null,
+    "Prompt must instruct that affirmation after an offered check preserves the offered date"
+  );
+});
+
+test("PROMPT-24: ASAP rule does not list bare affirmations as ASAP triggers", () => {
+  const asapLine = PROMPT.split("\n").find(l => l.startsWith("ASAP ("));
+  if (asapLine) {
+    assert.ok(
+      !asapLine.includes("'да'"),
+      "ASAP rule must not unconditionally list bare 'да' as an ASAP trigger"
+    );
+  }
+});
+
+test("PROMPT-25: RED-FLAG guidance includes a patient action, not only model restrictions", () => {
+  const redFlagLine = PROMPT.split("\n").find(l => l.startsWith("RED-FLAG"));
+  assert.ok(redFlagLine, "RED-FLAG line must exist");
+  assert.ok(
+    redFlagLine!.includes("contact") || redFlagLine!.includes("emergency") || redFlagLine!.includes("urgently") || redFlagLine!.includes("care"),
+    "RED-FLAG must include a patient action (contact clinic, seek emergency care, etc.)"
+  );
+});
+

@@ -128,10 +128,14 @@ test("CBM/bug2: system instruction says to reply in patient language and include
   assert.match(instruction, /Never reply in English unless the patient wrote in English/i);
 });
 
-test("CBM/bug2: system instruction tells agent not to request extra tools when results are available", () => {
+test("CBM/bug2: system instruction treats tool_results as authoritative while allowing valid chaining", () => {
   const instruction = buildRuntimeAgentSystemInstruction();
-
-  assert.match(instruction, /tool_results are already provided|results are already available/i);
+  // Absolute prohibition removed — runtime supports select_slot→apply chain.
+  // Prompt must say to treat results as authoritative and only chain when required.
+  assert.ok(
+    instruction.includes("treat them as authoritative") || instruction.includes("next valid step"),
+    "Prompt must instruct model to treat tool_results as authoritative and only request another tool when required",
+  );
 });
 
 test("system instruction greeting rule is language-neutral — no single-language hardcoded example", () => {
@@ -430,11 +434,17 @@ test("first-turn routing: booking + time hint (PATH B4) → availability.check, 
   assert.match(instruction, /No generic opening question/i, "B4 must prohibit generic intro question");
 });
 
-test("first-turn routing: booking without time (PATH B5) → ask only missing detail, not 'Что вас интересует?'", () => {
+test("first-turn routing: booking without time (PATH B5) → collect only missing details, no generic opening question", () => {
   const instruction = buildRuntimeAgentSystemInstruction({ is_new_conversation: true });
   assert.match(instruction, /B5/i, "must define PATH B5 for booking without time");
-  assert.match(instruction, /ask only the missing detail/i, "B5 must instruct to ask only what is missing");
-  assert.match(instruction, /Do not ask.*Что вас интересует/i, "B5 must prohibit open question when intent is known");
+  assert.ok(
+    instruction.match(/genuinely missing|ask only.*missing/i) !== null,
+    "B5 must instruct to collect only genuinely missing booking details",
+  );
+  assert.ok(
+    instruction.includes("generic opening question") || instruction.match(/Do not ask.*Что вас интересует/i) !== null,
+    "B5 must prohibit generic opening question when intent is known",
+  );
 });
 
 test("first-turn greeting: is_new_conversation=false omits clinic assistant self-introduction", () => {

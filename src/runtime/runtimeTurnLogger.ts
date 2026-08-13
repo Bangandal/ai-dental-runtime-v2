@@ -27,6 +27,10 @@ export interface TelegramDeliveryLogEvent {
   retry_count: number;
   error_code?: string;
   error?: string;
+  // Optional fields used by non-Telegram channels
+  channel?: string;
+  provider_message_id?: string;
+  status?: number;
 }
 
 export interface RuntimeTurnErrorLogEvent {

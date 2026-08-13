@@ -69,6 +69,7 @@ export interface RuntimeTurnOrchestratorDeps {
 export type RuntimeTurnOrchestratorResult =
   | { outcome: "success"; payload: RuntimeTurnHttpSuccessResponse }
   | { outcome: "duplicate" }
+  | { outcome: "inbound_registration_failed" }
   | { outcome: "invalid_request"; message: string }
   | { outcome: "clinic_not_found" }
   | { outcome: "error"; fallbackPayload: RuntimeTurnHttpSuccessResponse };
@@ -79,6 +80,7 @@ const RUNTIME_FALLBACK_REPLY =
 export async function runRuntimeTurnOrchestrated(
   body: RuntimeTurnHttpRequestBody,
   deps: RuntimeTurnOrchestratorDeps,
+  opts?: { trustedChannelContact?: ChannelContact; requireInboundRegistration?: boolean },
 ): Promise<RuntimeTurnOrchestratorResult> {
   const startTime = Date.now();
 
@@ -181,8 +183,15 @@ export async function runRuntimeTurnOrchestrated(
         trace_id: traceId,
       }).catch(() => ({ ok: false } as const));
 
-      // null inbound_event_id indicates the event was already registered (duplicate update/message).
-      if (inboundResult.ok && inboundResult.data.inbound_event_id === null) {
+      // When requireInboundRegistration=true (WhatsApp), fail closed on any registration error.
+      // This covers concurrent unique-violation races where the loser gets ok=false.
+      if (opts?.requireInboundRegistration && !inboundResult.ok) {
+        return { outcome: "inbound_registration_failed" };
+      }
+
+      // Use authoritative RPC flags: is_duplicate=true or accepted=false means this event was already registered.
+      // A non-null inbound_event_id on a duplicate must NOT allow the runtime turn to execute.
+      if (inboundResult.ok && (inboundResult.data.is_duplicate === true || inboundResult.data.accepted === false)) {
         return { outcome: "duplicate" };
       }
 
@@ -209,6 +218,10 @@ export async function runRuntimeTurnOrchestrated(
     } else {
       persistenceDebug.inbound_event = { ok: false, skipped: true, reason: "contact_unavailable" };
       persistenceDebug.save_user_message = { ok: false, skipped: true, reason: "contact_unavailable" };
+      // When requireInboundRegistration=true, contact unavailability also blocks business execution.
+      if (opts?.requireInboundRegistration) {
+        return { outcome: "inbound_registration_failed" };
+      }
     }
   }
 
@@ -293,7 +306,7 @@ export async function runRuntimeTurnOrchestrated(
         runtimeContextDebug.recent_history_count = runtimeContextResult.data.recent_history.length;
         runtimeContextDebug.topic_memory = runtimeContextResult.data.topic_memory ?? null;
 
-        const channelContactForCase = runtimeContextResult.data.channel_contact;
+        const channelContactForCase = runtimeContextResult.data.channel_contact ?? opts?.trustedChannelContact ?? null;
         const existingProvidedPhone = runtimeContextResult.data.provided_phone ?? null;
 
         // Always try to extract a typed phone from the current message.
@@ -411,6 +424,13 @@ export async function runRuntimeTurnOrchestrated(
       runtimeContextDebug.loaded = false;
       runtimeContextDebug.error = { code: "runtime_context_exception", message: error instanceof Error ? error.message : String(error) };
     }
+  }
+
+  // BLOCKER 1: Use trustedChannelContact when no persisted channel_contact was available.
+  // This is an internal-only trusted boundary: passed by WhatsApp transport via opts,
+  // not accepted from the public /runtime/turn HTTP request body.
+  if (!runtimeTurnInput.channel_contact && opts?.trustedChannelContact) {
+    runtimeTurnInput.channel_contact = opts.trustedChannelContact;
   }
 
   if (loadedCaseContext && !(runtimeTurnInput.business_context as Record<string, unknown>).runtime_context) {

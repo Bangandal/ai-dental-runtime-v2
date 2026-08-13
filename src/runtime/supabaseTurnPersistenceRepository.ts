@@ -24,7 +24,7 @@ export interface TurnPersistenceRepository {
     payload: Record<string, unknown>;
     trace_id: string;
     n8n_execution_id?: string | null;
-  }): Promise<RuntimeResult<{ inbound_event_id?: string | null }>>;
+  }): Promise<RuntimeResult<{ inbound_event_id: string | null; is_duplicate?: boolean; accepted?: boolean }>>;
   saveMessage(input: {
     contact_id: string;
     direction: "inbound" | "outbound";
@@ -71,7 +71,7 @@ export function createSupabaseTurnPersistenceRepository(deps: { rpc: RpcCaller }
       return { ok: true, data: { contact_id: contactId, clinic_id: clinicId } };
     },
     async registerInboundEvent(input) {
-      const { data, error } = await deps.rpc<Array<{ inbound_event_id?: unknown }>>("rpc_register_inbound_event", {
+      const { data, error } = await deps.rpc<Array<{ inbound_event_id?: unknown; is_duplicate?: unknown; accepted?: unknown }>>("rpc_register_inbound_event", {
         p_clinic_id: input.clinic_id,
         p_contact_id: input.contact_id,
         p_channel: input.channel,
@@ -84,7 +84,15 @@ export function createSupabaseTurnPersistenceRepository(deps: { rpc: RpcCaller }
         p_n8n_execution_id: input.n8n_execution_id ?? null,
       });
       if (error) return fail("inbound_event_persist_failed", "Failed to register inbound event");
-      return { ok: true, data: { inbound_event_id: typeof data?.[0]?.inbound_event_id === "string" ? data[0].inbound_event_id : null } };
+      const row = data?.[0];
+      return {
+        ok: true,
+        data: {
+          inbound_event_id: typeof row?.inbound_event_id === "string" ? row.inbound_event_id : null,
+          is_duplicate: row?.is_duplicate === true,
+          accepted: row?.accepted !== false,
+        },
+      };
     },
     async saveMessage(input) {
       const { data, error } = await deps.rpc<Array<{ message_id?: unknown }>>("rpc_save_message", {

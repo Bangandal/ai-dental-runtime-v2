@@ -19,6 +19,7 @@ import { createOpenAITurnUnderstandingClassifier } from "./turnUnderstandingShad
 import { loadAdminNotifyConfig } from "../integrations/adminNotify/adminNotifyConfig.ts";
 import { createAdminNotifier } from "../integrations/adminNotify/telegramAdminNotifier.ts";
 import { createOpenAIRuntimeCaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
+import type { RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 
 export interface TelegramBootstrapConfig {
   botToken: string;
@@ -38,7 +39,6 @@ export interface RuntimeServerBootstrapDeps {
   debugEnabled?: boolean;
   telegram?: TelegramBootstrapConfig;
 }
-
 
 export function createDeliveryObserver(
   logger: RuntimeTurnLogger,
@@ -63,30 +63,42 @@ function readConversationId(value: unknown): string | null {
   return typeof candidate === "string" && candidate.length > 0 ? candidate : null;
 }
 
-export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteApp, deps: RuntimeServerBootstrapDeps): void {
+export interface OrchestrationDepsInput {
+  openaiClient: OpenAIResponsesClient;
+  model: string;
+  embeddingModel: string;
+  rpc: RpcCaller;
+  embeddingClient: EmbeddingClient;
+  runtimeTurnLogger?: RuntimeTurnLogger;
+  debugEnabled?: boolean;
+  telegram?: TelegramBootstrapConfig;
+}
+
+// Exported for use by non-Telegram transports (e.g. WhatsApp) that need the
+// same shared orchestration deps without going through registerRuntimeRoutes.
+export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): RuntimeTurnOrchestratorDeps {
   const caseRouterModel = process.env.OPENAI_CASE_ROUTER_MODEL?.trim() || deps.model;
   const runtimeGateModel = process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
-  const turnUnderstandingModel = process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim() || process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
+  const turnUnderstandingModel =
+    process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim() ||
+    process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() ||
+    deps.model;
+
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
   const bookingProcessStateRepository = createSupabaseBookingProcessStateRepository({ rpc: deps.rpc });
   const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const clinicIdentityResolver = createSupabaseClinicIdentityResolver({ rpc: deps.rpc });
   const runtimeContextRepository = createSupabaseRuntimeContextRepository({ rpc: deps.rpc });
   const caseContextRepository = createSupabaseCaseContextRepository({ rpc: deps.rpc });
+
   const createOpenAIConversation = async (): Promise<string | null> => {
     const conversations = (deps.openaiClient as unknown as {
       conversations?: { create?: () => Promise<unknown> };
     }).conversations;
-
-    if (typeof conversations?.create !== "function") {
-      return null;
-    }
-
+    if (typeof conversations?.create !== "function") return null;
     const created = await conversations.create();
     return readConversationId(created);
   };
-
-  const rateLimiter = createRateLimiter({ maxRequests: 60, windowMs: 60_000 });
 
   const adminNotifyConfig = loadAdminNotifyConfig();
   const adminNotifier = createAdminNotifier({
@@ -101,7 +113,7 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
 
   const logger = deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger();
 
-  registerRuntimeTurnRoute(app, {
+  return {
     runtimeTurnService: createDentalRuntimeTurnService({
       openaiClient: deps.openaiClient,
       model: deps.model,
@@ -120,42 +132,33 @@ export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteA
     runtimeGateClassifier: createOpenAIRuntimeGateClassifier({ client: deps.openaiClient, model: runtimeGateModel }),
     turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({ client: deps.openaiClient, model: turnUnderstandingModel }),
     caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: caseRouterModel }),
-    apiKey: deps.apiKey,
-    isProduction: deps.isProduction,
-    rateLimiter,
     debugEnabled: deps.debugEnabled,
     adminNotifier,
     caseLiteExtractor,
+  };
+}
+
+export function registerRuntimeRoutes(app: RouteRegistrationApp & TelegramRouteApp, deps: RuntimeServerBootstrapDeps): void {
+  const rateLimiter = createRateLimiter({ maxRequests: 60, windowMs: 60_000 });
+  const logger = deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger();
+  const oDeps = createRuntimeOrchestrationDeps(deps);
+
+  registerRuntimeTurnRoute(app, {
+    ...oDeps,
+    runtimeTurnLogger: logger,
+    apiKey: deps.apiKey,
+    isProduction: deps.isProduction,
+    rateLimiter,
   });
 
   if (deps.telegram) {
     const { botToken, webhookSecret, defaultClinicCode } = deps.telegram;
     registerTelegramWebhookRoute(app, {
-      runtimeTurnService: createDentalRuntimeTurnService({
-        openaiClient: deps.openaiClient,
-        model: deps.model,
-        embeddingModel: deps.embeddingModel,
-        rpc: deps.rpc,
-        embeddingClient: deps.embeddingClient,
-        bookingProcessStateRepository,
-      }),
-      runtimeTurnLogger: logger,
-      openAIConversationMemoryRepository,
-      createOpenAIConversation,
-      turnPersistenceRepository,
-      clinicIdentityResolver,
-      runtimeContextRepository,
-      caseContextRepository,
-      runtimeGateClassifier: createOpenAIRuntimeGateClassifier({ client: deps.openaiClient, model: runtimeGateModel }),
-      turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({ client: deps.openaiClient, model: turnUnderstandingModel }),
-      caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: caseRouterModel }),
-      debugEnabled: deps.debugEnabled,
+      ...oDeps,
       botToken,
       webhookSecret,
       defaultClinicCode,
       isProduction: deps.isProduction ?? false,
-      adminNotifier,
-      caseLiteExtractor,
       onTelegramDelivery: createDeliveryObserver(logger),
     });
   }

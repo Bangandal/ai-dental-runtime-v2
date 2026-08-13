@@ -27,7 +27,6 @@ export interface TelegramMessage {
   text?: string;
   contact?: TelegramContact;
   voice?: TelegramVoice;
-  audio?: TelegramVoice;
 }
 
 export interface TelegramFrom {
@@ -124,8 +123,8 @@ export function normalizeTelegramUpdate(
     return { ok: false, reason: "no_from" };
   }
 
-  // Voice/audio message
-  const voiceMsg = message.voice ?? message.audio;
+  // Voice message (native Telegram voice note only; message.audio falls through to no_text)
+  const voiceMsg = message.voice;
   if (voiceMsg !== undefined) {
     const fileId = voiceMsg.file_id;
     if (!fileId) {

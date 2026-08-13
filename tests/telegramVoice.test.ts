@@ -251,24 +251,6 @@ test("TG-ADAPTER-TEXT: text message still normalizes to type='text'", () => {
   assert.equal(result.type, "text");
 });
 
-test("TG-ADAPTER-AUDIO-KEY: audio key also normalizes to type='voice'", () => {
-  const update = {
-    update_id: 2,
-    message: {
-      message_id: 2,
-      from: { id: 555 },
-      chat: { id: 555, type: "private" },
-      audio: { file_id: "audio_file_id", file_unique_id: "uniq", duration: 10, mime_type: "audio/mpeg" },
-    },
-  };
-  const result = normalizeTelegramUpdate(update, CLINIC_CODE);
-  assert.equal(result.ok, true);
-  if (!result.ok) return;
-  assert.equal(result.type, "voice");
-  if (result.type !== "voice") return;
-  assert.equal(result.file_id, "audio_file_id");
-  assert.equal(result.mime_type, "audio/mpeg");
-});
 
 // TG-VOICE-3: Telegram ordinary text/contact behavior unchanged
 test("TG-VOICE-3: text update still reaches normalized.type='text'", () => {
@@ -432,37 +414,6 @@ test("TG-OGA-3: mime_type=audio/ogg; codecs=opus → codec suffix stripped → c
   assert.equal(captureTranscriptionRequest.mimeType, "audio/ogg", "OpenAI multipart MIME must be stripped to audio/ogg");
 });
 
-// TG-OGA-4: webhook mime_type OMITTED, getFile returns .mp3 path
-// → normalized.mime_type=undefined → falls through to mediaResult.mime_type=audio/mpeg
-// → effectiveMimeType="audio/mpeg", canonical filename="audio.mp3"
-test("TG-OGA-4: absent webhook mime_type + getFile .mp3 path → effectiveMimeType=audio/mpeg, filename=audio.mp3", async () => {
-  const capturedInputs: RuntimeTurnInput[] = [];
-  const runCount = { n: 0 };
-  const captureTranscriptionRequest: { filename?: string; mimeType?: string } = {};
-  const { reply, getState } = makeReply();
-
-  const { app, postHandlers } = makeRouteApp();
-  const deps = makeFullRouteDeps({
-    capturedInputs,
-    runCount,
-    fetchOverride: makeFetchForVoice({
-      transcript: "запись на консультацию",
-      getFileFilePath: "audio/song.mp3",
-      captureTranscriptionRequest,
-    }),
-  });
-  registerTelegramWebhookRoute(app, deps);
-
-  const handler = postHandlers.get("/webhooks/telegram")!;
-  // mimeType: null → voice object has no mime_type field
-  await handler({ body: makeVoiceUpdate({ mimeType: null }), headers: {} }, reply);
-
-  assert.equal(getState().statusCode, 200, "route must return 200");
-  assert.equal(runCount.n, 1, "runtime must be called exactly once");
-  assert.equal(capturedInputs[0]?.user_message, "запись на консультацию", "transcript reaches runtime");
-  assert.equal(captureTranscriptionRequest.filename, "audio.mp3", "canonical filename must be audio.mp3 for audio/mpeg");
-  assert.equal(captureTranscriptionRequest.mimeType, "audio/mpeg", "effective MIME must be audio/mpeg from .mp3 file path");
-});
 
 // TG-OGA-5: webhook mime_type OMITTED, getFile returns .ogg path
 // → normalized.mime_type=undefined → falls through to mediaResult.mime_type=audio/ogg

@@ -161,7 +161,7 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     optional_args: [],
   },
   "booking.apply": {
-    description: "Create a visit in ClinicCard when the patient has provided all required details (first name, last name, service, date, time) and the channel has captured their phone number. Returns booking_status indicating whether the visit was created or why it could not be. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
+    description: "Create a visit in ClinicCard when required booking details are present, slot selection is verified, and runtime has an acceptable booking contact. Returns booking_status indicating whether the visit was created or why it could not be. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
     required_args: ["subject_id", "first_name", "last_name", "service", "requested_date", "requested_time"],
     optional_args: [],
   },
@@ -226,7 +226,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "Tool results and Supabase/runtime context are business truth. Tool results take precedence over conversation memory.",
     "Conversation memory is dialogue continuity only, not business proof.",
     "Runtime context (booking_apply_action_truth, availability_presentation_truth, appointment_display_truth, booking_process_state) — business truth.",
-    "PERSISTENCE FLAGS: booking_process_state.name_known and service_known are persistence flags only — always check conversation history before asking. task_state.collected.name and task_state.collected.service_interest are persistence flags; a null or absent collected field does NOT mean the patient has not provided it.",
+    "PERSISTENCE FLAGS: booking_process_state.name_known and service_known are persistence flags only — check conversation history before asking. task_state.collected.name and task_state.collected.service_interest are persistence flags; null or absent collected field does NOT mean the patient has not provided it.",
 
     // ── TRIAGE ────────────────────────────────────────────────────────────────
     "## TRIAGE",
@@ -245,7 +245,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     ...(firstTurnRule ? [firstTurnRule] : []),
     "1. Greetings, low-signal messages ('эээ', 'ну'), simple thanks: reply briefly. Do NOT immediately ask for service, name, or time. Wait for the patient to state their need.",
     "2. BOOKING INTENT: collect missing details flexibly. Check the current message and runtime_context.recent_history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known. When collecting names, use first_name and last_name from the current message or runtime_context.recent_history. Do not re-ask if visible there.",
-    "3. BOOKING SEQUENCE: availability.check → patient affirmatively chooses one offered slot → booking.select_slot → booking.apply. booking.select_slot is mandatory before booking.apply — text knowledge of name, service, and time is not sufficient. After slot_conflict: do NOT restart intake. Retain name and service from the current conversation. Ask only for a new time.",
+    "3. BOOKING SEQUENCE: availability.check → patient affirmatively chooses one offered slot → booking.select_slot → booking.apply. booking.select_slot is mandatory before booking.apply. After slot_conflict: do NOT restart intake. Retain name and service from the current conversation. Ask only for a new time.",
     "4. For questions about an existing appointment or modification intent, use appointment.lookup first.",
 
     // ── TOOLS ─────────────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## BOOKING SUBJECTS",
     "subject_1=sender/self, subject_2=first other person, subject_3/4=additional.",
     "Include subject_intent in final_response on subject switch or new person (omit when action='none').",
-    `subject_intent: {"action": "none"|"switch_subject"|"create_subjects"|"create_or_switch_subject", target: self|mentioned_person|active, subject_id: null|subject_N, confidence: low|medium|high}`,
+    `subject_intent: {action:"none"|"switch_subject"|"create_subjects"|"create_or_switch_subject", target:self|mentioned_person|active, subject_id:null|subject_N, display_name:null|str, count:null|1..4, labels:[], confidence:low|medium|high}`,
     "When pending_typed_phone is set: ask whose phone it is, include phone_ownership_intent in final_response.",
     `phone_ownership_intent: {action:assign_pending_phone|share_sender_contact|none, target_subject_id:null|subject_N, confidence:low|medium|high}`,
 

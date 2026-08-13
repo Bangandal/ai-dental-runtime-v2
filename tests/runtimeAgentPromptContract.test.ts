@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntimeAgent.ts";
+import { buildRuntimeAgentSystemInstruction, RUNTIME_AGENT_TOOL_DEFINITIONS } from "../src/runtime/openaiRuntimeAgent.ts";
 
 // Original prompt char count (measured before the prompt diet refactor on branch ai-dental-frontdesk-core HEAD 9e82e44).
 // PROMPT-13 verifies that these were removed (>=50% reduction).
@@ -210,6 +210,24 @@ test("PROMPT-25: RED-FLAG guidance includes a patient action, not only model res
   assert.ok(
     redFlagLine!.includes("contact") || redFlagLine!.includes("emergency") || redFlagLine!.includes("urgently") || redFlagLine!.includes("care"),
     "RED-FLAG must include a patient action (contact clinic, seek emergency care, etc.)"
+  );
+});
+
+test("PROMPT-26: subject_intent schema includes display_name, count, and labels for create_subjects semantics", () => {
+  assert.ok(PROMPT.includes("display_name"), "subject_intent schema must include display_name");
+  assert.ok(PROMPT.includes("count"), "subject_intent schema must include count");
+  assert.ok(PROMPT.includes("labels"), "subject_intent schema must include labels");
+});
+
+test("PROMPT-27: booking.apply tool description does not require channel-captured phone specifically", () => {
+  const desc = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.apply"].description;
+  assert.ok(
+    !desc.includes("channel has captured") && !desc.includes("captured their phone"),
+    "booking.apply must not require channel-captured phone specifically"
+  );
+  assert.ok(
+    desc.includes("acceptable booking contact") || desc.includes("booking contact"),
+    "booking.apply should refer generically to acceptable booking contact"
   );
 });
 

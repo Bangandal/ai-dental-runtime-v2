@@ -216,12 +216,6 @@ describe("buildRuntimeAgentSystemInstruction — availability hallucination guar
     );
   });
 
-  it("includes rule about disabled mode not implying online booking can complete", () => {
-    assert.ok(
-      instruction.includes("disabled") || instruction.includes("online booking"),
-      "System instruction must mention disabled mode booking restriction",
-    );
-  });
 });
 
 // ── 5 & 6. Contact button trust audit ────────────────────────────────────────

@@ -12,7 +12,7 @@ import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntime
 //   - "selected_slot and last_available_slots are reliable" (now runtime-sanitized via TTL guard)
 //   - "When sources conflict: higher-ranked source wins." filler
 //   - NON-RED-FLAG intake sub-bullets (Service, Time) duplicating TRIAGE and TOOLS sections
-// PROMPT-13 verifies that these were removed (≥12% reduction).
+// PROMPT-13 verifies that these were removed (≥50% reduction).
 const ORIGINAL_SIZE_CHARS = 12949;
 
 // Build a stable prompt snapshot for all tests (date pinned, no firstTurnRule).
@@ -102,20 +102,13 @@ test("PROMPT-12: prompt does NOT use TRUSTED/UNTRUSTED as instructional labels",
   );
 });
 
-test("PROMPT-13: prompt size is ≥12% smaller than the pre-refactor original", () => {
-  // The original prompt was 12949 chars. We target ≥12% reduction by removing:
-  // - Untested subject_id examples and field docs
-  // - Duplicate NON-RED-FLAG intake sub-bullets (Service, Time) already covered by TRIAGE/TOOLS
-  // - subject_intent verbatim examples
-  // - booking_status=pending_phone_classification duplicate note
-  // - selected_slot reliability note (runtime-sanitized via TTL guard in PR #188)
-  // - "When sources conflict: higher-ranked source wins." filler line
-  // A 50% reduction is not achievable given the density of existing contract tests that
-  // pin specific wording required for correct model behavior.
-  const maxAllowed = Math.floor(ORIGINAL_SIZE_CHARS * 0.88); // ≤88% of original = ≥12% reduction
+test("PROMPT-13: prompt size is ≥50% smaller than the pre-refactor original", () => {
+  // Target ≥50% reduction from baseline. Runtime-owned content (phone trust, booking
+  // state-machine mappings, channel UI details) removed from prompt — covered by runtime tests.
+  const maxAllowed = Math.floor(ORIGINAL_SIZE_CHARS * 0.50); // ≤50% of original = ≥50% reduction
   assert.ok(
     PROMPT.length <= maxAllowed,
-    `Prompt is ${PROMPT.length} chars but must be ≤${maxAllowed} (88% of original ${ORIGINAL_SIZE_CHARS}, i.e. ≥12% reduction). Actual reduction: ${((ORIGINAL_SIZE_CHARS - PROMPT.length) / ORIGINAL_SIZE_CHARS * 100).toFixed(1)}%`,
+    `Prompt is ${PROMPT.length} chars but must be ≤${maxAllowed} (50% of original ${ORIGINAL_SIZE_CHARS}, i.e. ≥50% reduction). Actual reduction: ${((ORIGINAL_SIZE_CHARS - PROMPT.length) / ORIGINAL_SIZE_CHARS * 100).toFixed(1)}%`,
   );
 });
 

@@ -13,12 +13,21 @@ export interface TelegramUpdate {
   edited_message?: TelegramMessage;
 }
 
+export interface TelegramVoice {
+  file_id: string;
+  file_unique_id?: string;
+  duration: number;
+  mime_type?: string;
+}
+
 export interface TelegramMessage {
   message_id: number;
   chat: { id: number; type: string };
   from?: TelegramFrom;
   text?: string;
   contact?: TelegramContact;
+  voice?: TelegramVoice;
+  audio?: TelegramVoice;
 }
 
 export interface TelegramFrom {
@@ -82,10 +91,20 @@ export function checkTelegramWebhookSecret(opts: {
   return { ok: true };
 }
 
+export interface TelegramVoiceMeta {
+  update_id: string;
+  message_id: string;
+  username: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  telegram_chat_type: string;
+}
+
 export type TelegramNormalizeResult =
   | { ok: true; type: "text"; body: TelegramTurnBody }
   | { ok: true; type: "contact"; capture: TelegramContactCapture; chat_id: string; external_user_id: string; update_id: string; message_id: string; clinic_code: string }
   | { ok: true; type: "contact_foreign"; chat_id: string; external_user_id: string; message_id: string; clinic_code: string }
+  | { ok: true; type: "voice"; file_id: string; mime_type: string; duration_seconds: number; message_id: string; chat_id: string; external_user_id: string; clinic_code: string; meta: TelegramVoiceMeta }
   | { ok: false; reason: "no_message" | "no_text" | "no_contact_phone" | "edited_message" | "no_from" };
 
 export function normalizeTelegramUpdate(
@@ -103,6 +122,34 @@ export function normalizeTelegramUpdate(
   const from = message.from;
   if (!from) {
     return { ok: false, reason: "no_from" };
+  }
+
+  // Voice/audio message
+  const voiceMsg = message.voice ?? message.audio;
+  if (voiceMsg !== undefined) {
+    const fileId = voiceMsg.file_id;
+    if (!fileId) {
+      return { ok: false, reason: "no_text" };
+    }
+    return {
+      ok: true,
+      type: "voice",
+      file_id: fileId,
+      mime_type: voiceMsg.mime_type ?? "audio/ogg",
+      duration_seconds: voiceMsg.duration,
+      message_id: String(message.message_id),
+      chat_id: String(message.chat.id),
+      external_user_id: String(from.id),
+      clinic_code: clinicCode,
+      meta: {
+        update_id: String(update.update_id),
+        message_id: String(message.message_id),
+        username: from.username ?? null,
+        first_name: from.first_name ?? null,
+        last_name: from.last_name ?? null,
+        telegram_chat_type: message.chat.type,
+      },
+    };
   }
 
   // Contact update — patient shared phone via contact button

@@ -13,6 +13,7 @@ import { bindOpenAIPerCallTimeout } from "./runtime/openaiClientTimeout.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;
+  openaiApiKey?: string;
   rpc: RpcCaller;
   embeddingClient: EmbeddingClient;
   embeddingModel: string;
@@ -56,6 +57,7 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
         appSecret: wa.appSecret,
         graphApiVersion: wa.graphApiVersion,
         clinicId: wa.clinicId,
+        openaiApiKey: deps.openaiApiKey,
       };
 
       // Adapter: bridges Fastify scope to WhatsAppRouteApp interface
@@ -83,6 +85,7 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
 
   registerRuntimeRoutes(app, {
     openaiClient: deps.openaiClient,
+    openaiApiKey: deps.openaiApiKey,
     model: deps.model,
     embeddingModel: deps.embeddingModel,
     rpc: deps.rpc,
@@ -159,6 +162,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
 
   const app = buildRuntimeApp({
     openaiClient,
+    openaiApiKey,
     model: runtimeEnv.runtimeModel,
     embeddingModel: runtimeEnv.runtimeEmbeddingModel,
     rpc,

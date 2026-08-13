@@ -85,6 +85,7 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
 
   registerRuntimeRoutes(app, {
     openaiClient: deps.openaiClient,
+    openaiApiKey: deps.openaiApiKey,
     model: deps.model,
     embeddingModel: deps.embeddingModel,
     rpc: deps.rpc,

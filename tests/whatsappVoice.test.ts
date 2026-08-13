@@ -313,6 +313,43 @@ test("WA-ADAPTER-EMPTY-ENTRY: payload with entry:[] normalizes to ok=true with e
   if (!result.ok) return;
   assert.equal(result.turns.length, 0);
   assert.equal(result.audioTurns.length, 0);
+  assert.equal(result.normalizedTurns.length, 0);
+});
+
+// WA-ORDERING: interleaved text+audio messages preserve original order in normalizedTurns
+test("WA-ORDERING: normalizedTurns preserves original per-message order across text and audio", () => {
+  const payload = {
+    object: "whatsapp_business_account",
+    entry: [
+      {
+        id: "BIZ_ID",
+        changes: [
+          {
+            value: {
+              messaging_product: "whatsapp",
+              messages: [
+                { from: WA_ID, id: "m1", type: "audio", audio: { id: "media_1", mime_type: "audio/ogg" } },
+                { from: WA_ID, id: "m2", type: "text", text: { body: "correction text" } },
+                { from: WA_ID, id: "m3", type: "audio", audio: { id: "media_3", mime_type: "audio/ogg" } },
+              ],
+            },
+            field: "messages",
+          },
+        ],
+      },
+    ],
+  };
+  const result = normalizeWhatsAppPayload(payload, CLINIC_ID);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  // normalizedTurns must be [audio, text, audio] — original order preserved
+  assert.equal(result.normalizedTurns.length, 3);
+  assert.equal(result.normalizedTurns[0]!.type, "audio", "first must be audio");
+  assert.equal(result.normalizedTurns[1]!.type, "text", "second must be text");
+  assert.equal(result.normalizedTurns[2]!.type, "audio", "third must be audio");
+  // backward-compat arrays
+  assert.equal(result.turns.length, 1, "one text turn");
+  assert.equal(result.audioTurns.length, 2, "two audio turns");
 });
 
 // ── Route-level tests ─────────────────────────────────────────────────────────

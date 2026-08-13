@@ -55,14 +55,26 @@ export interface WhatsAppAudioTurn {
   timestamp: string | null;
 }
 
-export type WhatsAppNormalizeResult =
-  | { ok: true; turns: WhatsAppTurn[]; audioTurns: WhatsAppAudioTurn[] }
-  | { ok: false; reason: "not_whatsapp_object" | "no_entries" | "malformed" };
-
 export interface WhatsAppTurn {
   runtimeBody: RuntimeTurnHttpRequestBody;
   waId: string;
 }
+
+// Unified ordered turn — preserves original message ordering across modalities.
+export type WhatsAppNormalizedTurn =
+  | { type: "text"; turn: WhatsAppTurn }
+  | { type: "audio"; turn: WhatsAppAudioTurn };
+
+export type WhatsAppNormalizeResult =
+  | {
+      ok: true;
+      /** Preserves original per-message ordering across text and audio. Route should iterate this. */
+      normalizedTurns: WhatsAppNormalizedTurn[];
+      /** Kept for backward compatibility with adapter unit tests. */
+      turns: WhatsAppTurn[];
+      audioTurns: WhatsAppAudioTurn[];
+    }
+  | { ok: false; reason: "not_whatsapp_object" | "no_entries" | "malformed" };
 
 // ── Signature verification ────────────────────────────────────────────────────
 
@@ -118,9 +130,10 @@ export function normalizeWhatsAppPayload(
   }
 
   if (!Array.isArray(p.entry) || p.entry.length === 0) {
-    return { ok: true, turns: [], audioTurns: [] };
+    return { ok: true, normalizedTurns: [], turns: [], audioTurns: [] };
   }
 
+  const normalizedTurns: WhatsAppNormalizedTurn[] = [];
   const turns: WhatsAppTurn[] = [];
   const audioTurns: WhatsAppAudioTurn[] = [];
 
@@ -146,13 +159,15 @@ export function normalizeWhatsAppPayload(
           const mediaId = message.audio?.id;
           if (!mediaId || typeof mediaId !== "string") continue;
           const mime_type = message.audio?.mime_type ?? "audio/ogg";
-          audioTurns.push({
+          const audioTurn: WhatsAppAudioTurn = {
             waId,
             mediaId,
             mime_type,
             messageId,
             timestamp: message.timestamp ?? null,
-          });
+          };
+          audioTurns.push(audioTurn);
+          normalizedTurns.push({ type: "audio", turn: audioTurn });
           continue;
         }
 
@@ -180,10 +195,12 @@ export function normalizeWhatsAppPayload(
           },
         };
 
-        turns.push({ runtimeBody, waId });
+        const textTurn: WhatsAppTurn = { runtimeBody, waId };
+        turns.push(textTurn);
+        normalizedTurns.push({ type: "text", turn: textTurn });
       }
     }
   }
 
-  return { ok: true, turns, audioTurns };
+  return { ok: true, normalizedTurns, turns, audioTurns };
 }

@@ -7,6 +7,10 @@ import type { VoiceConfig } from "./voiceConfig.ts";
 import { buildTwilioMediaStreamUrl } from "./twilioUrls.ts";
 export { buildTwilioMediaStreamUrl } from "./twilioUrls.ts";
 import { createElevenLabsBrainCallbacks } from "./elevenLabsBrain.ts";
+import {
+  createElevenLabsBrainWebsocketHandler,
+  type ElevenLabsBrainEngine,
+} from "./elevenLabsBrainWebsocket.ts";
 import { registerTwilioIncomingRoute } from "./twilioIncomingRoute.ts";
 import { createMediaBridgeHandler, type WebSocketConnection } from "./twilioMediaBridge.ts";
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
@@ -29,7 +33,7 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
   const app = Fastify();
   const elevenlabs = new ElevenLabsClient({ apiKey: config.elevenLabsApiKey });
 
-  let attachment: { close(): Promise<void> } | null = null;
+  let brainEngine: ElevenLabsBrainEngine | null = null;
   let ready = false;
 
   async function start(): Promise<void> {
@@ -78,6 +82,26 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
       voicePublicBaseUrl: config.voicePublicBaseUrl,
     });
 
+    const brainCallbacks = createElevenLabsBrainCallbacks({
+      runtimeBaseUrl: config.runtimeBaseUrl,
+      runtimeApiKey: config.runtimeApiKey,
+      voiceClinicCode: config.voiceClinicCode,
+      voiceFallbackReply: config.voiceFallbackReply,
+    });
+
+    // @fastify/websocket must own both websocket paths. Register /voice/brain
+    // before listen() so Fastify upgrades it instead of returning 404. The
+    // ElevenLabs SDK still verifies the signed upstream JWT and creates the
+    // SpeechEngineSession after Fastify accepts the websocket upgrade.
+    app.get(
+      "/voice/brain",
+      { websocket: true },
+      createElevenLabsBrainWebsocketHandler({
+        getEngine: () => brainEngine,
+        callbacks: brainCallbacks,
+      }),
+    );
+
     const bridgeHandler = createMediaBridgeHandler({
       elevenlabs,
       speechEngineId: config.elevenLabsSpeechEngineId,
@@ -116,22 +140,18 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
 
     safeVoiceLog({ event: "voice_gateway_started", stage: `port:${config.voicePort}` });
 
-    const brainCallbacks = createElevenLabsBrainCallbacks({
-      runtimeBaseUrl: config.runtimeBaseUrl,
-      runtimeApiKey: config.runtimeApiKey,
-      voiceClinicCode: config.voiceClinicCode,
-      voiceFallbackReply: config.voiceFallbackReply,
-    });
-
-    const engine = await elevenlabs.speechEngine.get(config.elevenLabsSpeechEngineId);
-    attachment = engine.attach(app.server, "/voice/brain", brainCallbacks);
+    // Keep health fail-closed until the Speech Engine resource is loaded. The
+    // route already exists, so an early connection is closed as not-ready
+    // rather than falling through to Fastify's 404 handler.
+    brainEngine = await elevenlabs.speechEngine.get(config.elevenLabsSpeechEngineId);
     ready = true;
 
     safeVoiceLog({ event: "voice_brain_attached", stage: "ready" });
   }
 
   async function stop(): Promise<void> {
-    try { await attachment?.close(); } catch {}
+    ready = false;
+    brainEngine = null;
     await app.close();
     safeVoiceLog({ event: "voice_gateway_stopped" });
   }

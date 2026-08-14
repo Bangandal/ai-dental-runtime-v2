@@ -2,10 +2,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import type WebSocket from "ws";
 import type { SpeechEngineResource } from "@elevenlabs/elevenlabs-js/dist/wrapper/speech-engine/SpeechEngineResource.js";
 import type { SpeechEngineSession } from "@elevenlabs/elevenlabs-js/dist/wrapper/speech-engine/SpeechEngineSession.js";
-import {
-  isAbortError,
-  type SpeechEngineCallbacks,
-} from "@elevenlabs/elevenlabs-js/dist/wrapper/speech-engine/types.js";
+import type { SpeechEngineCallbacks } from "@elevenlabs/elevenlabs-js/dist/wrapper/speech-engine/types.js";
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
 
 export type ElevenLabsBrainEngine = Pick<SpeechEngineResource, "verifyRequest" | "createSession">;
@@ -137,4 +134,11 @@ export function wireElevenLabsBrainCallbacks(
       onError.call(session, error, session);
     });
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  if (err instanceof Error && err.name === "AbortError") return true;
+  if (err instanceof Error && /\babort/i.test(err.message)) return true;
+  return false;
 }

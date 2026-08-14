@@ -111,6 +111,14 @@ export function registerTelegramWebhookRoute(
           },
         },
         deps,
+        {
+          trustedChannelContact: {
+            phone_number: normalized.capture.phone_number,
+            phone_source: normalized.capture.phone_source,
+            phone_consent: normalized.capture.phone_consent,
+            phone_collected_at: normalized.capture.phone_collected_at,
+          },
+        },
       );
 
       let contactReplyText: string;

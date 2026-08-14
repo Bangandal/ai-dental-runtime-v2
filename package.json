@@ -6,7 +6,8 @@
     "start": "node src/main.ts",
     "test": "node --import tsx/esm --test tests/*.test.ts",
     "cliniccard:probe": "node scripts/cliniccard-probe.ts",
-    "cliniccard:availability-probe": "node scripts/cliniccard-availability-probe.ts"
+    "cliniccard:availability-probe": "node scripts/cliniccard-availability-probe.ts",
+    "voice:start": "node --import tsx/esm src/voice/main.ts"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.63.0",

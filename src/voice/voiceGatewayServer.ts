@@ -2,10 +2,11 @@ import Fastify from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyFormBody from "@fastify/formbody";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
+import { validateRequest } from "twilio/lib/webhooks/webhooks.js";
 import type { VoiceConfig } from "./voiceConfig.ts";
 import { createElevenLabsBrainCallbacks } from "./elevenLabsBrain.ts";
 import { registerTwilioIncomingRoute } from "./twilioIncomingRoute.ts";
-import { registerTwilioMediaBridgeRoute, type WebSocketConnection } from "./twilioMediaBridge.ts";
+import { createMediaBridgeHandler, type WebSocketConnection } from "./twilioMediaBridge.ts";
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 
@@ -55,24 +56,40 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
       voicePublicBaseUrl: config.voicePublicBaseUrl,
     });
 
-    const bridgeApp = {
-      websocket(path: string, handler: (ws: WebSocketConnection) => void) {
-        app.get(path, { websocket: true }, (socket) => {
-          const wsConn: WebSocketConnection = {
-            on(event: string, cb: (data: Buffer | string | Error) => void) {
-              (socket as unknown as { on(e: string, cb: (...args: unknown[]) => void): void }).on(event, cb as (...args: unknown[]) => void);
-            },
-            send(data: string) { socket.send(data); },
-            close() { socket.close(); },
-          };
-          handler(wsConn);
-        });
-      },
-    };
-
-    registerTwilioMediaBridgeRoute(bridgeApp, {
+    // Fix 5: validate Twilio WS upgrade signature before accepting connection
+    const bridgeHandler = createMediaBridgeHandler({
       elevenlabs,
       speechEngineId: config.elevenLabsSpeechEngineId,
+      twilioAuthToken: config.twilioAuthToken,
+    });
+
+    app.get("/voice/media-stream", { websocket: true }, (socket, request: FastifyRequest) => {
+      // Fix 5: fail-closed — reject unauthenticated upgrades when auth token is configured
+      if (config.twilioAuthToken && config.voicePublicBaseUrl) {
+        const sig = (request.headers["x-twilio-signature"] as string | undefined) ?? "";
+        const wsUrl = `${config.voicePublicBaseUrl}/voice/media-stream`;
+        const valid = validateRequest(config.twilioAuthToken, sig, wsUrl, {});
+        if (!valid) {
+          safeVoiceLog({ event: "bridge_ws_auth_rejected", stage: "403", connection_state: "rejected" });
+          socket.close();
+          return;
+        }
+      }
+
+      const reqForBridge = {
+        headers: request.headers as Record<string, string | string[] | undefined>,
+        url: request.url,
+      };
+
+      const wsConn: WebSocketConnection = {
+        on(event: string, cb: (data: Buffer | string | Error) => void) {
+          (socket as unknown as { on(e: string, cb: (...args: unknown[]) => void): void }).on(event, cb as (...args: unknown[]) => void);
+        },
+        send(data: string) { socket.send(data); },
+        close() { socket.close(); },
+      };
+
+      bridgeHandler(wsConn, reqForBridge);
     });
 
     await app.listen({ port: config.voicePort, host: "0.0.0.0" });

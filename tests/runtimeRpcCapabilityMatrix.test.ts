@@ -123,6 +123,16 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "sql/rpc/core.rpc_kb_search_v1.sql",
     "sql/rpc/public.rpc_check_availability_v1.sql",
     "sql/rpc/core.rpc_merge_conversation_state.sql",
+    // voice gateway V1 (PR #192)
+    "src/voice/twilioMediaBridge.ts",
+    "src/voice/voiceGatewayServer.ts",
+    "src/voice/main.ts",
+    "src/voice/voiceConfig.ts",
+    "src/voice/elevenLabsBrain.ts",
+    "src/voice/runtimeVoiceClient.ts",
+    "src/voice/safeVoiceLogger.ts",
+    "src/voice/twilioIncomingRoute.ts",
+    "package.json",
   ]);
 
   for (const file of changedFiles) {

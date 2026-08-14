@@ -2,16 +2,24 @@ import WebSocket from "ws";
 import type { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
 
+const MAX_AUDIO_BUFFER = 200;
+
 export interface TwilioMediaBridgeDeps {
   elevenlabs: ElevenLabsClient;
   speechEngineId: string;
+  twilioAuthToken?: string;
 }
 
 export interface TwilioMediaBridgeApp {
   websocket(
     path: string,
-    handler: (connection: WebSocketConnection) => void,
+    handler: (connection: WebSocketConnection, req: IncomingRequest) => void,
   ): void;
+}
+
+export interface IncomingRequest {
+  headers: Record<string, string | string[] | undefined>;
+  url: string;
 }
 
 export interface WebSocketConnection {
@@ -28,13 +36,33 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
     let callSid = "";
     let elWs: WebSocket | null = null;
     let closed = false;
+    // Fix 4: buffer early Twilio audio frames before EL OPEN
+    const audioBuffer: string[] = [];
+    let elReady = false;
 
-    function closeAll() {
+    // Fix 6: idempotent close — handles all shutdown paths
+    function closeAll(reason?: string) {
       if (closed) return;
       closed = true;
+      if (reason) {
+        safeVoiceLog({ event: "bridge_close", call_sid: callSid, stage: reason, connection_state: "closing" });
+      }
       try {
-        if (elWs && elWs.readyState === WebSocket.OPEN) elWs.close();
+        twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
       } catch {}
+      try {
+        if (elWs && elWs.readyState !== WebSocket.CLOSED) elWs.close();
+      } catch {}
+      try {
+        twilioWs.close();
+      } catch {}
+    }
+
+    function sendToElevenLabs(payload: string) {
+      // Fix 1: correct user audio envelope
+      if (elWs && elWs.readyState === WebSocket.OPEN) {
+        elWs.send(JSON.stringify({ user_audio_chunk: payload }));
+      }
     }
 
     twilioWs.on("message", (raw) => {
@@ -67,11 +95,25 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
             elWs = new WebSocket(res.signedUrl);
 
             elWs.on("open", () => {
+              if (closed) {
+                elWs?.close();
+                return;
+              }
               safeVoiceLog({
                 event: "bridge_elevenlabs_connected",
                 call_sid: callSid,
                 connection_state: "connected",
               });
+
+              // Fix 2: send conversation_initiation_client_data on EL OPEN before audio
+              elWs!.send(JSON.stringify({ type: "conversation_initiation_client_data" }));
+
+              // Fix 4: flush buffered audio in order
+              elReady = true;
+              for (const chunk of audioBuffer) {
+                sendToElevenLabs(chunk);
+              }
+              audioBuffer.length = 0;
             });
 
             elWs.on("message", (data) => {
@@ -95,7 +137,10 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
               } else if (type === "interruption") {
                 twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
               } else if (type === "ping") {
-                elWs?.send(JSON.stringify({ type: "pong" }));
+                // Fix 3: preserve event_id in pong
+                const pingEvent = elMsg.ping_event as Record<string, unknown> | undefined;
+                const eventId = pingEvent?.event_id;
+                elWs?.send(JSON.stringify({ type: "pong", event_id: eventId }));
               }
             });
 
@@ -105,7 +150,7 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
                 call_sid: callSid,
                 connection_state: "closed",
               });
-              closeAll();
+              closeAll("el_close");
             });
 
             elWs.on("error", (err) => {
@@ -114,7 +159,7 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
                 call_sid: callSid,
                 error_code: err.name,
               });
-              closeAll();
+              closeAll("el_error");
             });
           })
           .catch((err: unknown) => {
@@ -123,7 +168,8 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
               call_sid: callSid,
               error_code: err instanceof Error ? err.name : "unknown",
             });
-            closeAll();
+            // Fix 6: signed URL failure → fail-closed
+            closeAll("signed_url_error");
           });
 
         return;
@@ -132,15 +178,22 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
       if (event === "media") {
         const media = msg.media as Record<string, string> | undefined;
         const payload = media?.payload;
-        if (payload && elWs && elWs.readyState === WebSocket.OPEN) {
-          elWs.send(JSON.stringify({ type: "audio", audio_event: { audio_base_64: payload } }));
+        if (!payload) return;
+
+        if (elReady) {
+          sendToElevenLabs(payload);
+        } else {
+          // Fix 4: buffer frames while EL connection is establishing
+          if (audioBuffer.length < MAX_AUDIO_BUFFER) {
+            audioBuffer.push(payload);
+          }
         }
         return;
       }
 
       if (event === "stop") {
         safeVoiceLog({ event: "bridge_call_stop", call_sid: callSid, stream_sid: streamSid });
-        closeAll();
+        closeAll("twilio_stop");
         return;
       }
     });
@@ -151,7 +204,7 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
         call_sid: callSid,
         connection_state: "closed",
       });
-      closeAll();
+      closeAll("twilio_closed");
     });
 
     twilioWs.on("error", (err) => {
@@ -160,7 +213,7 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
         call_sid: callSid,
         error_code: err.name,
       });
-      closeAll();
+      closeAll("twilio_error");
     });
   };
 }
@@ -170,5 +223,5 @@ export function registerTwilioMediaBridgeRoute(
   deps: TwilioMediaBridgeDeps,
 ): void {
   const handler = createMediaBridgeHandler(deps);
-  app.websocket("/voice/media-stream", handler);
+  app.websocket("/voice/media-stream", (ws, _req) => handler(ws));
 }

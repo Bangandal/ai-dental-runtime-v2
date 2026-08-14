@@ -4,10 +4,23 @@ import { safeVoiceLog } from "./safeVoiceLogger.ts";
 
 const MAX_AUDIO_BUFFER = 200;
 
+export interface WebSocketLike {
+  on(event: "open", handler: () => void): void;
+  on(event: "message", handler: (data: Buffer | string) => void): void;
+  on(event: "close", handler: () => void): void;
+  on(event: "error", handler: (err: Error) => void): void;
+  send(data: string): void;
+  close(): void;
+  readonly readyState: number;
+}
+
 export interface TwilioMediaBridgeDeps {
   elevenlabs: ElevenLabsClient;
   speechEngineId: string;
+  voiceFirstMessage: string;
   twilioAuthToken?: string;
+  /** Injectable WebSocket factory — default: new WebSocket(url) */
+  createElevenLabsWebSocket?: (url: string) => WebSocketLike;
 }
 
 export interface TwilioMediaBridgeApp {
@@ -31,16 +44,16 @@ export interface WebSocketConnection {
 }
 
 export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
+  const wsFactory = deps.createElevenLabsWebSocket ?? ((url: string) => new WebSocket(url) as unknown as WebSocketLike);
+
   return function handleTwilioConnection(twilioWs: WebSocketConnection): void {
     let streamSid = "";
     let callSid = "";
-    let elWs: WebSocket | null = null;
+    let elWs: WebSocketLike | null = null;
     let closed = false;
-    // Fix 4: buffer early Twilio audio frames before EL OPEN
     const audioBuffer: string[] = [];
     let elReady = false;
 
-    // Fix 6: idempotent close — handles all shutdown paths
     function closeAll(reason?: string) {
       if (closed) return;
       closed = true;
@@ -59,7 +72,6 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
     }
 
     function sendToElevenLabs(payload: string) {
-      // Fix 1: correct user audio envelope
       if (elWs && elWs.readyState === WebSocket.OPEN) {
         elWs.send(JSON.stringify({ user_audio_chunk: payload }));
       }
@@ -92,7 +104,7 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
           .then((res) => {
             if (closed) return;
 
-            elWs = new WebSocket(res.signedUrl);
+            elWs = wsFactory(res.signedUrl);
 
             elWs.on("open", () => {
               if (closed) {
@@ -105,10 +117,17 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
                 connection_state: "connected",
               });
 
-              // Fix 2: send conversation_initiation_client_data on EL OPEN before audio
-              elWs!.send(JSON.stringify({ type: "conversation_initiation_client_data" }));
+              // Send initiation data first (spec section 3): includes first_message override
+              elWs!.send(JSON.stringify({
+                type: "conversation_initiation_client_data",
+                conversation_config_override: {
+                  agent: {
+                    first_message: deps.voiceFirstMessage,
+                  },
+                },
+              }));
 
-              // Fix 4: flush buffered audio in order
+              // Flush buffered early audio in order
               elReady = true;
               for (const chunk of audioBuffer) {
                 sendToElevenLabs(chunk);
@@ -137,7 +156,6 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
               } else if (type === "interruption") {
                 twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
               } else if (type === "ping") {
-                // Fix 3: preserve event_id in pong
                 const pingEvent = elMsg.ping_event as Record<string, unknown> | undefined;
                 const eventId = pingEvent?.event_id;
                 elWs?.send(JSON.stringify({ type: "pong", event_id: eventId }));
@@ -168,7 +186,6 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
               call_sid: callSid,
               error_code: err instanceof Error ? err.name : "unknown",
             });
-            // Fix 6: signed URL failure → fail-closed
             closeAll("signed_url_error");
           });
 
@@ -183,7 +200,6 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
         if (elReady) {
           sendToElevenLabs(payload);
         } else {
-          // Fix 4: buffer frames while EL connection is establishing
           if (audioBuffer.length < MAX_AUDIO_BUFFER) {
             audioBuffer.push(payload);
           }

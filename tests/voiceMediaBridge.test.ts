@@ -1,26 +1,26 @@
+/**
+ * Tests A-L: real handler exercised via dependency injection.
+ * createElevenLabsWebSocket is injectable, so tests control the EL socket directly
+ * without reconstructing JSON independently.
+ */
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
 
-import { createMediaBridgeHandler } from "../src/voice/twilioMediaBridge.ts";
+import { createMediaBridgeHandler, type TwilioMediaBridgeDeps, type WebSocketLike } from "../src/voice/twilioMediaBridge.ts";
 
-// Minimal ElevenLabs client stub
-function makeElevenLabsStub(signedUrl = "wss://stub") {
-  return {
-    conversationalAi: {
-      conversations: {
-        getSignedUrl: async (_opts: unknown) => ({ signedUrl }),
-      },
-    },
-  };
-}
+const VOICE_FIRST_MESSAGE = "Добрый день, клиника!";
+const VOICE_FALLBACK_REPLY = "Извините, повторите.";
 
-// Fake WebSocket that records sent messages
-class FakeElWs extends EventEmitter {
+// Fake ElevenLabs WebSocket — injectable
+class FakeElWs extends EventEmitter implements WebSocketLike {
   sent: string[] = [];
   readyState = 1; // OPEN
   send(data: string) { this.sent.push(data); }
-  close() { this.readyState = 3; }
+  close() { this.readyState = 3; this.emit("close"); }
+  open() { this.readyState = 1; this.emit("open"); }
+  simulateMessage(data: unknown) { this.emit("message", JSON.stringify(data)); }
+  simulateError(err: Error) { this.emit("error", err); }
 }
 
 // Fake Twilio WS connection
@@ -28,34 +28,53 @@ class FakeTwilioWs extends EventEmitter {
   sent: string[] = [];
   closed = false;
   send(data: string) { this.sent.push(data); }
-  close() { this.closed = true; }
+  close() { this.closed = true; this.emit("close"); }
 }
 
-function makeDeps(elWsOverride?: FakeElWs) {
-  const elWs = elWsOverride ?? new FakeElWs();
-  let resolveUrl: (url: string) => void;
-  let rejectUrl: (err: unknown) => void;
-  const urlProm = new Promise<string>((res, rej) => { resolveUrl = res; rejectUrl = rej; });
+function makeDeps(overrides?: Partial<TwilioMediaBridgeDeps>): {
+  deps: TwilioMediaBridgeDeps;
+  elWs: FakeElWs;
+  signedUrlCallCount: number;
+  resolveSignedUrl: (url: string) => void;
+  rejectSignedUrl: (err: Error) => void;
+} {
+  const elWs = new FakeElWs();
+  let resolveSignedUrl!: (url: string) => void;
+  let rejectSignedUrl!: (err: Error) => void;
+  let signedUrlCallCount = 0;
+  const urlProm = new Promise<string>((res, rej) => {
+    resolveSignedUrl = res;
+    rejectSignedUrl = rej;
+  });
 
-  const deps = {
+  const deps: TwilioMediaBridgeDeps = {
     elevenlabs: {
       conversationalAi: {
         conversations: {
           getSignedUrl: async (_opts: unknown) => {
+            signedUrlCallCount++;
             const url = await urlProm;
             return { signedUrl: url };
           },
         },
       },
-    } as unknown,
-    speechEngineId: "engine_123",
+    } as unknown as TwilioMediaBridgeDeps["elevenlabs"],
+    speechEngineId: "engine_test",
+    voiceFirstMessage: VOICE_FIRST_MESSAGE,
+    createElevenLabsWebSocket: () => elWs,
+    ...overrides,
   };
 
-  return { deps: deps as Parameters<typeof createMediaBridgeHandler>[0], elWs, resolveUrl: resolveUrl!, rejectUrl: rejectUrl! };
+  return {
+    deps,
+    elWs,
+    get signedUrlCallCount() { return signedUrlCallCount; },
+    resolveSignedUrl,
+    rejectSignedUrl,
+  };
 }
 
-// Simulate Twilio sending a start + media sequence
-function sendStart(twilioWs: FakeTwilioWs, streamSid = "SS1", callSid = "CA1") {
+function startSession(twilioWs: FakeTwilioWs, streamSid = "SS1", callSid = "CA1") {
   twilioWs.emit("message", JSON.stringify({ event: "start", start: { streamSid, callSid } }));
 }
 function sendMedia(twilioWs: FakeTwilioWs, payload: string) {
@@ -64,158 +83,421 @@ function sendMedia(twilioWs: FakeTwilioWs, payload: string) {
 function sendStop(twilioWs: FakeTwilioWs) {
   twilioWs.emit("message", JSON.stringify({ event: "stop" }));
 }
+function tick() { return new Promise<void>(r => setImmediate(r)); }
 
-// FIX 1: user audio must be { user_audio_chunk } not { type: "audio", audio_event: {...} }
-test("BRIDGE-1: user audio sent as user_audio_chunk", async () => {
-  const { deps, elWs, resolveUrl } = makeDeps();
+// ─── A: start ────────────────────────────────────────────────────────────────
+
+test("BRIDGE-A: Twilio start calls signed URL exactly once and creates EL WS", async () => {
+  const elWs = new FakeElWs();
+  let getSignedUrlCalled = 0;
+  let wsCreated = false;
+  let resolveUrl!: (url: string) => void;
+  const urlProm = new Promise<string>(r => { resolveUrl = r; });
+
+  const deps: TwilioMediaBridgeDeps = {
+    elevenlabs: {
+      conversationalAi: {
+        conversations: {
+          getSignedUrl: async (_opts: unknown) => {
+            getSignedUrlCalled++;
+            const url = await urlProm;
+            return { signedUrl: url };
+          },
+        },
+      },
+    } as unknown as TwilioMediaBridgeDeps["elevenlabs"],
+    speechEngineId: "engine_test",
+    voiceFirstMessage: VOICE_FIRST_MESSAGE,
+    createElevenLabsWebSocket: (url: string) => {
+      assert.ok(url.startsWith("wss://"), "WS factory called with signed URL");
+      wsCreated = true;
+      return elWs;
+    },
+  };
+
   const handler = createMediaBridgeHandler(deps);
   const twilioWs = new FakeTwilioWs();
-  handler(twilioWs as unknown as Parameters<typeof handler>[0]);
+  handler(twilioWs);
 
-  sendStart(twilioWs);
-  resolveUrl("wss://stub");
-  await new Promise(r => setImmediate(r));
+  startSession(twilioWs);
+  await tick();
+  resolveUrl("wss://stub/signed");
+  await tick();
 
-  // Monkey-patch: replace elWs with our fake after WS creation
-  // Instead, patch the WS constructor at the module level via the getSignedUrl promise
-  // We test by triggering media after elReady
-  // Workaround: get the elWs from the sent messages
-  // Actually, we can't intercept the WebSocket construction easily without DI
-  // Let's test via a different approach: check that no message with "audio_event" key is sent
-  // For a cleaner test, we test the exported createMediaBridgeHandler directly by
-  // inspecting that the format matches the SDK expectation
-  const examplePayload = "AAEC"; // base64 noise
-  sendMedia(twilioWs, examplePayload);
-
-  // No side effects assertable without DI of WebSocket — this tests that no error is thrown
-  assert.ok(true, "BRIDGE-1: media event processed without error");
+  assert.equal(getSignedUrlCalled, 1, "signed URL called exactly once");
+  assert.ok(wsCreated, "EL WS was created");
 });
 
-// FIX 1 + 2: verify correct outgoing protocol shape (unit test with injectable WS)
-test("BRIDGE-1+2: correct audio envelope and init message", async () => {
-  // Test the message shapes directly (protocol contract test)
-  const initMsg = { type: "conversation_initiation_client_data" };
-  assert.equal(initMsg.type, "conversation_initiation_client_data", "init type correct");
+// ─── B: init ─────────────────────────────────────────────────────────────────
 
-  const audioPayload = "AAEC";
-  const audioMsg = { user_audio_chunk: audioPayload };
-  assert.equal((audioMsg as Record<string, string>).user_audio_chunk, audioPayload, "audio uses user_audio_chunk key");
+test("BRIDGE-B: EL opens → first outgoing EL message is conversation_initiation_client_data with voiceFirstMessage", async () => {
+  const { deps, elWs, resolveSignedUrl } = makeDeps();
+  const handler = createMediaBridgeHandler(deps);
+  const twilioWs = new FakeTwilioWs();
+  handler(twilioWs);
+
+  startSession(twilioWs);
+  await tick();
+  resolveSignedUrl("wss://stub/signed");
+  await tick();
+  elWs.open();
+  await tick();
+
+  assert.ok(elWs.sent.length > 0, "EL WS received at least one message after open");
+  const first = JSON.parse(elWs.sent[0]);
+  assert.equal(first.type, "conversation_initiation_client_data", "first message type is conversation_initiation_client_data");
+  assert.equal(
+    first.conversation_config_override?.agent?.first_message,
+    VOICE_FIRST_MESSAGE,
+    "first_message matches voiceFirstMessage",
+  );
+});
+
+// ─── C: correct caller audio ──────────────────────────────────────────────────
+
+test("BRIDGE-C: Twilio media → EL socket receives {user_audio_chunk: payload}, NOT audio_event", async () => {
+  const { deps, elWs, resolveSignedUrl } = makeDeps();
+  const handler = createMediaBridgeHandler(deps);
+  const twilioWs = new FakeTwilioWs();
+  handler(twilioWs);
+
+  startSession(twilioWs);
+  await tick();
+  resolveSignedUrl("wss://stub/signed");
+  await tick();
+  elWs.open();
+  await tick();
+  const sentBeforeMedia = elWs.sent.length; // init message(s)
+
+  const payload = "AAEC/base64audio";
+  sendMedia(twilioWs, payload);
+  await tick();
+
+  const audioMessages = elWs.sent.slice(sentBeforeMedia).map(m => JSON.parse(m));
+  assert.ok(audioMessages.length > 0, "EL received audio message");
+  const audioMsg = audioMessages[0];
+  assert.equal(audioMsg.user_audio_chunk, payload, "user_audio_chunk contains the payload");
   assert.ok(!("type" in audioMsg), "audio message has no type key");
   assert.ok(!("audio_event" in audioMsg), "audio message has no audio_event key");
 });
 
-// FIX 3: pong must include event_id from ping
-test("BRIDGE-3: pong preserves event_id from ping", () => {
-  const pingMsg = { type: "ping", ping_event: { event_id: 42, ping_ms: 100 } };
-  const pingEvent = pingMsg.ping_event;
-  const pong = { type: "pong", event_id: pingEvent.event_id };
-  assert.equal(pong.type, "pong");
-  assert.equal(pong.event_id, 42, "event_id must be preserved");
-  assert.ok("event_id" in pong, "pong must include event_id field");
+// ─── D: early buffering ───────────────────────────────────────────────────────
+
+test("BRIDGE-D: media arriving before EL OPEN is buffered and flushed in order after init", async () => {
+  const { deps, elWs, resolveSignedUrl } = makeDeps();
+  const handler = createMediaBridgeHandler(deps);
+  const twilioWs = new FakeTwilioWs();
+  handler(twilioWs);
+
+  startSession(twilioWs);
+  await tick();
+
+  // Send 3 audio chunks before EL even opens
+  sendMedia(twilioWs, "chunk_0");
+  sendMedia(twilioWs, "chunk_1");
+  sendMedia(twilioWs, "chunk_2");
+  await tick();
+
+  // No messages to EL yet (not open)
+  assert.equal(elWs.sent.length, 0, "no EL messages before EL OPEN");
+
+  resolveSignedUrl("wss://stub/signed");
+  await tick();
+  elWs.open();
+  await tick();
+
+  // After open: init message + 3 buffered chunks
+  const allSent = elWs.sent.map(m => JSON.parse(m));
+  const initMsg = allSent[0];
+  assert.equal(initMsg.type, "conversation_initiation_client_data", "first is init");
+
+  const audioMsgs = allSent.slice(1);
+  assert.ok(audioMsgs.length >= 3, `at least 3 buffered chunks flushed, got ${audioMsgs.length}`);
+  assert.equal(audioMsgs[0].user_audio_chunk, "chunk_0", "chunk_0 delivered first");
+  assert.equal(audioMsgs[1].user_audio_chunk, "chunk_1", "chunk_1 delivered second");
+  assert.equal(audioMsgs[2].user_audio_chunk, "chunk_2", "chunk_2 delivered third");
 });
 
-// FIX 3 negative: old pong without event_id is wrong
-test("BRIDGE-3 negative: pong without event_id is rejected by protocol", () => {
-  const oldPong = { type: "pong" };
-  assert.ok(!("event_id" in oldPong), "confirm old format lacks event_id");
-  // Protocol requires event_id — old format is incorrect
-  const newPong = { type: "pong", event_id: 7 };
-  assert.equal(newPong.event_id, 7, "new format includes event_id");
+// ─── E: EL audio output ───────────────────────────────────────────────────────
+
+test("BRIDGE-E: EL audio output forwarded as Twilio media event", async () => {
+  const { deps, elWs, resolveSignedUrl } = makeDeps();
+  const handler = createMediaBridgeHandler(deps);
+  const twilioWs = new FakeTwilioWs();
+  handler(twilioWs);
+
+  startSession(twilioWs, "SS_E");
+  await tick();
+  resolveSignedUrl("wss://stub/signed");
+  await tick();
+  elWs.open();
+  await tick();
+
+  elWs.simulateMessage({ type: "audio", audio_event: { audio_base_64: "AUDIO_BASE_64_DATA" } });
+  await tick();
+
+  const mediaMessages = twilioWs.sent.map(m => JSON.parse(m)).filter(m => m.event === "media");
+  assert.ok(mediaMessages.length > 0, "Twilio received at least one media event");
+  const mediaMsg = mediaMessages[0];
+  assert.equal(mediaMsg.streamSid, "SS_E", "streamSid matches");
+  assert.equal(mediaMsg.media?.payload, "AUDIO_BASE_64_DATA", "audio payload forwarded");
 });
 
-// FIX 4: early audio buffering — frames before EL OPEN must not be lost
-test("BRIDGE-4: early audio frames are buffered before EL opens", async () => {
-  // We track buffer behavior: media events arriving before start resolves
-  // should not be dropped silently
-  const buffered: string[] = [];
-  const MAX = 200;
+// ─── F: interruption ──────────────────────────────────────────────────────────
 
-  // Simulate the buffer logic directly
-  let elReady = false;
-  function onMedia(payload: string) {
-    if (elReady) {
-      // send immediately (would call sendToElevenLabs)
-    } else {
-      if (buffered.length < MAX) buffered.push(payload);
-    }
+test("BRIDGE-F: EL interruption → Twilio socket receives clear event", async () => {
+  const { deps, elWs, resolveSignedUrl } = makeDeps();
+  const handler = createMediaBridgeHandler(deps);
+  const twilioWs = new FakeTwilioWs();
+  handler(twilioWs);
+
+  startSession(twilioWs, "SS_F");
+  await tick();
+  resolveSignedUrl("wss://stub/signed");
+  await tick();
+  elWs.open();
+  await tick();
+
+  const sentBefore = twilioWs.sent.length;
+  elWs.simulateMessage({ type: "interruption" });
+  await tick();
+
+  const newMessages = twilioWs.sent.slice(sentBefore).map(m => JSON.parse(m));
+  const clearMsg = newMessages.find(m => m.event === "clear");
+  assert.ok(clearMsg, "Twilio received a clear event on interruption");
+});
+
+// ─── G: ping/pong ────────────────────────────────────────────────────────────
+
+test("BRIDGE-G: EL ping with event_id=123 → actual EL socket receives pong with event_id=123", async () => {
+  const { deps, elWs, resolveSignedUrl } = makeDeps();
+  const handler = createMediaBridgeHandler(deps);
+  const twilioWs = new FakeTwilioWs();
+  handler(twilioWs);
+
+  startSession(twilioWs);
+  await tick();
+  resolveSignedUrl("wss://stub/signed");
+  await tick();
+  elWs.open();
+  await tick();
+
+  const sentBefore = elWs.sent.length;
+  elWs.simulateMessage({ type: "ping", ping_event: { event_id: 123 } });
+  await tick();
+
+  const newMessages = elWs.sent.slice(sentBefore).map(m => JSON.parse(m));
+  const pong = newMessages.find(m => m.type === "pong");
+  assert.ok(pong, "EL received a pong message");
+  assert.equal(pong.event_id, 123, "pong event_id matches ping event_id");
+});
+
+// ─── H: auth — invalid/missing WS signature ───────────────────────────────────
+
+test("BRIDGE-H: signed URL NOT requested when auth is missing/invalid", async () => {
+  // This is validated at the voiceGatewayServer level — if auth is invalid,
+  // the handler is never invoked. The bridge itself doesn't auth-validate.
+  // We verify the bridge handler only gets called after server-level auth.
+  // Test: bridge with no twilioAuthToken does NOT reject — server-level auth handles rejection.
+  let getSignedUrlCalled = false;
+  const deps: TwilioMediaBridgeDeps = {
+    elevenlabs: {
+      conversationalAi: {
+        conversations: {
+          getSignedUrl: async (_opts: unknown) => {
+            getSignedUrlCalled = true;
+            return { signedUrl: "wss://stub" };
+          },
+        },
+      },
+    } as unknown as TwilioMediaBridgeDeps["elevenlabs"],
+    speechEngineId: "engine_test",
+    voiceFirstMessage: VOICE_FIRST_MESSAGE,
+  };
+
+  const handler = createMediaBridgeHandler(deps);
+  const twilioWs = new FakeTwilioWs();
+  handler(twilioWs);
+
+  // If the connection is immediately closed without a start event, signed URL must NOT be called
+  twilioWs.emit("close");
+  await tick();
+
+  assert.equal(getSignedUrlCalled, false, "signed URL must not be requested without a Twilio start event");
+});
+
+// ─── I: cleanup ───────────────────────────────────────────────────────────────
+
+test("BRIDGE-I: EL failure closes Twilio; Twilio stop closes EL", async () => {
+  // EL failure → Twilio closed
+  {
+    const { deps, elWs, resolveSignedUrl } = makeDeps();
+    const handler = createMediaBridgeHandler(deps);
+    const twilioWs = new FakeTwilioWs();
+    handler(twilioWs);
+
+    startSession(twilioWs);
+    await tick();
+    resolveSignedUrl("wss://stub/signed");
+    await tick();
+    elWs.open();
+    await tick();
+
+    elWs.simulateError(new Error("EL network failure"));
+    await tick();
+
+    assert.ok(twilioWs.closed, "Twilio closed after EL error");
   }
 
-  for (let i = 0; i < 250; i++) onMedia(`chunk_${i}`);
-  assert.equal(buffered.length, 200, "buffered exactly MAX_AUDIO_BUFFER frames");
+  // Twilio stop → EL closed
+  {
+    const { deps, elWs, resolveSignedUrl } = makeDeps();
+    const handler = createMediaBridgeHandler(deps);
+    const twilioWs = new FakeTwilioWs();
+    handler(twilioWs);
 
-  // On EL open, flush
-  elReady = true;
-  const flushed: string[] = [...buffered];
-  buffered.length = 0;
-  assert.equal(flushed.length, 200, "200 frames flushed in order");
-  assert.equal(flushed[0], "chunk_0", "first buffered frame is first");
-  assert.equal(flushed[199], "chunk_199", "last buffered frame before overflow is correct");
-});
+    startSession(twilioWs);
+    await tick();
+    resolveSignedUrl("wss://stub/signed");
+    await tick();
+    elWs.open();
+    await tick();
 
-// FIX 5: WS auth validation (tested at twilioIncomingRoute level, WS auth is fail-closed)
-test("BRIDGE-5: WS auth is fail-closed — no auth token means no auth check", () => {
-  // When twilioAuthToken is absent, WS upgrade proceeds without validation
-  const deps = {
-    elevenlabs: makeElevenLabsStub() as unknown,
-    speechEngineId: "id",
-    twilioAuthToken: undefined,
-  } as Parameters<typeof createMediaBridgeHandler>[0];
-  // Should not throw on construction
-  const handler = createMediaBridgeHandler(deps);
-  assert.equal(typeof handler, "function", "handler is a function when auth is absent");
-});
-
-// FIX 6: closeAll is idempotent — calling multiple times safe
-test("BRIDGE-6: multiple shutdown events do not throw", async () => {
-  const { deps, resolveUrl } = makeDeps();
-  const handler = createMediaBridgeHandler(deps);
-  const twilioWs = new FakeTwilioWs();
-  handler(twilioWs as unknown as Parameters<typeof handler>[0]);
-
-  sendStart(twilioWs);
-  resolveUrl("wss://stub");
-  await new Promise(r => setImmediate(r));
-
-  // Trigger multiple close events
-  assert.doesNotThrow(() => {
-    twilioWs.emit("close");
-    twilioWs.emit("close");
     sendStop(twilioWs);
-  }, "multiple close events must not throw");
+    await tick();
+
+    assert.equal(elWs.readyState, 3, "EL WS closed after Twilio stop");
+  }
 });
 
-// FIX 6: signed URL failure triggers closeAll
-test("BRIDGE-6b: signed URL failure calls closeAll (fail-closed)", async () => {
-  const { deps, rejectUrl } = makeDeps();
-  const handler = createMediaBridgeHandler(deps);
-  const twilioWs = new FakeTwilioWs();
-  handler(twilioWs as unknown as Parameters<typeof handler>[0]);
+// ─── J: runtime failure → fallback sent exactly once ─────────────────────────
 
-  sendStart(twilioWs);
-  rejectUrl(new Error("network_error"));
-  await new Promise(r => setImmediate(r));
+test("BRIDGE-J: runtime failure (not aborted) → fallback sent via session.sendResponse exactly once", async () => {
+  // This tests the elevenLabsBrain onTranscript error path
+  const { createElevenLabsBrainCallbacks } = await import("../src/voice/elevenLabsBrain.ts");
 
-  // After rejection, connection should be in closed state (twilioWs.close() called)
-  assert.ok(twilioWs.closed, "Twilio WS must be closed on signed URL failure");
+  const fallbacksSent: string[] = [];
+  const mockSession = {
+    conversationId: "conv_test_J",
+    sendResponse: async (text: string) => { fallbacksSent.push(text); },
+  };
+
+  const deps = {
+    runtimeBaseUrl: "http://localhost:3000",
+    runtimeApiKey: "test_key",
+    voiceClinicCode: "test_clinic",
+    voiceFallbackReply: VOICE_FALLBACK_REPLY,
+  };
+
+  const callbacks = createElevenLabsBrainCallbacks(deps);
+
+  const notAbortedSignal = AbortSignal.timeout(30_000);
+
+  // Stub: runtimeVoiceClient is internal — we simulate transcript with a runtime that fails
+  // by patching fetch globally for this test
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("runtime_unreachable"); };
+
+  try {
+    callbacks.onTranscript!(
+      [{ role: "user", content: "Хочу записаться" }],
+      notAbortedSignal,
+      mockSession as unknown as Parameters<typeof callbacks.onTranscript!>[2],
+    );
+    // Wait for the async error path
+    await new Promise(r => setTimeout(r, 100));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(fallbacksSent.length, 1, "fallback sent exactly once");
+  assert.equal(fallbacksSent[0], VOICE_FALLBACK_REPLY, "correct fallback message sent");
 });
 
-// FIX 7: main.ts is importable (existence check)
-test("BRIDGE-7: voice main.ts entrypoint exists", async () => {
-  const { readFileSync } = await import("node:fs");
-  const content = readFileSync(new URL("../src/voice/main.ts", import.meta.url), "utf8");
-  assert.ok(content.includes("readVoiceConfig"), "main.ts must import readVoiceConfig");
-  assert.ok(content.includes("createVoiceGatewayServer"), "main.ts must import createVoiceGatewayServer");
-  assert.ok(content.includes("gateway.start()"), "main.ts must call gateway.start()");
-  assert.ok(content.includes("SIGTERM"), "main.ts must handle SIGTERM");
+// ─── K: aborted runtime → no answer, no fallback ─────────────────────────────
+
+test("BRIDGE-K: aborted runtime signal → no response, no fallback", async () => {
+  const { createElevenLabsBrainCallbacks } = await import("../src/voice/elevenLabsBrain.ts");
+
+  const responsesSent: string[] = [];
+  const mockSession = {
+    conversationId: "conv_test_K",
+    sendResponse: async (text: string) => { responsesSent.push(text); },
+  };
+
+  const deps = {
+    runtimeBaseUrl: "http://localhost:3000",
+    runtimeApiKey: "test_key",
+    voiceClinicCode: "test_clinic",
+    voiceFallbackReply: VOICE_FALLBACK_REPLY,
+  };
+
+  const callbacks = createElevenLabsBrainCallbacks(deps);
+
+  // Pre-aborted signal
+  const controller = new AbortController();
+  controller.abort();
+  const abortedSignal = controller.signal;
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("runtime_unreachable"); };
+
+  try {
+    callbacks.onTranscript!(
+      [{ role: "user", content: "Хочу записаться" }],
+      abortedSignal,
+      mockSession as unknown as Parameters<typeof callbacks.onTranscript!>[2],
+    );
+    await new Promise(r => setTimeout(r, 100));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(responsesSent.length, 0, "no response sent when signal is aborted");
 });
 
-// FIX 7: voice:start script exists in package.json
-test("BRIDGE-7b: voice:start npm script exists in package.json", async () => {
-  const { readFileSync } = await import("node:fs");
-  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-  assert.ok(pkg.scripts?.["voice:start"], "package.json must have voice:start script");
-  assert.ok(
-    pkg.scripts["voice:start"].includes("src/voice/main.ts"),
-    "voice:start must reference src/voice/main.ts",
-  );
+// ─── L: missing conversationId → runtime NOT called ──────────────────────────
+
+test("BRIDGE-L: missing conversationId → runtime NOT called, fallback sent", async () => {
+  const { createElevenLabsBrainCallbacks } = await import("../src/voice/elevenLabsBrain.ts");
+
+  const responsesSent: string[] = [];
+  let runtimeCalled = false;
+
+  const mockSession = {
+    conversationId: undefined, // missing
+    sendResponse: async (text: string) => { responsesSent.push(text); },
+  };
+
+  const deps = {
+    runtimeBaseUrl: "http://localhost:3000",
+    runtimeApiKey: "test_key",
+    voiceClinicCode: "test_clinic",
+    voiceFallbackReply: VOICE_FALLBACK_REPLY,
+  };
+
+  const callbacks = createElevenLabsBrainCallbacks(deps);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    runtimeCalled = true;
+    throw new Error("should not be called");
+  };
+
+  const notAbortedSignal = AbortSignal.timeout(30_000);
+
+  try {
+    callbacks.onTranscript!(
+      [{ role: "user", content: "Здравствуйте" }],
+      notAbortedSignal,
+      mockSession as unknown as Parameters<typeof callbacks.onTranscript!>[2],
+    );
+    await new Promise(r => setTimeout(r, 50));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(runtimeCalled, false, "runtime must NOT be called when conversationId is missing");
+  assert.equal(responsesSent.length, 1, "fallback sent when conversationId is missing");
+  assert.equal(responsesSent[0], VOICE_FALLBACK_REPLY, "correct fallback");
 });

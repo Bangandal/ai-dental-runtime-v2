@@ -22,6 +22,7 @@ const result = await client.speechEngine.update(speechEngineId, {
   speechEngine: { wsUrl: brainWsUrl },
   asr: { userInputAudioFormat: "ulaw_8000", provider: "scribe_realtime" },
   tts: { modelId: ttsModelId as "eleven_flash_v2_5", agentOutputAudioFormat: "ulaw_8000" },
+  overrides: { firstMessage: true },
 });
 
 console.log(`Done. Speech Engine updated: ${result.engineId}`);

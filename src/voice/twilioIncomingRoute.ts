@@ -31,20 +31,19 @@ export function registerTwilioIncomingRoute(
   deps: TwilioIncomingRouteDeps,
 ): void {
   app.post("/voice/incoming", async (req, reply) => {
-    if (!deps.voicePublicBaseUrl) {
-      safeVoiceLog({ event: "incoming_no_public_base_url", stage: "503" });
-      reply.code(503).send("Voice gateway not configured: missing VOICE_PUBLIC_BASE_URL");
+    // Section 5: fail-closed — both token and public URL are required
+    if (!deps.twilioAuthToken || !deps.voicePublicBaseUrl) {
+      safeVoiceLog({ event: "incoming_not_configured", stage: "503" });
+      reply.code(503).send("Voice gateway not configured: missing TWILIO_AUTH_TOKEN or VOICE_PUBLIC_BASE_URL");
       return;
     }
 
-    if (deps.twilioAuthToken) {
-      const signature = (req.headers["x-twilio-signature"] as string | undefined) ?? "";
-      const valid = validateRequest(deps.twilioAuthToken, signature, req.url, req.body);
-      if (!valid) {
-        safeVoiceLog({ event: "incoming_invalid_signature", stage: "403" });
-        reply.code(403).send("Forbidden");
-        return;
-      }
+    const signature = (req.headers["x-twilio-signature"] as string | undefined) ?? "";
+    const valid = validateRequest(deps.twilioAuthToken, signature, req.url, req.body);
+    if (!valid) {
+      safeVoiceLog({ event: "incoming_invalid_signature", stage: "403" });
+      reply.code(403).send("Forbidden");
+      return;
     }
 
     const wssUrl = `${deps.voicePublicBaseUrl.replace(/^http/, "ws")}/voice/media-stream`;

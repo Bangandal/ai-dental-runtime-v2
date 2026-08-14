@@ -1,7 +1,7 @@
 import { readVoiceConfig } from "./voiceConfig.ts";
 import { createVoiceGatewayServer } from "./voiceGatewayServer.ts";
 
-const config = readVoiceConfig();
+const config = readVoiceConfig(process.env);
 const gateway = createVoiceGatewayServer(config);
 
 process.on("SIGTERM", () => gateway.stop().then(() => process.exit(0)));

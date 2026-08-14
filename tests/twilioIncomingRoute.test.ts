@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHmac } from "node:crypto";
 
 import {
   registerTwilioIncomingRoute,
@@ -37,13 +38,27 @@ function makeReq(overrides: Partial<TwilioIncomingRequest> = {}): TwilioIncoming
   };
 }
 
-test("twilioIncomingRoute: returns TwiML with correct stream URL", async () => {
+/** Compute a valid Twilio signature for a given URL and empty body params. */
+function validSig(authToken: string, url: string, params: Record<string, string> = {}): string {
+  const sorted = Object.keys(params).sort();
+  const data = url + sorted.map(k => k + params[k]).join("");
+  return createHmac("sha1", authToken).update(data, "utf8").digest("base64");
+}
+
+const TEST_TOKEN = "test_token_abc123";
+const TEST_URL = "https://host.example.com/voice/incoming";
+
+test("twilioIncomingRoute: returns TwiML with correct stream URL when auth passes", async () => {
   const { app, handlers } = makeApp();
-  registerTwilioIncomingRoute(app, { voicePublicBaseUrl: "https://host.example.com" });
+  registerTwilioIncomingRoute(app, {
+    twilioAuthToken: TEST_TOKEN,
+    voicePublicBaseUrl: "https://host.example.com",
+  });
 
   const handler = handlers.get("/voice/incoming")!;
   const { reply, state } = makeReply();
-  await handler(makeReq(), reply);
+  const sig = validSig(TEST_TOKEN, TEST_URL);
+  await handler(makeReq({ headers: { "x-twilio-signature": sig } }), reply);
 
   assert.equal(state.statusCode, 200);
   assert.equal(state.headers["Content-Type"], "text/xml");
@@ -55,18 +70,24 @@ test("twilioIncomingRoute: returns TwiML with correct stream URL", async () => {
 
 test("twilioIncomingRoute: https public URL produces wss:// media-stream URL", async () => {
   const { app, handlers } = makeApp();
-  registerTwilioIncomingRoute(app, { voicePublicBaseUrl: "https://dental.example.com" });
+  const token = "test_tok_xyz";
+  const url = "https://dental.example.com/voice/incoming";
+  registerTwilioIncomingRoute(app, {
+    twilioAuthToken: token,
+    voicePublicBaseUrl: "https://dental.example.com",
+  });
 
   const handler = handlers.get("/voice/incoming")!;
   const { reply, state } = makeReply();
-  await handler(makeReq(), reply);
+  const sig = validSig(token, url);
+  await handler(makeReq({ url, headers: { "x-twilio-signature": sig } }), reply);
 
   assert.ok(state.body.includes("wss://dental.example.com/voice/media-stream"));
 });
 
 test("twilioIncomingRoute: returns 503 when voicePublicBaseUrl missing", async () => {
   const { app, handlers } = makeApp();
-  registerTwilioIncomingRoute(app, {});
+  registerTwilioIncomingRoute(app, { twilioAuthToken: TEST_TOKEN });
 
   const handler = handlers.get("/voice/incoming")!;
   const { reply, state } = makeReply();
@@ -75,9 +96,22 @@ test("twilioIncomingRoute: returns 503 when voicePublicBaseUrl missing", async (
   assert.equal(state.statusCode, 503);
 });
 
+test("twilioIncomingRoute: returns 503 when twilioAuthToken missing (fail-closed)", async () => {
+  const { app, handlers } = makeApp();
+  registerTwilioIncomingRoute(app, {
+    voicePublicBaseUrl: "https://host.example.com",
+    // no twilioAuthToken — section 5: fail-closed
+  });
+
+  const handler = handlers.get("/voice/incoming")!;
+  const { reply, state } = makeReply();
+  await handler(makeReq({ headers: { "x-twilio-signature": "anything" } }), reply);
+
+  assert.equal(state.statusCode, 503, "503 when twilioAuthToken is absent (fail-closed)");
+});
+
 test("twilioIncomingRoute: returns 403 on bad Twilio signature when authToken configured", async () => {
   const { app, handlers } = makeApp();
-  // Set a real auth token — any non-empty token means validation runs
   registerTwilioIncomingRoute(app, {
     twilioAuthToken: "auth_token_abc",
     voicePublicBaseUrl: "https://host.example.com",
@@ -85,25 +119,10 @@ test("twilioIncomingRoute: returns 403 on bad Twilio signature when authToken co
 
   const handler = handlers.get("/voice/incoming")!;
   const { reply, state } = makeReply();
-  // Provide a bad signature
   await handler(
     makeReq({ headers: { "x-twilio-signature": "bad_sig" } }),
     reply,
   );
 
   assert.equal(state.statusCode, 403);
-});
-
-test("twilioIncomingRoute: skips validation when no authToken", async () => {
-  const { app, handlers } = makeApp();
-  registerTwilioIncomingRoute(app, {
-    voicePublicBaseUrl: "https://host.example.com",
-    // no twilioAuthToken
-  });
-
-  const handler = handlers.get("/voice/incoming")!;
-  const { reply, state } = makeReply();
-  await handler(makeReq({ headers: { "x-twilio-signature": "anything" } }), reply);
-
-  assert.equal(state.statusCode, 200);
 });

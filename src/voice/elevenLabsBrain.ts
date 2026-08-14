@@ -5,7 +5,7 @@ import { safeVoiceLog } from "./safeVoiceLogger.ts";
 
 export interface ElevenLabsBrainDeps extends RuntimeVoiceClientDeps {
   voiceClinicCode: string;
-  voiceFirstMessage: string;
+  voiceFallbackReply: string;
 }
 
 export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): SpeechEngineCallbacks {
@@ -13,9 +13,9 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
   const turnCounters = new Map<SpeechEngineSession, number>();
 
   return {
-    onInit(conversationId: string, session: SpeechEngineSession) {
-      safeVoiceLog({ event: "brain_init", conversation_id: conversationId, stage: "greeting" });
-      session.sendResponse(deps.voiceFirstMessage);
+    onInit(conversationId: string, _session: SpeechEngineSession) {
+      // Greeting is sent via conversation_initiation_client_data first_message override (not here)
+      safeVoiceLog({ event: "brain_init", conversation_id: conversationId, stage: "ready" });
     },
 
     onTranscript(transcript: TranscriptMessage[], signal: AbortSignal, session: SpeechEngineSession) {
@@ -28,7 +28,19 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
       const turnNumber = (turnCounters.get(session) ?? 0) + 1;
       turnCounters.set(session, turnNumber);
 
-      const conversationId = session.conversationId ?? "unknown";
+      // Section 10: guard conversationId — never call runtime with "unknown" identity
+      const conversationId = session.conversationId;
+      if (!conversationId) {
+        safeVoiceLog({
+          event: "brain_missing_conversation_id",
+          turn_number: turnNumber,
+          stage: "skipped",
+        });
+        if (!signal.aborted) {
+          void session.sendResponse(deps.voiceFallbackReply);
+        }
+        return;
+      }
 
       safeVoiceLog({
         event: "brain_transcript_received",
@@ -63,7 +75,7 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
             stage: "send_response",
             latency_ms: Date.now() - started,
           });
-          session.sendResponse(result.reply);
+          void session.sendResponse(result.reply);
         })
         .catch((err: unknown) => {
           safeVoiceLog({
@@ -72,6 +84,10 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
             turn_number: turnNumber,
             error_code: err instanceof Error ? err.name : "unknown",
           });
+          // Section 9: send fallback only if not aborted
+          if (!signal.aborted) {
+            void session.sendResponse(deps.voiceFallbackReply);
+          }
         });
     },
 

@@ -132,6 +132,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/voice/runtimeVoiceClient.ts",
     "src/voice/safeVoiceLogger.ts",
     "src/voice/twilioIncomingRoute.ts",
+    "scripts/configure-elevenlabs-speech-engine.ts",
     "package.json",
   ]);
 

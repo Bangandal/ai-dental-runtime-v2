@@ -4,33 +4,23 @@ import test from "node:test";
 import { createElevenLabsBrainCallbacks } from "../src/voice/elevenLabsBrain.ts";
 import type { RuntimeVoiceClientDeps } from "../src/voice/runtimeVoiceClient.ts";
 
-const FIRST_MESSAGE = "Добрый день. Стоматологическая клиника, чем могу помочь?";
+const FALLBACK_MESSAGE = "Извините, сейчас не удалось обработать запрос.";
 
-function makeDeps(replyWith = "Записал вас") {
-  const calls: { clinicCode: string; transcript: string }[] = [];
-  const runtimeDeps: RuntimeVoiceClientDeps & { voiceClinicCode: string; voiceFirstMessage: string } = {
+function makeDeps() {
+  const runtimeDeps: RuntimeVoiceClientDeps & { voiceClinicCode: string; voiceFallbackReply: string } = {
     runtimeBaseUrl: "https://rt.example.com",
     runtimeApiKey: "key",
     voiceClinicCode: "clinic_1",
-    voiceFirstMessage: FIRST_MESSAGE,
+    voiceFallbackReply: FALLBACK_MESSAGE,
   };
-
-  const mockClient = {
-    callRuntimeTurn: async (req: { clinicCode: string; patientTranscript: string; signal: AbortSignal }) => {
-      if (req.signal.aborted) throw new DOMException("Aborted", "AbortError");
-      calls.push({ clinicCode: req.clinicCode, transcript: req.patientTranscript });
-      return { reply: replyWith };
-    },
-  };
-
-  return { runtimeDeps, mockClient, calls };
+  return { runtimeDeps };
 }
 
-function makeSession(conversationId = "conv_abc") {
+function makeSession(conversationId?: string) {
   const responses: string[] = [];
   const session = {
-    conversationId,
-    sendResponse(text: string) { responses.push(text); },
+    conversationId: conversationId,
+    sendResponse(text: string) { responses.push(text); return Promise.resolve(); },
     close() {},
     isOpen: true,
     on() { return session; },
@@ -40,19 +30,19 @@ function makeSession(conversationId = "conv_abc") {
   return { session, responses };
 }
 
-test("elevenLabsBrain: onInit sends first message", () => {
+test("elevenLabsBrain: onInit does NOT send first message (greeting via initiation data)", () => {
   const { runtimeDeps } = makeDeps();
   const callbacks = createElevenLabsBrainCallbacks(runtimeDeps);
   const { session, responses } = makeSession();
 
   callbacks.onInit!("conv_abc", session as never);
-  assert.equal(responses[0], FIRST_MESSAGE);
+  // Greeting must NOT come from onInit — it's sent via conversation_initiation_client_data
+  assert.equal(responses.length, 0, "onInit must not call session.sendResponse for greeting");
 });
 
 test("elevenLabsBrain: onTranscript calls runtime and sends reply", async () => {
-  const { runtimeDeps, calls } = makeDeps("Записал");
+  const { runtimeDeps } = makeDeps();
 
-  // Override createRuntimeVoiceClient behaviour by patching fetch
   const orig = globalThis.fetch;
   globalThis.fetch = async () =>
     new Response(JSON.stringify({ final_patient_reply: "Записал" }), { status: 200 });
@@ -67,19 +57,15 @@ test("elevenLabsBrain: onTranscript calls runtime and sends reply", async () => 
     session as never,
   );
 
-  // Wait for async runtime call to complete
   await new Promise((r) => setTimeout(r, 50));
 
   assert.equal(responses[0], "Записал");
   globalThis.fetch = orig;
-  void calls; // suppress unused warning
 });
 
 test("elevenLabsBrain: aborted signal suppresses response", async () => {
   const orig = globalThis.fetch;
-  // Simulate slow runtime that finishes after signal is aborted
   globalThis.fetch = async (_url: string, init?: RequestInit) => {
-    // Respect abort signal
     if (init?.signal?.aborted) throw new DOMException("Aborted", "AbortError");
     await new Promise((r) => setTimeout(r, 20));
     return new Response(JSON.stringify({ final_patient_reply: "Too late" }), { status: 200 });
@@ -96,9 +82,7 @@ test("elevenLabsBrain: aborted signal suppresses response", async () => {
     session as never,
   );
 
-  // Abort before runtime finishes
   ac.abort();
-
   await new Promise((r) => setTimeout(r, 60));
   assert.equal(responses.length, 0);
 
@@ -142,5 +126,49 @@ test("elevenLabsBrain: agent-only transcript is no-op", async () => {
 
   assert.equal(responses.length, 0);
   assert.equal(fetchCalled, false);
+  globalThis.fetch = orig;
+});
+
+test("elevenLabsBrain: runtime failure sends fallback reply when not aborted", async () => {
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error("runtime_unreachable"); };
+
+  const { runtimeDeps } = makeDeps();
+  const callbacks = createElevenLabsBrainCallbacks(runtimeDeps);
+  const { session, responses } = makeSession("conv_3");
+  const ac = new AbortController();
+
+  callbacks.onTranscript!(
+    [{ role: "user", content: "Хочу записаться" }],
+    ac.signal,
+    session as never,
+  );
+
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(responses.length, 1, "exactly one fallback sent");
+  assert.equal(responses[0], FALLBACK_MESSAGE);
+  globalThis.fetch = orig;
+});
+
+test("elevenLabsBrain: missing conversationId skips runtime, sends fallback", async () => {
+  let fetchCalled = false;
+  const orig = globalThis.fetch;
+  globalThis.fetch = async () => { fetchCalled = true; throw new Error("should not be called"); };
+
+  const { runtimeDeps } = makeDeps();
+  const callbacks = createElevenLabsBrainCallbacks(runtimeDeps);
+  const { session, responses } = makeSession(); // no conversationId — session.conversationId is undefined
+  const ac = new AbortController();
+
+  callbacks.onTranscript!(
+    [{ role: "user", content: "Здравствуйте" }],
+    ac.signal,
+    session as never,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(fetchCalled, false, "runtime must not be called when conversationId is absent");
+  assert.equal(responses.length, 1, "fallback must be sent");
+  assert.equal(responses[0], FALLBACK_MESSAGE);
   globalThis.fetch = orig;
 });

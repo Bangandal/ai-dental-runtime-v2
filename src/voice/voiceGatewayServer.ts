@@ -56,30 +56,29 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
       voicePublicBaseUrl: config.voicePublicBaseUrl,
     });
 
-    // Fix 5: validate Twilio WS upgrade signature before accepting connection
     const bridgeHandler = createMediaBridgeHandler({
       elevenlabs,
       speechEngineId: config.elevenLabsSpeechEngineId,
+      voiceFirstMessage: config.voiceFirstMessage,
       twilioAuthToken: config.twilioAuthToken,
     });
 
     app.get("/voice/media-stream", { websocket: true }, (socket, request: FastifyRequest) => {
-      // Fix 5: fail-closed — reject unauthenticated upgrades when auth token is configured
-      if (config.twilioAuthToken && config.voicePublicBaseUrl) {
-        const sig = (request.headers["x-twilio-signature"] as string | undefined) ?? "";
-        const wsUrl = `${config.voicePublicBaseUrl}/voice/media-stream`;
-        const valid = validateRequest(config.twilioAuthToken, sig, wsUrl, {});
-        if (!valid) {
-          safeVoiceLog({ event: "bridge_ws_auth_rejected", stage: "403", connection_state: "rejected" });
-          socket.close();
-          return;
-        }
+      // Fail-closed: reject if auth token or public URL missing (section 5)
+      if (!config.twilioAuthToken || !config.voicePublicBaseUrl) {
+        safeVoiceLog({ event: "bridge_ws_auth_rejected", stage: "503_missing_config", connection_state: "rejected" });
+        socket.close();
+        return;
       }
 
-      const reqForBridge = {
-        headers: request.headers as Record<string, string | string[] | undefined>,
-        url: request.url,
-      };
+      const sig = (request.headers["x-twilio-signature"] as string | undefined) ?? "";
+      const wsUrl = `${config.voicePublicBaseUrl}/voice/media-stream`;
+      const valid = validateRequest(config.twilioAuthToken, sig, wsUrl, {});
+      if (!valid) {
+        safeVoiceLog({ event: "bridge_ws_auth_rejected", stage: "403", connection_state: "rejected" });
+        socket.close();
+        return;
+      }
 
       const wsConn: WebSocketConnection = {
         on(event: string, cb: (data: Buffer | string | Error) => void) {
@@ -89,7 +88,7 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
         close() { socket.close(); },
       };
 
-      bridgeHandler(wsConn, reqForBridge);
+      bridgeHandler(wsConn);
     });
 
     await app.listen({ port: config.voicePort, host: "0.0.0.0" });
@@ -100,7 +99,7 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
       runtimeBaseUrl: config.runtimeBaseUrl,
       runtimeApiKey: config.runtimeApiKey,
       voiceClinicCode: config.voiceClinicCode,
-      voiceFirstMessage: config.voiceFirstMessage,
+      voiceFallbackReply: config.voiceFallbackReply,
     });
 
     const engine = await elevenlabs.speechEngine.get(config.elevenLabsSpeechEngineId);

@@ -7,6 +7,7 @@ export interface VoiceConfig {
   voicePort: number;
   voiceTtsModelId: string;
   voiceFirstMessage: string;
+  voiceFallbackReply: string;
   twilioAuthToken?: string;
   voicePublicBaseUrl?: string;
 }
@@ -36,6 +37,9 @@ export function readVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConf
     voiceFirstMessage:
       env.VOICE_FIRST_MESSAGE?.trim() ||
       "Добрый день. Стоматологическая клиника, чем могу помочь?",
+    voiceFallbackReply:
+      env.VOICE_FALLBACK_REPLY?.trim() ||
+      "Извините, сейчас не удалось обработать запрос. Пожалуйста, повторите ещё раз.",
     twilioAuthToken: env.TWILIO_AUTH_TOKEN?.trim() || undefined,
     voicePublicBaseUrl: env.VOICE_PUBLIC_BASE_URL?.trim().replace(/\/$/, "") || undefined,
   };

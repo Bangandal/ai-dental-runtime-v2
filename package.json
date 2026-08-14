@@ -7,7 +7,9 @@
     "test": "node --import tsx/esm --test tests/*.test.ts",
     "cliniccard:probe": "node scripts/cliniccard-probe.ts",
     "cliniccard:availability-probe": "node scripts/cliniccard-availability-probe.ts",
-    "voice:start": "node --import tsx/esm src/voice/main.ts"
+    "voice:start": "node --import tsx/esm src/voice/main.ts",
+    "voice:gateway": "node --import tsx/esm src/voice/main.ts",
+    "voice:configure": "node --import tsx/esm scripts/configure-elevenlabs-speech-engine.ts"
   },
   "dependencies": {
     "@elevenlabs/elevenlabs-js": "^2.63.0",

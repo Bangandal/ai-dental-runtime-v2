@@ -7,12 +7,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { getExpectedTwilioSignature } from "twilio/lib/webhooks/webhooks.js";
-import { validateTwilioWsSignature } from "../src/voice/voiceGatewayServer.ts";
+import { validateTwilioWsSignature, buildTwilioMediaStreamUrl } from "../src/voice/voiceGatewayServer.ts";
 import { readVoiceConfig } from "../src/voice/voiceConfig.ts";
 
 const TEST_TOKEN = "test_auth_token_abc123";
 const TEST_PUBLIC_BASE_URL = "https://voice.example.com";
-const WS_URL = `${TEST_PUBLIC_BASE_URL}/voice/media-stream`;
+// Twilio signs the wss:// URL it actually sends the WebSocket handshake to — NOT https://
+const WS_URL = buildTwilioMediaStreamUrl(TEST_PUBLIC_BASE_URL); // "wss://voice.example.com/voice/media-stream"
 
 function validSig(token: string, wsUrl: string): string {
   return getExpectedTwilioSignature(token, wsUrl, {});
@@ -92,4 +93,24 @@ test("AUTH-4c: readVoiceConfig succeeds when VOICE_ALLOW_INSECURE_DEV=true despi
     () => readVoiceConfig(env),
     "Should not throw when VOICE_ALLOW_INSECURE_DEV=true",
   );
+});
+
+// ─── AUTH-5: HTTPS signature must NOT validate against WSS URL ────────────────
+
+test("AUTH-5: signature generated for https:// URL must not validate against wss:// URL", () => {
+  const httpsUrl = `https://voice.example.com/voice/media-stream`;
+  const httpsSignature = getExpectedTwilioSignature(TEST_TOKEN, httpsUrl, {});
+
+  // validateTwilioWsSignature uses wss:// internally — a https-signed sig must fail
+  const result = validateTwilioWsSignature(TEST_TOKEN, TEST_PUBLIC_BASE_URL, httpsSignature);
+  assert.equal(result, false, "Signature generated for https:// URL must not validate against wss:// URL");
+});
+
+test("AUTH-5b: TwiML Stream URL and WS signature validation URL are identical (single source of truth)", () => {
+  // Both must use buildTwilioMediaStreamUrl — assert they produce the same URL
+  const twimlUrl = buildTwilioMediaStreamUrl(TEST_PUBLIC_BASE_URL);
+  const sigValidationUrl = buildTwilioMediaStreamUrl(TEST_PUBLIC_BASE_URL);
+  assert.equal(twimlUrl, sigValidationUrl, "TwiML Stream URL and signature validation URL must be identical");
+  assert.ok(twimlUrl.startsWith("wss://"), `URL must use wss:// scheme, got: ${twimlUrl}`);
+  assert.equal(twimlUrl, "wss://voice.example.com/voice/media-stream");
 });

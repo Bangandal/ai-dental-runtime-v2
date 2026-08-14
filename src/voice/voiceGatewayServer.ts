@@ -4,6 +4,8 @@ import fastifyFormBody from "@fastify/formbody";
 import { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { validateRequest } from "twilio/lib/webhooks/webhooks.js";
 import type { VoiceConfig } from "./voiceConfig.ts";
+import { buildTwilioMediaStreamUrl } from "./twilioUrls.ts";
+export { buildTwilioMediaStreamUrl } from "./twilioUrls.ts";
 import { createElevenLabsBrainCallbacks } from "./elevenLabsBrain.ts";
 import { registerTwilioIncomingRoute } from "./twilioIncomingRoute.ts";
 import { createMediaBridgeHandler, type WebSocketConnection } from "./twilioMediaBridge.ts";
@@ -19,7 +21,7 @@ export function validateTwilioWsSignature(
   publicBaseUrl: string,
   signature: string,
 ): boolean {
-  const wsUrl = `${publicBaseUrl}/voice/media-stream`;
+  const wsUrl = buildTwilioMediaStreamUrl(publicBaseUrl);
   return validateRequest(authToken, signature, wsUrl, {});
 }
 

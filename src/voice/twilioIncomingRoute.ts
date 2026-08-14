@@ -1,6 +1,7 @@
 import { validateRequest } from "twilio/lib/webhooks/webhooks.js";
 import VoiceResponse from "twilio/lib/twiml/VoiceResponse.js";
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
+import { buildTwilioMediaStreamUrl } from "./twilioUrls.ts";
 
 export interface TwilioIncomingRouteDeps {
   twilioAuthToken?: string;
@@ -46,7 +47,7 @@ export function registerTwilioIncomingRoute(
       return;
     }
 
-    const wssUrl = `${deps.voicePublicBaseUrl.replace(/^http/, "ws")}/voice/media-stream`;
+    const wssUrl = buildTwilioMediaStreamUrl(deps.voicePublicBaseUrl);
 
     const twiml = new VoiceResponse();
     const connect = twiml.connect();

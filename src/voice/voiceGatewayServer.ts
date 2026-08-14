@@ -8,6 +8,7 @@ import { buildTwilioMediaStreamUrl } from "./twilioUrls.ts";
 export { buildTwilioMediaStreamUrl } from "./twilioUrls.ts";
 import { createElevenLabsBrainCallbacks } from "./elevenLabsBrain.ts";
 import {
+  createElevenLabsBrainPreValidation,
   createElevenLabsBrainWebsocketHandler,
   type ElevenLabsBrainEngine,
 } from "./elevenLabsBrainWebsocket.ts";
@@ -88,18 +89,22 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
       voiceClinicCode: config.voiceClinicCode,
       voiceFallbackReply: config.voiceFallbackReply,
     });
+    const brainRouteDeps = {
+      getEngine: () => brainEngine,
+      callbacks: brainCallbacks,
+    };
 
     // @fastify/websocket must own both websocket paths. Register /voice/brain
-    // before listen() so Fastify upgrades it instead of returning 404. The
-    // ElevenLabs SDK still verifies the signed upstream JWT and creates the
-    // SpeechEngineSession after Fastify accepts the websocket upgrade.
+    // before listen() so Fastify upgrades it instead of returning 404. ElevenLabs
+    // JWT verification runs in preValidation, before upgrade, so the websocket
+    // handler can synchronously create SpeechEngineSession and never drop init.
     app.get(
       "/voice/brain",
-      { websocket: true },
-      createElevenLabsBrainWebsocketHandler({
-        getEngine: () => brainEngine,
-        callbacks: brainCallbacks,
-      }),
+      {
+        websocket: true,
+        preValidation: createElevenLabsBrainPreValidation(brainRouteDeps),
+      },
+      createElevenLabsBrainWebsocketHandler(brainRouteDeps),
     );
 
     const bridgeHandler = createMediaBridgeHandler({
@@ -141,8 +146,7 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
     safeVoiceLog({ event: "voice_gateway_started", stage: `port:${config.voicePort}` });
 
     // Keep health fail-closed until the Speech Engine resource is loaded. The
-    // route already exists, so an early connection is closed as not-ready
-    // rather than falling through to Fastify's 404 handler.
+    // route already exists, so an early connection receives 503 instead of 404.
     brainEngine = await elevenlabs.speechEngine.get(config.elevenLabsSpeechEngineId);
     ready = true;
 

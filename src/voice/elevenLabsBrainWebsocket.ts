@@ -1,4 +1,4 @@
-import type { FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import type WebSocket from "ws";
 import type { SpeechEngineResource } from "@elevenlabs/elevenlabs-js/dist/wrapper/speech-engine/SpeechEngineResource.js";
 import type { SpeechEngineSession } from "@elevenlabs/elevenlabs-js/dist/wrapper/speech-engine/SpeechEngineSession.js";
@@ -21,17 +21,15 @@ export interface ElevenLabsBrainWebsocketDeps {
 }
 
 /**
- * Build the Fastify websocket handler for ElevenLabs Speech Engine upstream.
- *
- * @fastify/websocket already owns the HTTP server's `upgrade` event for the
- * Twilio media websocket. Registering /voice/brain through the same plugin
- * avoids a competing `engine.attach()` upgrade listener, which otherwise lets
- * Fastify reject the unknown route with 404 before the SDK can claim it.
+ * Authenticate ElevenLabs in Fastify's preValidation phase, before the HTTP
+ * request is upgraded to a websocket. This is both fail-closed and avoids the
+ * message-loss race that would exist if we awaited verification inside the
+ * websocket handler before SpeechEngineSession attached its message listener.
  */
-export function createElevenLabsBrainWebsocketHandler(deps: ElevenLabsBrainWebsocketDeps) {
-  return async function handleElevenLabsBrainWebsocket(
-    socket: WebSocket,
-    request: Pick<FastifyRequest, "headers">,
+export function createElevenLabsBrainPreValidation(deps: ElevenLabsBrainWebsocketDeps) {
+  return async function validateElevenLabsBrainRequest(
+    request: FastifyRequest,
+    reply: FastifyReply,
   ): Promise<void> {
     const engine = deps.getEngine();
     if (!engine) {
@@ -40,7 +38,7 @@ export function createElevenLabsBrainWebsocketHandler(deps: ElevenLabsBrainWebso
         stage: "503_engine_not_ready",
         connection_state: "rejected",
       });
-      socket.close(1013, "Speech Engine not ready");
+      reply.code(503).send({ ok: false, error: "speech_engine_not_ready" });
       return;
     }
 
@@ -50,13 +48,13 @@ export function createElevenLabsBrainWebsocketHandler(deps: ElevenLabsBrainWebso
         headers: request.headers as Record<string, string | string[] | undefined>,
       });
     } catch {
-      // Authentication errors must fail closed. Never log the JWT/header value.
+      // Never log the signed authorization JWT or any request secrets.
       safeVoiceLog({
         event: "brain_ws_auth_rejected",
         stage: "verification_error",
         connection_state: "rejected",
       });
-      socket.close(1008, "Unauthorized");
+      reply.code(401).send({ ok: false, error: "unauthorized" });
       return;
     }
 
@@ -66,7 +64,27 @@ export function createElevenLabsBrainWebsocketHandler(deps: ElevenLabsBrainWebso
         stage: "401",
         connection_state: "rejected",
       });
-      socket.close(1008, "Unauthorized");
+      reply.code(401).send({ ok: false, error: "unauthorized" });
+    }
+  };
+}
+
+/**
+ * Fastify owns the websocket upgrade. Authentication has already completed in
+ * preValidation, so this handler stays synchronous and immediately creates the
+ * SDK session, attaching message listeners before ElevenLabs can send `init`.
+ */
+export function createElevenLabsBrainWebsocketHandler(deps: ElevenLabsBrainWebsocketDeps) {
+  return function handleElevenLabsBrainWebsocket(socket: WebSocket): void {
+    const engine = deps.getEngine();
+    if (!engine) {
+      // Defensive race guard: the engine could only disappear during shutdown.
+      safeVoiceLog({
+        event: "brain_ws_auth_rejected",
+        stage: "engine_lost_after_upgrade",
+        connection_state: "rejected",
+      });
+      socket.close(1013, "Speech Engine not ready");
       return;
     }
 

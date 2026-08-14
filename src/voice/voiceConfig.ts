@@ -26,6 +26,22 @@ export function readVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConf
     throw new Error(`Voice gateway: missing required env vars: ${missing.join(", ")}`);
   }
 
+  const allowInsecureDev = env.VOICE_ALLOW_INSECURE_DEV === "true";
+  const securityVars = ["TWILIO_AUTH_TOKEN", "VOICE_PUBLIC_BASE_URL"] as const;
+  const missingSecurity = securityVars.filter((k) => !env[k]?.trim());
+  if (missingSecurity.length > 0) {
+    if (!allowInsecureDev) {
+      throw new Error(
+        `Voice gateway: missing required security env vars: ${missingSecurity.join(", ")}. ` +
+        `Set VOICE_ALLOW_INSECURE_DEV=true to bypass (local dev only, NOT FOR PRODUCTION).`,
+      );
+    }
+    console.warn(
+      `\n⚠️  WARNING: VOICE_ALLOW_INSECURE_DEV=true — running without Twilio authentication!` +
+      ` Missing: ${missingSecurity.join(", ")}. DO NOT USE IN PRODUCTION.\n`,
+    );
+  }
+
   return {
     elevenLabsApiKey: env.ELEVENLABS_API_KEY!.trim(),
     elevenLabsSpeechEngineId: env.ELEVENLABS_SPEECH_ENGINE_ID!.trim(),

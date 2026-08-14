@@ -10,17 +10,37 @@ import { createMediaBridgeHandler, type WebSocketConnection } from "./twilioMedi
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 
+/**
+ * Extracted auth helper — validates that the x-twilio-signature header matches
+ * the canonical WebSocket URL for the media-stream endpoint. Testable independently.
+ */
+export function validateTwilioWsSignature(
+  authToken: string,
+  publicBaseUrl: string,
+  signature: string,
+): boolean {
+  const wsUrl = `${publicBaseUrl}/voice/media-stream`;
+  return validateRequest(authToken, signature, wsUrl, {});
+}
+
 export function createVoiceGatewayServer(config: VoiceConfig) {
   const app = Fastify();
   const elevenlabs = new ElevenLabsClient({ apiKey: config.elevenLabsApiKey });
 
   let attachment: { close(): Promise<void> } | null = null;
+  let ready = false;
 
   async function start(): Promise<void> {
     await app.register(fastifyFormBody);
     await app.register(fastifyWebsocket);
 
-    app.get("/voice/health", async () => ({ ok: true }));
+    app.get("/voice/health", async (_req, reply) => {
+      if (!ready) {
+        reply.code(503);
+        return { ok: false, status: "starting" };
+      }
+      return { ok: true };
+    });
 
     const incomingRouteApp = {
       post(
@@ -64,7 +84,7 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
     });
 
     app.get("/voice/media-stream", { websocket: true }, (socket, request: FastifyRequest) => {
-      // Fail-closed: reject if auth token or public URL missing (section 5)
+      // Fail-closed: reject if auth token or public URL missing
       if (!config.twilioAuthToken || !config.voicePublicBaseUrl) {
         safeVoiceLog({ event: "bridge_ws_auth_rejected", stage: "503_missing_config", connection_state: "rejected" });
         socket.close();
@@ -72,8 +92,7 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
       }
 
       const sig = (request.headers["x-twilio-signature"] as string | undefined) ?? "";
-      const wsUrl = `${config.voicePublicBaseUrl}/voice/media-stream`;
-      const valid = validateRequest(config.twilioAuthToken, sig, wsUrl, {});
+      const valid = validateTwilioWsSignature(config.twilioAuthToken, config.voicePublicBaseUrl, sig);
       if (!valid) {
         safeVoiceLog({ event: "bridge_ws_auth_rejected", stage: "403", connection_state: "rejected" });
         socket.close();
@@ -104,6 +123,7 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
 
     const engine = await elevenlabs.speechEngine.get(config.elevenLabsSpeechEngineId);
     attachment = engine.attach(app.server, "/voice/brain", brainCallbacks);
+    ready = true;
 
     safeVoiceLog({ event: "voice_brain_attached", stage: "ready" });
   }

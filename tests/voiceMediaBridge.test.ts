@@ -501,3 +501,40 @@ test("BRIDGE-L: missing conversationId → runtime NOT called, fallback sent", a
   assert.equal(responsesSent.length, 1, "fallback sent when conversationId is missing");
   assert.equal(responsesSent[0], VOICE_FALLBACK_REPLY, "correct fallback");
 });
+
+// ─── OVERFLOW-1: 201st pre-open frame closes bridge ──────────────────────────
+
+test("OVERFLOW-1: 201st pre-open media frame triggers fail-closed bridge shutdown", async () => {
+  const MAX_AUDIO_BUFFER = 200;
+  const { deps, elWs, resolveSignedUrl } = makeDeps();
+  const handler = createMediaBridgeHandler(deps);
+  const twilioWs = new FakeTwilioWs();
+  handler(twilioWs);
+
+  startSession(twilioWs);
+  await tick();
+  // Keep signed URL pending so EL never opens (frames arrive pre-open)
+  // Send exactly MAX_AUDIO_BUFFER frames (fills buffer, no overflow yet)
+  for (let i = 0; i < MAX_AUDIO_BUFFER; i++) {
+    sendMedia(twilioWs, `chunk_${i}`);
+  }
+  await tick();
+
+  // Bridge should still be alive (buffer full but not overflowed)
+  assert.equal(twilioWs.closed, false, "bridge still open after exactly MAX_AUDIO_BUFFER frames");
+
+  // 201st frame — overflow
+  sendMedia(twilioWs, "overflow_chunk");
+  await tick();
+
+  assert.equal(twilioWs.closed, true, "bridge closed (fail-closed) on 201st pre-open frame");
+
+  // EL WS should never have been opened (signed URL still pending)
+  assert.equal(elWs.sent.length, 0, "EL WS never received any messages");
+
+  // Resolve signed URL after bridge is closed — verify no lingering activity
+  resolveSignedUrl("wss://stub/signed");
+  await tick();
+  // EL WS was created but bridge was already closed — bridge should not use it
+  assert.equal(elWs.sent.length, 0, "no EL messages after bridge closed via overflow");
+});

@@ -23,18 +23,6 @@ export interface TwilioMediaBridgeDeps {
   createElevenLabsWebSocket?: (url: string) => WebSocketLike;
 }
 
-export interface TwilioMediaBridgeApp {
-  websocket(
-    path: string,
-    handler: (connection: WebSocketConnection, req: IncomingRequest) => void,
-  ): void;
-}
-
-export interface IncomingRequest {
-  headers: Record<string, string | string[] | undefined>;
-  url: string;
-}
-
 export interface WebSocketConnection {
   on(event: "message", handler: (data: Buffer | string) => void): void;
   on(event: "close", handler: () => void): void;
@@ -202,6 +190,15 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
         } else {
           if (audioBuffer.length < MAX_AUDIO_BUFFER) {
             audioBuffer.push(payload);
+          } else {
+            // Buffer full: fail-closed rather than silently dropping frames
+            safeVoiceLog({
+              event: "voice_buffer_overflow",
+              call_sid: callSid,
+              buffered_frames: audioBuffer.length,
+            });
+            audioBuffer.length = 0;
+            closeAll("buffer_overflow");
           }
         }
         return;
@@ -234,10 +231,3 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
   };
 }
 
-export function registerTwilioMediaBridgeRoute(
-  app: TwilioMediaBridgeApp,
-  deps: TwilioMediaBridgeDeps,
-): void {
-  const handler = createMediaBridgeHandler(deps);
-  app.websocket("/voice/media-stream", (ws, _req) => handler(ws));
-}

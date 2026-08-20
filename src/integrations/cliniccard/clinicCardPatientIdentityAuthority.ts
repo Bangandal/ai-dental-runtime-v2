@@ -30,7 +30,7 @@ function externalFailure(reason: string): PatientIdentityResolution {
 
 export function createClinicCardPatientIdentityAuthority(adapter: ClinicCardAdapter): PatientIdentityAuthority {
   return {
-    async resolveOrCreate(input: ResolvePatientIdentityInput): Promise<PatientIdentityResolution> {
+    async resolve(input: ResolvePatientIdentityInput): Promise<PatientIdentityResolution> {
       const findResult = await adapter.findPatientByPhone(input.phone_number);
       if (!findResult.ok) {
         return externalFailure(`Patient lookup failed: ${findResult.error.message}`);
@@ -71,19 +71,11 @@ export function createClinicCardPatientIdentityAuthority(adapter: ClinicCardAdap
       }
 
       // No candidate + target phone, or responsible-party phone with no target-name
-      // match, creates a separate target patient exactly as the pre-R1 executor did.
-      const patientResult = await adapter.createPatient({
-        name: `${input.first_name} ${input.last_name}`,
-        phone: input.phone_number,
-      });
-      if (!patientResult.ok) {
-        return externalFailure(patientResult.error.message);
-      }
-
+      // match, means booking orchestration may create a separate target patient.
+      // This authority deliberately performs no ClinicCard writes.
       return {
         ok: true,
-        patient_id: patientResult.data.id,
-        resolution: "created_patient",
+        resolution: "create_patient_required",
       };
     },
   };

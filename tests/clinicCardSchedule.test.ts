@@ -16,7 +16,7 @@ const SCHEDULE_ENV: Record<string, string> = {
 };
 
 test("schedule config fails closed when working days are missing", () => {
-  const env = { ...SCHEDULE_ENV };
+  const env: Record<string, string | undefined> = { ...SCHEDULE_ENV };
   delete env.CLINICCARD_WORKING_DAYS;
   const result = loadClinicCardScheduleConfig(env);
   assert.equal(result.ok, false);
@@ -32,7 +32,7 @@ test("schedule config requires explicit working hours and duration", () => {
     "CLINICCARD_WORKING_HOURS_END",
     "CLINICCARD_SLOT_DURATION_MINUTES",
   ] as const) {
-    const env = { ...SCHEDULE_ENV };
+    const env: Record<string, string | undefined> = { ...SCHEDULE_ENV };
     delete env[key];
     const result = loadClinicCardScheduleConfig(env);
     assert.equal(result.ok, false, key);

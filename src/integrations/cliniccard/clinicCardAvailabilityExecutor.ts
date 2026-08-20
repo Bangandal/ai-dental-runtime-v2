@@ -2,14 +2,11 @@ import type { ClinicCardConfig } from "./clinicCardTypes.ts";
 import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { checkClinicCardAvailability, type AvailabilityAdapter } from "./clinicCardAvailability.ts";
+import { isClinicWorkingDate, loadClinicCardScheduleConfig } from "./clinicCardSchedule.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import { makeFailedToolResult } from "../../runtime/toolResults.ts";
 import { getTodayInTimezone, isPastSlotTime } from "../../runtime/bookingPreflight.ts";
 import { isAvailabilityDebugEnabled } from "./availabilityDiagnostics.ts";
-
-const DEFAULT_WORKING_HOURS_START = "09:00";
-const DEFAULT_WORKING_HOURS_END = "18:00";
-const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
 // Parses a time string to zero-padded "HH:MM" if valid, null otherwise.
 // Normalises single-digit hours: "9:00" -> "09:00".
@@ -45,7 +42,18 @@ export function createClinicCardAvailabilityExecutor(
       );
     }
 
+    const scheduleResult = loadClinicCardScheduleConfig(deps.env);
+    if (!scheduleResult.ok) {
+      return makeFailedToolResult(
+        "availability.check",
+        scheduleResult.error.code,
+        scheduleResult.error.message,
+        false,
+      );
+    }
+
     const config = configResult.data;
+    const schedule = scheduleResult.data;
 
     const doctorId = Number(config.default_doctor_id);
     if (!Number.isFinite(doctorId) || !Number.isInteger(doctorId) || doctorId <= 0) {
@@ -93,6 +101,21 @@ export function createClinicCardAvailabilityExecutor(
       }
     }
 
+    // Explicit clinic schedule is the first availability gate. A configured day off or
+    // holiday is closed by definition; absence of visits must never create synthetic slots.
+    if (!isClinicWorkingDate(requestedDate, schedule)) {
+      return {
+        tool: "availability.check",
+        status: "success",
+        data: {
+          slots: [],
+          timezone,
+          total_slots: 0,
+          free_slots_count: 0,
+        },
+      };
+    }
+
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
 
@@ -101,9 +124,9 @@ export function createClinicCardAvailabilityExecutor(
     const result = await checkClinicCardAvailability(
       {
         date: requestedDate,
-        working_hours_start: DEFAULT_WORKING_HOURS_START,
-        working_hours_end: DEFAULT_WORKING_HOURS_END,
-        slot_duration_minutes: DEFAULT_SLOT_DURATION_MINUTES,
+        working_hours_start: schedule.working_hours_start,
+        working_hours_end: schedule.working_hours_end,
+        slot_duration_minutes: schedule.slot_duration_minutes,
         doctor_id: doctorId,
         cabinet_id: cabinetId,
         timezone,
@@ -121,7 +144,7 @@ export function createClinicCardAvailabilityExecutor(
       );
     }
 
-    // total_slots and free_slots_count always reflect the full day — before any filtering.
+    // total_slots and free_slots_count always reflect the configured working day — before any filtering.
     const total_slots = result.data.total_slots;
     const free_slots_count = result.data.free_slots_count;
 

@@ -156,7 +156,7 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     optional_args: ["requested_time", "service_interest", "limit"],
   },
   "booking.select_slot": {
-    description: "Confirm the patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. Call booking.apply only after this tool returns selection_status='selected'.",
+    description: "Confirm the patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. Call booking.apply only after this tool returns selection_status='selected'. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
     required_args: ["subject_id", "requested_date", "requested_time"],
     optional_args: [],
   },

@@ -313,7 +313,15 @@ export function buildModelVisibleBookingProcessState(opts: {
       state.selected_slot != null &&
       !isSelectedSlotUsable(state.selected_slot, state.active_availability_evidence, now, tz);
 
-    const slotEvidenceStatus = slotExpiredOrUnbound ? "stale" : resolveSlotEvidenceStatus(state);
+    // All available slots filtered out by time (none in the past were selected, but all
+    // previously offered slots have now passed) — signal "stale" so the model knows to
+    // re-run availability.check rather than recalling times from conversation history.
+    const allOfferedSlotsExpired =
+      !slotExpiredOrUnbound &&
+      visibleSlots.length === 0 &&
+      (state.last_available_slots?.length ?? 0) > 0;
+    const slotEvidenceStatus =
+      slotExpiredOrUnbound || allOfferedSlotsExpired ? "stale" : resolveSlotEvidenceStatus(state);
     const freshProof = slotExpiredOrUnbound
       ? sanitizeProofForModel({ ...state.proof, slot_known: false, ready_for_booking_apply: false })
       : sanitizeProofForModel(state.proof);

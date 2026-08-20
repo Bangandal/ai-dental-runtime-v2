@@ -113,13 +113,15 @@ export function isAvailabilityEvidenceFresh(
 }
 
 /**
- * Converts slot starts_at to a clinic-local YYYY-MM-DDTHH:MM key for time comparison.
+ * Converts slot starts_at to a clinic-local YYYY-MM-DDTHH:MM key.
  *
  * Bare local timestamp (ClinicCard norm): uses slotToKey directly.
  * Z or numeric offset: parses as absolute Date, reformats in clinic timezone.
  * e.g. "2026-08-21T12:00:00Z" in Prague (UTC+2) becomes "2026-08-21T14:00".
  *
- * Do NOT use for identity matching against allowed_slot_keys — use slotToKey() for that.
+ * This is the canonical key for model-visible time comparison AND binding a
+ * model-visible slot to clinic-local allowed_slot_keys. Technical proof creation
+ * elsewhere still uses the persisted evidence contract.
  */
 function startsAtToClinicLocalKey(startsAt: string, timezone: string): string | null {
   if (!startsAt) return null;
@@ -169,12 +171,8 @@ function isSelectedSlotUsable(
   timezone: string,
 ): boolean {
   if (!selectedSlot) return false;
-  // Identity key for allowed_slot_keys matching.
-  const key = slotToKey(selectedSlot);
+  const key = startsAtToClinicLocalKey(selectedSlot.starts_at, timezone);
   if (key === null) return false;
-  // Clinic-local key for time comparison: handles Z/offset correctly.
-  const localKey = startsAtToClinicLocalKey(selectedSlot.starts_at, timezone);
-  if (localKey === null) return false;
 
   const fmt = new Intl.DateTimeFormat("sv-SE", {
     timeZone: timezone,
@@ -186,17 +184,17 @@ function isSelectedSlotUsable(
     hour12: false,
   });
   const minKey = fmt.format(now).replace(" ", "T").substring(0, 16);
-  if (localKey <= minKey) return false; // expired
+  if (key <= minKey) return false; // expired
 
   if (evidence && !evidence.allowed_slot_keys.includes(key)) return false; // unbound
 
   return true;
 }
 
-function filterAllowedSlots(slots: AvailableSlot[], allowedKeys: string[]): AvailableSlot[] {
+function filterAllowedSlots(slots: AvailableSlot[], allowedKeys: string[], timezone: string): AvailableSlot[] {
   const allowed = new Set(allowedKeys);
   return slots.filter((s) => {
-    const key = slotToKey(s);
+    const key = startsAtToClinicLocalKey(s.starts_at, timezone);
     return key !== null && allowed.has(key);
   });
 }
@@ -230,7 +228,7 @@ function filterVisibleSlots(state: BookingProcessState, now: Date, timezone: str
   if (slots.length === 0) return [];
   const evidence = state.active_availability_evidence;
   const future = filterFutureSlots(slots, now, timezone);
-  return evidence ? filterAllowedSlots(future, evidence.allowed_slot_keys) : future;
+  return evidence ? filterAllowedSlots(future, evidence.allowed_slot_keys, timezone) : future;
 }
 
 /**

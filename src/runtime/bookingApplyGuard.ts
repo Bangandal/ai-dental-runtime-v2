@@ -113,6 +113,7 @@ function resolveRequiredNextAction(bookingStatus: string): BookingApplyActionTru
     case "past_time":               return "offer_another_time";
     case "subject_resolution_conflict": return "clarify_subject";
     case "pending_phone_classification": return "none";
+    case "identity_ambiguous":
     case "booking_write_disabled":  return "admin_handoff";
     default:                        return "technical_fallback";
   }
@@ -146,6 +147,7 @@ export function buildBookingApplyEmergencyFallback(
     if (hasFullProof) return "Your appointment has been saved in our system, but a technical error prevented the confirmation message from sending. Please contact the clinic to verify your booking details.";
     if (status === "missing_phone") return "I need your phone number to complete the booking. Please share your contact or type your number.";
     if (status === "slot_conflict") return "That time slot is no longer available. I can check other times.";
+    if (status === "identity_ambiguous") return "I can't safely match this booking to the correct patient record. Please contact the clinic so staff can verify the patient before booking.";
     if (status === "booking_write_disabled") return "Online booking is currently unavailable. Please contact the clinic directly to book your appointment.";
     return "I'm unable to confirm the booking automatically right now. Please contact the clinic directly.";
   }
@@ -154,6 +156,7 @@ export function buildBookingApplyEmergencyFallback(
     if (hasFullProof) return "Vaše rezervace byla uložena v systému, ale při odeslání potvrzení došlo k technické chybě. Kontaktujte prosím kliniku pro ověření podrobností.";
     if (status === "missing_phone") return "Pro rezervaci potřebuji váš telefon. Sdílejte kontakt nebo napište číslo.";
     if (status === "slot_conflict") return "Tento čas je obsazen. Mohu zkontrolovat jiný termín.";
+    if (status === "identity_ambiguous") return "Rezervaci nelze bezpečně přiřadit ke správnému pacientovi. Kontaktujte prosím kliniku, aby personál ověřil pacienta před vytvořením rezervace.";
     if (status === "booking_write_disabled") return "Online rezervace není momentálně dostupná. Kontaktujte prosím kliniku přímo pro rezervaci.";
     return "Momentálně nemohu automaticky potvrdit rezervaci. Kontaktujte prosím kliniku přímo.";
   }
@@ -163,6 +166,7 @@ export function buildBookingApplyEmergencyFallback(
   if (hasFullProof) return "Запись создана в системе, но при отправке ответа произошла техническая ошибка. Пожалуйста, уточните детали у клиники.";
   if (status === "missing_phone") return "Для записи нужен номер телефона. Поделитесь контактом или напишите номер.";
   if (status === "slot_conflict") return "Это время уже недоступно. Могу проверить другое время.";
+  if (status === "identity_ambiguous") return "Не могу безопасно определить карточку пациента для этой записи. Пожалуйста, свяжитесь с клиникой, чтобы администратор уточнил данные перед записью.";
   if (status === "booking_write_disabled") return "Онлайн-запись временно недоступна. Пожалуйста, свяжитесь с клиникой напрямую для записи.";
   return "Пока не могу подтвердить запись автоматически. Пожалуйста, свяжитесь с клиникой напрямую.";
 }

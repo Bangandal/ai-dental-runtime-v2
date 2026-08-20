@@ -31,6 +31,9 @@ export interface ToolExecutionContext {
   phone_source?: string;
   /** Trust level of the phone — "unverified" for patient-typed numbers, absent/undefined for trusted sources. */
   phone_trust?: "unverified";
+  /** When booking phone belongs to a different subject (responsible-party booking),
+   *  contains that subject's id. null/undefined = phone belongs to execution subject. */
+  contact_phone_owner_subject_id?: string | null;
   /** subject_id argument from appointment.lookup tool call. */
   lookup_subject_id?: string;
   /** date_from argument from appointment.lookup (YYYY-MM-DD). */

@@ -93,6 +93,7 @@ export type BookingApplyStatus =
   | "missing_phone"
   | "config_missing"
   | "slot_conflict"
+  | "identity_ambiguous"
   | "cliniccard_write_failed"
   | "visit_created";
 

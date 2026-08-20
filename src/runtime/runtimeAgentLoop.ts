@@ -2187,6 +2187,7 @@ export function buildSubjectAwarePhoneFields(
   phone_number: string | undefined;
   phone_source: string | undefined;
   phone_trust: string | undefined;
+  contact_phone_owner_subject_id?: string | null;
 } {
   if (input.booking_subjects) {
     // Registry active: execution subject must be explicit — no fallback to active_subject_id.
@@ -2202,7 +2203,10 @@ export function buildSubjectAwarePhoneFields(
       const s1 = subjects.find((s) => s.id === "subject_1");
       const s1Bc = (s1?.booking_contact ?? null) as Record<string, unknown> | null;
       if (s1Bc?.phone_number && s1Bc.trust === "trusted") {
-        return resolveBookingContactFields(s1Bc, subjects);
+        return {
+          ...resolveBookingContactFields(s1Bc, subjects),
+          contact_phone_owner_subject_id: "subject_1",
+        };
       }
       if (input.channel_contact?.phone_number) {
         return {

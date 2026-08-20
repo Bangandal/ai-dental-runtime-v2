@@ -626,3 +626,146 @@ test("booking.apply: returns cliniccard_write_failed when findPatientByPhone fai
   assert.match(result.data.reason, /Patient lookup failed/);
   assert.equal(result.data.created_visit, false);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INV-IDENTITY-01 regression tests: bookingApplyExecutor patient identity
+// ─────────────────────────────────────────────────────────────────────────────
+// These live in bookingApplyExecutor.test.ts — import/helpers already present there.
+
+// INV-ID-01-4: own phone, exactly 1 patient found → reuse (backward compat preserved)
+test("INV-ID-01-4: own phone — single patient found → reuses existing patient", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({ ok: true, data: [{ id: 7, name: "Ivan Petrov" }] }),
+      }),
+  });
+  const result = await executor(makeContext({ contact_phone_owner_subject_id: null }));
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.equal(result.data.cliniccard_patient_id, 7);
+});
+
+// INV-ID-01-5: own phone, 0 patients found → creates new patient
+test("INV-ID-01-5: own phone — no patients found → creates new patient", async () => {
+  let createPatientCalled = false;
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({ ok: true, data: [] }),
+        createPatient: async (input) => {
+          createPatientCalled = true;
+          return { ok: true, data: { id: 88, name: input.name, phone: input.phone ?? null } };
+        },
+      }),
+  });
+  const result = await executor(makeContext({ contact_phone_owner_subject_id: null }));
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.ok(createPatientCalled, "createPatient must be called when no patient found");
+  assert.equal(result.data.cliniccard_patient_id, 88);
+});
+
+// INV-ID-01-6: own phone, 2 patients found → identity_ambiguous (fail closed)
+test("INV-ID-01-6: own phone — multiple patients found → identity_ambiguous", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({
+          ok: true,
+          data: [
+            { id: 1, name: "Ivan Petrov" },
+            { id: 2, name: "Ivan Ivanov" },
+          ],
+        }),
+      }),
+  });
+  const result = await executor(makeContext({ contact_phone_owner_subject_id: null }));
+  assert.equal(result.data.booking_status, "identity_ambiguous");
+  assert.equal(result.data.created_visit, false);
+  assert.equal(result.data.may_claim_booked, false);
+});
+
+// INV-ID-01-7: borrowed phone, 0 candidates → creates new patient (don't reuse owner's record)
+test("INV-ID-01-7: borrowed phone — no candidates → creates new patient for target", async () => {
+  let createPatientCalled = false;
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({ ok: true, data: [] }),
+        createPatient: async (input) => {
+          createPatientCalled = true;
+          return { ok: true, data: { id: 55, name: input.name, phone: input.phone ?? null } };
+        },
+      }),
+  });
+  const result = await executor(makeContext({ contact_phone_owner_subject_id: "subject_1" }));
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.ok(createPatientCalled, "must create new patient for target subject");
+  assert.equal(result.data.cliniccard_patient_id, 55);
+});
+
+// INV-ID-01-8: borrowed phone, 1 candidate, name matches → reuse target's record
+test("INV-ID-01-8: borrowed phone — 1 name match → reuses matched patient", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({
+          ok: true,
+          data: [{ id: 33, name: "Ivan Petrov" }],
+        }),
+      }),
+  });
+  // context first_name=Ivan, last_name=Petrov → matches "Ivan Petrov"
+  const result = await executor(makeContext({ contact_phone_owner_subject_id: "subject_1" }));
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.equal(result.data.cliniccard_patient_id, 33);
+});
+
+// INV-ID-01-9: borrowed phone, 1 candidate, name does NOT match → create new patient
+test("INV-ID-01-9: borrowed phone — candidate name mismatch → creates new patient", async () => {
+  let createPatientCalled = false;
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({
+          ok: true,
+          // Owner (subject_1) is "Olena Koval" — completely different from booking target
+          data: [{ id: 10, name: "Olena Koval" }],
+        }),
+        createPatient: async (input) => {
+          createPatientCalled = true;
+          return { ok: true, data: { id: 77, name: input.name, phone: input.phone ?? null } };
+        },
+      }),
+  });
+  // context first_name=Ivan, last_name=Petrov
+  const result = await executor(makeContext({ contact_phone_owner_subject_id: "subject_1" }));
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.ok(createPatientCalled, "must create new patient when name does not match");
+  assert.equal(result.data.cliniccard_patient_id, 77);
+});
+
+// INV-ID-01-10: borrowed phone, 2 candidates, both names match → identity_ambiguous
+test("INV-ID-01-10: borrowed phone — multiple name matches → identity_ambiguous", async () => {
+  const executor = createBookingApplyExecutor({
+    env: LIVE_ENV,
+    adapterFactory: () =>
+      makeAdapter({
+        findPatientByPhone: async () => ({
+          ok: true,
+          data: [
+            { id: 20, name: "Ivan Petrov" },
+            { id: 21, name: "Ivan Petrov" },
+          ],
+        }),
+      }),
+  });
+  const result = await executor(makeContext({ contact_phone_owner_subject_id: "subject_1" }));
+  assert.equal(result.data.booking_status, "identity_ambiguous");
+  assert.equal(result.data.created_visit, false);
+});

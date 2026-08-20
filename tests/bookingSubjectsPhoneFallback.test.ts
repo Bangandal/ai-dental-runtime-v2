@@ -142,3 +142,45 @@ test("REGRESSION: subject_2 with own trusted phone uses it directly", () => {
   const fields = buildSubjectAwarePhoneFields(input, "subject_2");
   assert.strictEqual(fields.phone_number, "999888777");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INV-IDENTITY-01 regression tests: contact_phone_owner_subject_id provenance
+// ─────────────────────────────────────────────────────────────────────────────
+
+// INV-ID-01-1: fallback to subject_1's trusted phone sets contact_phone_owner_subject_id
+test("INV-ID-01-1: buildSubjectAwarePhoneFields — borrowed phone sets contact_phone_owner_subject_id=subject_1", () => {
+  const input = makeInput([trustedS1Contact, s2NoPhone]);
+  const fields = buildSubjectAwarePhoneFields(input, "subject_2");
+  assert.strictEqual(fields.contact_phone_owner_subject_id, "subject_1");
+});
+
+// INV-ID-01-2: subject_1 uses own phone — no borrowed-phone marker
+test("INV-ID-01-2: buildSubjectAwarePhoneFields — own phone: contact_phone_owner_subject_id absent", () => {
+  const input = makeInput([trustedS1Contact, s2NoPhone]);
+  const fields = buildSubjectAwarePhoneFields(input, "subject_1");
+  assert.ok(
+    fields.contact_phone_owner_subject_id === undefined || fields.contact_phone_owner_subject_id === null,
+    `expected undefined/null, got ${fields.contact_phone_owner_subject_id}`,
+  );
+});
+
+// INV-ID-01-3: subject_2 uses own phone — no borrowed-phone marker
+test("INV-ID-01-3: buildSubjectAwarePhoneFields — subject_2 own phone: no owner marker", () => {
+  const s2WithPhone = {
+    ...s2NoPhone,
+    booking_contact: {
+      phone_number: "777888999",
+      source: "telegram_contact_button",
+      trust: "trusted",
+      owner_subject_id: null,
+      collected_at: "2026-08-14T12:00:00Z",
+    },
+  };
+  const input = makeInput([trustedS1Contact, s2WithPhone]);
+  const fields = buildSubjectAwarePhoneFields(input, "subject_2");
+  assert.strictEqual(fields.phone_number, "777888999");
+  assert.ok(
+    fields.contact_phone_owner_subject_id === undefined || fields.contact_phone_owner_subject_id === null,
+    `expected undefined/null, got ${fields.contact_phone_owner_subject_id}`,
+  );
+});

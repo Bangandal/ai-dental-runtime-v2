@@ -277,10 +277,52 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         });
       }
 
-      let patientId: number;
-      if (findResult.data.length > 0) {
-        patientId = findResult.data[0].id;
+      // Distinguish borrowed phone (responsible-party for another subject) from own phone.
+      // contact_phone_owner_subject_id is set when subject_1's phone is borrowed for subject_2+.
+      const isBorrowedPhone = !!context.contact_phone_owner_subject_id;
+      let patientId: number | undefined;
+
+      if (!isBorrowedPhone) {
+        // Phone belongs to execution subject — reuse on exact single match.
+        if (findResult.data.length === 1) {
+          patientId = findResult.data[0].id;
+        } else if (findResult.data.length > 1) {
+          // Ambiguous: multiple patients share this phone. Fail closed — do not pick blindly.
+          return bookingResult({
+            booking_status: "identity_ambiguous",
+            created_visit: false,
+            may_claim_booked: false,
+            cliniccard_visit_id: null,
+            reason: `${findResult.data.length} patients found for this phone; cannot determine booking subject — admin handoff required`,
+            proof: null,
+          });
+        }
+        // length === 0: patientId stays undefined → create new patient below
       } else {
+        // Borrowed phone from responsible-party subject. Identify the target patient by
+        // name among existing records sharing this phone. Never reuse the phone owner's record.
+        const targetFirst = firstName.trim().toLowerCase();
+        const targetLast = lastName.trim().toLowerCase();
+        const nameMatches = findResult.data.filter((p) => {
+          const pName = (p.name ?? "").trim().toLowerCase();
+          return pName === `${targetFirst} ${targetLast}` || pName === `${targetLast} ${targetFirst}`;
+        });
+        if (nameMatches.length === 1) {
+          patientId = nameMatches[0].id;
+        } else if (nameMatches.length > 1) {
+          return bookingResult({
+            booking_status: "identity_ambiguous",
+            created_visit: false,
+            may_claim_booked: false,
+            cliniccard_visit_id: null,
+            reason: `Multiple patients match name "${firstName} ${lastName}" for this phone — admin handoff required`,
+            proof: null,
+          });
+        }
+        // 0 name matches: create new patient below (do not reuse responsible-party's record)
+      }
+
+      if (patientId === undefined) {
         const patientResult = await adapter.createPatient({
           name: `${firstName} ${lastName}`,
           phone: phoneNumber,
@@ -300,7 +342,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
 
       // F2. Create visit.
       const visitResult = await adapter.createVisit({
-        patient_id: patientId,
+        patient_id: patientId as number,
         doctor_id: doctorId,
         cabinet_id: cabinetId,
         date: requestedDate,
@@ -328,7 +370,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         created_visit: true,
         may_claim_booked: true,
         cliniccard_visit_id: String(visit.id),
-        cliniccard_patient_id: patientId,
+        cliniccard_patient_id: patientId as number,
         date: visit.date,
         time_start: visit.time_start,
         time_end: visit.time_end,
@@ -338,7 +380,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         reason: "visit created in ClinicCard",
         proof: {
           cliniccard_visit_id: String(visit.id),
-          cliniccard_patient_id: patientId,
+          cliniccard_patient_id: patientId as number,
           date: visit.date,
           time_start: visit.time_start,
           time_end: visit.time_end,

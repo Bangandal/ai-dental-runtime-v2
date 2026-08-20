@@ -169,6 +169,30 @@ function filterAllowedSlots(slots: AvailableSlot[], allowedKeys: string[]): Avai
   });
 }
 
+/**
+ * Returns true when every slot in `slots` has provably passed in clinic-local time.
+ * Empty array returns false — no slots means unknown state, not proven expired.
+ * Uses the same key semantics as filterFutureSlots: slot at exactly the current minute
+ * is considered expired (key <= nowKey).
+ */
+function allOfferedSlotsProvenExpired(slots: AvailableSlot[], now: Date, timezone: string): boolean {
+  if (slots.length === 0) return false;
+  const fmt = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const nowKey = fmt.format(now).replace(" ", "T").substring(0, 16);
+  return slots.every((s) => {
+    const key = slotToKey(s);
+    return key !== null && key <= nowKey;
+  });
+}
+
 function filterVisibleSlots(state: BookingProcessState, now: Date, timezone: string): AvailableSlot[] {
   const slots = state.last_available_slots ?? [];
   if (slots.length === 0) return [];
@@ -313,16 +337,17 @@ export function buildModelVisibleBookingProcessState(opts: {
       state.selected_slot != null &&
       !isSelectedSlotUsable(state.selected_slot, state.active_availability_evidence, now, tz);
 
-    // All available slots filtered out by time (none in the past were selected, but all
-    // previously offered slots have now passed) — signal "stale" so the model knows to
-    // re-run availability.check rather than recalling times from conversation history.
+    // All offered slots proven expired by clinic-local time — signal "stale" so the model
+    // re-runs availability.check rather than recalling times from conversation history.
+    // Only fires when every slot in last_available_slots is individually past (timezone-aware).
+    // Empty last_available_slots returns false — unknown state, not proven expired.
     const allOfferedSlotsExpired =
       !slotExpiredOrUnbound &&
-      visibleSlots.length === 0 &&
-      (state.last_available_slots?.length ?? 0) > 0;
+      allOfferedSlotsProvenExpired(state.last_available_slots ?? [], now, tz);
     const slotEvidenceStatus =
       slotExpiredOrUnbound || allOfferedSlotsExpired ? "stale" : resolveSlotEvidenceStatus(state);
-    const freshProof = slotExpiredOrUnbound
+    // Clear slot proof for both expired-slot and all-slots-expired cases.
+    const freshProof = (slotExpiredOrUnbound || allOfferedSlotsExpired)
       ? sanitizeProofForModel({ ...state.proof, slot_known: false, ready_for_booking_apply: false })
       : sanitizeProofForModel(state.proof);
 

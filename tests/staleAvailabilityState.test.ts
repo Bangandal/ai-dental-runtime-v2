@@ -684,3 +684,110 @@ test("K: fresh evidence + one past + one future slot → future visible, choose_
   assert.equal(visible.last_available_slots?.[0]?.starts_at, "2026-08-12T14:00:00", "The 14:00 slot must be visible");
   assert.equal(visible.next_action, "choose_from_available_slots", "choose_from_available_slots must remain when at least one slot is visible");
 });
+
+// ── PF-001 regression: allOfferedSlotsProvenExpired ──────────────────────────
+
+// L: All offered slots proven expired → slot_evidence_status=stale, slot_known=false, ready_for_booking_apply=false
+test("L: all offered slots proven expired → stale, slot_known=false, ready_for_booking_apply=false", () => {
+  // NOW = 2026-08-12T10:00 UTC = 12:00 Prague. Both slots are before 12:00 Prague.
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "call-L",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T09:00", "2026-08-12T10:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence,
+    slots: [{ starts_at: "2026-08-12T09:00:00" }, { starts_at: "2026-08-12T10:00:00" }],
+    slotKnown: true,
+    nextAction: "ready_for_booking_apply",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.equal(visible.slot_evidence_status, "stale", "slot_evidence_status must be stale when all offered slots expired");
+  assert.equal(visible.proof?.slot_known, false, "slot_known must be cleared when all offered slots expired");
+  assert.equal(visible.proof?.ready_for_booking_apply, false, "ready_for_booking_apply must be cleared when all offered slots expired");
+  assert.equal((visible.last_available_slots ?? []).length, 0, "no slots should be visible");
+});
+
+// M: NOT all slots expired (one future) → not stale from allOfferedSlotsExpired path
+test("M: one slot still in future → NOT stale from allOfferedSlotsExpired", () => {
+  // 09:00 Prague = past; 14:00 Prague = future relative to NOW=12:00 Prague
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "call-M",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T09:00", "2026-08-12T14:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence,
+    slots: [{ starts_at: "2026-08-12T09:00:00" }, { starts_at: "2026-08-12T14:00:00" }],
+    nextAction: "choose_from_available_slots",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.notEqual(visible.slot_evidence_status, "stale", "slot_evidence_status must NOT be stale when at least one future slot remains");
+  assert.equal((visible.last_available_slots ?? []).length, 1, "future slot must be visible");
+});
+
+// N: Empty last_available_slots → NOT stale (unknown, not proven expired)
+test("N: empty last_available_slots → NOT stale (unknown state, not proven expired)", () => {
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "call-N",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: [],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({ evidence, slots: [], nextAction: "ask_for_slot" });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.notEqual(visible.slot_evidence_status, "stale", "empty slots must NOT trigger stale — state is unknown, not proven expired");
+});
+
+// O: Single slot exactly at current clinic-local minute → proven expired (key <= nowKey)
+test("O: single slot exactly at current clinic-local minute → proven expired", () => {
+  // NOW = 2026-08-12T10:00:00Z = 2026-08-12T12:00 Prague. Slot at exactly 12:00 Prague.
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "call-O",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T12:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence,
+    slots: [{ starts_at: "2026-08-12T12:00:00" }],
+    nextAction: "choose_from_available_slots",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.equal(visible.slot_evidence_status, "stale", "slot exactly at current minute must be treated as expired (key <= nowKey)");
+  assert.equal((visible.last_available_slots ?? []).length, 0, "expired slot must not be visible");
+});

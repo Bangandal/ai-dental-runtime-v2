@@ -29,9 +29,13 @@ function senderCanBeResponsibleParty(state: BookingSubjectsState): boolean {
  * is booking for another person. In that case a trusted subject_1 contact is an effective
  * responsible-party booking contact, not proof of target patient identity. Expose that fact to
  * the model without copying phone numbers or pretending the contact is self-owned.
+ *
+ * A pending typed phone takes precedence over this derived fallback because ownership of that
+ * newly supplied phone must be classified before the runtime assumes the sender contact is the
+ * intended booking contact.
  */
 function buildEffectiveBookingSubjectsContext(state: BookingSubjectsState): Record<string, unknown> {
-  const responsiblePartyAvailable = senderCanBeResponsibleParty(state);
+  const responsiblePartyAvailable = state.pending_typed_phone == null && senderCanBeResponsibleParty(state);
 
   return {
     version: state.version,

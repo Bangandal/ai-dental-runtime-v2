@@ -319,7 +319,7 @@ test("BSEP-4: round-2 bootstrap creates registry when availability.check in roun
 
 // ── Test 5: Round-2 bootstrap does NOT use sender phone for subject_2 ─────────
 
-test("BSEP-5: booking.apply blocked (no subject_2 phone), sender phone not used", async () => {
+test("BSEP-5: booking.apply proceeds using subject_1 trusted phone as fallback when subject_2 has no phone (bootstrap)", async () => {
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
@@ -344,7 +344,7 @@ test("BSEP-5: booking.apply blocked (no subject_2 phone), sender phone not used"
       },
       {
         type: "final_response",
-        final_response: { final_patient_reply: "Нет номера, ждём." },
+        final_response: { final_patient_reply: "Запись для Ивана Петрова создана." },
       },
     ]),
     executors: {
@@ -359,16 +359,16 @@ test("BSEP-5: booking.apply blocked (no subject_2 phone), sender phone not used"
 
   const result = await loop.runTurn({
     ...BASE_TURN_INPUT,
-    channel_contact: TRUSTED_CONTACT, // sender has phone, but subject_2 does not
-    // No booking_subjects — bootstrap will create registry without phone for subject_2
+    channel_contact: TRUSTED_CONTACT, // sender has trusted phone — subject_1 gets it via bootstrap → fallback for subject_2
+    // No booking_subjects — bootstrap creates registry with subject_1 having sender's trusted phone
   });
 
-  // Executor must NOT be called — subject_2 has no phone and phone guard fires
-  assert.equal(executorCalled, false, "executor must not run when subject_2 has no phone");
+  // Executor runs: subject_1's trusted phone is valid booking contact for subject_2
+  assert.equal(executorCalled, true, "executor must run: subject_1 trusted phone is valid fallback for subject_2");
   const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
-  assert.ok(bookingResult, "guarded booking result must be present");
+  assert.ok(bookingResult, "booking result must be present");
   const status = (bookingResult!.data as Record<string, unknown>).booking_status;
-  assert.equal(status, "missing_trusted_phone", "must block with missing_trusted_phone, not sender phone");
+  assert.equal(status, "visit_created", "booking must succeed using subject_1 trusted phone as contact");
 });
 
 // ── Test 6: current_turn_typed_phone becomes pending_typed_phone in bootstrap ─
@@ -818,7 +818,7 @@ test("BSEP-14: successful booking updates only frozen execution subject, not act
 
 // ── Test 15: Round-2 bootstrap with Guard J subject resolution ────────────────
 
-test("BSEP-15: bootstrap: registry created, phone missing blocks booking for subject_2", async () => {
+test("BSEP-15: bootstrap: registry created, sender trusted phone used as fallback for subject_2 booking", async () => {
   let executorCalled = false;
 
   const loop = createRuntimeAgentLoop({
@@ -843,7 +843,7 @@ test("BSEP-15: bootstrap: registry created, phone missing blocks booking for sub
       },
       {
         type: "final_response",
-        final_response: { final_patient_reply: "Нужен номер Ивана." },
+        final_response: { final_patient_reply: "Запись для Ивана Петрова создана." },
       },
     ]),
     executors: {
@@ -856,20 +856,20 @@ test("BSEP-15: bootstrap: registry created, phone missing blocks booking for sub
     bookingProcessStateRepository: makeSlotStateRepo("2026-07-09T12:00:00", "subject_2" as SubjectId),
   });
 
-  // No booking_subjects, no channel_contact for subject_2 phone
+  // No booking_subjects — bootstrap assigns sender's trusted phone to subject_1, used as fallback for subject_2
   const result = await loop.runTurn({
     ...BASE_TURN_INPUT,
-    channel_contact: TRUSTED_CONTACT, // sender has phone, subject_2 does not
+    channel_contact: TRUSTED_CONTACT, // sender has trusted phone — subject_1 gets it via bootstrap
   });
 
-  assert.equal(executorCalled, false, "executor must not run: subject_2 has no phone after bootstrap");
+  assert.equal(executorCalled, true, "executor runs: subject_1 trusted phone is valid fallback for subject_2");
   const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
   const status = (bookingResult!.data as Record<string, unknown>).booking_status;
-  assert.equal(status, "missing_trusted_phone", "blocked with missing_trusted_phone for subject_2");
-  assert.equal(result.execution_subject_id, "subject_2", "execution_subject_id frozen to subject_2 even when blocked");
+  assert.equal(status, "visit_created", "booking succeeds using subject_1 trusted phone as contact");
+  assert.equal(result.execution_subject_id, "subject_2", "execution_subject_id frozen to subject_2");
   assert.ok(result.booking_subjects_after_resolution, "bootstrapped registry returned");
   const s2 = result.booking_subjects_after_resolution!.subjects.find((s) => s.id === "subject_2");
-  assert.equal(s2?.status, "collecting", "subject_2 must remain collecting (not booked)");
+  assert.equal(s2?.status, "collecting", "subject_2 remains collecting at loop level (orchestrator updates to booked)");
 });
 
 // ── Test 16: Round-1 malformed response still carries execution metadata ───────

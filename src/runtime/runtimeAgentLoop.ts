@@ -2180,13 +2180,14 @@ function resolveBookingContactFields(
  * when booking_subjects registry is active. Falls back to global phone contacts otherwise.
  * @param executionSubjectId - frozen subject id from resolveBookingExecutionSubject(); overrides active_subject_id
  */
-function buildSubjectAwarePhoneFields(
+export function buildSubjectAwarePhoneFields(
   input: RuntimeAgentTurnInput,
   executionSubjectId?: SubjectId | null,
 ): {
   phone_number: string | undefined;
   phone_source: string | undefined;
   phone_trust: string | undefined;
+  contact_phone_owner_subject_id?: string | null;
 } {
   if (input.booking_subjects) {
     // Registry active: execution subject must be explicit — no fallback to active_subject_id.
@@ -2195,6 +2196,26 @@ function buildSubjectAwarePhoneFields(
     const target = subjects.find((s) => s.id === executionSubjectId);
     const bc = (target?.booking_contact ?? null) as Record<string, unknown> | null;
     if (bc?.phone_number) return resolveBookingContactFields(bc, subjects);
+    // Fallback: sender (subject_1) is responsible party when target has no explicit phone.
+    // Covers the common case: sender books for another person and their trusted contact
+    // (e.g. Telegram button press) serves as the booking contact phone.
+    if (executionSubjectId !== ("subject_1" as SubjectId)) {
+      const s1 = subjects.find((s) => s.id === "subject_1");
+      const s1Bc = (s1?.booking_contact ?? null) as Record<string, unknown> | null;
+      if (s1Bc?.phone_number && s1Bc.trust === "trusted") {
+        return {
+          ...resolveBookingContactFields(s1Bc, subjects),
+          contact_phone_owner_subject_id: "subject_1",
+        };
+      }
+      if (input.channel_contact?.phone_number) {
+        return {
+          phone_number: input.channel_contact.phone_number,
+          phone_source: input.channel_contact.phone_source,
+          phone_trust: undefined,
+        };
+      }
+    }
     return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
   }
   // Single-subject (no registry): suppress legacy typed provided_phone if this conversation
@@ -2219,16 +2240,26 @@ function buildSubjectAwarePhoneFields(
 /**
  * True when the resolved execution subject has a phone suitable for booking.
  * With an active registry, executionSubjectId must be explicit — no fallback to active_subject_id.
- * Without a registry, falls back to global channel_contact / provided_phone.
+ * When subject has no explicit phone, falls back to subject_1 (sender) as responsible party,
+ * or global channel_contact. Without a registry, falls back to global channel_contact / provided_phone.
  */
-function hasSubjectOrContactPhone(input: RuntimeAgentTurnInput, executionSubjectId: SubjectId | null): boolean {
+export function hasSubjectOrContactPhone(input: RuntimeAgentTurnInput, executionSubjectId: SubjectId | null): boolean {
   if (input.booking_subjects) {
     // Registry active but no resolved execution subject → no phone (prevents active-subject bypass)
     if (!executionSubjectId) return false;
     const subjects = input.booking_subjects.subjects as SubjectLike[];
     const target = subjects.find((s) => s.id === executionSubjectId);
     const bc = (target?.booking_contact ?? null) as Record<string, unknown> | null;
-    if (!bc?.phone_number) return false;
+    if (!bc?.phone_number) {
+      // Fallback: sender (subject_1) as responsible party when target has no phone.
+      if (executionSubjectId !== ("subject_1" as SubjectId)) {
+        const s1 = subjects.find((s) => s.id === "subject_1");
+        const s1Bc = (s1?.booking_contact ?? null) as Record<string, unknown> | null;
+        if (s1Bc?.phone_number && s1Bc.trust === "trusted") return true;
+        return hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: null });
+      }
+      return false;
+    }
     if (bc.source === "shared_from_subject") {
       const ownerId = bc.owner_subject_id as string | null | undefined;
       if (!ownerId) return false;

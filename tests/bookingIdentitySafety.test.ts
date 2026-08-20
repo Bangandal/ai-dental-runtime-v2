@@ -16,6 +16,11 @@ const LIVE_ENV: Record<string, string> = {
   CLINICCARD_DEFAULT_CABINET_ID: "20",
   CLINICCARD_TIMEZONE: "Europe/Prague",
   CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
+  CLINICCARD_WORKING_DAYS: "1,2,3,4,5,6,7",
+  CLINICCARD_WORKING_HOURS_START: "09:00",
+  CLINICCARD_WORKING_HOURS_END: "18:00",
+  CLINICCARD_SLOT_DURATION_MINUTES: "30",
+  CLINICCARD_HOLIDAYS: "",
 };
 
 function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {

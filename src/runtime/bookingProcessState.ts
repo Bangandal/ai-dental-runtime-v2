@@ -188,6 +188,10 @@ function allOfferedSlotsProvenExpired(slots: AvailableSlot[], now: Date, timezon
   });
   const nowKey = fmt.format(now).replace(" ", "T").substring(0, 16);
   return slots.every((s) => {
+    // Slots with explicit TZ offset (Z or +HH:MM) cannot be safely compared
+    // against nowKey (clinic-local) — slotToKey strips the offset, producing a
+    // bare datetime that looks local but is not. Treat as NOT proven expired.
+    if (/Z$|[+-]\d{2}:\d{2}$/.test(s.starts_at)) return false;
     const key = slotToKey(s);
     return key !== null && key <= nowKey;
   });

@@ -294,6 +294,20 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       }
 
       const isBorrowedPhone = !!context.contact_phone_owner_subject_id;
+
+      // Fail closed immediately: own phone shared across multiple patient records is an
+      // identity conflict — name matching cannot safely resolve it.
+      if (!isBorrowedPhone && findResult.data.length > 1) {
+        return bookingResult({
+          booking_status: "identity_ambiguous",
+          created_visit: false,
+          may_claim_booked: false,
+          cliniccard_visit_id: null,
+          reason: `Phone lookup returned ${findResult.data.length} patient records — shared phone is an identity conflict, admin handoff required`,
+          proof: null,
+        });
+      }
+
       const nameMatches = findResult.data.filter((patient) =>
         patientNameMatchesTarget(patient.name ?? "", firstName, lastName),
       );

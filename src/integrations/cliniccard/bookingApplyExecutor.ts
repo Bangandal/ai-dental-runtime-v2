@@ -2,11 +2,10 @@ import type { ClinicCardAdapter } from "./clinicCardAdapter.ts";
 import type { ClinicCardConfig } from "./clinicCardTypes.ts";
 import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
+import { isSlotWithinClinicSchedule, loadClinicCardScheduleConfig } from "./clinicCardSchedule.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import type { BookingApplyResult, BookingApplySuccessResult } from "../../runtime/toolResults.ts";
 import { acquireBookingSlotLock } from "./bookingSlotMutex.ts";
-
-const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
 // Strict HH:MM — exactly two-digit hour and minute, valid range.
 // Rejects "9:00", "10am", "morning", and any natural-language string.
@@ -136,6 +135,21 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
+    // A3. Live writes require an explicit clinic schedule. Never fall back to an implicit
+    // 09:00–18:00 / 30-minute grid when deciding whether a slot may be written.
+    const scheduleResult = loadClinicCardScheduleConfig(env);
+    if (!scheduleResult.ok) {
+      return bookingResult({
+        booking_status: "config_missing",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: scheduleResult.error.message,
+        proof: null,
+      });
+    }
+    const schedule = scheduleResult.data;
+
     // B2. Phone check — must be present, and from a trusted/verified source, before any write.
     const phoneNumber = context.phone_number;
     if (!phoneNumber) {
@@ -231,11 +245,24 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
+    // Availability and booking must share one schedule truth. Reject a write for a clinic
+    // day off, holiday, before opening, or when the configured duration would cross closing.
+    if (!isSlotWithinClinicSchedule(requestedDate, timeStart, schedule.slot_duration_minutes, schedule)) {
+      return bookingResult({
+        booking_status: "invalid_slot",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: `Slot ${requestedDate} ${timeStart} is outside the configured clinic working schedule`,
+        proof: null,
+      });
+    }
+
     const timezone = config.timezone || "Europe/Prague";
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
 
-    const timeEnd = addMinutes(timeStart, DEFAULT_SLOT_DURATION_MINUTES);
+    const timeEnd = addMinutes(timeStart, schedule.slot_duration_minutes);
 
     // Acquire slot-level lock before any ClinicCard read or write.
     // Serializes on both doctor and cabinet dimensions — mirrors the conflict rule

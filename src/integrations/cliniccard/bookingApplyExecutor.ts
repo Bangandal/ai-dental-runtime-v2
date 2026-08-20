@@ -36,6 +36,21 @@ function addMinutes(hhmm: string, mins: number): string {
   return minutesToHHMM(timeToMinutes(hhmm) + mins);
 }
 
+function normalizePatientName(value: string): string {
+  return value
+    .normalize("NFKC")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function patientNameMatchesTarget(patientName: string, firstName: string, lastName: string): boolean {
+  const candidate = normalizePatientName(patientName);
+  const firstLast = normalizePatientName(`${firstName} ${lastName}`);
+  const lastFirst = normalizePatientName(`${lastName} ${firstName}`);
+  return candidate === firstLast || candidate === lastFirst;
+}
+
 function bookingResult(partial: Omit<BookingApplyResult, "booking_action">): BookingApplySuccessResult {
   return {
     tool: "booking.apply",
@@ -264,7 +279,8 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         });
       }
 
-      // F1. Reuse existing patient by phone — avoids duplicate patient records for returning callers.
+      // F1. Resolve patient identity. Contact phone and patient identity are separate facts.
+      // The phone may belong to the patient or to a responsible party booking for someone else.
       const findResult = await adapter.findPatientByPhone(phoneNumber);
       if (!findResult.ok) {
         return bookingResult({
@@ -277,50 +293,40 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         });
       }
 
-      // Distinguish borrowed phone (responsible-party for another subject) from own phone.
-      // contact_phone_owner_subject_id is set when subject_1's phone is borrowed for subject_2+.
       const isBorrowedPhone = !!context.contact_phone_owner_subject_id;
+      const nameMatches = findResult.data.filter((patient) =>
+        patientNameMatchesTarget(patient.name ?? "", firstName, lastName),
+      );
       let patientId: number | undefined;
 
-      if (!isBorrowedPhone) {
-        // Phone belongs to execution subject — reuse on exact single match.
-        if (findResult.data.length === 1) {
-          patientId = findResult.data[0].id;
-        } else if (findResult.data.length > 1) {
-          // Ambiguous: multiple patients share this phone. Fail closed — do not pick blindly.
-          return bookingResult({
-            booking_status: "identity_ambiguous",
-            created_visit: false,
-            may_claim_booked: false,
-            cliniccard_visit_id: null,
-            reason: `${findResult.data.length} patients found for this phone; cannot determine booking subject — admin handoff required`,
-            proof: null,
-          });
-        }
-        // length === 0: patientId stays undefined → create new patient below
-      } else {
-        // Borrowed phone from responsible-party subject. Identify the target patient by
-        // name among existing records sharing this phone. Never reuse the phone owner's record.
-        const targetFirst = firstName.trim().toLowerCase();
-        const targetLast = lastName.trim().toLowerCase();
-        const nameMatches = findResult.data.filter((p) => {
-          const pName = (p.name ?? "").trim().toLowerCase();
-          return pName === `${targetFirst} ${targetLast}` || pName === `${targetLast} ${targetFirst}`;
+      if (nameMatches.length === 1) {
+        // Name + phone candidate resolve to one target patient. Safe to reuse.
+        patientId = nameMatches[0].id;
+      } else if (nameMatches.length > 1) {
+        // Multiple records still fit the target identity. Never choose data[0].
+        return bookingResult({
+          booking_status: "identity_ambiguous",
+          created_visit: false,
+          may_claim_booked: false,
+          cliniccard_visit_id: null,
+          reason: `Multiple patients match name "${firstName} ${lastName}" for this phone — admin handoff required`,
+          proof: null,
         });
-        if (nameMatches.length === 1) {
-          patientId = nameMatches[0].id;
-        } else if (nameMatches.length > 1) {
-          return bookingResult({
-            booking_status: "identity_ambiguous",
-            created_visit: false,
-            may_claim_booked: false,
-            cliniccard_visit_id: null,
-            reason: `Multiple patients match name "${firstName} ${lastName}" for this phone — admin handoff required`,
-            proof: null,
-          });
-        }
-        // 0 name matches: create new patient below (do not reuse responsible-party's record)
+      } else if (!isBorrowedPhone && findResult.data.length > 0) {
+        // Phone was presented as the target patient's own contact, but ClinicCard says it belongs
+        // to other named patient record(s). This is an identity conflict, not permission to reuse
+        // the first result and not permission to silently create a duplicate.
+        return bookingResult({
+          booking_status: "identity_ambiguous",
+          created_visit: false,
+          may_claim_booked: false,
+          cliniccard_visit_id: null,
+          reason: `Phone lookup returned patient record(s), but none match "${firstName} ${lastName}" — admin handoff required`,
+          proof: null,
+        });
       }
+      // No name match + borrowed responsible-party phone is safe to treat as a new target patient.
+      // No candidates at all is also safe to create as a new patient.
 
       if (patientId === undefined) {
         const patientResult = await adapter.createPatient({

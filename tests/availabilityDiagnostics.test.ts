@@ -8,8 +8,6 @@ import type { ClinicCardVisit } from "../src/integrations/cliniccard/clinicCardT
 import type { AvailabilityAdapter } from "../src/integrations/cliniccard/clinicCardAvailability.ts";
 import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 const BASE_INPUT = {
   date: "2026-07-08",
   working_hours_start: "09:00",
@@ -44,14 +42,17 @@ const BASE_EXECUTOR_ENV: Record<string, string | undefined> = {
   CLINICCARD_DEFAULT_DOCTOR_ID: "42",
   CLINICCARD_DEFAULT_CABINET_ID: "7",
   CLINICCARD_TIMEZONE: "Europe/Prague",
+  CLINICCARD_WORKING_DAYS: "1,2,3,4,5,6,7",
+  CLINICCARD_WORKING_HOURS_START: "09:00",
+  CLINICCARD_WORKING_HOURS_END: "18:00",
+  CLINICCARD_SLOT_DURATION_MINUTES: "30",
+  CLINICCARD_HOLIDAYS: "",
 };
 
 const BASE_CONTEXT: ToolExecutionContext = {
   clinic_id: "clinic_1",
   requested_date: "2026-07-08",
 };
-
-// ── A. Debug disabled by default ──────────────────────────────────────────────
 
 test("A: isAvailabilityDebugEnabled returns false when env flag not set", () => {
   assert.equal(isAvailabilityDebugEnabled({}), false);
@@ -68,12 +69,8 @@ test("A: isAvailabilityDebugEnabled returns false when flag is '1'", () => {
 test("A: checkClinicCardAvailability returns no diagnostic when debug not set", async () => {
   const result = await checkClinicCardAvailability({ ...BASE_INPUT, debug: false }, makeAdapter([]));
   assert.equal(result.ok, true);
-  if (result.ok) {
-    assert.equal(result.data.diagnostic, undefined);
-  }
+  if (result.ok) assert.equal(result.data.diagnostic, undefined);
 });
-
-// ── B. Debug enabled includes counts ──────────────────────────────────────────
 
 test("B: isAvailabilityDebugEnabled returns true when CLINICCARD_AVAILABILITY_DEBUG=true", () => {
   assert.equal(isAvailabilityDebugEnabled({ CLINICCARD_AVAILABILITY_DEBUG: "true" }), true);
@@ -94,14 +91,12 @@ test("B: debug enabled returns diagnostic with correct counts (no visits)", asyn
     assert.equal(d!.slot_duration_minutes, 30);
     assert.equal(d!.raw_visits_count, 0);
     assert.equal(d!.relevant_visits_count, 0);
-    assert.equal(d!.total_slots, 6); // 09:00-12:00 / 30min = 6 slots
+    assert.equal(d!.total_slots, 6);
     assert.equal(d!.blocked_slots_count, 0);
     assert.equal(d!.free_slots_count_before_filters, 6);
     assert.deepEqual(d!.relevant_visits_sample, []);
   }
 });
-
-// ── C. Same doctor visit blocks overlapping slots ─────────────────────────────
 
 test("C: visit with matching doctor_id blocks its slot, blocked_slots_count increments", async () => {
   const visit = makeVisit({ doctor_id: 42, cabinet_id: 99, time_start: "10:00", time_end: "10:30" });
@@ -109,11 +104,9 @@ test("C: visit with matching doctor_id blocks its slot, blocked_slots_count incr
   assert.equal(result.ok, true);
   if (result.ok) {
     const d = result.data.diagnostic!;
-    assert.equal(d.blocked_slots_count, 1, "one slot must be blocked by same doctor");
+    assert.equal(d.blocked_slots_count, 1);
     assert.equal(d.relevant_visits_count, 1);
-    // 10:00 slot must not appear in output
-    const blocked = result.data.slots.find((s) => s.time_start === "10:00");
-    assert.equal(blocked, undefined, "10:00 slot must be absent from free slots");
+    assert.equal(result.data.slots.find((s) => s.time_start === "10:00"), undefined);
     assert.equal(result.data.free_slots_count, 5);
   }
 });
@@ -133,22 +126,17 @@ test("C: two visits with matching doctor_id block two slots", async () => {
   }
 });
 
-// ── D. Same cabinet visit blocks overlapping slots ────────────────────────────
-
 test("D: visit with matching cabinet_id but different doctor blocks its slot", async () => {
   const visit = makeVisit({ doctor_id: 999, cabinet_id: 7, time_start: "09:30", time_end: "10:00" });
   const result = await checkClinicCardAvailability({ ...BASE_INPUT, debug: true }, makeAdapter([visit]));
   assert.equal(result.ok, true);
   if (result.ok) {
     const d = result.data.diagnostic!;
-    assert.equal(d.blocked_slots_count, 1, "cabinet-only match must block slot");
+    assert.equal(d.blocked_slots_count, 1);
     assert.equal(d.relevant_visits_count, 1);
-    const blocked = result.data.slots.find((s) => s.time_start === "09:30");
-    assert.equal(blocked, undefined, "09:30 slot must be absent");
+    assert.equal(result.data.slots.find((s) => s.time_start === "09:30"), undefined);
   }
 });
-
-// ── E. Unrelated doctor+cabinet does not block ────────────────────────────────
 
 test("E: visit with different doctor_id AND different cabinet_id does not block any slot", async () => {
   const visit = makeVisit({ doctor_id: 999, cabinet_id: 888, time_start: "09:00", time_end: "09:30" });
@@ -157,17 +145,17 @@ test("E: visit with different doctor_id AND different cabinet_id does not block 
   if (result.ok) {
     const d = result.data.diagnostic!;
     assert.equal(d.raw_visits_count, 1);
-    assert.equal(d.relevant_visits_count, 0, "unrelated visit must not be relevant");
+    assert.equal(d.relevant_visits_count, 0);
     assert.equal(d.blocked_slots_count, 0);
     assert.equal(result.data.free_slots_count, 6);
   }
 });
 
-// ── F. Half-day visit reduces free slot count ─────────────────────────────────
-
 test("F: half-day visit (09:00-12:00) blocks all 6 slots, free_slots_count=0", async () => {
-  const visit = makeVisit({ time_start: "09:00", time_end: "12:00" });
-  const result = await checkClinicCardAvailability({ ...BASE_INPUT, debug: true }, makeAdapter([visit]));
+  const result = await checkClinicCardAvailability(
+    { ...BASE_INPUT, debug: true },
+    makeAdapter([makeVisit({ time_start: "09:00", time_end: "12:00" })]),
+  );
   assert.equal(result.ok, true);
   if (result.ok) {
     const d = result.data.diagnostic!;
@@ -177,94 +165,70 @@ test("F: half-day visit (09:00-12:00) blocks all 6 slots, free_slots_count=0", a
   }
 });
 
-test("F: 09:00-10:30 visit (3 slots) leaves 3 slots free in 09:00-12:00 window", async () => {
-  const visit = makeVisit({ time_start: "09:00", time_end: "10:30" });
-  const result = await checkClinicCardAvailability({ ...BASE_INPUT, debug: true }, makeAdapter([visit]));
+test("F: 09:00-10:30 visit (3 slots) leaves 3 slots free", async () => {
+  const result = await checkClinicCardAvailability(
+    { ...BASE_INPUT, debug: true },
+    makeAdapter([makeVisit({ time_start: "09:00", time_end: "10:30" })]),
+  );
   assert.equal(result.ok, true);
   if (result.ok) {
-    const d = result.data.diagnostic!;
-    assert.equal(d.blocked_slots_count, 3);
+    assert.equal(result.data.diagnostic!.blocked_slots_count, 3);
     assert.equal(result.data.free_slots_count, 3);
   }
 });
 
-// ── G. No PII in diagnostic ───────────────────────────────────────────────────
-
 test("G: toVisitSample strips patient_id and note", () => {
-  const visit: ClinicCardVisit = {
-    id: 55,
-    patient_id: 9999,
-    doctor_id: 42,
-    cabinet_id: 7,
-    date: "2026-07-08",
-    time_start: "09:00",
-    time_end: "09:30",
-    status: "PLANNED",
-    note: "sensitive patient note",
-  };
-  const sample = toVisitSample(visit);
-  assert.equal("patient_id" in sample, false, "patient_id must not be in sample");
-  assert.equal("note" in sample, false, "note must not be in sample");
+  const sample = toVisitSample(makeVisit({ id: 55, patient_id: 9999, note: "sensitive patient note" }));
+  assert.equal("patient_id" in sample, false);
+  assert.equal("note" in sample, false);
   assert.equal(sample.visit_id, 55);
   assert.equal(sample.doctor_id, 42);
   assert.equal(sample.status, "PLANNED");
 });
 
 test("G: diagnostic object has no PII fields", async () => {
-  const visit = makeVisit({ patient_id: 9999, note: "private" });
-  const result = await checkClinicCardAvailability({ ...BASE_INPUT, debug: true }, makeAdapter([visit]));
+  const result = await checkClinicCardAvailability(
+    { ...BASE_INPUT, debug: true },
+    makeAdapter([makeVisit({ patient_id: 9999, note: "private" })]),
+  );
   assert.equal(result.ok, true);
   if (result.ok) {
-    const d = result.data.diagnostic!;
-    const asJson = JSON.stringify(d);
-    assert.doesNotMatch(asJson, /patient_id/, "patient_id must not appear in diagnostic JSON");
-    assert.doesNotMatch(asJson, /"note"/, "note must not appear in diagnostic JSON");
-    assert.doesNotMatch(asJson, /9999/, "patient_id value must not appear in diagnostic JSON");
-    assert.doesNotMatch(asJson, /phone/, "phone must not appear in diagnostic JSON");
-    assert.doesNotMatch(asJson, /first_name|last_name/, "name fields must not appear in diagnostic JSON");
+    const asJson = JSON.stringify(result.data.diagnostic!);
+    assert.doesNotMatch(asJson, /patient_id/);
+    assert.doesNotMatch(asJson, /"note"/);
+    assert.doesNotMatch(asJson, /9999/);
+    assert.doesNotMatch(asJson, /phone/);
+    assert.doesNotMatch(asJson, /first_name|last_name/);
   }
 });
 
-// ── Executor-level: post-filter counts ───────────────────────────────────────
-
-// H: debug disabled — no diagnostic anywhere in tool result
-test("H: executor: diagnostic absent from data and _diagnostic when CLINICCARD_AVAILABILITY_DEBUG not set", async () => {
+test("H: executor: diagnostic absent when debug is disabled", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV },
     adapterFactory: () => makeAdapter([]),
   });
   const result = await executor(BASE_CONTEXT);
   assert.equal(result.status, "success");
-  const data = result.data as Record<string, unknown>;
-  assert.equal(data["diagnostic"], undefined, "diagnostic must not appear in model-visible data");
-  const asAny = result as Record<string, unknown>;
-  assert.equal(asAny["_diagnostic"], undefined, "_diagnostic must be absent when debug not enabled");
+  assert.equal((result.data as Record<string, unknown>)["diagnostic"], undefined);
+  assert.equal((result as Record<string, unknown>)["_diagnostic"], undefined);
 });
 
-// H: debug enabled — diagnostic NOT in model-visible data, IS in _diagnostic
-test("H: executor: debug enabled — diagnostic in _diagnostic, NOT in model-visible data", async () => {
+test("H: executor: debug enabled stores diagnostic outside model-visible data", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV, CLINICCARD_AVAILABILITY_DEBUG: "true" },
     adapterFactory: () => makeAdapter([]),
   });
   const result = await executor({ ...BASE_CONTEXT, limit: 3 });
   assert.equal(result.status, "success");
-
-  // Model-visible data must NOT contain diagnostic
-  const data = result.data as Record<string, unknown>;
-  assert.equal(data["diagnostic"], undefined, "diagnostic must not appear in model-visible data");
-
-  // _diagnostic at top level must contain the diagnostic
-  const asAny = result as Record<string, unknown>;
-  const d = asAny["_diagnostic"] as Record<string, unknown>;
-  assert.ok(d, "_diagnostic must be present at top level");
+  assert.equal((result.data as Record<string, unknown>)["diagnostic"], undefined);
+  const d = (result as Record<string, unknown>)["_diagnostic"] as Record<string, unknown>;
+  assert.ok(d);
   assert.ok(typeof d["free_slots_count_after_requested_time_filter"] === "number");
   assert.ok(typeof d["free_slots_count_after_past_time_filter"] === "number");
   assert.ok(typeof d["limited_slots_count"] === "number");
 });
 
-// I: model-visible data only has slots, timezone, total_slots, free_slots_count
-test("I: model-visible data fields are exactly slots/timezone/total_slots/free_slots_count (no visit_id/doctor_id/cabinet_id/status)", async () => {
+test("I: model-visible data contains only safe availability fields", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV, CLINICCARD_AVAILABILITY_DEBUG: "true" },
     adapterFactory: () => makeAdapter([makeVisit({})]),
@@ -272,54 +236,43 @@ test("I: model-visible data fields are exactly slots/timezone/total_slots/free_s
   const result = await executor(BASE_CONTEXT);
   assert.equal(result.status, "success");
   const data = result.data as Record<string, unknown>;
-
-  // These fields must NOT appear in model-visible data
-  const sensitiveFields = ["diagnostic", "visit_id", "doctor_id", "cabinet_id", "status", "_diagnostic"];
   const dataJson = JSON.stringify(data);
-  for (const field of sensitiveFields) {
-    assert.doesNotMatch(dataJson, new RegExp(`"${field}"`), `"${field}" must not appear in model-visible data`);
+  for (const field of ["diagnostic", "visit_id", "doctor_id", "cabinet_id", "status", "_diagnostic"]) {
+    assert.doesNotMatch(dataJson, new RegExp(`"${field}"`));
   }
-
-  // Model-visible data must have expected safe fields
-  assert.ok(Array.isArray(data["slots"]), "slots must be present");
-  assert.ok(typeof data["timezone"] === "string", "timezone must be present");
-  assert.ok(typeof data["total_slots"] === "number", "total_slots must be present");
-  assert.ok(typeof data["free_slots_count"] === "number", "free_slots_count must be present");
+  assert.ok(Array.isArray(data["slots"]));
+  assert.ok(typeof data["timezone"] === "string");
+  assert.ok(typeof data["total_slots"] === "number");
+  assert.ok(typeof data["free_slots_count"] === "number");
 });
 
-// J: relevant_visits_sample in _diagnostic has no patient_id or note
 test("J: _diagnostic.relevant_visits_sample strips patient_id and note fields", async () => {
-  const visitWithPii = makeVisit({ patient_id: 9999, note: "sensitive note" });
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV, CLINICCARD_AVAILABILITY_DEBUG: "true" },
-    adapterFactory: () => makeAdapter([visitWithPii]),
+    adapterFactory: () => makeAdapter([makeVisit({ patient_id: 9999, note: "sensitive note" })]),
   });
   const result = await executor(BASE_CONTEXT);
   assert.equal(result.status, "success");
-  const asAny = result as Record<string, unknown>;
-  const d = asAny["_diagnostic"] as Record<string, unknown>;
-  assert.ok(d, "_diagnostic must be present");
+  const d = (result as Record<string, unknown>)["_diagnostic"] as Record<string, unknown>;
   const sample = d["relevant_visits_sample"] as Record<string, unknown>[];
-  assert.ok(Array.isArray(sample) && sample.length > 0, "relevant_visits_sample must be non-empty");
+  assert.ok(Array.isArray(sample) && sample.length > 0);
   for (const v of sample) {
-    assert.equal("patient_id" in v, false, "patient_id must not appear in relevant_visits_sample");
-    assert.equal("note" in v, false, "note must not appear in relevant_visits_sample");
+    assert.equal("patient_id" in v, false);
+    assert.equal("note" in v, false);
   }
 });
 
-// K: model cannot see visit_id/doctor_id/cabinet_id/status via tool result data JSON
-test("K: full tool result data JSON contains no visit_id/doctor_id/cabinet_id/status from diagnostic", async () => {
+test("K: model tool-result data never includes debug internals", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV, CLINICCARD_AVAILABILITY_DEBUG: "true" },
     adapterFactory: () => makeAdapter([makeVisit({ doctor_id: 42, cabinet_id: 7 })]),
   });
   const result = await executor(BASE_CONTEXT);
   assert.equal(result.status, "success");
-  // Only serialize result.data — what the model would receive as function_call_output
   const modelPayload = JSON.stringify(result.data);
-  assert.doesNotMatch(modelPayload, /"visit_id"/, "visit_id must not appear in model payload");
-  assert.doesNotMatch(modelPayload, /"doctor_id"/, "doctor_id must not appear in model payload");
-  assert.doesNotMatch(modelPayload, /"cabinet_id"/, "cabinet_id must not appear in model payload");
-  assert.doesNotMatch(modelPayload, /"status"/, "status must not appear in model payload");
-  assert.doesNotMatch(modelPayload, /"diagnostic"/, "diagnostic key must not appear in model payload");
+  assert.doesNotMatch(modelPayload, /"visit_id"/);
+  assert.doesNotMatch(modelPayload, /"doctor_id"/);
+  assert.doesNotMatch(modelPayload, /"cabinet_id"/);
+  assert.doesNotMatch(modelPayload, /"status"/);
+  assert.doesNotMatch(modelPayload, /"diagnostic"/);
 });

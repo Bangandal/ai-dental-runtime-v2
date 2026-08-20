@@ -5,7 +5,7 @@ import { buildModelVisibleCallerContext } from "../src/runtime/modelVisibleCalle
 import type { RuntimeAgentTurnInput } from "../src/runtime/openaiRuntimeAgent.ts";
 import type { BookingSubjectsState } from "../src/runtime/bookingSubjectsState.ts";
 
-function makeState(opts?: { senderTrusted?: boolean; targetOwnPhone?: boolean }): BookingSubjectsState {
+function makeState(opts?: { senderTrusted?: boolean; targetOwnPhone?: boolean; pendingTypedPhone?: string | null }): BookingSubjectsState {
   const senderTrusted = opts?.senderTrusted ?? true;
   const targetOwnPhone = opts?.targetOwnPhone ?? false;
   return {
@@ -13,7 +13,7 @@ function makeState(opts?: { senderTrusted?: boolean; targetOwnPhone?: boolean })
     status: "active",
     active_subject_id: "subject_2",
     max_subjects: 4,
-    pending_typed_phone: null,
+    pending_typed_phone: opts?.pendingTypedPhone ?? null,
     subjects: [
       {
         id: "subject_1",
@@ -72,10 +72,14 @@ function makeInput(state: BookingSubjectsState): RuntimeAgentTurnInput {
   };
 }
 
-function getTargetProjection(input: RuntimeAgentTurnInput): Record<string, unknown> {
+function getBookingSubjectsProjection(input: RuntimeAgentTurnInput): Record<string, unknown> {
   const context = buildModelVisibleCallerContext(input);
   const runtimeContext = context.runtime_context as Record<string, unknown>;
-  const bookingSubjects = runtimeContext.booking_subjects as Record<string, unknown>;
+  return runtimeContext.booking_subjects as Record<string, unknown>;
+}
+
+function getTargetProjection(input: RuntimeAgentTurnInput): Record<string, unknown> {
+  const bookingSubjects = getBookingSubjectsProjection(input);
   const subjects = bookingSubjects.subjects as Array<Record<string, unknown>>;
   return subjects.find((subject) => subject.id === "subject_2")!;
 }
@@ -105,4 +109,17 @@ test("RESP-CONTACT-3: target's own contact remains authoritative and is not repl
   assert.equal(target.phone_status, "trusted");
   assert.equal(target.contact_owner, "self");
   assert.deepEqual(target.missing, []);
+});
+
+test("RESP-CONTACT-4: pending typed phone prevents responsible-party fallback until ownership is classified", () => {
+  const bookingSubjects = getBookingSubjectsProjection(
+    makeInput(makeState({ pendingTypedPhone: "+420555666777" })),
+  );
+  const subjects = bookingSubjects.subjects as Array<Record<string, unknown>>;
+  const target = subjects.find((subject) => subject.id === "subject_2")!;
+
+  assert.equal(target.phone_status, null);
+  assert.equal(target.contact_owner, null);
+  assert.deepEqual(target.missing, ["booking_contact"]);
+  assert.equal(bookingSubjects.pending_typed_phone, "+420555666777");
 });

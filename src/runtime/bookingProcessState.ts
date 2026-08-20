@@ -112,6 +112,34 @@ export function isAvailabilityEvidenceFresh(
   return age >= 0 && age <= AVAILABILITY_MODEL_VISIBILITY_TTL_MS;
 }
 
+/**
+ * Converts slot starts_at to a clinic-local YYYY-MM-DDTHH:MM key for time comparison.
+ *
+ * Bare local timestamp (ClinicCard norm): uses slotToKey directly.
+ * Z or numeric offset: parses as absolute Date, reformats in clinic timezone.
+ * e.g. "2026-08-21T12:00:00Z" in Prague (UTC+2) becomes "2026-08-21T14:00".
+ *
+ * Do NOT use for identity matching against allowed_slot_keys — use slotToKey() for that.
+ */
+function startsAtToClinicLocalKey(startsAt: string, timezone: string): string | null {
+  if (!startsAt) return null;
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(startsAt)) {
+    const d = new Date(startsAt);
+    if (isNaN(d.getTime())) return null;
+    const fmt2 = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return fmt2.format(d).replace(" ", "T").substring(0, 16);
+  }
+  return slotToKey({ starts_at: startsAt });
+}
+
 function filterFutureSlots(slots: AvailableSlot[], now: Date, timezone: string): AvailableSlot[] {
   const fmt = new Intl.DateTimeFormat("sv-SE", {
     timeZone: timezone,
@@ -124,7 +152,7 @@ function filterFutureSlots(slots: AvailableSlot[], now: Date, timezone: string):
   });
   const minKey = fmt.format(now).replace(" ", "T").substring(0, 16);
   return slots.filter((s) => {
-    const key = slotToKey(s);
+    const key = startsAtToClinicLocalKey(s.starts_at, timezone);
     return key !== null && key > minKey; // slot at exactly current minute = expired
   });
 }
@@ -141,8 +169,12 @@ function isSelectedSlotUsable(
   timezone: string,
 ): boolean {
   if (!selectedSlot) return false;
+  // Identity key for allowed_slot_keys matching.
   const key = slotToKey(selectedSlot);
   if (key === null) return false;
+  // Clinic-local key for time comparison: handles Z/offset correctly.
+  const localKey = startsAtToClinicLocalKey(selectedSlot.starts_at, timezone);
+  if (localKey === null) return false;
 
   const fmt = new Intl.DateTimeFormat("sv-SE", {
     timeZone: timezone,
@@ -154,7 +186,7 @@ function isSelectedSlotUsable(
     hour12: false,
   });
   const minKey = fmt.format(now).replace(" ", "T").substring(0, 16);
-  if (key <= minKey) return false; // expired
+  if (localKey <= minKey) return false; // expired
 
   if (evidence && !evidence.allowed_slot_keys.includes(key)) return false; // unbound
 
@@ -188,11 +220,7 @@ function allOfferedSlotsProvenExpired(slots: AvailableSlot[], now: Date, timezon
   });
   const nowKey = fmt.format(now).replace(" ", "T").substring(0, 16);
   return slots.every((s) => {
-    // Slots with explicit TZ offset (Z or +HH:MM) cannot be safely compared
-    // against nowKey (clinic-local) — slotToKey strips the offset, producing a
-    // bare datetime that looks local but is not. Treat as NOT proven expired.
-    if (/Z$|[+-]\d{2}:\d{2}$/.test(s.starts_at)) return false;
-    const key = slotToKey(s);
+    const key = startsAtToClinicLocalKey(s.starts_at, timezone);
     return key !== null && key <= nowKey;
   });
 }

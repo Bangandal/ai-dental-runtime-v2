@@ -791,3 +791,114 @@ test("O: single slot exactly at current clinic-local minute → proven expired",
   assert.equal(visible.slot_evidence_status, "stale", "slot exactly at current minute must be treated as expired (key <= nowKey)");
   assert.equal((visible.last_available_slots ?? []).length, 0, "expired slot must not be visible");
 });
+
+// ── PF-001 regression: timezone-aware Z/offset starts_at in stale detection ──
+// NOW = 2026-08-12T10:00:00Z = 12:00 Prague (UTC+2)
+
+// P: UTC slot that is actually FUTURE in clinic-local → NOT expired
+test("P: starts_at with Z suffix that is future in clinic-local timezone → NOT stale", () => {
+  // "2026-08-12T12:00:00Z" = 14:00 Prague. NOW = 12:00 Prague. Still 2 hours away.
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "call-P",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T14:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence,
+    slots: [{ starts_at: "2026-08-12T12:00:00Z" }],
+    nextAction: "choose_from_available_slots",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.notEqual(visible.slot_evidence_status, "stale", "UTC slot future in Prague must NOT be stale");
+});
+
+// Q: UTC slot that is PAST in clinic-local → expired → stale
+test("Q: starts_at with Z suffix that is past in clinic-local timezone → stale", () => {
+  // "2026-08-12T08:00:00Z" = 10:00 Prague. NOW = 12:00 Prague. Already passed.
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "call-Q",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T10:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence,
+    slots: [{ starts_at: "2026-08-12T08:00:00Z" }],
+    slotKnown: true,
+    nextAction: "ready_for_booking_apply",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.equal(visible.slot_evidence_status, "stale", "UTC slot past in Prague must be stale");
+  assert.equal(visible.proof?.slot_known, false, "slot_known must be cleared");
+});
+
+// R: Numeric offset slot that is FUTURE in clinic-local → NOT expired
+test("R: starts_at with numeric offset that is future in clinic-local timezone → NOT stale", () => {
+  // "2026-08-12T14:00:00+02:00" = 14:00 Prague. NOW = 12:00 Prague. Still 2 hours away.
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "call-R",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T14:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence,
+    slots: [{ starts_at: "2026-08-12T14:00:00+02:00" }],
+    nextAction: "choose_from_available_slots",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.notEqual(visible.slot_evidence_status, "stale", "offset slot future in Prague must NOT be stale");
+});
+
+// S: Numeric offset slot that is PAST in clinic-local → expired → stale
+test("S: starts_at with numeric offset that is past in clinic-local timezone → stale", () => {
+  // "2026-08-12T09:00:00+02:00" = 09:00 Prague. NOW = 12:00 Prague. Already passed.
+  const evidence: AvailabilityEvidence = {
+    availability_call_id: "call-S",
+    requested_date: "2026-08-12",
+    requested_time: null,
+    allowed_slot_keys: ["2026-08-12T09:00"],
+    checked_at: FRESH_CHECKED_AT,
+  };
+  const state = makeState({
+    evidence,
+    slots: [{ starts_at: "2026-08-12T09:00:00+02:00" }],
+    slotKnown: true,
+    nextAction: "ready_for_booking_apply",
+  });
+
+  const visible = buildModelVisibleBookingProcessState({
+    ...GROUNDED,
+    state,
+    now: NOW,
+    timezone: TIMEZONE,
+  });
+
+  assert.equal(visible.slot_evidence_status, "stale", "offset slot past in Prague must be stale");
+  assert.equal(visible.proof?.slot_known, false, "slot_known must be cleared");
+});

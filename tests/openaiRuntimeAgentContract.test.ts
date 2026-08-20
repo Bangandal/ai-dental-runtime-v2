@@ -692,3 +692,44 @@ test("RC4-C: exact time rule: if available, confirm only that time; list alterna
     "AVAILABILITY RULES must say alternatives only when exact time is not available",
   );
 });
+
+// ── PF-001 regression: subject_id enum in tool schema ────────────────────────
+
+test("PF-001-1: booking.select_slot param_schemas.subject_id has enum with exactly subject_1..4", () => {
+  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.select_slot"] as Record<string, unknown>;
+  const paramSchemas = def.param_schemas as Record<string, { enum?: string[] }> | undefined;
+  assert.ok(paramSchemas, "booking.select_slot must have param_schemas");
+  const subjectEnum = paramSchemas["subject_id"]?.enum;
+  assert.ok(Array.isArray(subjectEnum), "subject_id must have enum array");
+  assert.deepEqual(
+    [...subjectEnum].sort(),
+    ["subject_1", "subject_2", "subject_3", "subject_4"],
+    "subject_id enum must be exactly subject_1..4",
+  );
+});
+
+test("PF-001-2: booking.apply param_schemas.subject_id has enum with exactly subject_1..4", () => {
+  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.apply"] as Record<string, unknown>;
+  const paramSchemas = def.param_schemas as Record<string, { enum?: string[] }> | undefined;
+  assert.ok(paramSchemas, "booking.apply must have param_schemas");
+  const subjectEnum = paramSchemas["subject_id"]?.enum;
+  assert.ok(Array.isArray(subjectEnum), "subject_id must have enum array");
+  assert.deepEqual(
+    [...subjectEnum].sort(),
+    ["subject_1", "subject_2", "subject_3", "subject_4"],
+    "subject_id enum must be exactly subject_1..4",
+  );
+});
+
+test("PF-001-3: appointment.lookup param_schemas.subject_id has enum with exactly subject_1..4", () => {
+  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["appointment.lookup"] as Record<string, unknown>;
+  const paramSchemas = def.param_schemas as Record<string, { enum?: string[] }> | undefined;
+  assert.ok(paramSchemas, "appointment.lookup must have param_schemas");
+  const subjectEnum = paramSchemas["subject_id"]?.enum;
+  assert.ok(Array.isArray(subjectEnum), "subject_id must have enum array");
+  assert.deepEqual(
+    [...subjectEnum].sort(),
+    ["subject_1", "subject_2", "subject_3", "subject_4"],
+    "subject_id enum must be exactly subject_1..4",
+  );
+});

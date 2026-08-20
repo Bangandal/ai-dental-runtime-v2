@@ -50,7 +50,7 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
       description: def.description,
       parameters: {
         type: "object",
-        properties: buildParameterProperties(def.required_args, def.optional_args),
+        properties: buildParameterProperties(def.required_args, def.optional_args, (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas),
         required: [...def.required_args],
         additionalProperties: true,
       },
@@ -147,9 +147,13 @@ export function normalizeOpenAIResponse(raw: unknown, fallbackConversationId?: s
   };
 }
 
-function buildParameterProperties(required: readonly string[], optional: readonly string[]): Record<string, unknown> {
+function buildParameterProperties(
+  required: readonly string[],
+  optional: readonly string[],
+  paramSchemas?: Record<string, Record<string, unknown>>,
+): Record<string, unknown> {
   const all = [...required, ...optional];
-  return Object.fromEntries(all.map((arg) => [arg, { type: "string" }]));
+  return Object.fromEntries(all.map((arg) => [arg, paramSchemas?.[arg] ?? { type: "string" }]));
 }
 
 function readToolRequests(response: Record<string, unknown> | null): RuntimeAgentToolRequest[] {

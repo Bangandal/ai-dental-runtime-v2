@@ -112,6 +112,36 @@ export function isAvailabilityEvidenceFresh(
   return age >= 0 && age <= AVAILABILITY_MODEL_VISIBILITY_TTL_MS;
 }
 
+/**
+ * Converts slot starts_at to a clinic-local YYYY-MM-DDTHH:MM key.
+ *
+ * Bare local timestamp (ClinicCard norm): uses slotToKey directly.
+ * Z or numeric offset: parses as absolute Date, reformats in clinic timezone.
+ * e.g. "2026-08-21T12:00:00Z" in Prague (UTC+2) becomes "2026-08-21T14:00".
+ *
+ * This is the canonical key for model-visible time comparison AND binding a
+ * model-visible slot to clinic-local allowed_slot_keys. Technical proof creation
+ * elsewhere still uses the persisted evidence contract.
+ */
+function startsAtToClinicLocalKey(startsAt: string, timezone: string): string | null {
+  if (!startsAt) return null;
+  if (/Z$|[+-]\d{2}:\d{2}$/.test(startsAt)) {
+    const d = new Date(startsAt);
+    if (isNaN(d.getTime())) return null;
+    const fmt2 = new Intl.DateTimeFormat("sv-SE", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return fmt2.format(d).replace(" ", "T").substring(0, 16);
+  }
+  return slotToKey({ starts_at: startsAt });
+}
+
 function filterFutureSlots(slots: AvailableSlot[], now: Date, timezone: string): AvailableSlot[] {
   const fmt = new Intl.DateTimeFormat("sv-SE", {
     timeZone: timezone,
@@ -124,7 +154,7 @@ function filterFutureSlots(slots: AvailableSlot[], now: Date, timezone: string):
   });
   const minKey = fmt.format(now).replace(" ", "T").substring(0, 16);
   return slots.filter((s) => {
-    const key = slotToKey(s);
+    const key = startsAtToClinicLocalKey(s.starts_at, timezone);
     return key !== null && key > minKey; // slot at exactly current minute = expired
   });
 }
@@ -141,7 +171,7 @@ function isSelectedSlotUsable(
   timezone: string,
 ): boolean {
   if (!selectedSlot) return false;
-  const key = slotToKey(selectedSlot);
+  const key = startsAtToClinicLocalKey(selectedSlot.starts_at, timezone);
   if (key === null) return false;
 
   const fmt = new Intl.DateTimeFormat("sv-SE", {
@@ -161,11 +191,35 @@ function isSelectedSlotUsable(
   return true;
 }
 
-function filterAllowedSlots(slots: AvailableSlot[], allowedKeys: string[]): AvailableSlot[] {
+function filterAllowedSlots(slots: AvailableSlot[], allowedKeys: string[], timezone: string): AvailableSlot[] {
   const allowed = new Set(allowedKeys);
   return slots.filter((s) => {
-    const key = slotToKey(s);
+    const key = startsAtToClinicLocalKey(s.starts_at, timezone);
     return key !== null && allowed.has(key);
+  });
+}
+
+/**
+ * Returns true when every slot in `slots` has provably passed in clinic-local time.
+ * Empty array returns false — no slots means unknown state, not proven expired.
+ * Uses the same key semantics as filterFutureSlots: slot at exactly the current minute
+ * is considered expired (key <= nowKey).
+ */
+function allOfferedSlotsProvenExpired(slots: AvailableSlot[], now: Date, timezone: string): boolean {
+  if (slots.length === 0) return false;
+  const fmt = new Intl.DateTimeFormat("sv-SE", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const nowKey = fmt.format(now).replace(" ", "T").substring(0, 16);
+  return slots.every((s) => {
+    const key = startsAtToClinicLocalKey(s.starts_at, timezone);
+    return key !== null && key <= nowKey;
   });
 }
 
@@ -174,7 +228,7 @@ function filterVisibleSlots(state: BookingProcessState, now: Date, timezone: str
   if (slots.length === 0) return [];
   const evidence = state.active_availability_evidence;
   const future = filterFutureSlots(slots, now, timezone);
-  return evidence ? filterAllowedSlots(future, evidence.allowed_slot_keys) : future;
+  return evidence ? filterAllowedSlots(future, evidence.allowed_slot_keys, timezone) : future;
 }
 
 /**
@@ -313,8 +367,17 @@ export function buildModelVisibleBookingProcessState(opts: {
       state.selected_slot != null &&
       !isSelectedSlotUsable(state.selected_slot, state.active_availability_evidence, now, tz);
 
-    const slotEvidenceStatus = slotExpiredOrUnbound ? "stale" : resolveSlotEvidenceStatus(state);
-    const freshProof = slotExpiredOrUnbound
+    // All offered slots proven expired by clinic-local time — signal "stale" so the model
+    // re-runs availability.check rather than recalling times from conversation history.
+    // Only fires when every slot in last_available_slots is individually past (timezone-aware).
+    // Empty last_available_slots returns false — unknown state, not proven expired.
+    const allOfferedSlotsExpired =
+      !slotExpiredOrUnbound &&
+      allOfferedSlotsProvenExpired(state.last_available_slots ?? [], now, tz);
+    const slotEvidenceStatus =
+      slotExpiredOrUnbound || allOfferedSlotsExpired ? "stale" : resolveSlotEvidenceStatus(state);
+    // Clear slot proof for both expired-slot and all-slots-expired cases.
+    const freshProof = (slotExpiredOrUnbound || allOfferedSlotsExpired)
       ? sanitizeProofForModel({ ...state.proof, slot_known: false, ready_for_booking_apply: false })
       : sanitizeProofForModel(state.proof);
 

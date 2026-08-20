@@ -3,40 +3,27 @@ import test from "node:test";
 
 import { createClinicCardPatientIdentityAuthority } from "../src/integrations/cliniccard/clinicCardPatientIdentityAuthority.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
-import type {
-  ClinicCardCreatePatientInput,
-  ClinicCardPatient,
-} from "../src/integrations/cliniccard/clinicCardTypes.ts";
+import type { ClinicCardPatient } from "../src/integrations/cliniccard/clinicCardTypes.ts";
 
 function makeAdapter(params: {
   patients?: ClinicCardPatient[];
   findFailure?: { code: string; message: string } | null;
-  createFailure?: { code: string; message: string } | null;
-  newPatientId?: number;
-  onCreatePatient?: (input: ClinicCardCreatePatientInput) => void;
+  onWriteAttempt?: (method: "createPatient" | "createVisit") => void;
 } = {}): ClinicCardAdapter {
   return {
     findPatientByPhone: async () => {
       if (params.findFailure) return { ok: false, error: params.findFailure };
       return { ok: true, data: params.patients ?? [] };
     },
-    createPatient: async (input) => {
-      params.onCreatePatient?.(input);
-      if (params.createFailure) return { ok: false, error: params.createFailure };
-      return {
-        ok: true,
-        data: {
-          id: params.newPatientId ?? 900,
-          name: input.name,
-          phone: input.phone ?? null,
-        },
-      };
+    createPatient: async () => {
+      params.onWriteAttempt?.("createPatient");
+      throw new Error("identity authority must not create patients");
     },
     listVisits: async () => ({ ok: true, data: [] }),
-    createVisit: async () => ({
-      ok: false,
-      error: { code: "unused", message: "createVisit is not used by identity authority tests" },
-    }),
+    createVisit: async () => {
+      params.onWriteAttempt?.("createVisit");
+      throw new Error("identity authority must not create visits");
+    },
     listPayments: async () => ({ ok: true, data: [] }),
   };
 }
@@ -47,12 +34,12 @@ const BASE_INPUT = {
   phone_number: "+420111222333",
 } as const;
 
-test("R1-ID-1: unique target-name match reuses the existing patient", async () => {
+test("R1-ID-1: unique target-name match resolves the existing patient", async () => {
   const authority = createClinicCardPatientIdentityAuthority(makeAdapter({
     patients: [{ id: 33, name: "Koval Anna", phone: BASE_INPUT.phone_number }],
   }));
 
-  const result = await authority.resolveOrCreate({ ...BASE_INPUT, contact_role: "patient" });
+  const result = await authority.resolve({ ...BASE_INPUT, contact_role: "patient" });
 
   assert.deepEqual(result, {
     ok: true,
@@ -62,43 +49,38 @@ test("R1-ID-1: unique target-name match reuses the existing patient", async () =
 });
 
 test("R1-ID-2: own phone mapped to multiple records fails closed before name tiebreaking", async () => {
-  let createCalls = 0;
+  let writeAttempts = 0;
   const authority = createClinicCardPatientIdentityAuthority(makeAdapter({
     patients: [
       { id: 33, name: "Anna Koval", phone: BASE_INPUT.phone_number },
       { id: 34, name: "Other Person", phone: BASE_INPUT.phone_number },
     ],
-    onCreatePatient: () => { createCalls += 1; },
+    onWriteAttempt: () => { writeAttempts += 1; },
   }));
 
-  const result = await authority.resolveOrCreate({ ...BASE_INPUT, contact_role: "patient" });
+  const result = await authority.resolve({ ...BASE_INPUT, contact_role: "patient" });
 
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.equal(result.failure, "identity_ambiguous");
   assert.match(result.reason, /shared phone is an identity conflict/);
-  assert.equal(createCalls, 0);
+  assert.equal(writeAttempts, 0);
 });
 
-test("R1-ID-3: responsible-party phone with no target match creates a separate target patient", async () => {
-  let created: ClinicCardCreatePatientInput | null = null;
+test("R1-ID-3: responsible-party phone with no target match requests target creation without writing", async () => {
+  let writeAttempts = 0;
   const authority = createClinicCardPatientIdentityAuthority(makeAdapter({
     patients: [{ id: 10, name: "Olena Koval", phone: BASE_INPUT.phone_number }],
-    newPatientId: 55,
-    onCreatePatient: (input) => { created = input; },
+    onWriteAttempt: () => { writeAttempts += 1; },
   }));
 
-  const result = await authority.resolveOrCreate({ ...BASE_INPUT, contact_role: "responsible_party" });
+  const result = await authority.resolve({ ...BASE_INPUT, contact_role: "responsible_party" });
 
   assert.deepEqual(result, {
     ok: true,
-    patient_id: 55,
-    resolution: "created_patient",
+    resolution: "create_patient_required",
   });
-  assert.deepEqual(created, {
-    name: "Anna Koval",
-    phone: BASE_INPUT.phone_number,
-  });
+  assert.equal(writeAttempts, 0);
 });
 
 test("R1-ID-4: multiple target-name matches on responsible-party phone remain ambiguous", async () => {
@@ -109,7 +91,7 @@ test("R1-ID-4: multiple target-name matches on responsible-party phone remain am
     ],
   }));
 
-  const result = await authority.resolveOrCreate({ ...BASE_INPUT, contact_role: "responsible_party" });
+  const result = await authority.resolve({ ...BASE_INPUT, contact_role: "responsible_party" });
 
   assert.equal(result.ok, false);
   if (result.ok) return;
@@ -121,7 +103,7 @@ test("R1-ID-5: ClinicCard lookup failure stays an external failure with the lega
     findFailure: { code: "cliniccard_timeout", message: "timeout" },
   }));
 
-  const result = await authority.resolveOrCreate({ ...BASE_INPUT, contact_role: "patient" });
+  const result = await authority.resolve({ ...BASE_INPUT, contact_role: "patient" });
 
   assert.deepEqual(result, {
     ok: false,
@@ -130,16 +112,18 @@ test("R1-ID-5: ClinicCard lookup failure stays an external failure with the lega
   });
 });
 
-test("R1-ID-6: patient creation failure stays an external failure without changing the provider reason", async () => {
+test("R1-ID-6: no existing candidate returns create_patient_required and authority performs zero writes", async () => {
+  let writeAttempts = 0;
   const authority = createClinicCardPatientIdentityAuthority(makeAdapter({
-    createFailure: { code: "cliniccard_write_failed", message: "duplicate phone" },
+    patients: [],
+    onWriteAttempt: () => { writeAttempts += 1; },
   }));
 
-  const result = await authority.resolveOrCreate({ ...BASE_INPUT, contact_role: "responsible_party" });
+  const result = await authority.resolve({ ...BASE_INPUT, contact_role: "patient" });
 
   assert.deepEqual(result, {
-    ok: false,
-    failure: "external_failure",
-    reason: "duplicate phone",
+    ok: true,
+    resolution: "create_patient_required",
   });
+  assert.equal(writeAttempts, 0);
 });

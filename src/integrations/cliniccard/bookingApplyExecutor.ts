@@ -270,10 +270,10 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         });
       }
 
-      // F1. Resolve the target patient behind a deterministic authority boundary.
-      // Booking contact provenance is translated here into business semantics; ClinicCard
-      // lookup/create details no longer live in the booking write executor.
-      const identityResult = await patientIdentityAuthority.resolveOrCreate({
+      // F1. Resolve target-patient identity behind a deterministic read-only authority.
+      // The authority decides whether an existing target is proven or a new target record
+      // is required. All ClinicCard writes remain owned by this booking executor.
+      const identityResult = await patientIdentityAuthority.resolve({
         first_name: firstName,
         last_name: lastName,
         phone_number: phoneNumber,
@@ -294,7 +294,26 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         });
       }
 
-      const patientId = identityResult.patient_id;
+      let patientId: number;
+      if (identityResult.resolution === "existing_patient") {
+        patientId = identityResult.patient_id;
+      } else {
+        const patientResult = await adapter.createPatient({
+          name: `${firstName} ${lastName}`,
+          phone: phoneNumber,
+        });
+        if (!patientResult.ok) {
+          return bookingResult({
+            booking_status: "cliniccard_write_failed",
+            created_visit: false,
+            may_claim_booked: false,
+            cliniccard_visit_id: null,
+            reason: patientResult.error.message,
+            proof: null,
+          });
+        }
+        patientId = patientResult.data.id;
+      }
 
       // F2. Create visit.
       const visitResult = await adapter.createVisit({

@@ -37,6 +37,11 @@ const LIVE_ENV: Record<string, string> = {
   CLINICCARD_DEFAULT_CABINET_ID: "2",
   CLINICCARD_TIMEZONE: "Europe/Prague",
   CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
+  CLINICCARD_WORKING_DAYS: "1,2,3,4,5,6,7",
+  CLINICCARD_WORKING_HOURS_START: "09:00",
+  CLINICCARD_WORKING_HOURS_END: "18:00",
+  CLINICCARD_SLOT_DURATION_MINUTES: "30",
+  CLINICCARD_HOLIDAYS: "",
 };
 
 const DISABLED_ENV: Record<string, string> = {
@@ -129,13 +134,11 @@ test("B: CLINICCARD_BOOKING_MODE disabled → booking_write_disabled; action tru
     createVisit: async () => { writeCalls.push("createVisit"); return { ok: true, data: { id: 1, patient_id: 1, doctor_id: 1, cabinet_id: 1, date: "", time_start: "", time_end: "", status: "PLANNED", note: null } }; },
   }, "2027-08-15T10:00:00", new Date("2027-08-15T07:00:00Z"));
 
-  // Round 1: model requests booking.apply
   pushCaller(async () => ({
     type: "tool_requests",
     tool_requests: [{ tool: "booking.apply", call_id: "call_b", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
   }));
 
-  // Round 2: model receives tool result + booking_apply_action_truth in context
   pushCaller(async (input) => {
     receivedActionTruth = (input.input.context as Record<string, unknown>)?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
     return { type: "final_response", final_response: { final_patient_reply: "Онлайн-запись временно недоступна. Администратор вам перезвонит." } };
@@ -147,16 +150,11 @@ test("B: CLINICCARD_BOOKING_MODE disabled → booking_write_disabled; action tru
     channel_contact: { phone_number: "+420777000001", phone_source: "telegram_contact_button" },
   });
 
-  // Executor returned booking_write_disabled
   const toolData = result.tool_results[0]?.data as Record<string, unknown>;
   assert.equal(toolData?.booking_status, "booking_write_disabled");
   assert.equal(toolData?.created_visit, false);
   assert.equal(toolData?.may_claim_booked, false);
-
-  // No ClinicCard writes
   assert.deepEqual(writeCalls, []);
-
-  // Model received structured action truth
   assert.ok(receivedActionTruth, "second model call must receive booking_apply_action_truth in context");
   assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_created, false);
   assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_confirmed, false);
@@ -164,8 +162,6 @@ test("B: CLINICCARD_BOOKING_MODE disabled → booking_write_disabled; action tru
 });
 
 // ── C: Missing phone — global preflight returns contact button without executing booking.apply ──
-// PR #133: round-1 booking.apply with no trusted phone is now intercepted by the global
-// preflight guard before the executor runs.
 
 test("C: no channel_contact → global preflight fires; contact button returned; booking.apply executor not called", async () => {
   const writeCalls: string[] = [];
@@ -179,7 +175,6 @@ test("C: no channel_contact → global preflight fires; contact button returned;
     type: "tool_requests",
     tool_requests: [{ tool: "booking.apply", call_id: "call_c", arguments: { subject_id: "subject_1", first_name: "Test", last_name: "User", service: "Чистка", requested_date: "2027-08-15", requested_time: "12:00" } }],
   }));
-  // Second caller: guarded finalization — model asks for phone after seeing guarded result
   pushCaller(async () => ({
     type: "final_response",
     final_response: { final_patient_reply: "Для записи нужен ваш номер телефона. Поделитесь контактом." },
@@ -188,20 +183,15 @@ test("C: no channel_contact → global preflight fires; contact button returned;
   const result = await loop.runTurn({
     clinic_id: "clinic_1", contact_id: "c_c", case_id: null,
     user_message: "Запишите меня", locale: "ru",
-    // No channel_contact
   });
 
-  // booking.apply executor was NOT called — guarded result in tool_results instead
   const bookingResult = result.tool_results?.find((r) => r.tool === "booking.apply");
   assert.ok(bookingResult, "guarded booking.apply result must appear in tool_results");
   assert.equal((bookingResult!.data as Record<string, unknown>).booking_status, "missing_trusted_phone");
   assert.equal((bookingResult!.data as Record<string, unknown>).created_visit, false);
   assert.equal((bookingResult!.data as Record<string, unknown>).may_claim_booked, false);
-  // No ClinicCard writes attempted
   assert.deepEqual(writeCalls, []);
-  // debug indicates the global preflight fired
   assert.equal((result.debug as Record<string, unknown>)?.reason, "booking_apply_preflight_missing_trusted_phone_round1");
-  // conversation NOT dirtied — guarded finalization succeeded (no conversation_id_resumable=false)
   assert.notStrictEqual(result.conversation_id_resumable, false, "conversation must not be marked dirty");
 });
 
@@ -259,17 +249,11 @@ test("E: visit_created → action truth can_say_booking_created=true; model repl
   assert.equal(toolData?.created_visit, true);
   assert.equal(toolData?.may_claim_booked, true);
   assert.equal(typeof toolData?.cliniccard_visit_id, "string");
-
-  // Phone came from channel_contact
   assert.equal(executorPhones[0], "+420777654321");
-
-  // Model received action truth with can_say_booking_created=true
   assert.ok(receivedActionTruth, "second model call must receive booking_apply_action_truth");
   assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_created, true);
   assert.equal(receivedActionTruth!.allowed_claims.can_say_booking_confirmed, true);
   assert.equal(receivedActionTruth!.required_next_action, "none");
-
-  // Model reply is returned UNCHANGED — runtime does not intercept or replace
   assert.equal(result.final_patient_reply, modelReply, "runtime must return model reply unchanged on success path");
 });
 
@@ -277,22 +261,16 @@ test("E: visit_created → action truth can_say_booking_created=true; model repl
 
 test("F: forced finalization path receives booking_apply_action_truth in resolved_context", async () => {
   let forcedCallContext: Record<string, unknown> | undefined;
-
   const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV, {}, "2027-08-15T10:00:00", new Date("2027-08-15T07:00:00Z"));
 
-  // Round 1: model requests booking.apply
   pushCaller(async () => ({
     type: "tool_requests",
     tool_requests: [{ tool: "booking.apply", call_id: "call_f1", arguments: { subject_id: "subject_1", first_name: "Ivan", last_name: "Petrov", service: "Чистка", requested_date: "2027-08-15", requested_time: "10:00" } }],
   }));
-
-  // Round 2: model requests more tools (triggers forced finalization path)
   pushCaller(async () => ({
     type: "tool_requests",
     tool_requests: [{ tool: "availability.check", call_id: "call_f2", arguments: { requested_date: "2027-08-15" } }],
   }));
-
-  // Forced finalization (round 3): capture context
   pushCaller(async (input) => {
     forcedCallContext = input.input.context as Record<string, unknown>;
     return { type: "final_response", final_response: { final_patient_reply: "Онлайн-запись недоступна. Обратитесь к администратору." } };
@@ -304,18 +282,13 @@ test("F: forced finalization path receives booking_apply_action_truth in resolve
     channel_contact: { phone_number: "+420777333444", phone_source: "telegram_contact_button" },
   });
 
-  // Forced finalization context must contain resolved_context (tool results)
   assert.ok(forcedCallContext, "forced finalization must be called");
   assert.ok(Array.isArray(forcedCallContext?.resolved_context), "resolved_context must be an array of tool results");
-
-  // booking_apply_action_truth must be present in forced finalization context
   const actionTruth = forcedCallContext?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
   assert.ok(actionTruth, "forced finalization context must contain booking_apply_action_truth");
   assert.equal(actionTruth!.tool, "booking.apply");
   assert.equal(actionTruth!.required_next_action, "admin_handoff");
   assert.equal(actionTruth!.allowed_claims.can_say_booking_created, false);
-
-  // Runtime returns forced finalization model reply unchanged
   assert.equal(result.final_patient_reply, "Онлайн-запись недоступна. Обратитесь к администратору.");
 });
 
@@ -408,21 +381,15 @@ test("buildBookingApplyEmergencyFallback: returns locale-aware minimal fallback 
     data: { booking_status: status, created_visit: false, may_claim_booked: false, cliniccard_visit_id: null },
   }];
 
-  // Russian (default)
   assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "ru"), /номер телефона/);
   assert.match(buildBookingApplyEmergencyFallback(make("slot_conflict"), "ru"), /недоступно/);
   assert.match(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "ru"), /клиникой/);
   assert.match(buildBookingApplyEmergencyFallback(make("unknown"), "ru"), /клиникой/);
-  // No unearned handoff/callback promise in any locale for these statuses
   assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "ru"), /передам|администратору клиники/);
   assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "en"), /team will follow up/);
-
-  // English
   assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "en"), /phone/);
   assert.match(buildBookingApplyEmergencyFallback(make("slot_conflict"), "en"), /available/);
   assert.match(buildBookingApplyEmergencyFallback(make("booking_write_disabled"), "en"), /clinic/);
-
-  // Czech
   assert.match(buildBookingApplyEmergencyFallback(make("missing_phone"), "cs"), /telefon/);
 });
 
@@ -435,12 +402,9 @@ test("RC3b: buildBookingApplyEmergencyFallback with visit_created never says 'н
     data: { booking_status: status, created_visit: true, may_claim_booked: true, cliniccard_visit_id: "58782156" },
   }];
 
-  // Must NOT claim it cannot confirm — the visit IS in ClinicCard
   assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("visit_created"), "ru"), /не могу подтвердить/i);
   assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("visit_created"), "en"), /unable to confirm/i);
   assert.doesNotMatch(buildBookingApplyEmergencyFallback(make("visit_created"), "cs"), /nemohu.*potvrdit/i);
-
-  // Must acknowledge booking was saved + advise to contact clinic for details
   assert.match(buildBookingApplyEmergencyFallback(make("visit_created"), "ru"), /создана в системе/i);
   assert.match(buildBookingApplyEmergencyFallback(make("visit_created"), "ru"), /клиник/i);
   assert.match(buildBookingApplyEmergencyFallback(make("visit_created"), "en"), /saved in our system/i);
@@ -504,17 +468,11 @@ test("proof: UNSAFE_BOOKING_TEXT_RE and guardBookingApplyFinalReply are removed 
 
   const allFiles = await collectTsFiles(srcDir);
   const violations: string[] = [];
-
   for (const file of allFiles) {
     const content = await readFile(file, "utf8");
-    if (content.includes("UNSAFE_BOOKING_TEXT_RE")) {
-      violations.push(`${file.replace(srcDir + "/", "src/")} contains UNSAFE_BOOKING_TEXT_RE`);
-    }
-    if (content.includes("guardBookingApplyFinalReply")) {
-      violations.push(`${file.replace(srcDir + "/", "src/")} contains guardBookingApplyFinalReply`);
-    }
+    if (content.includes("UNSAFE_BOOKING_TEXT_RE")) violations.push(`${file.replace(srcDir + "/", "src/")} contains UNSAFE_BOOKING_TEXT_RE`);
+    if (content.includes("guardBookingApplyFinalReply")) violations.push(`${file.replace(srcDir + "/", "src/")} contains guardBookingApplyFinalReply`);
   }
-
   assert.deepEqual(violations, [], `Regex guard must be fully removed: ${violations.join(", ")}`);
 });
 
@@ -560,7 +518,6 @@ function makeMalformedLoop(executorData: Record<string, unknown>) {
   });
 }
 
-// Test 1: partial visit_created (no cliniccard_visit_id) + second caller exception → no booking claim (RU/CS/EN)
 test("EF-partial-no-visit-id: visit_created without cliniccard_visit_id + caller exception → no booking-created claim in RU/CS/EN", async () => {
   const partialData = { booking_status: "visit_created", created_visit: true, may_claim_booked: true };
   for (const locale of ["ru", "cs", "en"] as const) {
@@ -573,7 +530,6 @@ test("EF-partial-no-visit-id: visit_created without cliniccard_visit_id + caller
   }
 });
 
-// Test 2: whitespace-only cliniccard_visit_id + caller exception → no booking claim
 test("EF-whitespace-visit-id: cliniccard_visit_id='   ' (whitespace only) + caller exception → no booking-created claim", async () => {
   const whitespaceData = { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "   " };
   for (const locale of ["ru", "cs", "en"] as const) {
@@ -584,7 +540,6 @@ test("EF-whitespace-visit-id: cliniccard_visit_id='   ' (whitespace only) + call
   }
 });
 
-// Test 3 (unit): denied tool result with booking_status=visit_created in data → no booking claim
 test("EF-denied-status: denied tool result containing booking_status=visit_created → no booking-created claim", () => {
   const deniedResult = [{ tool: "booking.apply" as const, call_id: "ba_denied", status: "denied" as const, error: { code: "guard_block", message: "blocked" } }];
   for (const locale of ["ru", "cs", "en"] as const) {
@@ -594,7 +549,6 @@ test("EF-denied-status: denied tool result containing booking_status=visit_creat
   }
 });
 
-// Test 4: full proof + caller exception → booking-saved wording IS allowed
 test("EF-full-proof: complete proof + caller exception → booking-saved emergency wording (RU/CS/EN)", async () => {
   const fullData = { booking_status: "visit_created", created_visit: true, may_claim_booked: true, cliniccard_visit_id: "real-visit-99" };
   for (const locale of ["ru", "cs", "en"] as const) {
@@ -605,7 +559,6 @@ test("EF-full-proof: complete proof + caller exception → booking-saved emergen
   }
 });
 
-// Test 5: partial proof + malformed second model response → no booking claim
 test("EF-partial-malformed: visit_created without cliniccard_visit_id + malformed model response → no booking-created claim", async () => {
   const partialData = { booking_status: "visit_created", created_visit: true, may_claim_booked: true };
   for (const locale of ["ru", "cs", "en"] as const) {

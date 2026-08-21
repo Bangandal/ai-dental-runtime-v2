@@ -155,8 +155,10 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     required_args: ["requested_date"],
     optional_args: ["requested_time", "service_interest", "limit"],
   },
+  // Legacy compatibility definition. The OpenAI caller intentionally does not
+  // expose this tool to the model anymore; booking.apply owns write-time slot validation.
   "booking.select_slot": {
-    description: "Confirm the patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. Call booking.apply only after this tool returns selection_status='selected'. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
+    description: "Legacy compatibility tool for confirming a slot against prior availability evidence. Not model-facing and not required before booking.apply.",
     required_args: ["subject_id", "requested_date", "requested_time"],
     optional_args: [],
     param_schemas: {
@@ -168,7 +170,7 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     },
   },
   "booking.apply": {
-    description: "Create a visit in ClinicCard when required booking details are present, slot selection is verified, and runtime has an acceptable booking contact. Returns booking_status indicating whether the visit was created or why it could not be. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
+    description: "Create a visit in ClinicCard when required booking details and an acceptable booking contact are present. The runtime revalidates the requested date/time against current clinic schedule policy and fresh ClinicCard conflicts before writing. Returns booking_status indicating whether the visit was created or why it could not be. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
     required_args: ["subject_id", "first_name", "last_name", "service", "requested_date", "requested_time"],
     optional_args: [],
     param_schemas: {
@@ -238,7 +240,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     // ── NEVER ─────────────────────────────────────────────────────────────────
     "## NEVER",
     "- Do not invent prices, services, opening hours, availability, bookings, or medical facts.",
-    "- Never claim a slot, time, or day is available without availability.check tool evidence.",
+    "- Never claim a slot, time, or day is available without availability.check tool evidence, except a successful booking.apply may confirm the exact slot it just created after write-time revalidation.",
     "- Never claim an administrator was notified or staff will contact the patient unless a handoff or admin notification side effect was actually created or queued.",
     "- Ask only for information genuinely missing from the conversation/runtime context. When structured required_next_action exists, follow it.",
 
@@ -266,21 +268,20 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     ...(firstTurnRule ? [firstTurnRule] : []),
     "1. Greetings, low-signal messages ('эээ', 'ну'), simple thanks: reply briefly. Do NOT immediately ask for service, name, or time. Wait for the patient to state their need.",
     "2. BOOKING INTENT: collect missing details flexibly. Check the current message and runtime_context.recent_history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known. When collecting names, use first_name and last_name from the current message or runtime_context.recent_history. Do not re-ask if visible there.",
-    "3. BOOKING SEQUENCE: availability.check → patient affirmatively chooses one offered slot → booking.select_slot → booking.apply. booking.select_slot is mandatory before booking.apply. After slot_conflict: do NOT restart intake. Retain name and service from the current conversation. Ask only for a new time.",
+    "3. BOOKING SEQUENCE: if the patient asks what is free or has only a vague time preference, use availability.check, present only grounded slots, then after the patient affirmatively chooses one exact date/time call booking.apply. If the patient explicitly asks to book an exact date/time and all other required booking details are already present, booking.apply may be called directly. booking.apply revalidates the requested slot against current clinic policy and fresh ClinicCard conflicts before any write. After slot_conflict: do NOT restart intake. Retain name and service from the current conversation. Ask only for a new time.",
     "4. For questions about an existing appointment or modification intent, use appointment.lookup first.",
 
     // ── TOOLS ─────────────────────────────────────────────────────────────────
     "## TOOLS",
     "- kb.search: clinic FAQ, services, prices, and opening hours.",
-    `- availability.check: slots. Convert relative dates ("tomorrow", "завтра", "next week") to YYYY-MM-DD. Never pass natural-language date strings to availability.check.`,
-    "- booking.select_slot: confirm patient's slot choice against availability evidence. Required step before booking.apply.",
-    "- booking.apply: create a visit. Call only after booking.select_slot returns selection_status='selected'.",
+    `- availability.check: use when the patient asks what is available or has a vague time preference. Convert relative dates ("tomorrow", "завтра", "next week") to YYYY-MM-DD. Never pass natural-language date strings to availability.check.`,
+    "- booking.apply: create a visit after the patient has explicitly requested or chosen an exact date/time and required booking details are present. The runtime performs fresh write-time slot validation; do not rely on remembered availability as booking authority.",
     "- appointment.lookup: existing appointments (read-only).",
 
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────
     "## AVAILABILITY RULES",
-    "- Use only slots present in structured model-visible context. Never resurrect availability from prose conversation history. Structured availability truth overrides prose history.",
-    "- Vague time → check first, list exact slots. Exact time → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available.",
+    "- Use only slots present in structured model-visible context when presenting availability choices. Never resurrect availability from prose conversation history. Structured availability truth overrides prose history.",
+    "- Vague time → check first, list exact slots. Exact availability question → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available. An explicit request to BOOK an exact date/time may go directly to booking.apply because the write boundary revalidates the slot.",
     "When availability_action_truth is present, follow it strictly.",
     "can_present_slots=false: no slot may be presented or reused from conversation history.",
     "past_date: the requested date has passed — explain and ask patient for a date from today onward.",

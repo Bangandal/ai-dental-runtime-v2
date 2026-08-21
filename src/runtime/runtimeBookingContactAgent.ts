@@ -21,7 +21,7 @@ export type RuntimeAgentLoopFactory = (
   deps: CreateRuntimeAgentLoopDeps,
 ) => OpenAIRuntimeAgent;
 
-interface CapturedBookingTarget {
+export interface CapturedBookingTarget {
   execution_input: RuntimeAgentTurnInput;
   execution_subject_id: SubjectId | null;
 }
@@ -105,6 +105,17 @@ export function createRuntimeAgentWithBookingContactBridge(
 
       if (originalBookingExecutor) {
         executors["booking.apply"] = async (context) => {
+          if (!captured.execution_subject_id) {
+            return originalBookingExecutor({
+              ...context,
+              phone_number: undefined,
+              phone_source: undefined,
+              phone_trust: undefined,
+              phone_belongs_to_patient: undefined,
+              contact_phone_owner_subject_id: undefined,
+            });
+          }
+
           const contact = buildRuntimeBookingContactFields(
             captured.execution_input,
             captured.execution_subject_id,

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
+
 import { isAvailabilityDebugEnabled, toVisitSample } from "../src/integrations/cliniccard/availabilityDiagnostics.ts";
 import { checkClinicCardAvailability } from "../src/integrations/cliniccard/clinicCardAvailability.ts";
 import { createClinicCardAvailabilityExecutor } from "../src/integrations/cliniccard/clinicCardAvailabilityExecutor.ts";
@@ -39,6 +41,8 @@ function makeAdapter(visits: ClinicCardVisit[]): AvailabilityAdapter {
 }
 
 const BASE_EXECUTOR_ENV: Record<string, string | undefined> = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "diagnostic", aliases: ["diagnostic"], doctor_id: 42, cabinet_id: 7, duration_minutes: 30 }),
+
   CLINICCARD_API_BASE_URL: "https://test.example.com",
   CLINICCARD_API_TOKEN: "test-token",
   CLINICCARD_DEFAULT_DOCTOR_ID: "42",
@@ -54,6 +58,7 @@ const BASE_EXECUTOR_ENV: Record<string, string | undefined> = {
 
 const BASE_CONTEXT: ToolExecutionContext = {
   clinic_id: "clinic_1",
+  service_interest: "diagnostic",
   requested_date: "2026-07-08",
 };
 
@@ -117,7 +122,6 @@ test("C: visit with matching doctor_id blocks its slot, blocked_slots_count incr
     const d = result.data.diagnostic!;
     assert.equal(d.blocked_slots_count, 1, "one slot must be blocked by same doctor");
     assert.equal(d.relevant_visits_count, 1);
-    // 10:00 slot must not appear in output
     const blocked = result.data.slots.find((s) => s.time_start === "10:00");
     assert.equal(blocked, undefined, "10:00 slot must be absent from free slots");
     assert.equal(result.data.free_slots_count, 5);
@@ -233,7 +237,6 @@ test("G: diagnostic object has no PII fields", async () => {
 
 // ── Executor-level: post-filter counts ───────────────────────────────────────
 
-// H: debug disabled — no diagnostic anywhere in tool result
 test("H: executor: diagnostic absent from data and _diagnostic when CLINICCARD_AVAILABILITY_DEBUG not set", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV },
@@ -247,7 +250,6 @@ test("H: executor: diagnostic absent from data and _diagnostic when CLINICCARD_A
   assert.equal(asAny["_diagnostic"], undefined, "_diagnostic must be absent when debug not enabled");
 });
 
-// H: debug enabled — diagnostic NOT in model-visible data, IS in _diagnostic
 test("H: executor: debug enabled — diagnostic in _diagnostic, NOT in model-visible data", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV, CLINICCARD_AVAILABILITY_DEBUG: "true" },
@@ -255,12 +257,8 @@ test("H: executor: debug enabled — diagnostic in _diagnostic, NOT in model-vis
   });
   const result = await executor({ ...BASE_CONTEXT, limit: 3 });
   assert.equal(result.status, "success");
-
-  // Model-visible data must NOT contain diagnostic
   const data = result.data as Record<string, unknown>;
   assert.equal(data["diagnostic"], undefined, "diagnostic must not appear in model-visible data");
-
-  // _diagnostic at top level must contain the diagnostic
   const asAny = result as Record<string, unknown>;
   const d = asAny["_diagnostic"] as Record<string, unknown>;
   assert.ok(d, "_diagnostic must be present at top level");
@@ -269,7 +267,6 @@ test("H: executor: debug enabled — diagnostic in _diagnostic, NOT in model-vis
   assert.ok(typeof d["limited_slots_count"] === "number");
 });
 
-// I: model-visible data only has slots, timezone, total_slots, free_slots_count
 test("I: model-visible data fields are exactly slots/timezone/total_slots/free_slots_count (no visit_id/doctor_id/cabinet_id/status)", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV, CLINICCARD_AVAILABILITY_DEBUG: "true" },
@@ -278,22 +275,17 @@ test("I: model-visible data fields are exactly slots/timezone/total_slots/free_s
   const result = await executor(BASE_CONTEXT);
   assert.equal(result.status, "success");
   const data = result.data as Record<string, unknown>;
-
-  // These fields must NOT appear in model-visible data
   const sensitiveFields = ["diagnostic", "visit_id", "doctor_id", "cabinet_id", "status", "_diagnostic"];
   const dataJson = JSON.stringify(data);
   for (const field of sensitiveFields) {
     assert.doesNotMatch(dataJson, new RegExp(`"${field}"`), `"${field}" must not appear in model-visible data`);
   }
-
-  // Model-visible data must have expected safe fields
   assert.ok(Array.isArray(data["slots"]), "slots must be present");
   assert.ok(typeof data["timezone"] === "string", "timezone must be present");
   assert.ok(typeof data["total_slots"] === "number", "total_slots must be present");
   assert.ok(typeof data["free_slots_count"] === "number", "free_slots_count must be present");
 });
 
-// J: relevant_visits_sample in _diagnostic has no patient_id or note
 test("J: _diagnostic.relevant_visits_sample strips patient_id and note fields", async () => {
   const visitWithPii = makeVisit({ patient_id: 9999, note: "sensitive note" });
   const executor = createClinicCardAvailabilityExecutor({
@@ -313,7 +305,6 @@ test("J: _diagnostic.relevant_visits_sample strips patient_id and note fields", 
   }
 });
 
-// K: model cannot see visit_id/doctor_id/cabinet_id/status via tool result data JSON
 test("K: full tool result data JSON contains no visit_id/doctor_id/cabinet_id/status from diagnostic", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...BASE_EXECUTOR_ENV, CLINICCARD_AVAILABILITY_DEBUG: "true" },
@@ -321,7 +312,6 @@ test("K: full tool result data JSON contains no visit_id/doctor_id/cabinet_id/st
   });
   const result = await executor(BASE_CONTEXT);
   assert.equal(result.status, "success");
-  // Only serialize result.data — what the model would receive as function_call_output
   const modelPayload = JSON.stringify(result.data);
   assert.doesNotMatch(modelPayload, /"visit_id"/, "visit_id must not appear in model payload");
   assert.doesNotMatch(modelPayload, /"doctor_id"/, "doctor_id must not appear in model payload");

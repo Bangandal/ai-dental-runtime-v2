@@ -151,7 +151,7 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     optional_args: [],
   },
   "availability.check": {
-    description: "Use for checking available appointment slots. When the patient asks about a specific time, pass it as requested_time once. The result explicitly reports requested_time_available and returns that slot when free plus the next available slots at/after it. If requested_time_available=false and slots are returned, offer those slots as alternatives instead of calling availability.check again only to search nearby times.",
+    description: "Check appointment slots. For a specific time, pass requested_time once. Result includes requested_time_available and free slots at/after it; if false, offer returned alternatives without another availability.check.",
     required_args: ["requested_date"],
     optional_args: ["requested_time", "service_interest", "limit"],
   },
@@ -267,7 +267,6 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "1. Greetings, low-signal messages ('эээ', 'ну'), simple thanks: reply briefly. Do NOT immediately ask for service, name, or time. Wait for the patient to state their need.",
     "2. BOOKING INTENT: collect missing details flexibly. Check the current message and runtime_context.recent_history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known. When collecting names, use first_name and last_name from the current message or runtime_context.recent_history. Do not re-ask if visible there.",
     "3. BOOKING SEQUENCE: availability.check → patient affirmatively chooses one offered slot → booking.select_slot → booking.apply. booking.select_slot is mandatory before booking.apply. After slot_conflict: do NOT restart intake. Retain name and service from the current conversation. Ask only for a new time.",
-    "3a. EXACT-TIME AVAILABILITY: when the patient asks about a specific time (for example 14:00), call availability.check once with requested_time. If requested_time_available=false and the same result contains later slots, say the requested time is unavailable and offer those returned alternatives. Do NOT call availability.check again merely to search 15:00, 16:00, or other nearby times already covered by that result.",
     "4. For questions about an existing appointment or modification intent, use appointment.lookup first.",
 
     // ── TOOLS ─────────────────────────────────────────────────────────────────
@@ -281,7 +280,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     // ── AVAILABILITY RULES ────────────────────────────────────────────────────
     "## AVAILABILITY RULES",
     "- Use only slots present in structured model-visible context. Never resurrect availability from prose conversation history. Structured availability truth overrides prose history.",
-    "- Vague time → check first, list exact slots. Exact time → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available.",
+    "- Vague time: check and list exact slots. Exact time: call availability.check once with requested_time; if available, confirm only it; otherwise offer returned alternatives without another check.",
     "When availability_action_truth is present, follow it strictly.",
     "can_present_slots=false: no slot may be presented or reused from conversation history.",
     "past_date: the requested date has passed — explain and ask patient for a date from today onward.",

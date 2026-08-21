@@ -1,3 +1,4 @@
+import type { RuntimeAgentToolRequest, RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
 import type { AvailabilityEvidence } from "./slotEvidence.ts";
 import { normalizeBookingRequestKey } from "./slotEvidence.ts";
 import { parseStrictSubjectId, type SubjectId } from "./bookingSubjectsState.ts";
@@ -20,6 +21,12 @@ export interface BookingSelectSlotSuccessData {
 export type BookingSelectSlotResult =
   | { ok: true; data: BookingSelectSlotSuccessData }
   | { ok: false; reason: BookingSelectSlotFailureReason };
+
+export interface BookingSelectSlotBatchResult {
+  attempted: boolean;
+  success_data: BookingSelectSlotSuccessData | null;
+  tool_results: RuntimeAgentToolResult[];
+}
 
 /**
  * Pure validator for booking.select_slot tool requests.
@@ -86,5 +93,72 @@ export function executeBookingSelectSlot(
       selected_slot_key: slotKey,
       may_apply_booking: true,
     },
+  };
+}
+
+/**
+ * Resolve every booking.select_slot request from one model tool batch without knowing
+ * or caring which model-call round produced it.
+ *
+ * - no selection: no-op;
+ * - exactly one: delegate to the pure selector above;
+ * - more than one: fail all as ambiguous and revoke any prior proof at the caller.
+ *
+ * The caller owns state persistence. `attempted=true` deliberately means old proof must
+ * be revoked even when selection failed.
+ */
+export function executeBookingSelectSlotBatch(params: {
+  requests: RuntimeAgentToolRequest[];
+  activeEvidence: AvailabilityEvidence | null | undefined;
+  subjects?: Array<{ id: SubjectId }> | null;
+}): BookingSelectSlotBatchResult {
+  const selectRequests = params.requests.filter((request) => request.tool === "booking.select_slot");
+
+  if (selectRequests.length === 0) {
+    return { attempted: false, success_data: null, tool_results: [] };
+  }
+
+  if (selectRequests.length > 1) {
+    return {
+      attempted: true,
+      success_data: null,
+      tool_results: selectRequests.map((request) => ({
+        tool: "booking.select_slot",
+        call_id: request.call_id,
+        status: "failed",
+        error: { code: "ambiguous_selection", message: "ambiguous_selection" },
+      })),
+    };
+  }
+
+  const request = selectRequests[0];
+  const result = executeBookingSelectSlot(
+    request.arguments,
+    params.activeEvidence,
+    params.subjects,
+  );
+
+  if (!result.ok) {
+    return {
+      attempted: true,
+      success_data: null,
+      tool_results: [{
+        tool: "booking.select_slot",
+        call_id: request.call_id,
+        status: "failed",
+        error: { code: result.reason, message: result.reason },
+      }],
+    };
+  }
+
+  return {
+    attempted: true,
+    success_data: result.data,
+    tool_results: [{
+      tool: "booking.select_slot",
+      call_id: request.call_id,
+      status: "success",
+      data: result.data,
+    }],
   };
 }

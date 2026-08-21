@@ -37,7 +37,7 @@ import {
   type BookingProcessState,
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
-import { executeBookingSelectSlot, type BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";
+import { executeBookingSelectSlot, executeBookingSelectSlotBatch, type BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
 
 export interface RuntimeAgentCallerInput {
@@ -1038,45 +1038,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           });
         }
 
-        // 2c. Round-2 booking.select_slot — explicitly rejected with deterministic failed results.
-        // booking.select_slot is only valid in round-1; any round-2 occurrence is a protocol error.
-        // A round-2 protocol error must not fall through to an old persisted proof — if booking.apply
-        // is also present in this round, block it immediately rather than letting it use stale state.
-        const round2SelectSlotRequests = secondOutput.tool_requests.filter((r) => r.tool === "booking.select_slot");
-        if (round2SelectSlotRequests.length > 0) {
-          for (const req of round2SelectSlotRequests) {
-            toolResults.push({
-              tool: "booking.select_slot",
-              call_id: req.call_id,
-              status: "failed",
-              error: { code: "select_slot_not_allowed_in_round2", message: "select_slot_not_allowed_in_round2" },
-            });
-          }
-          debug.reason = "booking_select_slot_rejected_in_round2";
-          if (pendingBookingApply) {
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: {
-                booking_status: "slot_not_verified",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "ask_for_slot",
-                reason: "select_slot_rejected_in_round2",
-              },
-              previousToolResults: toolResults,
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              booking_apply_resolution: round1BookingApplyResolution,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-        }
-
         // 3. Guard J (round 2) — strict subject_id validation (subject_1..subject_4 only).
         let round2ExecutionSubjectId: SubjectId | null = null;
         if (pendingBookingApply) {
@@ -1151,6 +1112,35 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           } else {
             // No registry: freeze to validated subject_id.
             round2ExecutionSubjectId = subjectParse2.subject_id;
+          }
+        }
+
+        // PF-004b: booking.select_slot legality is independent of model-call round.
+        // Resolve selection against the current authoritative evidence after any subject_2+
+        // bootstrap, then update/revoke proof before booking guards inspect it.
+        const round2SlotSelection = executeBookingSelectSlotBatch({
+          requests: secondOutput.tool_requests,
+          activeEvidence: bookingProcessState.active_availability_evidence,
+          subjects: effectiveBookingSubjects?.subjects ?? null,
+        });
+
+        if (round2SlotSelection.attempted) {
+          toolResults.push(...round2SlotSelection.tool_results);
+          bookingProcessState = computeBookingProcessState({
+            prior: bookingProcessState,
+            channelContact: input.channel_contact,
+            selectSlotData: round2SlotSelection.success_data,
+            // Any selection attempt, including failed/ambiguous, revokes the previous proof.
+            selectSlotAttemptedThisTurn: true,
+            now: turnNow,
+          });
+
+          if (deps.bookingProcessStateRepository) {
+            deps.bookingProcessStateRepository.saveState(
+              { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+              bookingProcessState,
+              (info) => { if (!info.saved) debug.booking_process_state_save = info; },
+            ).catch(() => undefined);
           }
         }
 

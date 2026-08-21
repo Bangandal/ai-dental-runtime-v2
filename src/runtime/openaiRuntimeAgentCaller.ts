@@ -124,7 +124,7 @@ export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string,
 export function normalizeOpenAIResponse(
   raw: unknown,
   fallbackConversationId?: string | null,
-  activeBookingSubjectId: string = "subject_1",
+  activeBookingSubjectId: string | null = null,
 ): RuntimeAgentCallerOutput {
   const response = asObject(raw);
   const conversationId = readString(response?.conversation_id) ?? readString(response?.conversation) ?? fallbackConversationId;
@@ -185,16 +185,16 @@ function buildParameterProperties(
   return Object.fromEntries(all.map((arg) => [arg, paramSchemas?.[arg] ?? { type: "string" }]));
 }
 
-function resolveActiveBookingSubjectId(context: Record<string, unknown>): string {
+function resolveActiveBookingSubjectId(context: Record<string, unknown>): string | null {
   const runtimeContext = asObject(context.runtime_context);
   const bookingSubjects = asObject(runtimeContext?.booking_subjects);
   const candidate = readString(bookingSubjects?.active_subject_id);
-  return candidate !== null && /^subject_[1-4]$/.test(candidate) ? candidate : "subject_1";
+  return candidate !== null && /^subject_[1-4]$/.test(candidate) ? candidate : null;
 }
 
 function readToolRequests(
   response: Record<string, unknown> | null,
-  activeBookingSubjectId: string,
+  activeBookingSubjectId: string | null,
 ): RuntimeAgentToolRequest[] {
   if (!response) return [];
   const fromToolCalls = toToolRequests(response.tool_calls, activeBookingSubjectId);
@@ -202,9 +202,14 @@ function readToolRequests(
   return toToolRequests(response.output, activeBookingSubjectId);
 }
 
-function toToolRequests(value: unknown, activeBookingSubjectId: string): RuntimeAgentToolRequest[] {
+function toToolRequests(value: unknown, activeBookingSubjectId: string | null): RuntimeAgentToolRequest[] {
   if (!Array.isArray(value)) return [];
-  const toolRequests: RuntimeAgentToolRequest[] = [];
+
+  // Parse the whole batch first. When no persisted multi-person registry exists yet,
+  // a same-batch booking.apply may be the first deterministic bootstrap signal for the
+  // target person. R3a may inherit that one valid target internally without exposing
+  // subject_id on booking_select_slot itself.
+  const parsedRequests: RuntimeAgentToolRequest[] = [];
   for (const item of value) {
     const obj = asObject(item);
     if (!obj) continue;
@@ -213,13 +218,25 @@ function toToolRequests(value: unknown, activeBookingSubjectId: string): Runtime
     const internalToolName = toInternalToolName(name);
     if (!internalToolName || !isActiveTool(internalToolName)) continue;
     const callId = readString(obj.call_id) ?? readString(obj.id);
-    const parsedArgs = parseArguments(obj.arguments ?? obj.input ?? obj.parameters);
-    const args = internalToolName === "booking.select_slot"
-      ? { ...parsedArgs, subject_id: activeBookingSubjectId }
-      : parsedArgs;
-    toolRequests.push({ tool: internalToolName, call_id: callId ?? undefined, arguments: args });
+    const args = parseArguments(obj.arguments ?? obj.input ?? obj.parameters);
+    parsedRequests.push({ tool: internalToolName, call_id: callId ?? undefined, arguments: args });
   }
-  return toolRequests;
+
+  const batchApplySubjects = Array.from(new Set(
+    parsedRequests
+      .filter((request) => request.tool === "booking.apply")
+      .map((request) => request.arguments.subject_id)
+      .filter((value): value is string => typeof value === "string" && /^subject_[1-4]$/.test(value)),
+  ));
+  const selectSlotSubjectId = activeBookingSubjectId
+    ?? (batchApplySubjects.length === 1 ? batchApplySubjects[0] : "subject_1");
+
+  return parsedRequests.map((request) => request.tool === "booking.select_slot"
+    ? {
+        ...request,
+        arguments: { ...request.arguments, subject_id: selectSlotSubjectId },
+      }
+    : request);
 }
 
 function toInternalToolName(name: string): string {

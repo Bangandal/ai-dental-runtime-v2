@@ -3,6 +3,7 @@ import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { checkClinicCardAvailability, type AvailabilityAdapter } from "./clinicCardAvailability.ts";
 import { getIsoWeekday, isDateInsideAvailabilityPolicy, loadClinicCardAvailabilityPolicy } from "./clinicCardAvailabilityPolicy.ts";
+import { resolveClinicCardServiceResource } from "./clinicCardServiceResourcePolicy.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import { makeFailedToolResult } from "../../runtime/toolResults.ts";
 import { getTodayInTimezone, isPastSlotTime } from "../../runtime/bookingPreflight.ts";
@@ -44,26 +45,6 @@ export function createClinicCardAvailabilityExecutor(
 
     const config = configResult.data;
 
-    const doctorId = Number(config.default_doctor_id);
-    if (!Number.isFinite(doctorId) || !Number.isInteger(doctorId) || doctorId <= 0) {
-      return makeFailedToolResult(
-        "availability.check",
-        "cliniccard_config_invalid_doctor_id",
-        "CLINICCARD_DEFAULT_DOCTOR_ID must be a positive integer",
-        false,
-      );
-    }
-
-    const cabinetId = Number(config.default_cabinet_id);
-    if (!Number.isFinite(cabinetId) || !Number.isInteger(cabinetId) || cabinetId <= 0) {
-      return makeFailedToolResult(
-        "availability.check",
-        "cliniccard_config_invalid_cabinet_id",
-        "CLINICCARD_DEFAULT_CABINET_ID must be a positive integer",
-        false,
-      );
-    }
-
     const requestedDate = context.requested_date;
     if (!requestedDate) {
       return makeFailedToolResult(
@@ -73,6 +54,22 @@ export function createClinicCardAvailabilityExecutor(
         false,
       );
     }
+
+    // PF-011: an availability claim must be tied to the resource and duration of a
+    // concrete service. Global doctor/cabinet/duration defaults are not authority.
+    const serviceResource = resolveClinicCardServiceResource(deps.env, context.service_interest);
+    if (!serviceResource.ok) {
+      return makeFailedToolResult(
+        "availability.check",
+        serviceResource.failure === "service_missing"
+          ? "availability_service_required"
+          : "cliniccard_service_resource_unavailable",
+        serviceResource.reason,
+        false,
+      );
+    }
+    const doctorId = serviceResource.doctor_id;
+    const cabinetId = serviceResource.cabinet_id;
 
     const timezone = config.timezone || context.timezone || "Europe/Prague";
     // requested_time is an anchor, not a one-slot query. A single availability read
@@ -143,7 +140,7 @@ export function createClinicCardAvailabilityExecutor(
         date: requestedDate,
         working_hours_start: availabilityPolicy.working_hours_start,
         working_hours_end: availabilityPolicy.working_hours_end,
-        slot_duration_minutes: availabilityPolicy.slot_duration_minutes,
+        slot_duration_minutes: serviceResource.duration_minutes,
         doctor_id: doctorId,
         cabinet_id: cabinetId,
         timezone,

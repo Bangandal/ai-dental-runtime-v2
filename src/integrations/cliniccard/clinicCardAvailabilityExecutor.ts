@@ -2,14 +2,11 @@ import type { ClinicCardConfig } from "./clinicCardTypes.ts";
 import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { checkClinicCardAvailability, type AvailabilityAdapter } from "./clinicCardAvailability.ts";
+import { getIsoWeekday, isDateInsideAvailabilityPolicy, loadClinicCardAvailabilityPolicy } from "./clinicCardAvailabilityPolicy.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import { makeFailedToolResult } from "../../runtime/toolResults.ts";
 import { getTodayInTimezone, isPastSlotTime } from "../../runtime/bookingPreflight.ts";
 import { isAvailabilityDebugEnabled } from "./availabilityDiagnostics.ts";
-
-const DEFAULT_WORKING_HOURS_START = "09:00";
-const DEFAULT_WORKING_HOURS_END = "18:00";
-const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
 // Parses a time string to zero-padded "HH:MM" if valid, null otherwise.
 // Normalises single-digit hours: "9:00" -> "09:00".
@@ -79,6 +76,15 @@ export function createClinicCardAvailabilityExecutor(
 
     const timezone = config.timezone || context.timezone || "Europe/Prague";
 
+    if (getIsoWeekday(requestedDate) === null) {
+      return makeFailedToolResult(
+        "availability.check",
+        "availability_invalid_requested_date",
+        "requested_date must be a valid YYYY-MM-DD clinic date",
+        false,
+      );
+    }
+
     // Reject past dates — ClinicCard returns slots for any date, including past ones.
     // Only enforced when context.now is present (always set in production).
     if (context.now) {
@@ -93,6 +99,32 @@ export function createClinicCardAvailabilityExecutor(
       }
     }
 
+    const availabilityPolicyResult = loadClinicCardAvailabilityPolicy(deps.env);
+    if (!availabilityPolicyResult.ok) {
+      return makeFailedToolResult(
+        "availability.check",
+        availabilityPolicyResult.error.code,
+        availabilityPolicyResult.error.message,
+        false,
+      );
+    }
+    const availabilityPolicy = availabilityPolicyResult.data;
+
+    // A configured non-working/closed date is authoritative negative evidence.
+    // No ClinicCard visit read is needed because the policy proves the clinic cannot offer a slot.
+    if (!isDateInsideAvailabilityPolicy(requestedDate, availabilityPolicy)) {
+      return {
+        tool: "availability.check",
+        status: "success",
+        data: {
+          slots: [],
+          timezone,
+          total_slots: 0,
+          free_slots_count: 0,
+        },
+      };
+    }
+
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
 
@@ -101,9 +133,9 @@ export function createClinicCardAvailabilityExecutor(
     const result = await checkClinicCardAvailability(
       {
         date: requestedDate,
-        working_hours_start: DEFAULT_WORKING_HOURS_START,
-        working_hours_end: DEFAULT_WORKING_HOURS_END,
-        slot_duration_minutes: DEFAULT_SLOT_DURATION_MINUTES,
+        working_hours_start: availabilityPolicy.working_hours_start,
+        working_hours_end: availabilityPolicy.working_hours_end,
+        slot_duration_minutes: availabilityPolicy.slot_duration_minutes,
         doctor_id: doctorId,
         cabinet_id: cabinetId,
         timezone,

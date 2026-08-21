@@ -95,5 +95,6 @@ test("PF-003: free 14:00 is explicit and appears first in the same anchored resu
 test("PF-003: model tool contract tells the model to reuse returned nearby alternatives", () => {
   const description = RUNTIME_AGENT_TOOL_DEFINITIONS["availability.check"].description;
   assert.match(description, /requested_time_available/);
-  assert.match(description, /instead of calling availability\.check again/);
+  assert.match(description, /requested_time once/);
+  assert.match(description, /without another availability\.check/);
 });

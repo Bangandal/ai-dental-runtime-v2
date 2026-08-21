@@ -46,3 +46,16 @@ jobs:
           name: runtime-test-output
           path: test-output.txt
           if-no-files-found: error
+
+      - name: Upload source snapshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-source-snapshot
+          path: |
+            package.json
+            package-lock.json
+            tsconfig.json
+            src
+            tests
+          if-no-files-found: error

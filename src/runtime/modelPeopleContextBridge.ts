@@ -26,12 +26,12 @@ function senderCanBeResponsibleParty(state: BookingSubjectsState): boolean {
 }
 
 /**
- * Current model-visible projection of the persisted people/booking registry.
+ * Model-visible projection of the persisted people/booking registry.
  *
- * This module is the quarantine seam for the remaining legacy subject_N representation.
- * R2d intentionally preserves the current payload byte-for-byte at the semantic level;
- * a later R3 migration can replace IDs with self/active/other-person labels here without
- * changing OpenAI transport or persisted booking state at the same time.
+ * R3d adds semantic person_kind/is_active hints while retaining legacy IDs temporarily
+ * for compatibility with the internal tool bridge. The model instruction explicitly
+ * forbids emitting those IDs; a later migration can remove them from this payload once
+ * the caller has a separate runtime-private people context.
  */
 export function buildModelVisiblePeopleContext(
   state: BookingSubjectsState,
@@ -51,6 +51,8 @@ export function buildModelVisiblePeopleContext(
 
       return {
         id: subject.id,
+        person_kind: subject.id === "subject_1" ? "self" : "other_person",
+        is_active: subject.id === state.active_subject_id,
         label: subject.label,
         patient_name: subject.patient_name,
         service: subject.service,

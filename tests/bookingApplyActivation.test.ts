@@ -15,6 +15,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import test from "node:test";
 
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
+
 import { ACTIVE_RUNTIME_AGENT_TOOLS } from "../src/runtime/openaiRuntimeAgent.ts";
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 import {
@@ -30,6 +32,8 @@ import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCar
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 const LIVE_ENV: Record<string, string> = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "cleaning", aliases: ["Чистка", "чистка"], doctor_id: 1, cabinet_id: 2, duration_minutes: 30 }),
+
   CLINICCARD_API_BASE_URL: "https://cliniccard.example",
   CLINICCARD_API_TOKEN: "tok_test",
   CLINICCARD_BOOKING_MODE: "live",

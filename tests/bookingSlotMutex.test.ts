@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
+
 import {
   acquireBookingSlotLock,
   _resetSlotLocks,
@@ -13,6 +15,8 @@ import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 const LIVE_ENV: Record<string, string> = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "cleaning", aliases: ["Чистка"], doctor_id: 1, cabinet_id: 2, duration_minutes: 30 }),
+
   CLINICCARD_API_BASE_URL: "https://cliniccard.example",
   CLINICCARD_API_TOKEN: "tok_test",
   CLINICCARD_BOOKING_MODE: "live",
@@ -27,6 +31,19 @@ const LIVE_ENV: Record<string, string> = {
   CLINICCARD_SLOT_DURATION_MINUTES: "30",
   CLINICCARD_CLOSED_DATES: "",
 };
+
+function envForResource(doctorId: number, cabinetId: number): Record<string, string> {
+  return {
+    ...LIVE_ENV,
+    ...clinicCardServiceAuthorityEnv({
+      service_key: "cleaning",
+      aliases: ["Чистка"],
+      doctor_id: doctorId,
+      cabinet_id: cabinetId,
+      duration_minutes: 30,
+    }),
+  };
+}
 
 function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
   return {
@@ -260,11 +277,11 @@ test("concurrent same doctor diff cabinet overlapping: only one createVisit", as
   const sharedAdapter = makeStatefulAdapter();
 
   const exec1 = createBookingApplyExecutor({
-    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_CABINET_ID: "2" },
+    env: envForResource(1, 2),
     adapterFactory: () => sharedAdapter,
   });
   const exec2 = createBookingApplyExecutor({
-    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_CABINET_ID: "99" },
+    env: envForResource(1, 99),
     adapterFactory: () => sharedAdapter,
   });
 
@@ -286,11 +303,11 @@ test("concurrent same cabinet diff doctor overlapping: only one createVisit", as
   const sharedAdapter = makeStatefulAdapter();
 
   const exec1 = createBookingApplyExecutor({
-    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "1" },
+    env: envForResource(1, 2),
     adapterFactory: () => sharedAdapter,
   });
   const exec2 = createBookingApplyExecutor({
-    env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "99" },
+    env: envForResource(99, 2),
     adapterFactory: () => sharedAdapter,
   });
 

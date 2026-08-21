@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
+
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import { resolveClinicCardBookingSlotPolicy } from "../src/integrations/cliniccard/clinicCardBookingSlotPolicy.ts";
 
 const LIVE_ENV: Record<string, string> = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "cleaning", aliases: ["Cleaning"], doctor_id: 7, cabinet_id: 3, duration_minutes: 45 }),
+
   CLINICCARD_API_BASE_URL: "https://cliniccard.example",
   CLINICCARD_API_TOKEN: "test-token",
   CLINICCARD_DEFAULT_DOCTOR_ID: "7",
@@ -97,7 +101,7 @@ test("PF-007b: slot must align to the same configured grid used by availability"
   assert.match(String((result.data as Record<string, unknown>).reason), /not aligned/);
 });
 
-test("PF-007b: valid booking write uses the exact policy duration, not a hardcoded 30 minutes", async () => {
+test("PF-011: valid booking write uses service duration independently of schedule grid", async () => {
   let capturedWrite: Record<string, any> | undefined;
   let listVisitsCalls = 0;
 
@@ -139,17 +143,17 @@ test("PF-007b: valid booking write uses the exact policy duration, not a hardcod
   assert.equal(listVisitsCalls, 1);
   assert.ok(capturedWrite);
   assert.equal(capturedWrite!.visit.time_start, "10:00");
-  assert.equal(capturedWrite!.visit.time_end, "11:00");
+  assert.equal(capturedWrite!.visit.time_end, "10:45");
   assert.equal(result.status, "success");
   assert.equal((result.data as Record<string, unknown>).booking_status, "visit_created");
-  assert.equal((result.data as Record<string, unknown>).time_end, "11:00");
+  assert.equal((result.data as Record<string, unknown>).time_end, "10:45");
 });
 
-test("PF-007b: pure slot-policy resolver derives 60-minute end time from the confirmed policy", () => {
-  const result = resolveClinicCardBookingSlotPolicy(LIVE_ENV, "2026-08-24", "11:00");
+test("PF-011: pure slot-policy resolver keeps service duration separate from the 60-minute start grid", () => {
+  const result = resolveClinicCardBookingSlotPolicy(LIVE_ENV, "2026-08-24", "11:00", 45);
   assert.deepEqual(result, {
     ok: true,
-    time_end: "12:00",
-    duration_minutes: 60,
+    time_end: "11:45",
+    duration_minutes: 45,
   });
 });

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
+
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import { createClinicCardAdapter, type ClinicCardFetch } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import type { ClinicCardConfig } from "../src/integrations/cliniccard/clinicCardTypes.ts";
@@ -64,6 +66,7 @@ test("booking.apply detects conflict from real ClinicCard visit shape without pa
   const adapter = createClinicCardAdapter(TEST_CONFIG, fetch);
   const executor = createBookingApplyExecutor({
     env: {
+      ...clinicCardServiceAuthorityEnv({ service_key: "cleaning", aliases: ["cleaning"], doctor_id: 111431, cabinet_id: 43393, duration_minutes: 30 }),
       CLINICCARD_API_BASE_URL: TEST_CONFIG.api_base_url,
       CLINICCARD_API_TOKEN: TEST_CONFIG.api_token,
       CLINICCARD_BOOKING_MODE: "live",

@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import type { ClinicCardConfig } from "../src/integrations/cliniccard/clinicCardTypes.ts";
 import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
 
 const LIVE_ENV: Record<string, string> = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "cleaning", aliases: ["Чистка зубов"], doctor_id: 1, cabinet_id: 2, duration_minutes: 30 }),
+
   CLINICCARD_API_BASE_URL: "https://cliniccard.example",
   CLINICCARD_API_TOKEN: "tok_test",
   CLINICCARD_BOOKING_MODE: "live",
@@ -227,28 +231,27 @@ test("booking.apply: returns missing_phone when phone_number is absent", async (
   assert.equal(result.data.may_claim_booked, false);
 });
 
-// config_missing — doctor_id not set.
-test("booking.apply: returns config_missing when CLINICCARD_DEFAULT_DOCTOR_ID is absent", async () => {
+// PF-011: legacy global resource defaults no longer authorize or block booking.
+test("booking.apply: legacy default doctor can be absent when service authority is confirmed", async () => {
   const executor = createBookingApplyExecutor({
     env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "" },
     adapterFactory: () => makeAdapter(),
   });
 
   const result = await executor(makeContext());
-  assert.equal(result.data.booking_status, "config_missing");
-  assert.match(result.data.reason, /DOCTOR_ID/);
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.equal(result.data.doctor_id, 1);
 });
 
-// config_missing — cabinet_id not set.
-test("booking.apply: returns config_missing when CLINICCARD_DEFAULT_CABINET_ID is zero", async () => {
+test("booking.apply: legacy default cabinet can be invalid when service authority is confirmed", async () => {
   const executor = createBookingApplyExecutor({
     env: { ...LIVE_ENV, CLINICCARD_DEFAULT_CABINET_ID: "0" },
     adapterFactory: () => makeAdapter(),
   });
 
   const result = await executor(makeContext());
-  assert.equal(result.data.booking_status, "config_missing");
-  assert.match(result.data.reason, /CABINET_ID/);
+  assert.equal(result.data.booking_status, "visit_created");
+  assert.equal(result.data.cabinet_id, 2);
 });
 
 // slot_conflict — overlapping visit for same doctor.
@@ -422,7 +425,7 @@ test("booking.apply: may_claim_booked is false for all non-success paths", async
   const cases: Array<{ label: string; context: Partial<ToolExecutionContext>; env?: Record<string, string> }> = [
     { label: "booking_write_disabled", env: { ...LIVE_ENV, CLINICCARD_BOOKING_MODE: "disabled" }, context: {} },
     { label: "missing_phone", context: { phone_number: undefined } },
-    { label: "config_missing", env: { ...LIVE_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "" }, context: {} },
+    { label: "config_missing", env: { ...LIVE_ENV, CLINICCARD_SERVICE_RESOURCE_POLICY_CONFIRMED: "false" }, context: {} },
   ];
 
   for (const c of cases) {

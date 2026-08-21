@@ -75,6 +75,9 @@ export function createClinicCardAvailabilityExecutor(
     }
 
     const timezone = config.timezone || context.timezone || "Europe/Prague";
+    // requested_time is an anchor, not a one-slot query. A single availability read
+    // answers whether the anchor itself is free and also returns nearby future options.
+    const requestedTime = parseHHMM(context.requested_time);
 
     if (getIsoWeekday(requestedDate) === null) {
       return makeFailedToolResult(
@@ -121,6 +124,11 @@ export function createClinicCardAvailabilityExecutor(
           timezone,
           total_slots: 0,
           free_slots_count: 0,
+          ...(requestedTime !== null ? {
+            requested_time: requestedTime,
+            requested_time_available: false,
+            requested_time_status: "unavailable",
+          } : {}),
         },
       };
     }
@@ -157,8 +165,9 @@ export function createClinicCardAvailabilityExecutor(
     const total_slots = result.data.total_slots;
     const free_slots_count = result.data.free_slots_count;
 
-    // Filter free slots to at/after requested_time if it is a parseable HH:MM value.
-    const requestedTime = parseHHMM(context.requested_time);
+    // requested_time is an anchor: keep the requested slot if free and include the
+    // next free slots in the same result. The model must not need another lookup merely
+    // because the exact anchor is occupied.
     let freeSlots = result.data.slots;
     if (requestedTime !== null) {
       freeSlots = freeSlots.filter((s) => s.time_start >= requestedTime);
@@ -171,6 +180,9 @@ export function createClinicCardAvailabilityExecutor(
       freeSlots = freeSlots.filter((s) => !isPastSlotTime(s.time_start, context.now!, timezone));
     }
     const countAfterPastFilter = freeSlots.length;
+    const requestedTimeAvailable = requestedTime !== null
+      ? freeSlots.some((s) => s.time_start === requestedTime)
+      : null;
 
     // Map to output format.
     const mappedSlots = freeSlots.map((s) => ({
@@ -201,6 +213,11 @@ export function createClinicCardAvailabilityExecutor(
         timezone,
         total_slots,
         free_slots_count,
+        ...(requestedTime !== null ? {
+          requested_time: requestedTime,
+          requested_time_available: requestedTimeAvailable,
+          requested_time_status: requestedTimeAvailable ? "available" : "unavailable",
+        } : {}),
       },
       ...(diagnostic !== undefined ? { _diagnostic: diagnostic } : {}),
     };

@@ -10,7 +10,12 @@ export interface AvailabilityInput {
   date_to?: string;
   working_hours_start: string;
   working_hours_end: string;
+  /** Legacy combined slot size. Used as fallback for both fields below. */
   slot_duration_minutes: number;
+  /** Confirmed cadence on which appointments may start. */
+  slot_interval_minutes?: number;
+  /** Duration of the concrete service occupying the resource. */
+  appointment_duration_minutes?: number;
   doctor_id: number;
   cabinet_id: number;
   timezone: string;
@@ -77,12 +82,25 @@ export async function checkClinicCardAvailability(
   input: AvailabilityInput,
   adapter: AvailabilityAdapter,
 ): Promise<ClinicCardResult<AvailabilityOutput>> {
-  if (!Number.isFinite(input.slot_duration_minutes) || input.slot_duration_minutes <= 0) {
+  const slotIntervalMinutes = input.slot_interval_minutes ?? input.slot_duration_minutes;
+  const appointmentDurationMinutes = input.appointment_duration_minutes ?? input.slot_duration_minutes;
+
+  if (!Number.isFinite(slotIntervalMinutes) || slotIntervalMinutes <= 0) {
     return {
       ok: false,
       error: {
         code: "cliniccard_availability_error",
-        message: "slot_duration_minutes must be a positive finite number",
+        message: "slot_interval_minutes must be a positive finite number",
+      },
+    };
+  }
+
+  if (!Number.isFinite(appointmentDurationMinutes) || appointmentDurationMinutes <= 0) {
+    return {
+      ok: false,
+      error: {
+        code: "cliniccard_availability_error",
+        message: "appointment_duration_minutes must be a positive finite number",
       },
     };
   }
@@ -111,7 +129,6 @@ export async function checkClinicCardAvailability(
   const dates = dateRange(input.date, dateTo);
   const workStart = timeToMinutes(input.working_hours_start);
   const workEnd = timeToMinutes(input.working_hours_end);
-  const duration = input.slot_duration_minutes;
 
   const slots: AvailabilitySlot[] = [];
   let total_slots = 0;
@@ -120,9 +137,13 @@ export async function checkClinicCardAvailability(
   for (const date of dates) {
     const dayVisits = relevantVisits.filter((v) => v.date === date);
 
-    for (let t = workStart; t + duration <= workEnd; t += duration) {
+    for (
+      let t = workStart;
+      t + appointmentDurationMinutes <= workEnd;
+      t += slotIntervalMinutes
+    ) {
       total_slots++;
-      const slotEnd = t + duration;
+      const slotEnd = t + appointmentDurationMinutes;
 
       const isFree = dayVisits.every((v) => {
         const visitStart = timeToMinutes(v.time_start);
@@ -151,7 +172,7 @@ export async function checkClinicCardAvailability(
         cabinet_id: input.cabinet_id,
         working_hours_start: input.working_hours_start,
         working_hours_end: input.working_hours_end,
-        slot_duration_minutes: input.slot_duration_minutes,
+        slot_duration_minutes: appointmentDurationMinutes,
         raw_visits_count: rawVisitsCount,
         relevant_visits_count: relevantVisits.length,
         total_slots,

@@ -32,9 +32,13 @@ function minutesToHHMM(value: number): string {
 
 /**
  * Revalidates one booking slot against the same operator-confirmed working-hours
- * policy used by availability.check. PF-011 callers pass the service-authoritative
- * duration explicitly; the global slot duration remains only as a compatibility
- * fallback for direct legacy callers while migration completes.
+ * and start-grid policy used by availability.check. PF-011 callers pass the
+ * service-authoritative visit duration explicitly. The schedule grid and visit
+ * duration are separate authorities: a 60-minute visit may still start on a
+ * confirmed 15/30-minute grid.
+ *
+ * The global slot duration remains only as a compatibility fallback for direct
+ * legacy callers that do not yet pass a service duration.
  */
 export function resolveClinicCardBookingSlotPolicy(
   env: Record<string, string | undefined> | undefined,
@@ -89,11 +93,11 @@ export function resolveClinicCardBookingSlotPolicy(
     };
   }
 
-  if ((startMinutes - policyStartMinutes) % durationMinutes !== 0) {
+  if ((startMinutes - policyStartMinutes) % policy.slot_duration_minutes !== 0) {
     return {
       ok: false,
       failure: "slot_not_allowed",
-      reason: `slot ${date} ${timeStart} is not aligned to the confirmed ${durationMinutes} minute service grid starting at ${policy.working_hours_start}`,
+      reason: `slot ${date} ${timeStart} is not aligned to the confirmed ${policy.slot_duration_minutes} minute start grid beginning at ${policy.working_hours_start}`,
     };
   }
 

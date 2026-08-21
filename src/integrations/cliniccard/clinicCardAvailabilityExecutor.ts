@@ -55,27 +55,14 @@ export function createClinicCardAvailabilityExecutor(
       );
     }
 
-    // PF-011: an availability claim must be tied to the resource and duration of a
-    // concrete service. Global doctor/cabinet/duration defaults are not authority.
-    const serviceResource = resolveClinicCardServiceResource(deps.env, context.service_interest);
-    if (!serviceResource.ok) {
-      return makeFailedToolResult(
-        "availability.check",
-        serviceResource.failure === "service_missing"
-          ? "availability_service_required"
-          : "cliniccard_service_resource_unavailable",
-        serviceResource.reason,
-        false,
-      );
-    }
-    const doctorId = serviceResource.doctor_id;
-    const cabinetId = serviceResource.cabinet_id;
-
     const timezone = config.timezone || context.timezone || "Europe/Prague";
     // requested_time is an anchor, not a one-slot query. A single availability read
     // answers whether the anchor itself is free and also returns nearby future options.
     const requestedTime = parseHHMM(context.requested_time);
 
+    // Calendar truth is global and must be resolved before service routing. A malformed
+    // date is a date error, and a globally closed/non-working day is authoritative
+    // negative availability without requiring a service mapping.
     if (getIsoWeekday(requestedDate) === null) {
       return makeFailedToolResult(
         "availability.check",
@@ -111,7 +98,8 @@ export function createClinicCardAvailabilityExecutor(
     const availabilityPolicy = availabilityPolicyResult.data;
 
     // A configured non-working/closed date is authoritative negative evidence.
-    // No ClinicCard visit read is needed because the policy proves the clinic cannot offer a slot.
+    // No service mapping or ClinicCard visit read is needed because the schedule policy
+    // proves the clinic cannot offer any service slot on that date.
     if (!isDateInsideAvailabilityPolicy(requestedDate, availabilityPolicy)) {
       return {
         tool: "availability.check",
@@ -130,6 +118,23 @@ export function createClinicCardAvailabilityExecutor(
       };
     }
 
+    // PF-011: positive/open-day availability must be tied to the authoritative
+    // provider, resource and duration of a concrete service. Global doctor/cabinet
+    // defaults are not write or availability authority.
+    const serviceResource = resolveClinicCardServiceResource(deps.env, context.service_interest);
+    if (!serviceResource.ok) {
+      return makeFailedToolResult(
+        "availability.check",
+        serviceResource.failure === "service_missing"
+          ? "availability_service_required"
+          : "cliniccard_service_resource_unavailable",
+        serviceResource.reason,
+        false,
+      );
+    }
+    const doctorId = serviceResource.doctor_id;
+    const cabinetId = serviceResource.cabinet_id;
+
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
 
@@ -140,7 +145,12 @@ export function createClinicCardAvailabilityExecutor(
         date: requestedDate,
         working_hours_start: availabilityPolicy.working_hours_start,
         working_hours_end: availabilityPolicy.working_hours_end,
-        slot_duration_minutes: serviceResource.duration_minutes,
+        // PF-011 separates when a visit may start from how long this service occupies
+        // the doctor/cabinet. The static policy owns the start cadence; the service rule
+        // owns visit duration.
+        slot_duration_minutes: availabilityPolicy.slot_duration_minutes,
+        slot_interval_minutes: availabilityPolicy.slot_duration_minutes,
+        appointment_duration_minutes: serviceResource.duration_minutes,
         doctor_id: doctorId,
         cabinet_id: cabinetId,
         timezone,

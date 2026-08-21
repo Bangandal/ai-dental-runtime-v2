@@ -5,10 +5,11 @@ on:
   push:
     branches:
       - ai-dental-frontdesk-core
+      - refactor/r3g-canonical-semantic-people-prompt
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: runtime-tests-${{ github.workflow }}-${{ github.ref }}
@@ -23,6 +24,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Apply one-shot R3g final-response contract fix
+        if: github.event_name == 'push' && github.ref == 'refs/heads/refactor/r3g-canonical-semantic-people-prompt'
+        shell: bash
+        run: |
+          python scripts/r3g-final-response-contract.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/runtime/openaiRuntimeAgent.ts .github/workflows/runtime-tests.yml scripts/r3g-final-response-contract.py
+          if ! git diff --cached --quiet; then
+            git commit -m "fix(R3g): keep person intents in final_response contract"
+            git push
+          fi
 
       - name: Setup Node.js
         uses: actions/setup-node@v4

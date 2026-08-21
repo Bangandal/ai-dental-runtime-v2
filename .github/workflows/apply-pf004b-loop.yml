@@ -1,0 +1,59 @@
+name: Apply PF-004b loop patch
+
+on:
+  push:
+    branches:
+      - fix/pf-004b-round-independent-select-slot
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Remove round-specific select_slot rejection
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/runtime/runtimeAgentLoopLegacy.ts')
+          s = p.read_text()
+
+          old_import = 'import { executeBookingSelectSlot, type BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";'
+          new_import = 'import { executeBookingSelectSlot, executeBookingSelectSlotBatch, type BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";'
+          assert old_import in s
+          s = s.replace(old_import, new_import, 1)
+
+          start_marker = '        // 2c. Round-2 booking.select_slot — explicitly rejected with deterministic failed results.'
+          end_marker = '        // 3. Guard J (round 2) — strict subject_id validation (subject_1..subject_4 only).'
+          start = s.index(start_marker)
+          end = s.index(end_marker, start)
+          s = s[:start] + s[end:]
+
+          insert_marker = '        // 6. No-slots gate — fires AFTER Guard J, bootstrap, and execution subject freeze.'
+          insert_at = s.index(insert_marker)
+          replacement = '''        // PF-004b: booking.select_slot legality is independent of model-call round.\n        // Resolve selection against the current authoritative evidence after any subject_2+\n        // bootstrap, then update/revoke proof before booking guards inspect it.\n        const round2SlotSelection = executeBookingSelectSlotBatch({\n          requests: secondOutput.tool_requests,\n          activeEvidence: bookingProcessState.active_availability_evidence,\n          subjects: effectiveBookingSubjects?.subjects ?? null,\n        });\n\n        if (round2SlotSelection.attempted) {\n          toolResults.push(...round2SlotSelection.tool_results);\n          bookingProcessState = computeBookingProcessState({\n            prior: bookingProcessState,\n            channelContact: input.channel_contact,\n            selectSlotData: round2SlotSelection.success_data,\n            // Any selection attempt, including failed/ambiguous, revokes the previous proof.\n            selectSlotAttemptedThisTurn: true,\n            now: turnNow,\n          });\n\n          if (deps.bookingProcessStateRepository) {\n            deps.bookingProcessStateRepository.saveState(\n              { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },\n              bookingProcessState,\n              (info) => { if (!info.saved) debug.booking_process_state_save = info; },\n            ).catch(() => undefined);\n          }\n        }\n\n'''
+          s = s[:insert_at] + replacement + s[insert_at:]
+
+          assert 'select_slot_not_allowed_in_round2' not in s
+          assert 'booking_select_slot_rejected_in_round2' not in s
+          assert s.count('executeBookingSelectSlotBatch') == 2  # import + call
+          p.write_text(s)
+          PY
+
+      - name: Commit exact patch and self-remove
+        run: |
+          rm .github/workflows/apply-pf004b-loop.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/runtime/runtimeAgentLoopLegacy.ts .github/workflows/apply-pf004b-loop.yml
+          git diff --cached --check
+          git commit -m "fix(PF-004b): process select_slot independent of model round"
+          git push origin HEAD:fix/pf-004b-round-independent-select-slot

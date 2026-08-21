@@ -14,6 +14,7 @@ test("R3g: canonical runtime prompt contains semantic BOOKING PEOPLE protocol", 
   });
 
   assert.match(instruction, /## BOOKING PEOPLE/);
+  assert.equal(instruction.match(/## BOOKING PEOPLE/g)?.length, 1, "semantic people protocol must have exactly one canonical prompt section");
   assert.match(instruction, /target:"self"\|"active"\|"other_person"/);
   assert.match(instruction, /person_ref:null\|string/);
   assert.match(instruction, /Never emit subject_id/);

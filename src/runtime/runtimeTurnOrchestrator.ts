@@ -2,6 +2,7 @@ import {
   createRuntimeTurnSerialQueue,
   runRuntimeTurnSerialized,
 } from "./runtimeTurnSerialQueue.ts";
+import { withDurableConversationContinuity } from "./runtimeConversationContinuity.ts";
 import {
   runRuntimeTurnOrchestrated as runRuntimeTurnOrchestratedLegacy,
 } from "./runtimeTurnOrchestratorLegacy.ts";
@@ -24,6 +25,10 @@ export function runRuntimeTurnOrchestrated(
   return runRuntimeTurnSerialized({
     body,
     queue: runtimeTurnSerialQueue,
-    task: () => runRuntimeTurnOrchestratedLegacy(body, deps, opts),
+    task: () => runRuntimeTurnOrchestratedLegacy(
+      body,
+      withDurableConversationContinuity(deps),
+      opts,
+    ),
   });
 }

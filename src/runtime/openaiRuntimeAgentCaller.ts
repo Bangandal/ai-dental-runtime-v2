@@ -7,6 +7,11 @@ import {
 import { parseSubjectIntent, parsePhoneOwnershipIntent } from "./bookingSubjectsState.ts";
 import type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeAgentLoop.ts";
 import { readResponseOutputTextDeduped } from "./openaiResponsesOutputText.ts";
+import {
+  bindModelToolRequestsToInternalContract,
+  projectModelToolContract,
+  resolveActiveInternalSubjectId,
+} from "./modelToolContractBridge.ts";
 
 export interface OpenAIResponsesClient {
   responses: {
@@ -30,25 +35,6 @@ const OPENAI_TO_INTERNAL_TOOL_NAME = Object.fromEntries(
   Object.entries(INTERNAL_TO_OPENAI_TOOL_NAME).map(([internalName, openAIName]) => [openAIName, internalName]),
 ) as Record<string, (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number]>;
 
-const SELECT_SLOT_MODEL_DESCRIPTION =
-  "Confirm the active patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. The runtime binds the selection to the active patient; do not provide an internal patient/subject identifier. Call booking.apply only after this tool returns selection_status='selected'.";
-
-const BOOKING_APPLY_MODEL_DESCRIPTION =
-  "Create a visit in ClinicCard for the intended patient when required booking details are present, slot selection is verified, and runtime has an acceptable booking contact. Set patient_target='self' when the sender is the patient, or patient_target='other_person' when booking for another person. Runtime owns the internal patient/subject identifier. Returns booking_status indicating whether the visit was created or why it could not be.";
-
-const APPOINTMENT_LOOKUP_MODEL_DESCRIPTION =
-  "Look up upcoming appointments for the intended patient. Set patient_target='self' for the sender's appointments, or patient_target='other_person' for another person's appointments. Runtime owns the internal patient/subject identifier. Read-only: does not create, cancel, or modify visits.";
-
-const PATIENT_TARGET_SCHEMA = {
-  type: "string",
-  enum: ["self", "other_person"],
-  description: "Business-semantic patient target: self for the sender/patient, other_person for another person. Runtime resolves the internal patient identity.",
-} as const;
-
-const INVALID_SEMANTIC_SUBJECT_ID = "__patient_target_conflict__";
-
-type PatientTarget = "self" | "other_person";
-
 export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCallerDeps): RuntimeAgentCaller {
   return async (input) => {
     const openAIInput = buildOpenAIInput(input);
@@ -56,13 +42,9 @@ export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCal
     return normalizeOpenAIResponse(
       rawResponse,
       input.conversation_id ?? null,
-      resolveActiveBookingSubjectId(input.input.context),
+      resolveActiveInternalSubjectId(input.input.context),
     );
   };
-}
-
-function usesSemanticPatientTarget(toolName: (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number]): boolean {
-  return toolName === "booking.apply" || toolName === "appointment.lookup";
 }
 
 export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Array<Record<string, unknown>> {
@@ -72,45 +54,25 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
     const def = defs[toolName];
     if (!def) return [];
 
-    // R3: subject_id stays inside the deterministic compatibility contract but is
-    // removed from model-facing booking tools. select_slot needs no target argument;
-    // apply/lookup receive the business-semantic patient_target instead.
-    const semanticPatientTarget = usesSemanticPatientTarget(toolName);
-    const removesSubjectId = toolName === "booking.select_slot" || semanticPatientTarget;
-    const requiredArgs = removesSubjectId
-      ? def.required_args.filter((arg) => arg !== "subject_id")
-      : [...def.required_args];
-    const optionalArgs = removesSubjectId
-      ? def.optional_args.filter((arg) => arg !== "subject_id")
-      : [...def.optional_args];
-
-    const projectedRequiredArgs = semanticPatientTarget
-      ? ["patient_target", ...requiredArgs]
-      : requiredArgs;
-    const description = toolName === "booking.select_slot"
-      ? SELECT_SLOT_MODEL_DESCRIPTION
-      : toolName === "booking.apply"
-        ? BOOKING_APPLY_MODEL_DESCRIPTION
-        : toolName === "appointment.lookup"
-          ? APPOINTMENT_LOOKUP_MODEL_DESCRIPTION
-          : def.description;
-    const baseParamSchemas = (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas;
-    const paramSchemas = semanticPatientTarget
-      ? { ...(baseParamSchemas ?? {}), patient_target: PATIENT_TARGET_SCHEMA }
-      : baseParamSchemas;
+    const projected = projectModelToolContract(toolName, {
+      description: def.description,
+      required_args: def.required_args,
+      optional_args: def.optional_args,
+      param_schemas: (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas,
+    });
 
     return [{
       type: "function",
       name: INTERNAL_TO_OPENAI_TOOL_NAME[toolName],
-      description,
+      description: projected.description,
       parameters: {
         type: "object",
         properties: buildParameterProperties(
-          projectedRequiredArgs,
-          optionalArgs,
-          paramSchemas,
+          projected.required_args,
+          projected.optional_args,
+          projected.param_schemas,
         ),
-        required: projectedRequiredArgs,
+        required: projected.required_args,
         additionalProperties: true,
       },
     }];
@@ -219,86 +181,24 @@ function buildParameterProperties(
   return Object.fromEntries(all.map((arg) => [arg, paramSchemas?.[arg] ?? { type: "string" }]));
 }
 
-function resolveActiveBookingSubjectId(context: Record<string, unknown>): string | null {
-  const runtimeContext = asObject(context.runtime_context);
-  const bookingSubjects = asObject(runtimeContext?.booking_subjects);
-  const candidate = readString(bookingSubjects?.active_subject_id);
-  return candidate !== null && /^subject_[1-4]$/.test(candidate) ? candidate : null;
-}
-
 function readToolRequests(
   response: Record<string, unknown> | null,
   activeBookingSubjectId: string | null,
 ): RuntimeAgentToolRequest[] {
   if (!response) return [];
-  const fromToolCalls = toToolRequests(response.tool_calls, activeBookingSubjectId);
-  if (fromToolCalls.length > 0) return fromToolCalls;
-  return toToolRequests(response.output, activeBookingSubjectId);
-}
-
-function readPatientTarget(args: Record<string, unknown>): { present: boolean; value: PatientTarget | null } {
-  if (!Object.prototype.hasOwnProperty.call(args, "patient_target")) {
-    return { present: false, value: null };
+  const fromToolCalls = parseToolRequests(response.tool_calls);
+  if (fromToolCalls.length > 0) {
+    return bindModelToolRequestsToInternalContract(fromToolCalls, activeBookingSubjectId);
   }
-  const value = args.patient_target;
-  return {
-    present: true,
-    value: value === "self" || value === "other_person" ? value : null,
-  };
+  return bindModelToolRequestsToInternalContract(
+    parseToolRequests(response.output),
+    activeBookingSubjectId,
+  );
 }
 
-function resolveSemanticPatientSubjectId(
-  args: Record<string, unknown>,
-  activeBookingSubjectId: string | null,
-): string | null {
-  const target = readPatientTarget(args);
-
-  // Hidden legacy calls that do not contain patient_target keep their old subject_id
-  // semantics. This is compatibility only; patient_target is required in new schemas.
-  if (!target.present) {
-    return typeof args.subject_id === "string" ? args.subject_id : null;
-  }
-
-  // An explicitly malformed semantic target must never fall back to a legacy ID.
-  if (!target.value) return INVALID_SEMANTIC_SUBJECT_ID;
-
-  if (!activeBookingSubjectId) {
-    // subject_2 is only a compatibility bootstrap token. booking.apply may bootstrap the
-    // first other person; appointment.lookup will reject it when no registry exists.
-    return target.value === "self" ? "subject_1" : "subject_2";
-  }
-
-  const activeIsSelf = activeBookingSubjectId === "subject_1";
-  const targetMatchesActive = target.value === "self" ? activeIsSelf : !activeIsSelf;
-  return targetMatchesActive ? activeBookingSubjectId : INVALID_SEMANTIC_SUBJECT_ID;
-}
-
-function stripPatientTargetAndBindSubject(
-  request: RuntimeAgentToolRequest,
-  activeBookingSubjectId: string | null,
-): RuntimeAgentToolRequest {
-  if (request.tool !== "booking.apply" && request.tool !== "appointment.lookup") return request;
-
-  const target = readPatientTarget(request.arguments);
-  if (!target.present) return request;
-
-  const subjectId = resolveSemanticPatientSubjectId(request.arguments, activeBookingSubjectId);
-  const { patient_target: _patientTarget, subject_id: _modelSubjectId, ...businessArgs } = request.arguments;
-  return {
-    ...request,
-    arguments: {
-      ...businessArgs,
-      subject_id: subjectId ?? INVALID_SEMANTIC_SUBJECT_ID,
-    },
-  };
-}
-
-function toToolRequests(value: unknown, activeBookingSubjectId: string | null): RuntimeAgentToolRequest[] {
+function parseToolRequests(value: unknown): RuntimeAgentToolRequest[] {
   if (!Array.isArray(value)) return [];
-
-  // Parse the whole batch first, consume semantic patient targets at this boundary, and
-  // inject the old internal subject_id expected by the deterministic runtime/kernel.
-  const parsedRequests: RuntimeAgentToolRequest[] = [];
+  const toolRequests: RuntimeAgentToolRequest[] = [];
   for (const item of value) {
     const obj = asObject(item);
     if (!obj) continue;
@@ -308,44 +208,9 @@ function toToolRequests(value: unknown, activeBookingSubjectId: string | null): 
     if (!internalToolName || !isActiveTool(internalToolName)) continue;
     const callId = readString(obj.call_id) ?? readString(obj.id);
     const args = parseArguments(obj.arguments ?? obj.input ?? obj.parameters);
-    parsedRequests.push({ tool: internalToolName, call_id: callId ?? undefined, arguments: args });
+    toolRequests.push({ tool: internalToolName, call_id: callId ?? undefined, arguments: args });
   }
-
-  const boundRequests = parsedRequests.map((request) =>
-    stripPatientTargetAndBindSubject(request, activeBookingSubjectId));
-
-  const batchApplySubjects = Array.from(new Set(
-    boundRequests
-      .filter((request) => request.tool === "booking.apply")
-      .map((request) => request.arguments.subject_id)
-      .filter((value): value is string => typeof value === "string" && /^subject_[1-4]$/.test(value)),
-  ));
-  const legacySelectSubjects = Array.from(new Set(
-    boundRequests
-      .filter((request) => request.tool === "booking.select_slot")
-      .map((request) => request.arguments.subject_id)
-      .filter((value): value is string => typeof value === "string" && /^subject_[1-4]$/.test(value)),
-  ));
-
-  // Priority is deliberate:
-  // 1) persisted runtime active patient owns an established multi-person flow;
-  // 2) a single same-batch booking.apply target preserves first-bootstrap behavior;
-  // 3) a hidden legacy select-slot target is preserved only for backward compatibility,
-  //    so old invalid subject_2-without-registry calls still fail closed in the kernel;
-  // 4) otherwise simple booking is self.
-  const selectSlotSubjectId = activeBookingSubjectId
-    ?? (batchApplySubjects.length === 1
-      ? batchApplySubjects[0]
-      : legacySelectSubjects.length === 1
-        ? legacySelectSubjects[0]
-        : "subject_1");
-
-  return boundRequests.map((request) => request.tool === "booking.select_slot"
-    ? {
-        ...request,
-        arguments: { ...request.arguments, subject_id: selectSlotSubjectId },
-      }
-    : request);
+  return toolRequests;
 }
 
 function toInternalToolName(name: string): string {

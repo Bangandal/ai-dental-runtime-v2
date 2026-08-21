@@ -5,8 +5,9 @@ import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestH
 import { createClinicCardAvailabilityExecutor } from "../src/integrations/cliniccard/clinicCardAvailabilityExecutor.ts";
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
-import type { ClinicCardVisit } from "../src/integrations/cliniccard/clinicCardTypes.ts";
 import { buildBookingApplyActionTruth } from "../src/runtime/bookingApplyGuard.ts";
+import { createInMemoryBookingProcessStateRepository } from "../src/runtime/bookingProcessState.ts";
+import { createBookingReconciliationCoordinator } from "../src/runtime/bookingReconciliationCoordinator.ts";
 import type { RuntimeAgentToolResult } from "../src/runtime/openaiRuntimeAgent.ts";
 
 const ENV: Record<string, string> = {
@@ -35,6 +36,8 @@ const ENV: Record<string, string> = {
 function bookingContext() {
   return {
     clinic_id: "clinic_1",
+    contact_id: "contact_1",
+    case_id: "case_1",
     first_name: "Anna",
     last_name: "Koval",
     phone_number: "+420111222333",
@@ -166,8 +169,8 @@ test("PF-012 GOLDEN: definite visit write failure remains cliniccard_write_faile
   assert.equal(result.data.cliniccard_visit_id, null);
 });
 
-test("PF-012 GOLDEN: retry after lost createVisit response does not create a duplicate visit", async () => {
-  const visits: ClinicCardVisit[] = [];
+test("PF-012 GOLDEN: durable reconciliation lock blocks cross-turn retry even while ClinicCard reads are stale", async () => {
+  let listVisitsCount = 0;
   let createVisitCount = 0;
 
   const adapter: ClinicCardAdapter = {
@@ -179,39 +182,59 @@ test("PF-012 GOLDEN: retry after lost createVisit response does not create a dup
       ok: true,
       data: { id: 44, name: input.name, phone: input.phone ?? null },
     }),
-    listVisits: async () => ({ ok: true, data: visits }),
-    createVisit: async (input) => {
+    // Intentionally stale forever: a fresh read cannot prove whether the timed-out POST committed.
+    listVisits: async () => {
+      listVisitsCount += 1;
+      return { ok: true, data: [] };
+    },
+    createVisit: async () => {
       createVisitCount += 1;
-      const created: ClinicCardVisit = {
-        id: 700,
-        patient_id: input.patient_id,
-        doctor_id: input.doctor_id,
-        cabinet_id: input.cabinet_id,
-        date: input.date,
-        time_start: input.time_start,
-        time_end: input.time_end,
-        status: input.status,
-        note: input.note ?? null,
-      };
-      visits.push(created);
       return {
         ok: false,
-        error: { code: "cliniccard_timeout", message: "response lost after server commit" },
+        error: { code: "cliniccard_timeout", message: "response lost after possible server commit" },
       };
     },
     listPayments: async () => ({ ok: true, data: [] }),
   };
 
-  const executor = createBookingApplyExecutor({ env: ENV, adapterFactory: () => adapter });
+  const baseStateRepository = createInMemoryBookingProcessStateRepository();
+  const coordinator = createBookingReconciliationCoordinator(baseStateRepository);
+  const executor = createBookingApplyExecutor({
+    env: ENV,
+    adapterFactory: () => adapter,
+    bookingReconciliationGuard: coordinator.guard,
+  });
+
   const first = await executor(bookingContext());
   assert.equal(first.data.booking_status, "booking_outcome_unknown");
   assert.equal(createVisitCount, 1);
-  assert.equal(visits.length, 1, "the first request reached ClinicCard despite the lost response");
+  assert.equal(listVisitsCount, 1);
 
+  // Simulate the normal runtime state save at the end of turn 1. The wrapper must preserve
+  // the hidden reconciliation lock instead of letting booking_process_state overwrite it.
+  await coordinator.stateRepository.saveState(
+    { clinic_id: "clinic_1", contact_id: "contact_1", case_id: "case_1" },
+    {
+      service_reason: "consultation",
+      first_name: "Anna",
+      last_name: "Koval",
+      proof: {
+        service_known: true,
+        name_known: true,
+        slot_known: true,
+        trusted_phone_known: true,
+        ready_for_booking_apply: true,
+      },
+    },
+  );
+
+  // Turn 2 occurs before ClinicCard's read model has caught up. Durable local truth wins:
+  // no listVisits re-read and, crucially, no second createVisit POST.
   const second = await executor(bookingContext());
-  assert.equal(second.data.booking_status, "slot_conflict");
+  assert.equal(second.data.booking_status, "booking_outcome_unknown");
   assert.equal(second.data.created_visit, false);
   assert.equal(second.data.may_claim_booked, false);
-  assert.equal(createVisitCount, 1, "fresh re-read must stop a duplicate createVisit POST");
-  assert.equal(visits.length, 1);
+  assert.match(second.data.reason, /Automatic retry is blocked/i);
+  assert.equal(listVisitsCount, 1, "pending reconciliation must block before any ClinicCard read");
+  assert.equal(createVisitCount, 1, "cross-turn retry must never issue a second createVisit POST");
 });

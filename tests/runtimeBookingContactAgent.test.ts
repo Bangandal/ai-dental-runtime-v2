@@ -91,7 +91,7 @@ function successfulBookingResult(): ToolExecutionResult {
   } as ToolExecutionResult;
 }
 
-function loopFactoryThatExecutesBooking(observed: ToolExecutionContext[]): RuntimeAgentLoopFactory {
+function loopFactoryThatExecutesBooking(): RuntimeAgentLoopFactory {
   return (deps) => ({
     async runTurn(input) {
       const output = await deps.caller({
@@ -99,7 +99,9 @@ function loopFactoryThatExecutesBooking(observed: ToolExecutionContext[]): Runti
         system_instruction: "test",
         input: { message: input.user_message, context: {} },
       });
-      assert.equal(output.type, "tool_requests");
+      if (output.type !== "tool_requests") {
+        throw new Error("expected tool_requests");
+      }
 
       const executor = deps.executors["booking.apply"];
       assert.ok(executor);
@@ -112,7 +114,7 @@ function loopFactoryThatExecutesBooking(observed: ToolExecutionContext[]): Runti
 
       return {
         final_patient_reply: "ok",
-        tool_requests: output.type === "tool_requests" ? output.tool_requests : [],
+        tool_requests: output.tool_requests,
         tool_results: [],
       };
     },
@@ -137,7 +139,7 @@ function makeAgent(params: {
         },
       },
     },
-    loopFactoryThatExecutesBooking(params.observed),
+    loopFactoryThatExecutesBooking(),
   );
 }
 
@@ -183,7 +185,7 @@ test("R1-RUNTIME-CONTACT-2: subject_2 bootstrap treats channel sender phone as c
 
 test("R1-RUNTIME-CONTACT-3: single-person subject_1 channel contact stays patient-owned", async () => {
   const observed: ToolExecutionContext[] = [];
-  const request = {
+  const request: RuntimeAgentToolRequest = {
     ...bookingApply("subject_1"),
     arguments: {
       ...bookingApply("subject_1").arguments,
@@ -203,4 +205,22 @@ test("R1-RUNTIME-CONTACT-3: single-person subject_1 channel contact stays patien
   assert.equal(observed.length, 1);
   assert.equal(observed[0]?.phone_number, "+420777666555");
   assert.equal(observed[0]?.phone_belongs_to_patient, true);
+});
+
+test("R1-RUNTIME-CONTACT-4: unresolved subject cannot inherit any legacy phone at write boundary", async () => {
+  const observed: ToolExecutionContext[] = [];
+  const agent = makeAgent({ request: bookingApply("subject_9"), observed });
+
+  await agent.runTurn(baseInput({
+    channel_contact: {
+      phone_number: "+420777666555",
+      phone_source: "telegram_contact_button",
+    },
+  }));
+
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0]?.phone_number, undefined);
+  assert.equal(observed[0]?.phone_source, undefined);
+  assert.equal(observed[0]?.phone_belongs_to_patient, undefined);
+  assert.equal(observed[0]?.contact_phone_owner_subject_id, undefined);
 });

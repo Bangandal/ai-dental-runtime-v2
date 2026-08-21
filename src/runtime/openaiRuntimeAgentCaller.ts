@@ -30,11 +30,18 @@ const OPENAI_TO_INTERNAL_TOOL_NAME = Object.fromEntries(
   Object.entries(INTERNAL_TO_OPENAI_TOOL_NAME).map(([internalName, openAIName]) => [openAIName, internalName]),
 ) as Record<string, (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number]>;
 
+const SELECT_SLOT_MODEL_DESCRIPTION =
+  "Confirm the active patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. The runtime binds the selection to the active patient; do not provide an internal patient/subject identifier. Call booking.apply only after this tool returns selection_status='selected'.";
+
 export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCallerDeps): RuntimeAgentCaller {
   return async (input) => {
     const openAIInput = buildOpenAIInput(input);
     const rawResponse = await deps.client.responses.create(openAIInput);
-    return normalizeOpenAIResponse(rawResponse, input.conversation_id ?? null);
+    return normalizeOpenAIResponse(
+      rawResponse,
+      input.conversation_id ?? null,
+      resolveActiveBookingSubjectId(input.input.context),
+    );
   };
 }
 
@@ -44,14 +51,32 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
   return ACTIVE_RUNTIME_AGENT_TOOLS.flatMap((toolName) => {
     const def = defs[toolName];
     if (!def) return [];
+
+    // R3a: subject_id remains an internal compatibility field for the deterministic
+    // booking kernel, but is no longer part of the OpenAI-facing select-slot contract.
+    // The adapter injects the runtime-owned active subject when normalizing the tool call.
+    const requiredArgs = toolName === "booking.select_slot"
+      ? def.required_args.filter((arg) => arg !== "subject_id")
+      : [...def.required_args];
+    const optionalArgs = toolName === "booking.select_slot"
+      ? def.optional_args.filter((arg) => arg !== "subject_id")
+      : [...def.optional_args];
+    const description = toolName === "booking.select_slot"
+      ? SELECT_SLOT_MODEL_DESCRIPTION
+      : def.description;
+
     return [{
       type: "function",
       name: INTERNAL_TO_OPENAI_TOOL_NAME[toolName],
-      description: def.description,
+      description,
       parameters: {
         type: "object",
-        properties: buildParameterProperties(def.required_args, def.optional_args, (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas),
-        required: [...def.required_args],
+        properties: buildParameterProperties(
+          requiredArgs,
+          optionalArgs,
+          (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas,
+        ),
+        required: requiredArgs,
         additionalProperties: true,
       },
     }];
@@ -96,11 +121,15 @@ export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string,
   };
 }
 
-export function normalizeOpenAIResponse(raw: unknown, fallbackConversationId?: string | null): RuntimeAgentCallerOutput {
+export function normalizeOpenAIResponse(
+  raw: unknown,
+  fallbackConversationId?: string | null,
+  activeBookingSubjectId: string = "subject_1",
+): RuntimeAgentCallerOutput {
   const response = asObject(raw);
   const conversationId = readString(response?.conversation_id) ?? readString(response?.conversation) ?? fallbackConversationId;
 
-  const toolRequests = readToolRequests(response);
+  const toolRequests = readToolRequests(response, activeBookingSubjectId);
   if (toolRequests.length > 0) {
     return {
       type: "tool_requests",
@@ -156,14 +185,24 @@ function buildParameterProperties(
   return Object.fromEntries(all.map((arg) => [arg, paramSchemas?.[arg] ?? { type: "string" }]));
 }
 
-function readToolRequests(response: Record<string, unknown> | null): RuntimeAgentToolRequest[] {
-  if (!response) return [];
-  const fromToolCalls = toToolRequests(response.tool_calls);
-  if (fromToolCalls.length > 0) return fromToolCalls;
-  return toToolRequests(response.output);
+function resolveActiveBookingSubjectId(context: Record<string, unknown>): string {
+  const runtimeContext = asObject(context.runtime_context);
+  const bookingSubjects = asObject(runtimeContext?.booking_subjects);
+  const candidate = readString(bookingSubjects?.active_subject_id);
+  return candidate !== null && /^subject_[1-4]$/.test(candidate) ? candidate : "subject_1";
 }
 
-function toToolRequests(value: unknown): RuntimeAgentToolRequest[] {
+function readToolRequests(
+  response: Record<string, unknown> | null,
+  activeBookingSubjectId: string,
+): RuntimeAgentToolRequest[] {
+  if (!response) return [];
+  const fromToolCalls = toToolRequests(response.tool_calls, activeBookingSubjectId);
+  if (fromToolCalls.length > 0) return fromToolCalls;
+  return toToolRequests(response.output, activeBookingSubjectId);
+}
+
+function toToolRequests(value: unknown, activeBookingSubjectId: string): RuntimeAgentToolRequest[] {
   if (!Array.isArray(value)) return [];
   const toolRequests: RuntimeAgentToolRequest[] = [];
   for (const item of value) {
@@ -174,7 +213,10 @@ function toToolRequests(value: unknown): RuntimeAgentToolRequest[] {
     const internalToolName = toInternalToolName(name);
     if (!internalToolName || !isActiveTool(internalToolName)) continue;
     const callId = readString(obj.call_id) ?? readString(obj.id);
-    const args = parseArguments(obj.arguments ?? obj.input ?? obj.parameters);
+    const parsedArgs = parseArguments(obj.arguments ?? obj.input ?? obj.parameters);
+    const args = internalToolName === "booking.select_slot"
+      ? { ...parsedArgs, subject_id: activeBookingSubjectId }
+      : parsedArgs;
     toolRequests.push({ tool: internalToolName, call_id: callId ?? undefined, arguments: args });
   }
   return toolRequests;
@@ -387,7 +429,6 @@ function normalizeSubjectIntentEnvelope(obj: Record<string, unknown>): Record<st
   // action === "none"
   return obj;
 }
-
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" ? (value as Record<string, unknown>) : null;

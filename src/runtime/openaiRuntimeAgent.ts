@@ -156,16 +156,9 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     optional_args: ["requested_time", "service_interest", "limit"],
   },
   "booking.select_slot": {
-    description: "Confirm the patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. Call booking.apply only after this tool returns selection_status='selected'. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
-    required_args: ["subject_id", "requested_date", "requested_time"],
+    description: "Confirm the active patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. The runtime binds the selection to the active patient; do not provide an internal patient/subject identifier. Call booking.apply only after this tool returns selection_status='selected'.",
+    required_args: ["requested_date", "requested_time"],
     optional_args: [],
-    param_schemas: {
-      subject_id: {
-        type: "string",
-        enum: ["subject_1", "subject_2", "subject_3", "subject_4"],
-        description: "use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
-      },
-    },
   },
   "booking.apply": {
     description: "Create a visit in ClinicCard when required booking details are present, slot selection is verified, and runtime has an acceptable booking contact. Returns booking_status indicating whether the visit was created or why it could not be. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",

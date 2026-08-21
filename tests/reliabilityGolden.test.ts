@@ -125,7 +125,6 @@ function bookingToolResult(data: Record<string, unknown>): RuntimeAgentToolResul
   };
 }
 
-// PF-006 + base booking success: a unique, matching patient identity is safe to reuse.
 test("GOLDEN-01 self booking: exactly one visit is written to the uniquely matched patient", async () => {
   const visits: ClinicCardCreateVisitInput[] = [];
   const adapter = makeAdapter({
@@ -145,7 +144,6 @@ test("GOLDEN-01 self booking: exactly one visit is written to the uniquely match
   assert.equal(visits[0]?.time_start, "10:00");
 });
 
-// PF-010: a contact phone owned by another person is contact authority, not target-patient identity.
 test("GOLDEN-02 third-party booking: another person's phone never attaches the visit to that person", async () => {
   let createdPatient: ClinicCardCreatePatientInput | null = null;
   const visits: ClinicCardCreateVisitInput[] = [];
@@ -169,7 +167,6 @@ test("GOLDEN-02 third-party booking: another person's phone never attaches the v
   assert.notEqual(visits[0]?.patient_id, 10);
 });
 
-// PF-006: ambiguous target identity fails closed and cannot produce a booking claim.
 test("GOLDEN-03 ambiguous target on another person's phone: no visit is written and next action is admin handoff", async () => {
   let createVisitCount = 0;
   const adapter = makeAdapter({
@@ -197,7 +194,6 @@ test("GOLDEN-03 ambiguous target on another person's phone: no visit is written 
   assert.equal(truth.allowed_claims.can_say_booking_confirmed, false);
 });
 
-// PF-002 characterization: stale offer memory may exist internally, but it is not booking authority.
 test("GOLDEN-04 stale availability: stale slot evidence cannot remain booking-ready to the model", () => {
   const now = new Date("2026-08-12T10:00:00.000Z");
   const staleCheckedAt = new Date(now.getTime() - 20 * 60 * 1000).toISOString();
@@ -238,8 +234,8 @@ test("GOLDEN-04 stale availability: stale slot evidence cannot remain booking-re
   assert.notEqual(visible.next_action, "ready_for_booking_apply");
 });
 
-// PF-012: external write failure can never be converted into a success claim.
-test("GOLDEN-05 ClinicCard booking failure: no success claim and no fabricated visit id", async () => {
+// PF-012: a timeout after a write request is not proof of failure or success.
+test("GOLDEN-05 ClinicCard booking timeout: outcome unknown, no success claim, admin reconciliation", async () => {
   const adapter = makeAdapter({
     patients: [{ id: 33, name: "Anna Koval", phone: "+420111222333" }],
     createVisitFailure: { code: "cliniccard_timeout", message: "timeout" },
@@ -247,7 +243,7 @@ test("GOLDEN-05 ClinicCard booking failure: no success claim and no fabricated v
 
   const data = await runBooking(adapter, makeContext({ phone_belongs_to_patient: true }));
 
-  assert.equal(data.booking_status, "cliniccard_write_failed");
+  assert.equal(data.booking_status, "booking_outcome_unknown");
   assert.equal(data.created_visit, false);
   assert.equal(data.may_claim_booked, false);
   assert.equal(data.cliniccard_visit_id, null);
@@ -256,9 +252,9 @@ test("GOLDEN-05 ClinicCard booking failure: no success claim and no fabricated v
   assert.ok(truth);
   assert.equal(truth.allowed_claims.can_say_booking_created, false);
   assert.equal(truth.allowed_claims.can_say_booking_confirmed, false);
+  assert.equal(truth.required_next_action, "admin_handoff");
 });
 
-// Open Reliability Matrix items. These are intentionally visible before the refactor starts.
 test.todo("PF-003 GOLDEN: exact patient-requested time outside active evidence is rechecked, then nearest alternatives are offered if unavailable");
 test.todo("PF-004 GOLDEN: slot-selection legality depends on explicit patient choice + active evidence, not model round number");
 test.todo("PF-005 GOLDEN: missing/ambiguous requested date gets deterministic recovery and never becomes an availability claim");

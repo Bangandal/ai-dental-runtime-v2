@@ -27,8 +27,8 @@ export interface BookingApplyActionTruth {
 /**
  * True when a single booking.apply tool result carries the complete ClinicCard proof:
  * status=success, booking_status=visit_created, created_visit=true, may_claim_booked=true,
- * and a non-empty cliniccard_visit_id.  Used by postUpdateBookingSubjects to gate subject
- * status transitions — partial results must never mark a subject as booked.
+ * and a non-empty cliniccard_visit_id. Used by postUpdateBookingSubjects to gate subject
+ * status transitions. Partial results must never mark a subject as booked.
  */
 export function hasCompleteBookingApplyProof(result: RuntimeAgentToolResult | undefined): boolean {
   if (!result || result.tool !== "booking.apply" || result.status !== "success") return false;
@@ -52,12 +52,10 @@ export function hasSuccessfulBookingApplyProof(results: RuntimeAgentToolResult[]
  * Finds the authoritative booking.apply result from a list of tool results.
  *
  * Priority:
- *   1. Last result with a complete ClinicCard proof (visit_created, created_visit=true,
- *      may_claim_booked=true, non-empty cliniccard_visit_id).
+ *   1. Last result with a complete ClinicCard proof.
  *   2. If no complete proof exists, the last booking.apply result.
  *
- * "Last" wins so that a successful round-2 result always overrides a blocked round-1
- * synthetic result that appears earlier in the same toolResults accumulator.
+ * Last wins so that a successful later result overrides an earlier blocked result.
  * Fields are never mixed across results.
  */
 export function findAuthoritativeBookingApplyResult(
@@ -81,8 +79,6 @@ export function buildBookingApplyActionTruth(results: RuntimeAgentToolResult[]):
   const clinicCardVisitId = typeof d?.cliniccard_visit_id === "string" ? d.cliniccard_visit_id : null;
 
   const requiredNextAction = resolveRequiredNextAction(bookingStatus);
-  // allowed_claims must reflect full proof from the same result — never mix fields
-  // across results (e.g. booking_status from round-1 blocked result + claims from round-2).
   const hasFullProof = hasCompleteBookingApplyProof(bookingResult);
 
   return {
@@ -101,26 +97,27 @@ export function buildBookingApplyActionTruth(results: RuntimeAgentToolResult[]):
 
 function resolveRequiredNextAction(bookingStatus: string): BookingApplyActionTruth["required_next_action"] {
   switch (bookingStatus) {
-    case "visit_created":           return "none";
+    case "visit_created": return "none";
     case "missing_phone":
-    case "missing_trusted_phone":   return "ask_for_phone";
-    case "missing_slot":            return "ask_for_slot";
-    case "missing_patient_name":    return "ask_for_name";
-    case "missing_service":         return "ask_for_service";
+    case "missing_trusted_phone": return "ask_for_phone";
+    case "missing_slot": return "ask_for_slot";
+    case "missing_patient_name": return "ask_for_name";
+    case "missing_service": return "ask_for_service";
     case "slot_conflict":
     case "no_available_slots":
     case "invalid_slot":
-    case "past_time":               return "offer_another_time";
+    case "past_time": return "offer_another_time";
     case "subject_resolution_conflict": return "clarify_subject";
     case "pending_phone_classification": return "none";
     case "identity_ambiguous":
-    case "booking_write_disabled":  return "admin_handoff";
-    default:                        return "technical_fallback";
+    case "booking_write_disabled":
+    case "booking_outcome_unknown": return "admin_handoff";
+    default: return "technical_fallback";
   }
 }
 
 /**
- * Emergency fallback reply — only when the model call itself fails (error, malformed response).
+ * Emergency fallback reply, only when the model call itself fails.
  * Not the main booking reply path. Locale-aware.
  */
 export function buildBookingApplyEmergencyFallback(
@@ -134,13 +131,6 @@ export function buildBookingApplyEmergencyFallback(
       : "unknown";
 
   const normalized = String(locale ?? "").toLowerCase();
-
-  // Booking-created copy is only allowed when all 5 proof fields are present
-  // (hasCompleteBookingApplyProof). A partial visit_created result (e.g. missing
-  // cliniccard_visit_id or whitespace-only ID) falls through to the generic fallback —
-  // never tell the patient a booking was made without durable ClinicCard proof.
-  // No handoff/admin-notification side effect is created in this path — do not promise
-  // clinic staff will follow up or reach out.
   const hasFullProof = hasCompleteBookingApplyProof(bookingResult);
 
   if (normalized.startsWith("en")) {
@@ -149,6 +139,7 @@ export function buildBookingApplyEmergencyFallback(
     if (status === "slot_conflict") return "That time slot is no longer available. I can check other times.";
     if (status === "identity_ambiguous") return "I can't safely match this booking to the correct patient record. Please contact the clinic so staff can verify the patient before booking.";
     if (status === "booking_write_disabled") return "Online booking is currently unavailable. Please contact the clinic directly to book your appointment.";
+    if (status === "booking_outcome_unknown") return "I couldn't verify whether ClinicCard completed the booking. I won't repeat the booking automatically because that could create a duplicate. Please contact the clinic so staff can reconcile it.";
     return "I'm unable to confirm the booking automatically right now. Please contact the clinic directly.";
   }
 
@@ -158,15 +149,15 @@ export function buildBookingApplyEmergencyFallback(
     if (status === "slot_conflict") return "Tento čas je obsazen. Mohu zkontrolovat jiný termín.";
     if (status === "identity_ambiguous") return "Rezervaci nelze bezpečně přiřadit ke správnému pacientovi. Kontaktujte prosím kliniku, aby personál ověřil pacienta před vytvořením rezervace.";
     if (status === "booking_write_disabled") return "Online rezervace není momentálně dostupná. Kontaktujte prosím kliniku přímo pro rezervaci.";
+    if (status === "booking_outcome_unknown") return "Nepodařilo se ověřit, zda ClinicCard rezervaci dokončil. Rezervaci automaticky nezopakuji, protože by mohl vzniknout duplikát. Kontaktujte prosím kliniku pro ověření.";
     return "Momentálně nemohu automaticky potvrdit rezervaci. Kontaktujte prosím kliniku přímo.";
   }
 
-  // Default: Russian
-  // Booking IS in ClinicCard only when full proof present — never say "не могу подтвердить" then.
   if (hasFullProof) return "Запись создана в системе, но при отправке ответа произошла техническая ошибка. Пожалуйста, уточните детали у клиники.";
   if (status === "missing_phone") return "Для записи нужен номер телефона. Поделитесь контактом или напишите номер.";
   if (status === "slot_conflict") return "Это время уже недоступно. Могу проверить другое время.";
   if (status === "identity_ambiguous") return "Не могу безопасно определить карточку пациента для этой записи. Пожалуйста, свяжитесь с клиникой, чтобы администратор уточнил данные перед записью.";
   if (status === "booking_write_disabled") return "Онлайн-запись временно недоступна. Пожалуйста, свяжитесь с клиникой напрямую для записи.";
+  if (status === "booking_outcome_unknown") return "Не удалось проверить, завершил ли ClinicCard запись. Я не буду повторять её автоматически, чтобы не создать дубль. Пожалуйста, свяжитесь с клиникой для сверки.";
   return "Пока не могу подтвердить запись автоматически. Пожалуйста, свяжитесь с клиникой напрямую.";
 }

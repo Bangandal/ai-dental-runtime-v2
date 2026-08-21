@@ -42,9 +42,13 @@ export type BookingWriteResolution =
     }
   | {
       ok: false;
-      failure: "patient_write_failed" | "visit_write_failed";
+      failure:
+        | "patient_write_failed"
+        | "visit_write_failed"
+        | "patient_write_outcome_unknown"
+        | "visit_write_outcome_unknown";
       reason: string;
-      /** Present when patient creation succeeded but the visit write failed. */
+      /** Present when patient creation definitely succeeded before the visit write. */
       patient_id?: number;
     };
 
@@ -54,6 +58,10 @@ export type BookingWriteResolution =
  *
  * It does not decide patient identity, availability, slot legality, or locking.
  * Those decisions must be complete before this authority is called.
+ *
+ * PF-012: an external write can fail in two materially different ways. A definite
+ * failure proves the mutation did not succeed. An outcome-unknown failure means
+ * the request may have reached ClinicCard and must be reconciled before retrying.
  */
 export interface BookingWriteAuthority {
   write(input: BookingWriteInput): Promise<BookingWriteResolution>;

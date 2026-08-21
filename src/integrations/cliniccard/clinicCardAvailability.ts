@@ -109,13 +109,9 @@ export async function checkClinicCardAvailability(
   const visitsResult = await adapter.listVisits(input.date, dateTo);
 
   if (!visitsResult.ok) {
-    return {
-      ok: false,
-      error: {
-        code: "cliniccard_availability_error",
-        message: visitsResult.error.message,
-      },
-    };
+    // Preserve provider error identity so PF-012 can distinguish a retry-safe read
+    // timeout/network failure from a definite configuration/API rejection.
+    return { ok: false, error: visitsResult.error };
   }
 
   const rawVisitsCount = visitsResult.data.length;

@@ -54,7 +54,7 @@ test("listVisits result with 0 visits returns all slots free", async () => {
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.equal(result.data.free_slots_count, result.data.total_slots);
-    assert.equal(result.data.total_slots, 6); // 09:00-12:00 / 30min = 6 slots
+    assert.equal(result.data.total_slots, 6);
     assert.equal(result.data.slots.length, 6);
   }
 });
@@ -114,7 +114,6 @@ test("unknown status blocks by default", async () => {
 // ── 6. Back-to-back slots are allowed ─────────────────────────────────────────
 
 test("back-to-back slots are allowed — visit ending at slot start does not block next slot", async () => {
-  // Visit 09:00-09:30 should NOT block 09:30-10:00
   const visit = makeVisit({ status: "PLANNED", time_start: "09:00", time_end: "09:30" });
   const result = await checkClinicCardAvailability(BASE_INPUT, makeAdapter([visit]));
   assert.equal(result.ok, true);
@@ -179,13 +178,13 @@ test("output contains only slot date/time fields and counts — no patient names
   }
 });
 
-// ── 11. API errors return typed availability error ────────────────────────────
+// ── 11. Provider read errors preserve their identity ──────────────────────────
 
-test("API error returns ok:false with code cliniccard_availability_error", async () => {
+test("API error preserves ClinicCard error code for PF-012 classification", async () => {
   const result = await checkClinicCardAvailability(BASE_INPUT, makeErrorAdapter("HTTP 401: Unauthorized"));
   assert.equal(result.ok, false);
   if (!result.ok) {
-    assert.equal(result.error.code, "cliniccard_availability_error");
+    assert.equal(result.error.code, "cliniccard_http_error");
     assert.match(result.error.message, /401/);
   }
 });
@@ -197,7 +196,7 @@ test("date_to extends range across multiple days", async () => {
   const result = await checkClinicCardAvailability(input, makeAdapter([]));
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.equal(result.data.total_slots, 12); // 6 slots/day × 2 days
+    assert.equal(result.data.total_slots, 12);
     const day1 = result.data.slots.filter((s) => s.date === "2026-07-01");
     const day2 = result.data.slots.filter((s) => s.date === "2026-07-02");
     assert.equal(day1.length, 6);

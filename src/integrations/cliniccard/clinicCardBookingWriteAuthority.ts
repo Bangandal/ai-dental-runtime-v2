@@ -1,4 +1,5 @@
 import type { ClinicCardAdapter } from "./clinicCardAdapter.ts";
+import { classifyClinicCardFailure } from "./clinicCardFailurePolicy.ts";
 import type {
   BookingWriteAuthority,
   BookingWriteInput,
@@ -20,9 +21,12 @@ export function createClinicCardBookingWriteAuthority(
           phone: input.patient.phone_number,
         });
         if (!patientResult.ok) {
+          const disposition = classifyClinicCardFailure(patientResult.error, "write");
           return {
             ok: false,
-            failure: "patient_write_failed",
+            failure: disposition.outcome === "unknown"
+              ? "patient_write_outcome_unknown"
+              : "patient_write_failed",
             reason: patientResult.error.message,
           };
         }
@@ -41,9 +45,12 @@ export function createClinicCardBookingWriteAuthority(
       });
 
       if (!visitResult.ok) {
+        const disposition = classifyClinicCardFailure(visitResult.error, "write");
         return {
           ok: false,
-          failure: "visit_write_failed",
+          failure: disposition.outcome === "unknown"
+            ? "visit_write_outcome_unknown"
+            : "visit_write_failed",
           reason: visitResult.error.message,
           patient_id: patientId,
         };

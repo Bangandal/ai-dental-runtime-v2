@@ -123,7 +123,7 @@ test("GOLDEN-01 self booking: exactly one visit is written to the uniquely match
     onCreateVisit: (input) => visits.push(input),
   });
 
-  const data = await runBooking(adapter, makeContext());
+  const data = await runBooking(adapter, makeContext({ phone_belongs_to_patient: true }));
 
   assert.equal(data.booking_status, "visit_created");
   assert.equal(data.created_visit, true);
@@ -135,8 +135,8 @@ test("GOLDEN-01 self booking: exactly one visit is written to the uniquely match
   assert.equal(visits[0]?.time_start, "10:00");
 });
 
-// PF-010: a responsible-party phone is contact authority, not target-patient identity.
-test("GOLDEN-02 third-party booking: responsible-party phone never attaches the visit to the responsible party", async () => {
+// PF-010: a contact phone owned by another person is contact authority, not target-patient identity.
+test("GOLDEN-02 third-party booking: another person's phone never attaches the visit to that person", async () => {
   let createdPatient: ClinicCardCreatePatientInput | null = null;
   const visits: ClinicCardCreateVisitInput[] = [];
   const adapter = makeAdapter({
@@ -148,7 +148,7 @@ test("GOLDEN-02 third-party booking: responsible-party phone never attaches the 
 
   const data = await runBooking(
     adapter,
-    makeContext({ contact_phone_owner_subject_id: "subject_1" }),
+    makeContext({ phone_belongs_to_patient: false }),
   );
 
   assert.equal(data.booking_status, "visit_created");
@@ -159,8 +159,8 @@ test("GOLDEN-02 third-party booking: responsible-party phone never attaches the 
   assert.notEqual(visits[0]?.patient_id, 10);
 });
 
-// PF-006: shared/ambiguous patient identity fails closed and cannot produce a booking claim.
-test("GOLDEN-03 shared phone ambiguity: no visit is written and next action is admin handoff", async () => {
+// PF-006: ambiguous target identity fails closed and cannot produce a booking claim.
+test("GOLDEN-03 ambiguous target on another person's phone: no visit is written and next action is admin handoff", async () => {
   let createVisitCount = 0;
   const adapter = makeAdapter({
     patients: [
@@ -172,7 +172,7 @@ test("GOLDEN-03 shared phone ambiguity: no visit is written and next action is a
 
   const data = await runBooking(
     adapter,
-    makeContext({ contact_phone_owner_subject_id: "subject_1" }),
+    makeContext({ phone_belongs_to_patient: false }),
   );
 
   assert.equal(data.booking_status, "identity_ambiguous");
@@ -235,7 +235,7 @@ test("GOLDEN-05 ClinicCard booking failure: no success claim and no fabricated v
     createVisitFailure: { code: "cliniccard_timeout", message: "timeout" },
   });
 
-  const data = await runBooking(adapter, makeContext());
+  const data = await runBooking(adapter, makeContext({ phone_belongs_to_patient: true }));
 
   assert.equal(data.booking_status, "cliniccard_write_failed");
   assert.equal(data.created_visit, false);

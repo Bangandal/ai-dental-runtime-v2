@@ -25,14 +25,24 @@ export interface ToolExecutionContext {
   first_name?: string;
   /** Patient last name — extracted from booking.apply tool arguments. */
   last_name?: string;
-  /** Phone number captured from the channel contact mechanism (e.g. contact button) or patient-typed text. */
+  /** Phone number used as the booking contact. */
   phone_number?: string;
   /** Source of the captured phone number. */
   phone_source?: string;
   /** Trust level of the phone — "unverified" for patient-typed numbers, absent/undefined for trusted sources. */
   phone_trust?: "unverified";
-  /** When booking phone belongs to a different subject (responsible-party booking),
-   *  contains that subject's id. null/undefined = phone belongs to execution subject. */
+  /**
+   * Semantic ownership fact for booking identity.
+   * true = this phone belongs to the patient targeted by the booking.
+   * false = it belongs to another person and may be used for contactability only.
+   * undefined = legacy/unknown; callers should migrate to an explicit value.
+   */
+  phone_belongs_to_patient?: boolean;
+  /**
+   * @deprecated Legacy Subject Registry provenance. Kept temporarily while the old
+   * subject protocol is adapted to people + booking drafts. New kernel code must
+   * consume phone_belongs_to_patient instead of subject ids.
+   */
   contact_phone_owner_subject_id?: string | null;
   /** subject_id argument from appointment.lookup tool call. */
   lookup_subject_id?: string;

@@ -2,8 +2,10 @@ import type { ClinicCardAdapter } from "./clinicCardAdapter.ts";
 import type { ClinicCardConfig } from "./clinicCardTypes.ts";
 import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
+import { createClinicCardPatientIdentityAuthority } from "./clinicCardPatientIdentityAuthority.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import type { BookingApplyResult, BookingApplySuccessResult } from "../../runtime/toolResults.ts";
+import type { PatientIdentityAuthority } from "../../runtime/patientIdentityAuthority.ts";
 import { acquireBookingSlotLock } from "./bookingSlotMutex.ts";
 
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
@@ -34,21 +36,6 @@ function minutesToHHMM(minutes: number): string {
 
 function addMinutes(hhmm: string, mins: number): string {
   return minutesToHHMM(timeToMinutes(hhmm) + mins);
-}
-
-function normalizePatientName(value: string): string {
-  return value
-    .normalize("NFKC")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, " ");
-}
-
-function patientNameMatchesTarget(patientName: string, firstName: string, lastName: string): boolean {
-  const candidate = normalizePatientName(patientName);
-  const firstLast = normalizePatientName(`${firstName} ${lastName}`);
-  const lastFirst = normalizePatientName(`${lastName} ${firstName}`);
-  return candidate === firstLast || candidate === lastFirst;
 }
 
 function bookingResult(partial: Omit<BookingApplyResult, "booking_action">): BookingApplySuccessResult {
@@ -91,6 +78,7 @@ function isClinicAllowedForLiveBooking(
 export interface BookingApplyExecutorDeps {
   env?: Record<string, string | undefined>;
   adapterFactory?: (config: ClinicCardConfig) => ClinicCardAdapter;
+  patientIdentityAuthorityFactory?: (adapter: ClinicCardAdapter) => PatientIdentityAuthority;
 }
 
 export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}): ToolExecutor {
@@ -234,6 +222,9 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
     const timezone = config.timezone || "Europe/Prague";
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
+    const patientIdentityAuthorityFactory =
+      deps.patientIdentityAuthorityFactory ?? createClinicCardPatientIdentityAuthority;
+    const patientIdentityAuthority = patientIdentityAuthorityFactory(adapter);
 
     const timeEnd = addMinutes(timeStart, DEFAULT_SLOT_DURATION_MINUTES);
 
@@ -279,70 +270,36 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         });
       }
 
-      // F1. Resolve patient identity. Contact phone and patient identity are separate facts.
-      // The phone may belong to the patient or to a responsible party booking for someone else.
-      const findResult = await adapter.findPatientByPhone(phoneNumber);
-      if (!findResult.ok) {
+      // F1. Resolve target-patient identity behind a deterministic read-only authority.
+      // New callers provide an explicit ownership fact. The legacy subject marker remains
+      // only as a compatibility fallback until runtimeAgentLoop stops emitting subjects.
+      const phoneBelongsToPatient = context.phone_belongs_to_patient
+        ?? (context.contact_phone_owner_subject_id ? false : true);
+      const identityResult = await patientIdentityAuthority.resolve({
+        first_name: firstName,
+        last_name: lastName,
+        phone_number: phoneNumber,
+        phone_belongs_to_patient: phoneBelongsToPatient,
+      });
+
+      if (!identityResult.ok) {
         return bookingResult({
-          booking_status: "cliniccard_write_failed",
+          booking_status:
+            identityResult.failure === "identity_ambiguous"
+              ? "identity_ambiguous"
+              : "cliniccard_write_failed",
           created_visit: false,
           may_claim_booked: false,
           cliniccard_visit_id: null,
-          reason: `Patient lookup failed: ${findResult.error.message}`,
+          reason: identityResult.reason,
           proof: null,
         });
       }
 
-      const isBorrowedPhone = !!context.contact_phone_owner_subject_id;
-
-      // Fail closed immediately: own phone shared across multiple patient records is an
-      // identity conflict — name matching cannot safely resolve it.
-      if (!isBorrowedPhone && findResult.data.length > 1) {
-        return bookingResult({
-          booking_status: "identity_ambiguous",
-          created_visit: false,
-          may_claim_booked: false,
-          cliniccard_visit_id: null,
-          reason: `Phone lookup returned ${findResult.data.length} patient records — shared phone is an identity conflict, admin handoff required`,
-          proof: null,
-        });
-      }
-
-      const nameMatches = findResult.data.filter((patient) =>
-        patientNameMatchesTarget(patient.name ?? "", firstName, lastName),
-      );
-      let patientId: number | undefined;
-
-      if (nameMatches.length === 1) {
-        // Name + phone candidate resolve to one target patient. Safe to reuse.
-        patientId = nameMatches[0].id;
-      } else if (nameMatches.length > 1) {
-        // Multiple records still fit the target identity. Never choose data[0].
-        return bookingResult({
-          booking_status: "identity_ambiguous",
-          created_visit: false,
-          may_claim_booked: false,
-          cliniccard_visit_id: null,
-          reason: `Multiple patients match name "${firstName} ${lastName}" for this phone — admin handoff required`,
-          proof: null,
-        });
-      } else if (!isBorrowedPhone && findResult.data.length > 0) {
-        // Phone was presented as the target patient's own contact, but ClinicCard says it belongs
-        // to other named patient record(s). This is an identity conflict, not permission to reuse
-        // the first result and not permission to silently create a duplicate.
-        return bookingResult({
-          booking_status: "identity_ambiguous",
-          created_visit: false,
-          may_claim_booked: false,
-          cliniccard_visit_id: null,
-          reason: `Phone lookup returned patient record(s), but none match "${firstName} ${lastName}" — admin handoff required`,
-          proof: null,
-        });
-      }
-      // No name match + borrowed responsible-party phone is safe to treat as a new target patient.
-      // No candidates at all is also safe to create as a new patient.
-
-      if (patientId === undefined) {
+      let patientId: number;
+      if (identityResult.resolution === "existing_patient") {
+        patientId = identityResult.patient_id;
+      } else {
         const patientResult = await adapter.createPatient({
           name: `${firstName} ${lastName}`,
           phone: phoneNumber,
@@ -362,7 +319,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
 
       // F2. Create visit.
       const visitResult = await adapter.createVisit({
-        patient_id: patientId as number,
+        patient_id: patientId,
         doctor_id: doctorId,
         cabinet_id: cabinetId,
         date: requestedDate,
@@ -390,7 +347,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         created_visit: true,
         may_claim_booked: true,
         cliniccard_visit_id: String(visit.id),
-        cliniccard_patient_id: patientId as number,
+        cliniccard_patient_id: patientId,
         date: visit.date,
         time_start: visit.time_start,
         time_end: visit.time_end,
@@ -400,7 +357,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         reason: "visit created in ClinicCard",
         proof: {
           cliniccard_visit_id: String(visit.id),
-          cliniccard_patient_id: patientId as number,
+          cliniccard_patient_id: patientId,
           date: visit.date,
           time_start: visit.time_start,
           time_end: visit.time_end,

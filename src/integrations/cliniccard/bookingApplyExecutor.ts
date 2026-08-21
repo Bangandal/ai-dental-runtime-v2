@@ -4,13 +4,12 @@ import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { createClinicCardPatientIdentityAuthority } from "./clinicCardPatientIdentityAuthority.ts";
 import { createClinicCardBookingWriteAuthority } from "./clinicCardBookingWriteAuthority.ts";
+import { resolveClinicCardBookingSlotPolicy } from "./clinicCardBookingSlotPolicy.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import type { BookingApplyResult, BookingApplySuccessResult } from "../../runtime/toolResults.ts";
 import type { PatientIdentityAuthority } from "../../runtime/patientIdentityAuthority.ts";
 import type { BookingWriteAuthority } from "../../runtime/bookingWriteAuthority.ts";
 import { acquireBookingSlotLock } from "./bookingSlotMutex.ts";
-
-const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
 // Strict HH:MM, exactly two-digit hour and minute, valid range.
 // Rejects "9:00", "10am", "morning", and any natural-language string.
@@ -28,16 +27,6 @@ function timeToMinutes(time: string): number {
   const h = parseInt(time.slice(0, sep), 10);
   const m = parseInt(time.slice(sep + 1), 10);
   return h * 60 + m;
-}
-
-function minutesToHHMM(minutes: number): string {
-  const h = Math.floor(minutes / 60) % 24;
-  const m = minutes % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
-
-function addMinutes(hhmm: string, mins: number): string {
-  return minutesToHHMM(timeToMinutes(hhmm) + mins);
 }
 
 function bookingResult(partial: Omit<BookingApplyResult, "booking_action">): BookingApplySuccessResult {
@@ -223,6 +212,23 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
     }
 
     const timezone = config.timezone || "Europe/Prague";
+
+    // PF-007b: offered-slot evidence is not enough. Revalidate the requested slot
+    // against the same explicit policy that generated availability before any
+    // ClinicCard read or write, and derive visit duration from that policy.
+    const slotPolicyResult = resolveClinicCardBookingSlotPolicy(deps.env, requestedDate, timeStart);
+    if (!slotPolicyResult.ok) {
+      return bookingResult({
+        booking_status: slotPolicyResult.failure === "policy_unavailable" ? "config_missing" : "slot_conflict",
+        created_visit: false,
+        may_claim_booked: false,
+        cliniccard_visit_id: null,
+        reason: slotPolicyResult.reason,
+        proof: null,
+      });
+    }
+    const timeEnd = slotPolicyResult.time_end;
+
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
     const patientIdentityAuthorityFactory =
@@ -231,8 +237,6 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
     const bookingWriteAuthorityFactory =
       deps.bookingWriteAuthorityFactory ?? createClinicCardBookingWriteAuthority;
     const bookingWriteAuthority = bookingWriteAuthorityFactory(adapter);
-
-    const timeEnd = addMinutes(timeStart, DEFAULT_SLOT_DURATION_MINUTES);
 
     // Acquire slot-level lock before any ClinicCard read or write.
     // Serializes on both doctor and cabinet dimensions, mirrors the conflict rule

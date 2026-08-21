@@ -110,9 +110,13 @@ test("PF-011 GOLDEN: service determines availability provider/resource/duration"
     assert.equal(orthodontics.data.slots[0]?.starts_at, "2099-08-21T09:00:00",
       "orthodontics uses a different resource, so 09:00 remains free");
     assert.equal(cleaning.data.slots[0]?.ends_at.slice(11, 16), "10:00",
-      "first free cleaning slot is 09:30-10:00 on a 30m grid");
+      "first free cleaning slot is 09:30-10:00");
     assert.equal(orthodontics.data.slots[0]?.ends_at.slice(11, 16), "10:00",
       "orthodontics 09:00 slot lasts 60 minutes");
+    assert.equal(orthodontics.data.slots[1]?.starts_at, "2099-08-21T09:15:00",
+      "60-minute service still follows the confirmed 15-minute start grid");
+    assert.equal(orthodontics.data.slots[1]?.ends_at, "2099-08-21T10:15:00",
+      "service duration controls occupancy independently of start cadence");
   }
 });
 
@@ -140,7 +144,7 @@ test("PF-011 GOLDEN: booking independently resolves the same service resources",
     phone_source: "telegram_contact_button",
     phone_belongs_to_patient: true,
     requested_date: "2099-08-21",
-    requested_time: "11:00",
+    requested_time: "11:15",
     service_interest: "ортодонт",
   });
 
@@ -165,7 +169,7 @@ test("PF-011 GOLDEN: booking independently resolves the same service resources",
       time_start: createdVisits[1]?.time_start,
       time_end: createdVisits[1]?.time_end,
     },
-    { doctor_id: 12, cabinet_id: 22, time_start: "11:00", time_end: "12:00" },
+    { doctor_id: 12, cabinet_id: 22, time_start: "11:15", time_end: "12:15" },
   );
 });
 

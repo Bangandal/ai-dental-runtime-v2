@@ -133,9 +133,9 @@ export function buildMissingServiceReply(locale?: string | null): string {
 
 import type { AvailableSlot } from "./bookingProcessState.ts";
 import type { AvailabilityEvidence, SelectedSlotProof } from "./slotEvidence.ts";
-import { validateBookingSlotEvidence, validateBookingRequestFormat } from "./slotEvidence.ts";
+import { validateBookingRequestFormat } from "./slotEvidence.ts";
 
-/** Shared params for both slot evidence guards. */
+/** Shared params for legacy slot-evidence guards. */
 interface SlotEvidenceGuardParams {
   pendingToolRequests: RuntimeAgentToolRequest[];
   activeAvailabilityEvidence: AvailabilityEvidence | null | undefined;
@@ -144,37 +144,16 @@ interface SlotEvidenceGuardParams {
 }
 
 /**
- * Returns true when booking.apply is pending and there is no authoritative evidence
- * or no verified selected-slot proof to authorize the booking slot.
+ * Deprecated compatibility guard.
  *
- * Covers:
- *   - no availability.check attempted (or failed) this turn AND no persisted evidence
- *   - persisted evidence exists but selected_slot_proof is absent or mismatched
- *
- * Does NOT fire when the slot is simply wrong (i.e. exists in evidence but doesn't
- * match the request) — that case is handled by shouldInterceptInvalidSlotDateTime.
+ * Selected-slot proof is no longer write authority. booking.apply now revalidates
+ * the requested date/time against the confirmed clinic schedule policy and fresh
+ * ClinicCard conflicts at the write boundary. Availability evidence remains useful
+ * for presentation and dialogue continuity, but stale evidence must not authorize or
+ * deny a write.
  */
-export function shouldInterceptMissingSlotProof(params: SlotEvidenceGuardParams): boolean {
-  if (!hasBookingApplyPending(params.pendingToolRequests)) return false;
-  const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
-  if (!req) return false;
-
-  // Missing or malformed date/time is handled upstream by bookingApplyArgsMissingSlot (Guard D).
-  if (!validateBookingRequestFormat(req.arguments).ok) return false;
-
-  const result = validateBookingSlotEvidence({
-    bookingApplyRequest: req,
-    activeAvailabilityEvidence: params.activeAvailabilityEvidence,
-    selectedSlot: params.selectedSlot,
-    selectedSlotProof: params.selectedSlotProof,
-  });
-  if (result.ok) return false;
-  // Fire for evidence/proof-absence reasons; leave slot-mismatch to shouldInterceptInvalidSlotDateTime.
-  return (
-    result.reason === "no_authoritative_availability_evidence" ||
-    result.reason === "selected_slot_proof_missing" ||
-    result.reason === "selected_slot_proof_mismatch"
-  );
+export function shouldInterceptMissingSlotProof(_params: SlotEvidenceGuardParams): boolean {
+  return false;
 }
 
 const MISSING_SLOT_PROOF_REPLIES: Record<string, string> = {
@@ -188,30 +167,15 @@ export function buildMissingSlotProofReply(locale?: string | null): string {
 }
 
 /**
- * Returns true when booking.apply requests a full date+time that is NOT present in the
- * authoritative availability evidence (current-turn or persisted).
+ * Deprecated compatibility guard.
  *
- * Covers:
- *   - slot exists in evidence but the requested date+time doesn't match any allowed key
- *   - cross-date booking attempt where the time matches but the date differs
- *
- * Does NOT fire when evidence is entirely absent — that case is caught first by
- * shouldInterceptMissingSlotProof.
+ * A previously presented availability list is not booking authority. The requested
+ * slot is validated again by booking.apply against current policy and current
+ * ClinicCard conflicts immediately before the write. Keeping old evidence here as a
+ * blocker would make stale presentation state stronger than fresh write-time truth.
  */
-export function shouldInterceptInvalidSlotDateTime(params: SlotEvidenceGuardParams): boolean {
-  if (!hasBookingApplyPending(params.pendingToolRequests)) return false;
-  const req = params.pendingToolRequests.find((r) => r.tool === "booking.apply");
-  if (!req) return false;
-
-  // No evidence → can't detect invalid slot (Guard G handles missing-evidence case).
-  if (!params.activeAvailabilityEvidence) return false;
-
-  // Missing or malformed date/time is handled upstream by bookingApplyArgsMissingSlot (Guard D).
-  const fmt = validateBookingRequestFormat(req.arguments);
-  if (!fmt.ok) return false;
-
-  // Evidence exists — slot must be in the allowed keys regardless of proof state.
-  return !params.activeAvailabilityEvidence.allowed_slot_keys.includes(fmt.slot_key);
+export function shouldInterceptInvalidSlotDateTime(_params: SlotEvidenceGuardParams): boolean {
+  return false;
 }
 
 const INVALID_SLOT_REPLIES: Record<string, string> = {

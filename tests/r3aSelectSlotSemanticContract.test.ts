@@ -204,9 +204,9 @@ test("R3a regression: persisted active patient wins over conflicting same-batch 
   assert.equal(select?.arguments.subject_id, "subject_2");
 });
 
-test("R3a regression: booking_apply still exposes subject_id until its own migration", () => {
+test("R3a migration sentinel: appointment_lookup still exposes subject_id until its own migration", () => {
   const defs = buildOpenAIToolDefinitions(makeInput() as never);
-  const def = defs.find((item) => item.name === "booking_apply") as Record<string, any> | undefined;
+  const def = defs.find((item) => item.name === "appointment_lookup") as Record<string, any> | undefined;
   assert.ok(def);
   assert.equal(def.parameters.required.includes("subject_id"), true);
   assert.equal("subject_id" in def.parameters.properties, true);

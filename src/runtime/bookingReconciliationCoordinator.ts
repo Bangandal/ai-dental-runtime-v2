@@ -52,8 +52,10 @@ interface Snapshot {
   malformed_lock: boolean;
 }
 
+// Production persistence is contact-scoped (clinic_id + contact_id). case_id is
+// intentionally excluded so one unresolved write blocks every case for that contact.
 function keyString(key: BookingReconciliationKey): string {
-  return `${key.clinic_id}:${key.contact_id ?? ""}:${key.case_id ?? ""}`;
+  return `${key.clinic_id}:${key.contact_id ?? ""}`;
 }
 
 function validateKey(key: BookingReconciliationKey): string | null {
@@ -108,6 +110,20 @@ function parseLock(value: unknown): { lock: BookingReconciliationLock | null; ma
   };
 }
 
+function locksEqual(a: BookingReconciliationLock | null, b: BookingReconciliationLock): boolean {
+  return !!a
+    && a.status === b.status
+    && a.armed_at === b.armed_at
+    && a.reason === b.reason
+    && a.date === b.date
+    && a.time_start === b.time_start
+    && a.time_end === b.time_end
+    && a.doctor_id === b.doctor_id
+    && a.cabinet_id === b.cabinet_id
+    && a.service_interest === b.service_interest
+    && a.patient_id === b.patient_id;
+}
+
 function splitPersistedState(state: Partial<BookingProcessState> | null): Snapshot {
   if (!state) return { visible: null, lock: null, malformed_lock: false };
   const raw = state as PersistedBookingProcessState;
@@ -145,7 +161,10 @@ export function createBookingReconciliationCoordinator(
         loadError = info.error ?? "booking process state repository load failed";
       }
     });
-    if (loadError) return { ok: false, reason: loadError };
+    if (loadError) {
+      cache.delete(keyString(key));
+      return { ok: false, reason: loadError };
+    }
 
     const snapshot = splitPersistedState(loaded);
     cache.set(keyString(key), snapshot);
@@ -183,15 +202,20 @@ export function createBookingReconciliationCoordinator(
 
   const stateRepository: BookingProcessStateRepository = {
     async loadState(key, onDebug) {
-      let forwarded: Parameters<NonNullable<typeof onDebug>>[0] | null = null;
+      let loadFailed = false;
       const loaded = await base.loadState(key, (info) => {
-        forwarded = info;
+        if (!info.loaded && info.reason === "rpc_error") loadFailed = true;
         onDebug?.(info);
       });
-      if (!forwarded && !loaded) onDebug?.({ loaded: false, reason: "null_or_missing" });
 
       const snapshot = splitPersistedState(loaded);
-      cache.set(keyString(key), snapshot);
+      if (loadFailed) {
+        // Never cache an RPC failure as an authoritative "no lock" result. The booking
+        // boundary will retry the repository read and fail closed if the error persists.
+        cache.delete(keyString(key));
+      } else {
+        cache.set(keyString(key), snapshot);
+      }
       return snapshot.visible;
     },
 
@@ -243,8 +267,8 @@ export function createBookingReconciliationCoordinator(
       cache.delete(keyString(key));
       const confirmed = await loadSnapshot(key);
       if (!confirmed.ok) return confirmed;
-      if (!confirmed.snapshot.lock) {
-        return { ok: false, reason: "booking reconciliation lock was not durably persisted" };
+      if (!locksEqual(confirmed.snapshot.lock, lock)) {
+        return { ok: false, reason: "booking reconciliation lock was not durably persisted as written" };
       }
       cache.set(keyString(key), confirmed.snapshot);
       return { ok: true };

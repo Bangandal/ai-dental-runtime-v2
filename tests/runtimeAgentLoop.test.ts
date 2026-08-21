@@ -193,9 +193,9 @@ test("multi-round tool loop is not implemented", async () => {
   assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
 });
 
-test("runtimeAgentLoop has no forbidden external imports and preserves ownership boundaries", async () => {
+test("runtimeAgentLoop legacy implementation has no forbidden external imports and preserves ownership boundaries", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
-  const modulePath = resolve(thisDir, "../src/runtime/runtimeAgentLoop.ts");
+  const modulePath = resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts");
   const docsPath = resolve(thisDir, "../docs/OPENAI_RUNTIME_AGENT_LOOP.md");
   const source = await readFile(modulePath, "utf8");
 
@@ -231,9 +231,9 @@ test("CBM/bug2: multi-round fallback reply is Russian, not English", async () =>
   assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
 });
 
-test("CBM/bug2: runtimeAgentLoop source does not contain English 'Let me clarify that with the clinic team'", async () => {
+test("CBM/bug2: runtimeAgentLoop legacy implementation does not contain English 'Let me clarify that with the clinic team'", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
-  const source = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoop.ts"), "utf8");
+  const source = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
 
   assert.ok(!source.includes("Let me clarify that with the clinic team"), "English fallback string must be removed");
 });
@@ -276,9 +276,9 @@ test("CBM/P2: runtimeAgentLoop multi-round fallback respects locale in runTurn â
   assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
 });
 
-test("CBM/P2: runtimeAgentLoop runTurn path uses locale-aware helper, not a hard-coded reply string", async () => {
+test("CBM/P2: runtimeAgentLoop legacy runTurn path uses locale-aware helper, not a hard-coded reply string", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
-  const source = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoop.ts"), "utf8");
+  const source = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
 
   assert.ok(
     source.includes("buildMultiRoundFallbackReply"),

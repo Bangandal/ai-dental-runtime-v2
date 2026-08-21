@@ -518,13 +518,13 @@ test("proof: UNSAFE_BOOKING_TEXT_RE and guardBookingApplyFinalReply are removed 
   assert.deepEqual(violations, [], `Regex guard must be fully removed: ${violations.join(", ")}`);
 });
 
-// ── Proof: booking_apply_action_truth is passed to model in runtimeAgentLoop ──
+// ── Proof: booking_apply_action_truth is passed to model in legacy Runtime implementation ──
 
-test("proof: runtimeAgentLoop.ts injects booking_apply_action_truth into second model call context", async () => {
+test("proof: runtimeAgentLoopLegacy.ts injects booking_apply_action_truth into second model call context", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
-  const loopSrc = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoop.ts"), "utf8");
-  assert.match(loopSrc, /booking_apply_action_truth/, "runtimeAgentLoop must inject booking_apply_action_truth into model context");
-  assert.match(loopSrc, /buildBookingApplyActionTruth/, "runtimeAgentLoop must call buildBookingApplyActionTruth");
+  const loopSrc = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  assert.match(loopSrc, /booking_apply_action_truth/, "runtimeAgentLoopLegacy must inject booking_apply_action_truth into model context");
+  assert.match(loopSrc, /buildBookingApplyActionTruth/, "runtimeAgentLoopLegacy must call buildBookingApplyActionTruth");
 });
 
 // ── PR #180 R4: Emergency fallback gated by complete ClinicCard proof ──────────

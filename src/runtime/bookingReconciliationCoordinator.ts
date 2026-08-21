@@ -279,13 +279,23 @@ export function createBookingReconciliationCoordinator(
       if (!current.ok) return current;
       if (!current.snapshot.lock) return { ok: true };
 
+      const previousSnapshot = current.snapshot;
       const saved = await saveRaw(key, current.snapshot.visible, null);
       if (!saved.ok) return saved;
-      cache.set(keyString(key), {
-        visible: current.snapshot.visible,
-        lock: null,
-        malformed_lock: false,
-      });
+
+      // Unlock is safety-relevant too. Prove the hidden lock is actually gone before
+      // allowing this process to treat the contact as writable again.
+      cache.delete(keyString(key));
+      const confirmed = await loadSnapshot(key);
+      if (!confirmed.ok) {
+        cache.set(keyString(key), previousSnapshot);
+        return confirmed;
+      }
+      if (confirmed.snapshot.lock) {
+        cache.set(keyString(key), previousSnapshot);
+        return { ok: false, reason: "booking reconciliation lock clear was not durably persisted" };
+      }
+      cache.set(keyString(key), confirmed.snapshot);
       return { ok: true };
     },
   };

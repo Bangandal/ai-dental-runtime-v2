@@ -4,6 +4,7 @@ import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { checkClinicCardAvailability, type AvailabilityAdapter } from "./clinicCardAvailability.ts";
 import { getIsoWeekday, isDateInsideAvailabilityPolicy, loadClinicCardAvailabilityPolicy } from "./clinicCardAvailabilityPolicy.ts";
 import { resolveClinicCardServiceResource } from "./clinicCardServiceResourcePolicy.ts";
+import { classifyClinicCardFailure } from "./clinicCardFailurePolicy.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import { makeFailedToolResult } from "../../runtime/toolResults.ts";
 import { getTodayInTimezone, isPastSlotTime } from "../../runtime/bookingPreflight.ts";
@@ -160,11 +161,12 @@ export function createClinicCardAvailabilityExecutor(
     );
 
     if (!result.ok) {
+      const disposition = classifyClinicCardFailure(result.error, "read");
       return makeFailedToolResult(
         "availability.check",
         result.error.code,
         result.error.message,
-        false,
+        disposition.safe_to_retry,
       );
     }
 

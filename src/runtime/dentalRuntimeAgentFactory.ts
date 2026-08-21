@@ -1,5 +1,5 @@
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
-import { createRuntimeAgentLoop } from "./runtimeAgentLoop.ts";
+import { createRuntimeAgentWithBookingContactBridge } from "./runtimeBookingContactAgent.ts";
 import { createOpenAIRuntimeAgentCaller, type OpenAIResponsesClient } from "./openaiRuntimeAgentCaller.ts";
 import { createSupabaseKnowledgeRepository, type EmbeddingClient, type RpcCaller } from "./supabaseKnowledgeRepository.ts";
 import { createKbSearchExecutor } from "./kbSearchExecutor.ts";
@@ -46,7 +46,7 @@ export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): Op
     "appointment.lookup": lookupExecutor,
   };
 
-  return createRuntimeAgentLoop({
+  return createRuntimeAgentWithBookingContactBridge({
     model: deps.model,
     caller,
     executors,

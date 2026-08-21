@@ -1,0 +1,42 @@
+name: Apply PF-003 RC4 contract restore
+
+on:
+  push:
+    branches:
+      - fix/pf-003-anchored-availability
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Restore exact-time presentation invariant
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('src/runtime/openaiRuntimeAgent.ts')
+          s = p.read_text()
+          old = '    "- Vague time: check and list exact slots. Exact time: call availability.check once with requested_time; if available, confirm only it; otherwise offer returned alternatives without another check.",'
+          new = '    "- Vague time → check first, list exact slots. Exact time → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available.",'
+          assert old in s
+          s = s.replace(old, new, 1)
+          p.write_text(s)
+          PY
+
+      - name: Commit exact patch and self-remove
+        run: |
+          rm .github/workflows/apply-pf003-rc4-contract.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- src/runtime/openaiRuntimeAgent.ts .github/workflows/apply-pf003-rc4-contract.yml
+          git diff --cached --check
+          git commit -m "fix(PF-003): preserve exact-time presentation invariant"
+          git push origin HEAD:fix/pf-003-anchored-availability

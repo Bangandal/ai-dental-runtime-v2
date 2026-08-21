@@ -37,11 +37,12 @@ export function classifyClinicCardFailure(
 ): ClinicCardFailureDisposition {
   const code = error.code.trim().toLowerCase();
 
-  if (code === "cliniccard_validation_error") {
-    return { transient: false, safe_to_retry: false, outcome: "known_failed" };
-  }
-
-  if (code === "cliniccard_api_error") {
+  if (
+    code === "cliniccard_validation_error"
+    || code === "cliniccard_api_error"
+    || code === "patient_write_failed"
+    || code === "visit_write_failed"
+  ) {
     return { transient: false, safe_to_retry: false, outcome: "known_failed" };
   }
 

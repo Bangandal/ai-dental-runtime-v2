@@ -95,6 +95,7 @@ export type BookingApplyStatus =
   | "slot_conflict"
   | "identity_ambiguous"
   | "cliniccard_write_failed"
+  | "booking_outcome_unknown"
   | "visit_created";
 
 export interface BookingApplyResult {

@@ -30,9 +30,6 @@ const OPENAI_TO_INTERNAL_TOOL_NAME = Object.fromEntries(
   Object.entries(INTERNAL_TO_OPENAI_TOOL_NAME).map(([internalName, openAIName]) => [openAIName, internalName]),
 ) as Record<string, (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number]>;
 
-const SELECT_SLOT_MODEL_DESCRIPTION =
-  "Confirm the active patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. The runtime binds the selection to the active patient; do not provide an internal patient/subject identifier. Call booking.apply only after this tool returns selection_status='selected'.";
-
 export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCallerDeps): RuntimeAgentCaller {
   return async (input) => {
     const openAIInput = buildOpenAIInput(input);
@@ -52,31 +49,18 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
     const def = defs[toolName];
     if (!def) return [];
 
-    // R3a: subject_id remains an internal compatibility field for the deterministic
-    // booking kernel, but is no longer part of the OpenAI-facing select-slot contract.
-    // The adapter injects the runtime-owned active subject when normalizing the tool call.
-    const requiredArgs = toolName === "booking.select_slot"
-      ? def.required_args.filter((arg) => arg !== "subject_id")
-      : [...def.required_args];
-    const optionalArgs = toolName === "booking.select_slot"
-      ? def.optional_args.filter((arg) => arg !== "subject_id")
-      : [...def.optional_args];
-    const description = toolName === "booking.select_slot"
-      ? SELECT_SLOT_MODEL_DESCRIPTION
-      : def.description;
-
     return [{
       type: "function",
       name: INTERNAL_TO_OPENAI_TOOL_NAME[toolName],
-      description,
+      description: def.description,
       parameters: {
         type: "object",
         properties: buildParameterProperties(
-          requiredArgs,
-          optionalArgs,
+          def.required_args,
+          def.optional_args,
           (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas,
         ),
-        required: requiredArgs,
+        required: [...def.required_args],
         additionalProperties: true,
       },
     }];

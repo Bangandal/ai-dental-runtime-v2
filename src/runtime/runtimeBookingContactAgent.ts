@@ -26,11 +26,49 @@ export interface CapturedBookingTarget {
   execution_subject_id: SubjectId | null;
 }
 
+export interface SameBatchBookingStage {
+  booking_apply: RuntimeAgentToolRequest;
+  select_slot_call_id: string;
+  forwarded_requests: RuntimeAgentToolRequest[];
+}
+
 function findSingleBookingApply(
   requests: RuntimeAgentToolRequest[],
 ): RuntimeAgentToolRequest | null {
   const bookingRequests = requests.filter((request) => request.tool === "booking.apply");
   return bookingRequests.length === 1 ? bookingRequests[0] : null;
+}
+
+/**
+ * Returns a deterministic staging plan only for the unambiguous same-person case:
+ * exactly one booking.select_slot and exactly one booking.apply with matching strict
+ * subject ids. Everything else stays on the legacy fail-closed path unchanged.
+ *
+ * The booking.apply request is not changed. It is only replayed to the legacy loop after
+ * that exact select_slot call has produced a tool result, so the existing slot-proof,
+ * identity, policy, lock and write guards remain authoritative.
+ */
+export function buildSameBatchBookingStage(
+  requests: RuntimeAgentToolRequest[],
+): SameBatchBookingStage | null {
+  const selectRequests = requests.filter((request) => request.tool === "booking.select_slot");
+  const bookingRequests = requests.filter((request) => request.tool === "booking.apply");
+
+  if (selectRequests.length !== 1 || bookingRequests.length !== 1) return null;
+
+  const selectRequest = selectRequests[0];
+  const bookingRequest = bookingRequests[0];
+  if (selectRequest.call_id === bookingRequest.call_id) return null;
+
+  const selectSubjectId = parseStrictSubjectId(selectRequest.arguments.subject_id);
+  const bookingSubjectId = parseStrictSubjectId(bookingRequest.arguments.subject_id);
+  if (!selectSubjectId || !bookingSubjectId || selectSubjectId !== bookingSubjectId) return null;
+
+  return {
+    booking_apply: bookingRequest,
+    select_slot_call_id: selectRequest.call_id,
+    forwarded_requests: requests.filter((request) => request.call_id !== bookingRequest.call_id),
+  };
 }
 
 /**
@@ -76,10 +114,14 @@ export function captureBookingExecutionTarget(
 /**
  * Per-turn compatibility shell around the legacy Runtime loop.
  *
- * The legacy loop may still calculate phone fields internally, but immediately
- * before booking.apply reaches its executor we replace those fields with the
- * semantic projection from runtimeBookingContactBridge. This makes explicit
- * ownership authoritative without sharing mutable state across concurrent turns.
+ * Responsibilities kept at this boundary:
+ * 1. preserve semantic phone ownership immediately before booking.apply writes;
+ * 2. collapse the safe same-batch select_slot + booking.apply case without asking the
+ *    model to make the same booking decision again.
+ *
+ * The shell never authorizes a booking itself. It only replays the exact already-issued
+ * booking.apply after the matching select_slot result exists. The legacy Runtime still
+ * owns subject validation, slot proof, schedule policy, identity checks, locking and writes.
  */
 export function createRuntimeAgentWithBookingContactBridge(
   deps: CreateRuntimeAgentLoopDeps,
@@ -87,15 +129,55 @@ export function createRuntimeAgentWithBookingContactBridge(
 ): OpenAIRuntimeAgent {
   return {
     async runTurn(input: RuntimeAgentTurnInput) {
+      // This object is private to one runTurn. It may receive a legacy bootstrap after the
+      // first model response so select_slot for subject_2+ sees the same registry that the
+      // booking write boundary already uses. Nothing is shared across concurrent turns.
+      const loopInput: RuntimeAgentTurnInput = { ...input };
+
       let captured: CapturedBookingTarget = {
-        execution_input: input,
+        execution_input: loopInput,
         execution_subject_id: null,
       };
+      let stagedBooking: SameBatchBookingStage | null = null;
 
       const caller: RuntimeAgentCaller = async (callerInput) => {
+        if (
+          stagedBooking
+          && Array.isArray(callerInput.input.tool_results)
+          && callerInput.input.tool_results.some(
+            (result) => result.tool === "booking.select_slot"
+              && result.call_id === stagedBooking?.select_slot_call_id,
+          )
+        ) {
+          const request = stagedBooking.booking_apply;
+          stagedBooking = null;
+          return {
+            type: "tool_requests",
+            conversation_id: callerInput.conversation_id,
+            tool_requests: [request],
+          };
+        }
+
         const output = await deps.caller(callerInput);
         if (output.type === "tool_requests") {
-          captured = captureBookingExecutionTarget(captured, input, output.tool_requests);
+          captured = captureBookingExecutionTarget(captured, loopInput, output.tool_requests);
+
+          const nextStage = buildSameBatchBookingStage(output.tool_requests);
+          if (nextStage) {
+            stagedBooking = nextStage;
+
+            // For subject_2+ the legacy loop normally bootstraps from booking.apply before
+            // processing select_slot. Because booking.apply is staged here, mirror that exact
+            // already-existing bootstrap into the private loop input before control returns.
+            if (captured.execution_input.booking_subjects && !loopInput.booking_subjects) {
+              loopInput.booking_subjects = captured.execution_input.booking_subjects;
+            }
+
+            return {
+              ...output,
+              tool_requests: nextStage.forwarded_requests,
+            };
+          }
         }
         return output;
       };
@@ -138,7 +220,7 @@ export function createRuntimeAgentWithBookingContactBridge(
         caller,
         executors,
       });
-      return loop.runTurn(input);
+      return loop.runTurn(loopInput);
     },
   };
 }

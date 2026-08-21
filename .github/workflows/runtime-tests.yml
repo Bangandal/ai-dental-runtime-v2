@@ -1,38 +1,48 @@
-name: R2e one-shot loop migration
+name: Runtime tests
 
 on:
+  pull_request:
   push:
     branches:
-      - refactor/r2e-booking-apply-preflight-orchestrator
+      - ai-dental-frontdesk-core
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: r2e-loop-migration-${{ github.ref }}
+  group: runtime-tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  migrate:
+  test:
+    name: npm test
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          ref: refactor/r2e-booking-apply-preflight-orchestrator
+          node-version: 22
+          cache: npm
 
-      - name: Apply deterministic loop migration
-        run: python3 scripts/r2e-apply.py
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Commit migrated loop and restore workflow
+      - name: Run full test suite
         shell: bash
         run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git diff --cached --quiet && exit 0
-          git commit -m "refactor(R2e): route booking preflight through decision boundary"
-          git push origin HEAD:refactor/r2e-booking-apply-preflight-orchestrator
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-test-output
+          path: test-output.txt
+          if-no-files-found: error

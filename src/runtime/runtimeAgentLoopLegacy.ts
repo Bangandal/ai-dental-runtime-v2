@@ -24,7 +24,8 @@ import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { hasTrustedPhone, hasBookingContactPhone, hasBookingApplyPending } from "./bookingContactGuard.ts";
-import { shouldInterceptMissingPhoneBeforeBookingApply, shouldInterceptNoSlotsBeforeBookingApply, bookingApplyArgsMissingSlot, getMissingBookingApplyNameFields, bookingApplyArgsMissingService, shouldInterceptInvalidSlotDateTime, shouldInterceptMissingSlotProof } from "./bookingApplyPreflight.ts";
+import { shouldInterceptNoSlotsBeforeBookingApply } from "./bookingApplyPreflight.ts";
+import { evaluateBookingApplyPreflight } from "./bookingApplyPreflightDecision.ts";
 import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAvailabilityActionTruth, resolveAuthoritativeAvailabilityAttempt, findLastAvailabilityRequest } from "./availabilityActionTruth.ts";
@@ -516,59 +517,29 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
       }
 
-      // Guard I (round 1) — pending typed phone: fires right after subject resolution, before
-      // slot guards. Subject is frozen; phone ownership must be resolved before execution.
-      if (!guardSFired && bookingApplyRound1 && effectiveBookingSubjects?.pending_typed_phone) {
-        debug.reason = "booking_apply_preflight_pending_typed_phone_round1";
-        return await finalizeBlockedBookingApplyWithToolOutput({
-          pendingBookingApply: bookingApplyRound1,
-          guardedData: {
-            booking_status: "pending_phone_classification",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "none",
-            reason: "typed_phone_subject_unclear",
-          },
-          previousToolResults: [],
-          toolRequests: processedToolRequests,
-          conversationId,
-          systemInstruction,
-          callerContext,
-          input,
-          debug,
-          deps,
-          execution_subject_id: round1ExecutionSubjectId,
-          booking_subjects_after_resolution: bootstrappedRegistry,
-        });
-      }
-
-      // Global preflight A — past-time guard (round 1): fires after subject resolution.
+      // Shared booking business preflight (round 1) — execution patient is already frozen.
+      // Guard priority lives in bookingApplyPreflightDecision, not in this transport loop.
       if (!guardSFired && bookingApplyRound1) {
-        if (isPastBookingTime({
-          requestedDate: typeof bookingApplyRound1.arguments.requested_date === "string"
-            ? bookingApplyRound1.arguments.requested_date : undefined,
-          requestedTime: typeof bookingApplyRound1.arguments.requested_time === "string"
-            ? bookingApplyRound1.arguments.requested_time : undefined,
+        const round1Preflight = evaluateBookingApplyPreflight({
+          round: 1,
+          pendingBookingApply: bookingApplyRound1,
+          pendingToolRequests: toolRequests,
+          pendingTypedPhone: Boolean(effectiveBookingSubjects?.pending_typed_phone),
+          hasBookingPhone: hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId),
+          activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
+          selectedSlot: bookingProcessState.selected_slot,
+          selectedSlotProof: bookingProcessState.selected_slot_proof,
+          includeInvalidSlotGuard: false,
           timezone,
           now: turnNow,
-        })) {
-          debug.past_time_detail = {
-            requestedDate: typeof bookingApplyRound1.arguments.requested_date === "string" ? bookingApplyRound1.arguments.requested_date : undefined,
-            requestedTime: typeof bookingApplyRound1.arguments.requested_time === "string" ? bookingApplyRound1.arguments.requested_time : undefined,
-            timezone,
-            nowISO: turnNow.toISOString(),
-            todayInTimezone: getTodayInTimezone(turnNow, timezone),
-          };
-          debug.reason = "booking_apply_preflight_past_time_round1";
+        });
+        if (round1Preflight.outcome === "block") {
+          debug.reason = round1Preflight.debug_reason;
+          if (round1Preflight.past_time_detail) debug.past_time_detail = round1Preflight.past_time_detail;
+          if (round1Preflight.missing_fields) debug.missing_fields = round1Preflight.missing_fields;
           return await finalizeBlockedBookingApplyWithToolOutput({
             pendingBookingApply: bookingApplyRound1,
-            guardedData: {
-              booking_status: "past_time",
-              created_visit: false,
-              may_claim_booked: false,
-              required_next_action: "ask_for_alternative_time",
-              reason: "requested_time_is_in_past",
-            },
+            guardedData: round1Preflight.guarded_data,
             previousToolResults: [],
             toolRequests: processedToolRequests,
             conversationId,
@@ -581,141 +552,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             booking_subjects_after_resolution: bootstrappedRegistry,
           });
         }
-      }
-
-      // Global preflight D — no-slot guard (round 1): fires after subject resolution.
-      if (!guardSFired && bookingApplyRound1 && bookingApplyArgsMissingSlot(bookingApplyRound1.arguments)) {
-        debug.reason = "booking_apply_preflight_missing_slot_round1";
-        return await finalizeBlockedBookingApplyWithToolOutput({
-          pendingBookingApply: bookingApplyRound1,
-          guardedData: {
-            booking_status: "missing_slot",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "ask_for_slot",
-            reason: "requested_date_time_required",
-          },
-          previousToolResults: [],
-          toolRequests: processedToolRequests,
-          conversationId,
-          systemInstruction,
-          callerContext,
-          input,
-          debug,
-          deps,
-          execution_subject_id: round1ExecutionSubjectId,
-          booking_subjects_after_resolution: bootstrappedRegistry,
-        });
-      }
-
-      // Global preflight G — slot proof guard (round 1): fires after subject resolution.
-      if (!guardSFired && bookingApplyRound1 && shouldInterceptMissingSlotProof({
-        pendingToolRequests: toolRequests,
-        activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
-        selectedSlot: bookingProcessState.selected_slot,
-        selectedSlotProof: bookingProcessState.selected_slot_proof,
-      })) {
-        debug.reason = "booking_apply_preflight_missing_slot_proof_round1";
-        return await finalizeBlockedBookingApplyWithToolOutput({
-          pendingBookingApply: bookingApplyRound1,
-          guardedData: {
-            booking_status: "slot_not_verified",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "ask_for_slot",
-            reason: "slot_proof_required",
-          },
-          previousToolResults: [],
-          toolRequests: processedToolRequests,
-          conversationId,
-          systemInstruction,
-          callerContext,
-          input,
-          debug,
-          deps,
-          execution_subject_id: round1ExecutionSubjectId,
-          booking_subjects_after_resolution: bootstrappedRegistry,
-        });
-      }
-
-      // Global preflight B — phone guard (round 1): fires after slot guards.
-      if (!guardSFired && bookingApplyRound1 && !hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId)) {
-        debug.reason = "booking_apply_preflight_missing_trusted_phone_round1";
-        return await finalizeBlockedBookingApplyWithToolOutput({
-          pendingBookingApply: bookingApplyRound1,
-          guardedData: {
-            booking_status: "missing_trusted_phone",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "ask_for_phone",
-            reason: "trusted_phone_required",
-          },
-          previousToolResults: [],
-          toolRequests: processedToolRequests,
-          conversationId,
-          systemInstruction,
-          callerContext,
-          input,
-          debug,
-          deps,
-          execution_subject_id: round1ExecutionSubjectId,
-          booking_subjects_after_resolution: bootstrappedRegistry,
-        });
-      }
-
-      // Global preflight E — name-missing guard (round 1).
-      if (!guardSFired && bookingApplyRound1 && hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId)) {
-        const missingNames = getMissingBookingApplyNameFields(bookingApplyRound1.arguments);
-        if (missingNames.length > 0) {
-          debug.reason = "booking_apply_preflight_missing_name_round1";
-          debug.missing_fields = missingNames;
-          return await finalizeBlockedBookingApplyWithToolOutput({
-            pendingBookingApply: bookingApplyRound1,
-            guardedData: {
-              booking_status: "missing_patient_name",
-              created_visit: false,
-              may_claim_booked: false,
-              required_next_action: "ask_for_name",
-              reason: "patient_name_required",
-              missing_fields: missingNames,
-            },
-            previousToolResults: [],
-            toolRequests: processedToolRequests,
-            conversationId,
-            systemInstruction,
-            callerContext,
-            input,
-            debug,
-            deps,
-            execution_subject_id: round1ExecutionSubjectId,
-            booking_subjects_after_resolution: bootstrappedRegistry,
-          });
-        }
-      }
-
-      // Global preflight F — service-missing guard (round 1).
-      if (!guardSFired && bookingApplyRound1 && hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId) && bookingApplyArgsMissingService(bookingApplyRound1.arguments)) {
-        debug.reason = "booking_apply_preflight_missing_service_round1";
-        return await finalizeBlockedBookingApplyWithToolOutput({
-          pendingBookingApply: bookingApplyRound1,
-          guardedData: {
-            booking_status: "missing_service",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "ask_for_service",
-            reason: "service_required",
-          },
-          previousToolResults: [],
-          toolRequests: processedToolRequests,
-          conversationId,
-          systemInstruction,
-          callerContext,
-          input,
-          debug,
-          deps,
-          execution_subject_id: round1ExecutionSubjectId,
-          booking_subjects_after_resolution: bootstrappedRegistry,
-        });
       }
 
       // When Guard S fired, booking.apply was blocked in round-1 (not executed) — no resolution.
@@ -1174,227 +1010,29 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           });
         }
 
+        // Shared booking business preflight (round 2). No-slots and subject resolution
+        // have already run; this owns pending-phone → time/slot proof → phone → name/service.
         if (pendingBookingApply) {
-          // 7. Guard I (round 2): pending typed phone fires right after subject resolution,
-          //    before slot guards — phone ownership must be resolved before execution.
-          if (effectiveBookingSubjects?.pending_typed_phone) {
-            debug.reason = "booking_apply_preflight_pending_typed_phone_round2";
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: {
-                booking_status: "pending_phone_classification",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "none",
-                reason: "typed_phone_subject_unclear",
-              },
-              previousToolResults: toolResults,
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-              execution_subject_id: round2ExecutionSubjectId,
-            });
-          }
-
-          // 8. Past-time preflight (round 2): fires after subject resolution.
-          if (isPastBookingTime({
-              requestedDate: typeof pendingBookingApply.arguments.requested_date === "string"
-                ? pendingBookingApply.arguments.requested_date : undefined,
-              requestedTime: typeof pendingBookingApply.arguments.requested_time === "string"
-                ? pendingBookingApply.arguments.requested_time : undefined,
-              timezone,
-              now: turnNow,
-            })) {
-              debug.past_time_detail = {
-                requestedDate: typeof pendingBookingApply.arguments.requested_date === "string" ? pendingBookingApply.arguments.requested_date : undefined,
-                requestedTime: typeof pendingBookingApply.arguments.requested_time === "string" ? pendingBookingApply.arguments.requested_time : undefined,
-                timezone,
-                nowISO: turnNow.toISOString(),
-                todayInTimezone: getTodayInTimezone(turnNow, timezone),
-              };
-              debug.reason = "booking_apply_preflight_past_time_round2";
-              return await finalizeBlockedBookingApplyWithToolOutput({
-                pendingBookingApply,
-                guardedData: {
-                  booking_status: "past_time",
-                  created_visit: false,
-                  may_claim_booked: false,
-                  required_next_action: "ask_for_alternative_time",
-                  reason: "requested_time_is_in_past",
-                },
-                previousToolResults: toolResults,
-                toolRequests: processedToolRequests,
-                conversationId,
-                systemInstruction,
-                callerContext,
-                input,
-                debug,
-                deps,
-                execution_subject_id: round2ExecutionSubjectId,
-                booking_subjects_after_resolution: bootstrappedRegistry,
-              });
-          }
-
-          // 9. Guard D (round 2): missing date+time — fires after subject resolution.
-          if (bookingApplyArgsMissingSlot(pendingBookingApply.arguments)) {
-            debug.reason = "booking_apply_preflight_missing_slot_round2";
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: {
-                booking_status: "missing_slot",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "ask_for_slot",
-                reason: "requested_date_time_required",
-              },
-              previousToolResults: toolResults,
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              execution_subject_id: round2ExecutionSubjectId,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-
-          // 10. Guard G (round 2): slot not verified — fires after subject resolution.
-          if (shouldInterceptMissingSlotProof({
+          const round2Preflight = evaluateBookingApplyPreflight({
+            round: 2,
+            pendingBookingApply,
             pendingToolRequests: secondOutput.tool_requests,
+            pendingTypedPhone: Boolean(effectiveBookingSubjects?.pending_typed_phone),
+            hasBookingPhone: hasSubjectOrContactPhone(effectiveInput, round2ExecutionSubjectId),
             activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
             selectedSlot: bookingProcessState.selected_slot,
             selectedSlotProof: bookingProcessState.selected_slot_proof,
-          })) {
-            debug.reason = "booking_apply_preflight_missing_slot_proof_round2";
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: {
-                booking_status: "slot_not_verified",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "ask_for_slot",
-                reason: "slot_proof_required",
-              },
-              previousToolResults: toolResults,
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              execution_subject_id: round2ExecutionSubjectId,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-
-          // 11. Guard H (round 2): invalid slot — fires after subject resolution.
-          if (shouldInterceptInvalidSlotDateTime({
-            pendingToolRequests: secondOutput.tool_requests,
-            activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
-            selectedSlot: bookingProcessState.selected_slot,
-            selectedSlotProof: bookingProcessState.selected_slot_proof,
-          })) {
-            debug.reason = "booking_apply_preflight_invalid_slot_round2";
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: {
-                booking_status: "invalid_slot",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "choose_from_available_slots",
-                reason: "requested_time_not_in_available_slots",
-              },
-              previousToolResults: toolResults,
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              execution_subject_id: round2ExecutionSubjectId,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-        }
-
-        // 12. Guard A: booking.apply requested in round-2 but trusted phone absent.
-        //     Runs after slot guards so we don't ask for phone when slots are invalid.
-        if (hasBookingApplyPending(secondOutput.tool_requests) && !hasSubjectOrContactPhone(effectiveInput, round2ExecutionSubjectId)) {
-          const missingPhonePendingApply = pendingBookingApply ?? secondOutput.tool_requests.find((r) => r.tool === "booking.apply")!;
-          debug.reason = "booking_apply_intercepted_missing_trusted_phone";
-          return await finalizeBlockedBookingApplyWithToolOutput({
-            pendingBookingApply: missingPhonePendingApply,
-            guardedData: {
-              booking_status: "missing_trusted_phone",
-              created_visit: false,
-              may_claim_booked: false,
-              required_next_action: "ask_for_phone",
-              reason: "trusted_phone_required",
-            },
-            previousToolResults: toolResults,
-            toolRequests: processedToolRequests,
-            conversationId,
-            systemInstruction,
-            callerContext,
-            input,
-            debug,
-            deps,
-            execution_subject_id: round2ExecutionSubjectId,
-            booking_subjects_after_resolution: bootstrappedRegistry,
+            includeInvalidSlotGuard: true,
+            timezone,
+            now: turnNow,
           });
-        }
-
-        // 13. Guard B: round-2 booking.apply with trusted phone — execute it.
-        if (pendingBookingApply && hasSubjectOrContactPhone(effectiveInput, round2ExecutionSubjectId)) {
-          // Guard E (round 2): slot and phone present but first_name or last_name absent.
-          const round2MissingNames = getMissingBookingApplyNameFields(pendingBookingApply.arguments);
-          if (round2MissingNames.length > 0) {
-            debug.reason = "booking_apply_preflight_missing_name_round2";
-            debug.missing_fields = round2MissingNames;
+          if (round2Preflight.outcome === "block") {
+            debug.reason = round2Preflight.debug_reason;
+            if (round2Preflight.past_time_detail) debug.past_time_detail = round2Preflight.past_time_detail;
+            if (round2Preflight.missing_fields) debug.missing_fields = round2Preflight.missing_fields;
             return await finalizeBlockedBookingApplyWithToolOutput({
               pendingBookingApply,
-              guardedData: {
-                booking_status: "missing_patient_name",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "ask_for_name",
-                reason: "patient_name_required",
-                missing_fields: round2MissingNames,
-              },
-              previousToolResults: toolResults,
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              execution_subject_id: round2ExecutionSubjectId,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-
-          // Guard F (round 2): name and slot present but service/service_reason absent.
-          if (bookingApplyArgsMissingService(pendingBookingApply.arguments)) {
-            debug.reason = "booking_apply_preflight_missing_service_round2";
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: {
-                booking_status: "missing_service",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "ask_for_service",
-                reason: "service_required",
-              },
+              guardedData: round2Preflight.guarded_data,
               previousToolResults: toolResults,
               toolRequests: processedToolRequests,
               conversationId,

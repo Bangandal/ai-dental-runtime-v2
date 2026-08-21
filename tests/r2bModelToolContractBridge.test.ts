@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { RUNTIME_AGENT_TOOL_DEFINITIONS } from "../src/runtime/openaiRuntimeAgent.ts";
 import {
   bindModelToolRequestsToInternalContract,
   INVALID_SEMANTIC_SUBJECT_ID,
@@ -11,21 +12,19 @@ import {
   resolveActiveInternalSubjectId,
 } from "../src/runtime/modelToolContractBridge.ts";
 
-test("R2b boundary: booking tool projection is business-semantic", () => {
-  const select = projectModelToolContract("booking.select_slot", {
-    description: "legacy select",
-    required_args: ["subject_id", "requested_date", "requested_time"],
-    optional_args: [],
-    param_schemas: { subject_id: { type: "string" } },
-  });
+test("R3f boundary: canonical booking tool contracts are already business-semantic", () => {
+  const select = projectModelToolContract(
+    "booking.select_slot",
+    RUNTIME_AGENT_TOOL_DEFINITIONS["booking.select_slot"] as never,
+  );
   assert.deepEqual(select.required_args, ["requested_date", "requested_time"]);
-  assert.equal("subject_id" in (select.param_schemas ?? {}), true, "unused legacy schema may remain internal but is not projected as a property by required/optional args");
+  assert.equal("subject_id" in (select.param_schemas ?? {}), false);
+  assert.doesNotMatch(select.description, /subject_[1-4]|subject_id/i);
 
-  const apply = projectModelToolContract("booking.apply", {
-    description: "legacy apply",
-    required_args: ["subject_id", "first_name", "last_name", "service", "requested_date", "requested_time"],
-    optional_args: [],
-  });
+  const apply = projectModelToolContract(
+    "booking.apply",
+    RUNTIME_AGENT_TOOL_DEFINITIONS["booking.apply"] as never,
+  );
   assert.deepEqual(apply.required_args, [
     "patient_target",
     "first_name",
@@ -35,14 +34,15 @@ test("R2b boundary: booking tool projection is business-semantic", () => {
     "requested_time",
   ]);
   assert.deepEqual(apply.param_schemas?.patient_target?.enum, ["self", "other_person"]);
+  assert.equal("subject_id" in (apply.param_schemas ?? {}), false);
 
-  const lookup = projectModelToolContract("appointment.lookup", {
-    description: "legacy lookup",
-    required_args: ["subject_id"],
-    optional_args: ["date_from", "date_to"],
-  });
+  const lookup = projectModelToolContract(
+    "appointment.lookup",
+    RUNTIME_AGENT_TOOL_DEFINITIONS["appointment.lookup"] as never,
+  );
   assert.deepEqual(lookup.required_args, ["patient_target"]);
   assert.deepEqual(lookup.optional_args, ["date_from", "date_to"]);
+  assert.deepEqual(lookup.param_schemas?.patient_target?.enum, ["self", "other_person"]);
 });
 
 test("R2b boundary: active runtime patient beats model legacy IDs", () => {
@@ -119,6 +119,8 @@ test("R2b structure: OpenAI caller no longer owns booking-tool legacy translatio
   assert.doesNotMatch(callerSource, /INVALID_SEMANTIC_SUBJECT_ID/);
   assert.doesNotMatch(callerSource, /batchApplySubjects|legacySelectSubjects|selectSlotSubjectId/);
 
+  assert.doesNotMatch(bridgeSource, /SELECT_SLOT_MODEL_DESCRIPTION|BOOKING_APPLY_MODEL_DESCRIPTION|APPOINTMENT_LOOKUP_MODEL_DESCRIPTION/);
+  assert.doesNotMatch(bridgeSource, /PATIENT_TARGET_SCHEMA/);
   assert.doesNotMatch(bridgeSource, /process\.env/);
   assert.doesNotMatch(bridgeSource, /from\s+["'][^"']*cliniccard[^"']*["']/i);
   assert.doesNotMatch(bridgeSource, /from\s+["'][^"']*supabase[^"']*["']/i);

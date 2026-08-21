@@ -19,68 +19,25 @@ export interface ModelToolContract {
   param_schemas?: Record<string, Record<string, unknown>>;
 }
 
-const SELECT_SLOT_MODEL_DESCRIPTION =
-  "Confirm the active patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. The runtime binds the selection to the active patient; do not provide an internal patient/subject identifier. Call booking.apply only after this tool returns selection_status='selected'.";
-
-const BOOKING_APPLY_MODEL_DESCRIPTION =
-  "Create a visit in ClinicCard for the intended patient when required booking details are present, slot selection is verified, and runtime has an acceptable booking contact. Set patient_target='self' when the sender is the patient, or patient_target='other_person' when booking for another person. Runtime owns the internal patient/subject identifier. Returns booking_status indicating whether the visit was created or why it could not be.";
-
-const APPOINTMENT_LOOKUP_MODEL_DESCRIPTION =
-  "Look up upcoming appointments for the intended patient. Set patient_target='self' for the sender's appointments, or patient_target='other_person' for another person's appointments. Runtime owns the internal patient/subject identifier. Read-only: does not create, cancel, or modify visits.";
-
-const PATIENT_TARGET_SCHEMA: Record<string, unknown> = {
-  type: "string",
-  enum: ["self", "other_person"],
-  description: "Business-semantic patient target: self for the sender/patient, other_person for another person. Runtime resolves the internal patient identity.",
-};
-
 const VALID_INTERNAL_SUBJECT_RE = /^subject_[1-4]$/;
 export const INVALID_SEMANTIC_SUBJECT_ID = "__patient_target_conflict__";
 
 type PatientTarget = "self" | "other_person";
 
-function usesSemanticPatientTarget(toolName: ActiveRuntimeToolName): boolean {
-  return toolName === "booking.apply" || toolName === "appointment.lookup";
-}
-
 /**
- * Project an internal runtime tool contract into the smaller business-semantic contract
- * exposed to the model. Technical subject IDs remain an internal compatibility detail.
+ * The canonical runtime tool definitions are already business-semantic.
+ * Keep this boundary as a detached copy so the OpenAI adapter does not own schemas,
+ * while all semantic-to-legacy translation remains on the response path below.
  */
 export function projectModelToolContract(
-  toolName: ActiveRuntimeToolName,
+  _toolName: ActiveRuntimeToolName,
   definition: InternalToolContract,
 ): ModelToolContract {
-  const semanticPatientTarget = usesSemanticPatientTarget(toolName);
-  const removesSubjectId = toolName === "booking.select_slot" || semanticPatientTarget;
-  const requiredArgs = removesSubjectId
-    ? definition.required_args.filter((arg) => arg !== "subject_id")
-    : [...definition.required_args];
-  const optionalArgs = removesSubjectId
-    ? definition.optional_args.filter((arg) => arg !== "subject_id")
-    : [...definition.optional_args];
-
-  const projectedRequiredArgs = semanticPatientTarget
-    ? ["patient_target", ...requiredArgs]
-    : requiredArgs;
-
-  const description = toolName === "booking.select_slot"
-    ? SELECT_SLOT_MODEL_DESCRIPTION
-    : toolName === "booking.apply"
-      ? BOOKING_APPLY_MODEL_DESCRIPTION
-      : toolName === "appointment.lookup"
-        ? APPOINTMENT_LOOKUP_MODEL_DESCRIPTION
-        : definition.description;
-
-  const paramSchemas = semanticPatientTarget
-    ? { ...(definition.param_schemas ?? {}), patient_target: PATIENT_TARGET_SCHEMA }
-    : definition.param_schemas;
-
   return {
-    description,
-    required_args: projectedRequiredArgs,
-    optional_args: optionalArgs,
-    ...(paramSchemas ? { param_schemas: paramSchemas } : {}),
+    description: definition.description,
+    required_args: [...definition.required_args],
+    optional_args: [...definition.optional_args],
+    ...(definition.param_schemas ? { param_schemas: definition.param_schemas } : {}),
   };
 }
 
@@ -91,9 +48,8 @@ function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Read the runtime-owned active legacy subject from model-visible context.
- * This is deliberately the only place the OpenAI boundary needs to know that
- * booking_subjects still carries an internal subject_N identifier.
+ * Read the runtime-owned active legacy subject from the private runtime context.
+ * Technical subject IDs never need to be present in the serialized model payload.
  */
 export function resolveActiveInternalSubjectId(context: Record<string, unknown>): string | null {
   const runtimeContext = asObject(context.runtime_context);
@@ -162,8 +118,8 @@ function bindSemanticPatientTarget(
 }
 
 /**
- * Translate already-parsed model tool requests back into the existing deterministic
- * runtime contract. This is the quarantine seam for legacy subject_N plumbing.
+ * Translate already-parsed model tool requests into the existing deterministic kernel
+ * contract. This is the single quarantine seam for remaining legacy subject_N plumbing.
  */
 export function bindModelToolRequestsToInternalContract(
   requests: RuntimeAgentToolRequest[],

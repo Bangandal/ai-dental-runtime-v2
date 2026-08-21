@@ -144,6 +144,12 @@ export interface OpenAIRuntimeAgent {
   runTurn(input: RuntimeAgentTurnInput): Promise<RuntimeAgentTurnResult>;
 }
 
+const PATIENT_TARGET_PARAM_SCHEMA = {
+  type: "string",
+  enum: ["self", "other_person"],
+  description: "Business-semantic patient target: self for the sender/patient, other_person for another person. Runtime resolves the internal patient identity.",
+} as const;
+
 export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
   "kb.search": {
     description: "Use for clinic FAQ, services, prices, location, insurance, and opening hours.",
@@ -156,39 +162,24 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     optional_args: ["requested_time", "service_interest", "limit"],
   },
   "booking.select_slot": {
-    description: "Confirm the patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. Call booking.apply only after this tool returns selection_status='selected'. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
-    required_args: ["subject_id", "requested_date", "requested_time"],
+    description: "Confirm the active patient's slot choice against active availability evidence. Call this with the exact date and time the patient affirmatively selected. Returns selection_status='selected' when the slot is in active evidence, or a failure reason otherwise. Does NOT create a visit or call ClinicCard. Runtime binds the selection to the active patient; do not provide an internal patient identifier. Call booking.apply only after this tool returns selection_status='selected'.",
+    required_args: ["requested_date", "requested_time"],
     optional_args: [],
-    param_schemas: {
-      subject_id: {
-        type: "string",
-        enum: ["subject_1", "subject_2", "subject_3", "subject_4"],
-        description: "use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
-      },
-    },
   },
   "booking.apply": {
-    description: "Create a visit in ClinicCard when required booking details are present, slot selection is verified, and runtime has an acceptable booking contact. Returns booking_status indicating whether the visit was created or why it could not be. subject_id is always required: use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
-    required_args: ["subject_id", "first_name", "last_name", "service", "requested_date", "requested_time"],
+    description: "Create a visit in ClinicCard for the intended patient when required booking details are present, slot selection is verified, and runtime has an acceptable booking contact. Set patient_target='self' when the sender is the patient, or patient_target='other_person' when booking for another person. Runtime owns internal patient identity. Returns booking_status indicating whether the visit was created or why it could not be.",
+    required_args: ["patient_target", "first_name", "last_name", "service", "requested_date", "requested_time"],
     optional_args: [],
     param_schemas: {
-      subject_id: {
-        type: "string",
-        enum: ["subject_1", "subject_2", "subject_3", "subject_4"],
-        description: "use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
-      },
+      patient_target: PATIENT_TARGET_PARAM_SCHEMA,
     },
   },
   "appointment.lookup": {
-    description: "Look up upcoming appointments for a specific subject. Read-only — does not create, cancel, or modify visits. Returns upcoming visits (PLANNED or CONFIRMED). subject_id is always required. Call this when the patient asks to view, cancel, or reschedule an existing appointment.",
-    required_args: ["subject_id"],
+    description: "Look up upcoming appointments for the intended patient. Set patient_target='self' for the sender's appointments, or patient_target='other_person' for another person's appointments. Runtime owns internal patient identity. Read-only: does not create, cancel, or modify visits.",
+    required_args: ["patient_target"],
     optional_args: ["date_from", "date_to"],
     param_schemas: {
-      subject_id: {
-        type: "string",
-        enum: ["subject_1", "subject_2", "subject_3", "subject_4"],
-        description: "use 'subject_1' for the sender/self, 'subject_2' for the first mentioned person, etc.",
-      },
+      patient_target: PATIENT_TARGET_PARAM_SCHEMA,
     },
   },
 } as const;

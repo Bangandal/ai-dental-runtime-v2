@@ -693,43 +693,47 @@ test("RC4-C: exact time rule: if available, confirm only that time; list alterna
   );
 });
 
-// ── PF-001 regression: subject_id enum in tool schema ────────────────────────
+// ── PF-001 regression: semantic model tool contract, strict internal binding ──
 
-test("PF-001-1: booking.select_slot param_schemas.subject_id has enum with exactly subject_1..4", () => {
-  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.select_slot"] as Record<string, unknown>;
-  const paramSchemas = def.param_schemas as Record<string, { enum?: string[] }> | undefined;
-  assert.ok(paramSchemas, "booking.select_slot must have param_schemas");
-  const subjectEnum = paramSchemas["subject_id"]?.enum;
-  assert.ok(Array.isArray(subjectEnum), "subject_id must have enum array");
-  assert.deepEqual(
-    [...subjectEnum].sort(),
-    ["subject_1", "subject_2", "subject_3", "subject_4"],
-    "subject_id enum must be exactly subject_1..4",
-  );
+test("PF-001-1: booking.select_slot canonical contract has no technical subject id", () => {
+  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.select_slot"] as {
+    required_args: readonly string[];
+    optional_args: readonly string[];
+    param_schemas?: Record<string, unknown>;
+    description: string;
+  };
+  assert.deepEqual(def.required_args, ["requested_date", "requested_time"]);
+  assert.deepEqual(def.optional_args, []);
+  assert.equal(def.required_args.includes("subject_id"), false);
+  assert.equal(def.optional_args.includes("subject_id"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(def.param_schemas ?? {}, "subject_id"), false);
+  assert.doesNotMatch(def.description, /subject_[1-4]|subject_id/i);
 });
 
-test("PF-001-2: booking.apply param_schemas.subject_id has enum with exactly subject_1..4", () => {
-  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.apply"] as Record<string, unknown>;
-  const paramSchemas = def.param_schemas as Record<string, { enum?: string[] }> | undefined;
-  assert.ok(paramSchemas, "booking.apply must have param_schemas");
-  const subjectEnum = paramSchemas["subject_id"]?.enum;
-  assert.ok(Array.isArray(subjectEnum), "subject_id must have enum array");
-  assert.deepEqual(
-    [...subjectEnum].sort(),
-    ["subject_1", "subject_2", "subject_3", "subject_4"],
-    "subject_id enum must be exactly subject_1..4",
-  );
+test("PF-001-2: booking.apply canonical contract uses semantic patient_target only", () => {
+  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.apply"] as {
+    required_args: readonly string[];
+    optional_args: readonly string[];
+    param_schemas?: Record<string, { enum?: readonly string[] }>;
+    description: string;
+  };
+  assert.equal(def.required_args.includes("subject_id"), false);
+  assert.equal(def.optional_args.includes("subject_id"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(def.param_schemas ?? {}, "subject_id"), false);
+  assert.deepEqual(def.param_schemas?.patient_target?.enum, ["self", "other_person"]);
+  assert.match(def.description, /patient_target/i);
 });
 
-test("PF-001-3: appointment.lookup param_schemas.subject_id has enum with exactly subject_1..4", () => {
-  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["appointment.lookup"] as Record<string, unknown>;
-  const paramSchemas = def.param_schemas as Record<string, { enum?: string[] }> | undefined;
-  assert.ok(paramSchemas, "appointment.lookup must have param_schemas");
-  const subjectEnum = paramSchemas["subject_id"]?.enum;
-  assert.ok(Array.isArray(subjectEnum), "subject_id must have enum array");
-  assert.deepEqual(
-    [...subjectEnum].sort(),
-    ["subject_1", "subject_2", "subject_3", "subject_4"],
-    "subject_id enum must be exactly subject_1..4",
-  );
+test("PF-001-3: appointment.lookup canonical contract uses semantic patient_target only", () => {
+  const def = RUNTIME_AGENT_TOOL_DEFINITIONS["appointment.lookup"] as {
+    required_args: readonly string[];
+    optional_args: readonly string[];
+    param_schemas?: Record<string, { enum?: readonly string[] }>;
+    description: string;
+  };
+  assert.deepEqual(def.required_args, ["patient_target"]);
+  assert.deepEqual(def.optional_args, ["date_from", "date_to"]);
+  assert.equal(Object.prototype.hasOwnProperty.call(def.param_schemas ?? {}, "subject_id"), false);
+  assert.deepEqual(def.param_schemas?.patient_target?.enum, ["self", "other_person"]);
+  assert.doesNotMatch(def.description, /subject_[1-4]|subject_id/i);
 });

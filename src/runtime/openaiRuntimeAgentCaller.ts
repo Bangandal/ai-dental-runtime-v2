@@ -15,6 +15,7 @@ import {
   parseModelPersonIntents,
   projectModelPersonInstruction,
 } from "./modelPersonIntentBridge.ts";
+import { projectModelFacingContext } from "./modelFacingContextProjection.ts";
 
 export interface OpenAIResponsesClient {
   responses: {
@@ -86,7 +87,7 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
 export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string, unknown> {
   const payload = {
     message: input.input.message,
-    context: input.input.context,
+    context: projectModelFacingContext(input.input.context),
   };
 
   const responseInput: Array<Record<string, unknown>> = [

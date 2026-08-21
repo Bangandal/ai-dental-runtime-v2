@@ -278,11 +278,11 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
 
     // ── BOOKING PEOPLE ────────────────────────────────────────────────────────
     "## BOOKING PEOPLE",
-    "Identify via runtime_context.booking_subjects.subjects label/name, person_kind and is_active.",
-    `On switch/create, include subject_intent in final_response: {action:"none"|"switch_subject"|"create_subjects",target:"self"|"active"|"other_person",person_ref:null|string,display_name:null|string,count:null|1..4,labels:[],confidence:"low"|"medium"|"high"}.`,
-    "Multiple other_person: person_ref must exactly match visible label/patient_name; if ambiguous, ask.",
-    `pending_typed_phone: ask owner; include phone_ownership_intent in final_response: {action:"assign_pending_phone"|"share_sender_contact"|"none",target:"self"|"active"|"other_person",person_ref:null|string,confidence:"low"|"medium"|"high"}.`,
-    "Never emit subject_id, target_subject_id or subject_1..4.",
+    "Identify from booking_subjects.subjects label/name, person_kind, is_active.",
+    `Switch/create: put subject_intent in final_response:{action:"none"|"switch_subject"|"create_subjects",target:"self"|"active"|"other_person",person_ref:null|string,display_name:null|string,count:null|1..4,labels:[],confidence:"low"|"medium"|"high"}.`,
+    "Multiple other_person: person_ref=exact visible label/patient_name; if ambiguous, ask.",
+    `pending_typed_phone: ask owner; put phone_ownership_intent in final_response:{action:"assign_pending_phone"|"share_sender_contact"|"none",target:"self"|"active"|"other_person",person_ref:null|string,confidence:"low"|"medium"|"high"}.`,
+    "Never emit subject_id, target_subject_id, subject_1..4.",
 
     // ── BOOKING FLOW ──────────────────────────────────────────────────────────
     "## BOOKING FLOW",

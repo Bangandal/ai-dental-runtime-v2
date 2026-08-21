@@ -449,12 +449,12 @@ test("RC3b: buildBookingApplyEmergencyFallback with visit_created never says 'н
 
 // ── T9: no ClinicCard writes outside bookingApplyExecutor ────────────────────
 
-test("T9: no createPatient or createVisit calls outside bookingApplyExecutor and ClinicCard adapter files", async () => {
+test("T9: ClinicCard booking writes live only in BookingWriteAuthority and adapter plumbing", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const srcDir = resolve(thisDir, "../src");
 
   const allowedFiles = new Set([
-    resolve(srcDir, "integrations/cliniccard/bookingApplyExecutor.ts"),
+    resolve(srcDir, "integrations/cliniccard/clinicCardBookingWriteAuthority.ts"),
     resolve(srcDir, "integrations/cliniccard/clinicCardAdapter.ts"),
     resolve(srcDir, "integrations/cliniccard/clinicCardTypes.ts"),
   ]);
@@ -477,11 +477,11 @@ test("T9: no createPatient or createVisit calls outside bookingApplyExecutor and
   for (const file of allFiles) {
     if (allowedFiles.has(file)) continue;
     const content = await readFile(file, "utf8");
-    if (content.includes("createPatient") || content.includes("createVisit")) {
+    if (/\.create(?:Patient|Visit)\s*\(/.test(content)) {
       violations.push(file.replace(srcDir + "/", "src/"));
     }
   }
-  assert.deepEqual(violations, [], `ClinicCard write calls found outside allowed files: ${violations.join(", ")}`);
+  assert.deepEqual(violations, [], `ClinicCard booking write calls found outside BookingWriteAuthority/adapter plumbing: ${violations.join(", ")}`);
 });
 
 // ── Proof: no regex semantic guard in runtime ─────────────────────────────────

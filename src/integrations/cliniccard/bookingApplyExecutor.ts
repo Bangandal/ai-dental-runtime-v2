@@ -3,14 +3,16 @@ import type { ClinicCardConfig } from "./clinicCardTypes.ts";
 import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { createClinicCardPatientIdentityAuthority } from "./clinicCardPatientIdentityAuthority.ts";
+import { createClinicCardBookingWriteAuthority } from "./clinicCardBookingWriteAuthority.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import type { BookingApplyResult, BookingApplySuccessResult } from "../../runtime/toolResults.ts";
 import type { PatientIdentityAuthority } from "../../runtime/patientIdentityAuthority.ts";
+import type { BookingWriteAuthority } from "../../runtime/bookingWriteAuthority.ts";
 import { acquireBookingSlotLock } from "./bookingSlotMutex.ts";
 
 const DEFAULT_SLOT_DURATION_MINUTES = 30;
 
-// Strict HH:MM — exactly two-digit hour and minute, valid range.
+// Strict HH:MM, exactly two-digit hour and minute, valid range.
 // Rejects "9:00", "10am", "morning", and any natural-language string.
 function parseStrictHHMM(val: string): string | null {
   const m = val.trim().match(/^(\d{2}):(\d{2})$/);
@@ -47,7 +49,7 @@ function bookingResult(partial: Omit<BookingApplyResult, "booking_action">): Boo
 }
 
 // Phone sources that represent a platform-verified or ClinicCard-verified contact.
-// "manual_input" (patient free-typed a number) is intentionally excluded — live writes
+// "manual_input" (patient free-typed a number) is intentionally excluded, live writes
 // require a stronger proof of contact than unverified free text.
 // Exported so the booking contact guard can reuse the same authoritative set.
 export const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
@@ -79,11 +81,12 @@ export interface BookingApplyExecutorDeps {
   env?: Record<string, string | undefined>;
   adapterFactory?: (config: ClinicCardConfig) => ClinicCardAdapter;
   patientIdentityAuthorityFactory?: (adapter: ClinicCardAdapter) => PatientIdentityAuthority;
+  bookingWriteAuthorityFactory?: (adapter: ClinicCardAdapter) => BookingWriteAuthority;
 }
 
 export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}): ToolExecutor {
   return async (context: ToolExecutionContext): Promise<BookingApplySuccessResult> => {
-    // A. Mode gate — must be first check. No ClinicCard reads or writes occur before this.
+    // A. Mode gate, must be first check. No ClinicCard reads or writes occur before this.
     const configResult = loadClinicCardConfig(deps.env);
     if (!configResult.ok) {
       return bookingResult({
@@ -108,7 +111,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // A2. Clinic allowlist gate — must run before any read or write, and before the phone
+    // A2. Clinic allowlist gate, must run before any read or write, and before the phone
     // check, so a non-allowlisted clinic never gets asked for contact info it can't use.
     const env = deps.env ?? (process.env as Record<string, string | undefined>);
     if (!isClinicAllowedForLiveBooking(context.clinic_id, env)) {
@@ -124,7 +127,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // B2. Phone check — must be present, and from a trusted/verified source, before any write.
+    // B2. Phone check, must be present, and from a trusted/verified source, before any write.
     const phoneNumber = context.phone_number;
     if (!phoneNumber) {
       return bookingResult({
@@ -153,7 +156,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // C. Config resolution — doctor_id and cabinet_id from trusted env only, never from patient.
+    // C. Config resolution, doctor_id and cabinet_id from trusted env only, never from patient.
     const doctorId = Number(config.default_doctor_id);
     if (!Number.isFinite(doctorId) || !Number.isInteger(doctorId) || doctorId <= 0) {
       return bookingResult({
@@ -178,7 +181,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // Missing patient name fields — createVisit cannot proceed without them.
+    // Missing patient name fields, createVisit cannot proceed without them.
     const firstName = context.first_name;
     const lastName = context.last_name;
     if (!firstName || !lastName) {
@@ -205,7 +208,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // Strict HH:MM validation — rejects "9:00", "10am", "morning", or any non-exact format.
+    // Strict HH:MM validation, rejects "9:00", "10am", "morning", or any non-exact format.
     const rawTime = context.requested_time;
     const timeStart = rawTime ? parseStrictHHMM(rawTime) : null;
     if (!timeStart) {
@@ -225,11 +228,14 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
     const patientIdentityAuthorityFactory =
       deps.patientIdentityAuthorityFactory ?? createClinicCardPatientIdentityAuthority;
     const patientIdentityAuthority = patientIdentityAuthorityFactory(adapter);
+    const bookingWriteAuthorityFactory =
+      deps.bookingWriteAuthorityFactory ?? createClinicCardBookingWriteAuthority;
+    const bookingWriteAuthority = bookingWriteAuthorityFactory(adapter);
 
     const timeEnd = addMinutes(timeStart, DEFAULT_SLOT_DURATION_MINUTES);
 
     // Acquire slot-level lock before any ClinicCard read or write.
-    // Serializes on both doctor and cabinet dimensions — mirrors the conflict rule
+    // Serializes on both doctor and cabinet dimensions, mirrors the conflict rule
     // (same doctor OR same cabinet). Different doctor+cabinet proceed independently.
     const release = await acquireBookingSlotLock(
       context.clinic_id ?? "",
@@ -238,7 +244,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       cabinetId,
     );
     try {
-      // D. Fresh re-read of ClinicCard visits for the requested date — never trust stale availability.
+      // D. Fresh re-read of ClinicCard visits for the requested date, never trust stale availability.
       const visitsResult = await adapter.listVisits(requestedDate, requestedDate);
       if (!visitsResult.ok) {
         return bookingResult({
@@ -296,52 +302,44 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         });
       }
 
-      let patientId: number;
-      if (identityResult.resolution === "existing_patient") {
-        patientId = identityResult.patient_id;
-      } else {
-        const patientResult = await adapter.createPatient({
-          name: `${firstName} ${lastName}`,
-          phone: phoneNumber,
-        });
-        if (!patientResult.ok) {
-          return bookingResult({
-            booking_status: "cliniccard_write_failed",
-            created_visit: false,
-            may_claim_booked: false,
-            cliniccard_visit_id: null,
-            reason: patientResult.error.message,
-            proof: null,
-          });
-        }
-        patientId = patientResult.data.id;
-      }
-
-      // F2. Create visit.
-      const visitResult = await adapter.createVisit({
-        patient_id: patientId,
-        doctor_id: doctorId,
-        cabinet_id: cabinetId,
-        date: requestedDate,
-        time_start: timeStart,
-        time_end: timeEnd,
-        status: "PLANNED",
-        note: context.service_interest ?? undefined,
+      // F2. All external booking writes are owned by BookingWriteAuthority.
+      // The executor provides only the already-resolved patient target + visit command.
+      const writeResult = await bookingWriteAuthority.write({
+        patient: identityResult.resolution === "existing_patient"
+          ? {
+              kind: "existing_patient",
+              patient_id: identityResult.patient_id,
+            }
+          : {
+              kind: "create_patient",
+              name: `${firstName} ${lastName}`,
+              phone_number: phoneNumber,
+            },
+        visit: {
+          doctor_id: doctorId,
+          cabinet_id: cabinetId,
+          date: requestedDate,
+          time_start: timeStart,
+          time_end: timeEnd,
+          status: "PLANNED",
+          note: context.service_interest ?? undefined,
+        },
       });
 
-      if (!visitResult.ok) {
+      if (!writeResult.ok) {
         return bookingResult({
           booking_status: "cliniccard_write_failed",
           created_visit: false,
           may_claim_booked: false,
           cliniccard_visit_id: null,
-          reason: visitResult.error.message,
+          reason: writeResult.reason,
           proof: null,
         });
       }
 
-      // G. Success — only here may may_claim_booked be true.
-      const visit = visitResult.data;
+      // G. Success, only here may may_claim_booked be true.
+      const patientId = writeResult.patient_id;
+      const visit = writeResult.visit;
       return bookingResult({
         booking_status: "visit_created",
         created_visit: true,

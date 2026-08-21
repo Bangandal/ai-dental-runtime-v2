@@ -9,6 +9,7 @@ import { createAppointmentLookupExecutor } from "../integrations/cliniccard/appo
 import type { ToolExecutor } from "./toolExecutor.ts";
 import type { OpenAIRuntimeAgent } from "./openaiRuntimeAgent.ts";
 import type { BookingProcessStateRepository } from "./bookingProcessState.ts";
+import { createBookingReconciliationCoordinator } from "./bookingReconciliationCoordinator.ts";
 
 export interface CreateDentalRuntimeAgentDeps {
   openaiClient: OpenAIResponsesClient;
@@ -34,9 +35,15 @@ export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): Op
     embeddingModel: deps.embeddingModel,
   });
 
+  const reconciliationCoordinator = deps.bookingProcessStateRepository
+    ? createBookingReconciliationCoordinator(deps.bookingProcessStateRepository)
+    : undefined;
+
   const kbExecutor = createKbSearchExecutor({ knowledgeRepository });
   const availabilityExecutor = deps.clinicCardAvailabilityExecutor ?? createClinicCardAvailabilityExecutor();
-  const bookingExecutor = deps.bookingApplyExecutor ?? createBookingApplyExecutor();
+  const bookingExecutor = deps.bookingApplyExecutor ?? createBookingApplyExecutor({
+    bookingReconciliationGuard: reconciliationCoordinator?.guard,
+  });
   const lookupExecutor = deps.appointmentLookupExecutor ?? createAppointmentLookupExecutor();
 
   const executors = {
@@ -51,7 +58,7 @@ export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): Op
     caller,
     executors,
     conversationMemoryRepository: deps.conversationMemoryRepository,
-    bookingProcessStateRepository: deps.bookingProcessStateRepository,
+    bookingProcessStateRepository: reconciliationCoordinator?.stateRepository ?? deps.bookingProcessStateRepository,
     now: deps.now,
     timezone: deps.timezone,
   });

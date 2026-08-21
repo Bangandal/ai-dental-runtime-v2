@@ -52,7 +52,7 @@ export interface EvaluateBookingApplyPreflightParams {
 }
 
 function debugReason(round: 1 | 2, code: string): string {
-  if (code === "missing_phone" && round === 2) {
+  if (code === "missing_trusted_phone" && round === 2) {
     return "booking_apply_intercepted_missing_trusted_phone";
   }
   return `booking_apply_preflight_${code}_round${round}`;

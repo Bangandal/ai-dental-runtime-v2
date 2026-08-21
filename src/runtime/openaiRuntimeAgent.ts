@@ -151,7 +151,7 @@ export const RUNTIME_AGENT_TOOL_DEFINITIONS = {
     optional_args: [],
   },
   "availability.check": {
-    description: "Use for checking available appointment slots.",
+    description: "Check appointment slots. For a specific time, pass requested_time once. Result includes requested_time_available and free slots at/after it; if false, offer returned alternatives without another availability.check.",
     required_args: ["requested_date"],
     optional_args: ["requested_time", "service_interest", "limit"],
   },

@@ -42,6 +42,9 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
   const defs = input.input.tool_definitions;
   if (!defs) return [];
   return ACTIVE_RUNTIME_AGENT_TOOLS.flatMap((toolName) => {
+    // PF-004: booking.select_slot remains a legacy-compatible internal tool name,
+    // but is no longer model-facing. booking.apply performs fresh write-time slot validation.
+    if (toolName === "booking.select_slot") return [];
     const def = defs[toolName];
     if (!def) return [];
     return [{

@@ -114,6 +114,58 @@ test("PF-012 GOLDEN: timed-out visit write is outcome-unknown and cannot be clai
   assert.equal(truth.required_next_action, "admin_handoff");
 });
 
+test("PF-012 GOLDEN: timed-out patient creation is outcome-unknown and stops before createVisit", async () => {
+  let createVisitCount = 0;
+  const adapter: ClinicCardAdapter = {
+    findPatientByPhone: async () => ({ ok: true, data: [] }),
+    createPatient: async () => ({
+      ok: false,
+      error: { code: "cliniccard_timeout", message: "ClinicCard patient write timed out" },
+    }),
+    listVisits: async () => ({ ok: true, data: [] }),
+    createVisit: async () => {
+      createVisitCount += 1;
+      throw new Error("createVisit must not run after unknown patient write outcome");
+    },
+    listPayments: async () => ({ ok: true, data: [] }),
+  };
+
+  const executor = createBookingApplyExecutor({ env: ENV, adapterFactory: () => adapter });
+  const result = await executor(bookingContext());
+
+  assert.equal(result.data.booking_status, "booking_outcome_unknown");
+  assert.equal(result.data.created_visit, false);
+  assert.equal(result.data.may_claim_booked, false);
+  assert.equal(createVisitCount, 0);
+});
+
+test("PF-012 GOLDEN: definite visit write failure remains cliniccard_write_failed", async () => {
+  const adapter: ClinicCardAdapter = {
+    findPatientByPhone: async () => ({
+      ok: true,
+      data: [{ id: 33, name: "Anna Koval", phone: "+420111222333" }],
+    }),
+    createPatient: async (input) => ({
+      ok: true,
+      data: { id: 44, name: input.name, phone: input.phone ?? null },
+    }),
+    listVisits: async () => ({ ok: true, data: [] }),
+    createVisit: async () => ({
+      ok: false,
+      error: { code: "visit_write_failed", message: "definite write rejection" },
+    }),
+    listPayments: async () => ({ ok: true, data: [] }),
+  };
+
+  const executor = createBookingApplyExecutor({ env: ENV, adapterFactory: () => adapter });
+  const result = await executor(bookingContext());
+
+  assert.equal(result.data.booking_status, "cliniccard_write_failed");
+  assert.equal(result.data.created_visit, false);
+  assert.equal(result.data.may_claim_booked, false);
+  assert.equal(result.data.cliniccard_visit_id, null);
+});
+
 test("PF-012 GOLDEN: retry after lost createVisit response does not create a duplicate visit", async () => {
   const visits: ClinicCardVisit[] = [];
   let createVisitCount = 0;

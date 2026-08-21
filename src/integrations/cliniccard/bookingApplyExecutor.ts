@@ -5,6 +5,7 @@ import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { createClinicCardPatientIdentityAuthority } from "./clinicCardPatientIdentityAuthority.ts";
 import { createClinicCardBookingWriteAuthority } from "./clinicCardBookingWriteAuthority.ts";
 import { resolveClinicCardBookingSlotPolicy } from "./clinicCardBookingSlotPolicy.ts";
+import { resolveClinicCardServiceResource } from "./clinicCardServiceResourcePolicy.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import type { BookingApplyResult, BookingApplySuccessResult } from "../../runtime/toolResults.ts";
 import type { PatientIdentityAuthority } from "../../runtime/patientIdentityAuthority.ts";
@@ -145,30 +146,21 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       });
     }
 
-    // C. Config resolution, doctor_id and cabinet_id from trusted env only, never from patient.
-    const doctorId = Number(config.default_doctor_id);
-    if (!Number.isFinite(doctorId) || !Number.isInteger(doctorId) || doctorId <= 0) {
+    // C. PF-011 service/resource authority. The model/patient never supplies ClinicCard
+    // technical IDs. Exact operator-confirmed service rules own doctor, cabinet and duration.
+    const serviceResource = resolveClinicCardServiceResource(deps.env, context.service_interest);
+    if (!serviceResource.ok) {
       return bookingResult({
         booking_status: "config_missing",
         created_visit: false,
         may_claim_booked: false,
         cliniccard_visit_id: null,
-        reason: "CLINICCARD_DEFAULT_DOCTOR_ID is missing or not a positive integer",
+        reason: serviceResource.reason,
         proof: null,
       });
     }
-
-    const cabinetId = Number(config.default_cabinet_id);
-    if (!Number.isFinite(cabinetId) || !Number.isInteger(cabinetId) || cabinetId <= 0) {
-      return bookingResult({
-        booking_status: "config_missing",
-        created_visit: false,
-        may_claim_booked: false,
-        cliniccard_visit_id: null,
-        reason: "CLINICCARD_DEFAULT_CABINET_ID is missing or not a positive integer",
-        proof: null,
-      });
-    }
+    const doctorId = serviceResource.doctor_id;
+    const cabinetId = serviceResource.cabinet_id;
 
     // Missing patient name fields, createVisit cannot proceed without them.
     const firstName = context.first_name;
@@ -213,10 +205,14 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
 
     const timezone = config.timezone || "Europe/Prague";
 
-    // PF-007b: offered-slot evidence is not enough. Revalidate the requested slot
-    // against the same explicit policy that generated availability before any
-    // ClinicCard read or write, and derive visit duration from that policy.
-    const slotPolicyResult = resolveClinicCardBookingSlotPolicy(deps.env, requestedDate, timeStart);
+    // PF-007b + PF-011: revalidate working-hours authority and derive the visit end
+    // from the resolved service duration, never from a global 30-minute assumption.
+    const slotPolicyResult = resolveClinicCardBookingSlotPolicy(
+      deps.env,
+      requestedDate,
+      timeStart,
+      serviceResource.duration_minutes,
+    );
     if (!slotPolicyResult.ok) {
       return bookingResult({
         booking_status: slotPolicyResult.failure === "policy_unavailable" ? "config_missing" : "slot_conflict",

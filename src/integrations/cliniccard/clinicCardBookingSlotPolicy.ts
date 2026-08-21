@@ -31,14 +31,20 @@ function minutesToHHMM(value: number): string {
 }
 
 /**
- * Revalidates one booking slot against the same operator-confirmed static policy
- * used by availability.check. This runs on every booking.apply invocation, so an
- * offered slot is never sufficient authority by itself.
+ * Revalidates one booking slot against the same operator-confirmed working-hours
+ * and start-grid policy used by availability.check. PF-011 callers pass the
+ * service-authoritative visit duration explicitly. The schedule grid and visit
+ * duration are separate authorities: a 60-minute visit may still start on a
+ * confirmed 15/30-minute grid.
+ *
+ * The global slot duration remains only as a compatibility fallback for direct
+ * legacy callers that do not yet pass a service duration.
  */
 export function resolveClinicCardBookingSlotPolicy(
   env: Record<string, string | undefined> | undefined,
   date: string,
   timeStart: string,
+  serviceDurationMinutes?: number,
 ): ClinicCardBookingSlotPolicyResolution {
   const policyResult = loadClinicCardAvailabilityPolicy(env);
   if (!policyResult.ok) {
@@ -58,6 +64,15 @@ export function resolveClinicCardBookingSlotPolicy(
     };
   }
 
+  const durationMinutes = serviceDurationMinutes ?? policy.slot_duration_minutes;
+  if (!Number.isInteger(durationMinutes) || durationMinutes <= 0) {
+    return {
+      ok: false,
+      failure: "policy_unavailable",
+      reason: "booking duration must be a positive integer number of minutes",
+    };
+  }
+
   const startMinutes = timeToMinutes(timeStart);
   const policyStartMinutes = timeToMinutes(policy.working_hours_start);
   const policyEndMinutes = timeToMinutes(policy.working_hours_end);
@@ -69,12 +84,12 @@ export function resolveClinicCardBookingSlotPolicy(
     };
   }
 
-  const endMinutes = startMinutes + policy.slot_duration_minutes;
+  const endMinutes = startMinutes + durationMinutes;
   if (startMinutes < policyStartMinutes || endMinutes > policyEndMinutes) {
     return {
       ok: false,
       failure: "slot_not_allowed",
-      reason: `slot ${date} ${timeStart} with ${policy.slot_duration_minutes} minute duration falls outside confirmed working hours ${policy.working_hours_start}-${policy.working_hours_end}`,
+      reason: `slot ${date} ${timeStart} with ${durationMinutes} minute duration falls outside confirmed working hours ${policy.working_hours_start}-${policy.working_hours_end}`,
     };
   }
 
@@ -82,13 +97,13 @@ export function resolveClinicCardBookingSlotPolicy(
     return {
       ok: false,
       failure: "slot_not_allowed",
-      reason: `slot ${date} ${timeStart} is not aligned to the confirmed ${policy.slot_duration_minutes} minute slot grid starting at ${policy.working_hours_start}`,
+      reason: `slot ${date} ${timeStart} is not aligned to the confirmed ${policy.slot_duration_minutes} minute start grid beginning at ${policy.working_hours_start}`,
     };
   }
 
   return {
     ok: true,
     time_end: minutesToHHMM(endMinutes),
-    duration_minutes: policy.slot_duration_minutes,
+    duration_minutes: durationMinutes,
   };
 }

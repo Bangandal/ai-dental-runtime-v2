@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
+
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import type { ClinicCardCreatePatientInput, ClinicCardCreateVisitInput, ClinicCardPatient } from "../src/integrations/cliniccard/clinicCardTypes.ts";
@@ -9,6 +11,8 @@ import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
 import type { RuntimeAgentToolResult } from "../src/runtime/openaiRuntimeAgent.ts";
 
 const LIVE_ENV: Record<string, string> = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "consultation", aliases: ["consultation"], doctor_id: 10, cabinet_id: 20, duration_minutes: 30 }),
+
   CLINICCARD_API_BASE_URL: "https://cliniccard.invalid",
   CLINICCARD_API_TOKEN: "test-token",
   CLINICCARD_BOOKING_MODE: "live",

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
+
 import { createBookingApplyExecutor } from "../src/integrations/cliniccard/bookingApplyExecutor.ts";
 import type { ClinicCardAdapter } from "../src/integrations/cliniccard/clinicCardAdapter.ts";
 import { createClinicCardBookingWriteAuthority } from "../src/integrations/cliniccard/clinicCardBookingWriteAuthority.ts";
@@ -12,6 +14,8 @@ import type { BookingWriteInput } from "../src/runtime/bookingWriteAuthority.ts"
 import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
 
 const LIVE_ENV: Record<string, string> = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "consultation", aliases: ["consultation"], doctor_id: 10, cabinet_id: 20, duration_minutes: 30 }),
+
   CLINICCARD_API_BASE_URL: "https://cliniccard.invalid",
   CLINICCARD_API_TOKEN: "test-token",
   CLINICCARD_BOOKING_MODE: "live",
@@ -90,12 +94,7 @@ test("R1-WRITE-1: existing patient skips patient creation and writes exactly one
     onCreatePatient: () => { createPatientCount += 1; },
     onCreateVisit: (input) => visits.push(input),
   }));
-
-  const result = await authority.write(baseWriteInput({
-    kind: "existing_patient",
-    patient_id: 33,
-  }));
-
+  const result = await authority.write(baseWriteInput({ kind: "existing_patient", patient_id: 33 }));
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.equal(result.patient_id, 33);
@@ -110,13 +109,7 @@ test("R1-WRITE-2: create-required patient is created before the visit", async ()
     onCreatePatient: () => order.push("createPatient"),
     onCreateVisit: () => order.push("createVisit"),
   }));
-
-  const result = await authority.write(baseWriteInput({
-    kind: "create_patient",
-    name: "Anna Koval",
-    phone_number: "+420111222333",
-  }));
-
+  const result = await authority.write(baseWriteInput({ kind: "create_patient", name: "Anna Koval", phone_number: "+420111222333" }));
   assert.equal(result.ok, true);
   if (!result.ok) return;
   assert.deepEqual(order, ["createPatient", "createVisit"]);
@@ -130,38 +123,15 @@ test("R1-WRITE-3: patient creation failure stops before visit write", async () =
     patientFailure: "patient timeout",
     onCreateVisit: () => { createVisitCount += 1; },
   }));
-
-  const result = await authority.write(baseWriteInput({
-    kind: "create_patient",
-    name: "Anna Koval",
-    phone_number: "+420111222333",
-  }));
-
-  assert.deepEqual(result, {
-    ok: false,
-    failure: "patient_write_failed",
-    reason: "patient timeout",
-  });
+  const result = await authority.write(baseWriteInput({ kind: "create_patient", name: "Anna Koval", phone_number: "+420111222333" }));
+  assert.deepEqual(result, { ok: false, failure: "patient_write_failed", reason: "patient timeout" });
   assert.equal(createVisitCount, 0);
 });
 
 test("R1-WRITE-4: visit failure reports the resolved patient id for recovery diagnostics", async () => {
-  const authority = createClinicCardBookingWriteAuthority(adapterForWrites({
-    visitFailure: "visit timeout",
-  }));
-
-  const result = await authority.write(baseWriteInput({
-    kind: "create_patient",
-    name: "Anna Koval",
-    phone_number: "+420111222333",
-  }));
-
-  assert.deepEqual(result, {
-    ok: false,
-    failure: "visit_write_failed",
-    reason: "visit timeout",
-    patient_id: 55,
-  });
+  const authority = createClinicCardBookingWriteAuthority(adapterForWrites({ visitFailure: "visit timeout" }));
+  const result = await authority.write(baseWriteInput({ kind: "create_patient", name: "Anna Koval", phone_number: "+420111222333" }));
+  assert.deepEqual(result, { ok: false, failure: "visit_write_failed", reason: "visit timeout", patient_id: 55 });
 });
 
 function bookingContext(): ToolExecutionContext {
@@ -181,25 +151,16 @@ function bookingContext(): ToolExecutionContext {
 test("R1-WRITE-5: bookingApplyExecutor cannot bypass BookingWriteAuthority", async () => {
   const writeCalls: BookingWriteInput[] = [];
   const adapter: ClinicCardAdapter = {
-    findPatientByPhone: async () => {
-      throw new Error("identity lookup must be owned by injected PatientIdentityAuthority in this test");
-    },
-    createPatient: async () => {
-      throw new Error("bookingApplyExecutor must not call adapter.createPatient directly");
-    },
+    findPatientByPhone: async () => { throw new Error("identity lookup must be owned by injected PatientIdentityAuthority in this test"); },
+    createPatient: async () => { throw new Error("bookingApplyExecutor must not call adapter.createPatient directly"); },
     listVisits: async () => ({ ok: true, data: [] }),
-    createVisit: async () => {
-      throw new Error("bookingApplyExecutor must not call adapter.createVisit directly");
-    },
+    createVisit: async () => { throw new Error("bookingApplyExecutor must not call adapter.createVisit directly"); },
     listPayments: async () => ({ ok: true, data: [] }),
   };
-
   const executor = createBookingApplyExecutor({
     env: LIVE_ENV,
     adapterFactory: () => adapter,
-    patientIdentityAuthorityFactory: () => ({
-      resolve: async () => ({ ok: true, resolution: "create_patient_required" }),
-    }),
+    patientIdentityAuthorityFactory: () => ({ resolve: async () => ({ ok: true, resolution: "create_patient_required" }) }),
     bookingWriteAuthorityFactory: () => ({
       write: async (input) => {
         writeCalls.push(input);
@@ -207,15 +168,9 @@ test("R1-WRITE-5: bookingApplyExecutor cannot bypass BookingWriteAuthority", asy
       },
     }),
   });
-
   const result = await executor(bookingContext());
-
   assert.equal(writeCalls.length, 1);
-  assert.deepEqual(writeCalls[0]?.patient, {
-    kind: "create_patient",
-    name: "Anna Koval",
-    phone_number: "+420111222333",
-  });
+  assert.deepEqual(writeCalls[0]?.patient, { kind: "create_patient", name: "Anna Koval", phone_number: "+420111222333" });
   assert.equal(result.tool, "booking.apply");
   assert.equal(result.status, "success");
   if (result.status !== "success") return;

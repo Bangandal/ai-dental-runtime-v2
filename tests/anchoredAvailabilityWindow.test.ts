@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
+
 import { createClinicCardAvailabilityExecutor } from "../src/integrations/cliniccard/clinicCardAvailabilityExecutor.ts";
 import type { AvailabilityAdapter } from "../src/integrations/cliniccard/clinicCardAvailability.ts";
 import type { ClinicCardVisit } from "../src/integrations/cliniccard/clinicCardTypes.ts";
 import { RUNTIME_AGENT_TOOL_DEFINITIONS } from "../src/runtime/openaiRuntimeAgent.ts";
 
 const ENV = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "availability", aliases: ["availability"], doctor_id: 111431, cabinet_id: 43393, duration_minutes: 30 }),
+
   CLINICCARD_API_BASE_URL: "https://test.cliniccard.com",
   CLINICCARD_API_TOKEN: "test-token",
   CLINICCARD_DEFAULT_DOCTOR_ID: "111431",
@@ -56,7 +60,7 @@ test("PF-003: occupied 14:00 returns later alternatives from one ClinicCard read
     adapterFactory: () => counted.adapter,
   });
 
-  const result = await executor({ requested_date: "2026-09-01", requested_time: "14:00", limit: 3 });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-09-01", requested_time: "14:00", limit: 3 });
   assert.equal(result.status, "success");
   assert.equal(counted.getReads(), 1, "exact time plus alternatives must come from one ClinicCard read");
 
@@ -79,7 +83,7 @@ test("PF-003: free 14:00 is explicit and appears first in the same anchored resu
     adapterFactory: () => counted.adapter,
   });
 
-  const result = await executor({ requested_date: "2026-09-01", requested_time: "14:00", limit: 3 });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-09-01", requested_time: "14:00", limit: 3 });
   assert.equal(result.status, "success");
   assert.equal(counted.getReads(), 1);
 

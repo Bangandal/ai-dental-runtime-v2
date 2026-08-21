@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
+import { clinicCardServiceAuthorityEnv } from "./clinicCardServiceAuthorityTestHelper.ts";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolve, dirname } from "node:path";
@@ -9,6 +11,8 @@ import type { AvailabilityAdapter } from "../src/integrations/cliniccard/clinicC
 import type { ClinicCardVisit } from "../src/integrations/cliniccard/clinicCardTypes.ts";
 
 const VALID_ENV = {
+  ...clinicCardServiceAuthorityEnv({ service_key: "availability", aliases: ["availability"], doctor_id: 111431, cabinet_id: 43393, duration_minutes: 30 }),
+
   CLINICCARD_API_BASE_URL: "https://test.cliniccard.com",
   CLINICCARD_API_TOKEN: "test-token",
   CLINICCARD_DEFAULT_DOCTOR_ID: "111431",
@@ -54,7 +58,7 @@ test("missing CLINICCARD_API_BASE_URL returns failed result with config_missing_
     env: { ...VALID_ENV, CLINICCARD_API_BASE_URL: undefined },
     adapterFactory: () => makeAdapter([]),
   });
-  const result = await executor({ requested_date: "2026-07-01" });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
   assert.equal(result.status, "failed");
   if (result.status === "failed") {
     assert.equal(result.error.code, "cliniccard_config_missing_field");
@@ -68,39 +72,31 @@ test("missing CLINICCARD_API_TOKEN returns failed result with config_missing_fie
     env: { ...VALID_ENV, CLINICCARD_API_TOKEN: undefined },
     adapterFactory: () => makeAdapter([]),
   });
-  const result = await executor({ requested_date: "2026-07-01" });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
   assert.equal(result.status, "failed");
   if (result.status === "failed") {
     assert.equal(result.error.code, "cliniccard_config_missing_field");
   }
 });
 
-// ── 4. Invalid CLINICCARD_DEFAULT_DOCTOR_ID ───────────────────────────────────
+// ── 4-5. Legacy global resource defaults are not availability authority ───────
 
-test("non-integer CLINICCARD_DEFAULT_DOCTOR_ID returns failed result", async () => {
+test("legacy CLINICCARD_DEFAULT_DOCTOR_ID does not override service authority", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...VALID_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "abc" },
     adapterFactory: () => makeAdapter([]),
   });
-  const result = await executor({ requested_date: "2026-07-01" });
-  assert.equal(result.status, "failed");
-  if (result.status === "failed") {
-    assert.equal(result.error.code, "cliniccard_config_invalid_doctor_id");
-  }
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
+  assert.equal(result.status, "success");
 });
 
-// ── 5. Invalid CLINICCARD_DEFAULT_CABINET_ID ──────────────────────────────────
-
-test("zero CLINICCARD_DEFAULT_CABINET_ID returns failed result", async () => {
+test("legacy CLINICCARD_DEFAULT_CABINET_ID does not override service authority", async () => {
   const executor = createClinicCardAvailabilityExecutor({
     env: { ...VALID_ENV, CLINICCARD_DEFAULT_CABINET_ID: "0" },
     adapterFactory: () => makeAdapter([]),
   });
-  const result = await executor({ requested_date: "2026-07-01" });
-  assert.equal(result.status, "failed");
-  if (result.status === "failed") {
-    assert.equal(result.error.code, "cliniccard_config_invalid_cabinet_id");
-  }
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
+  assert.equal(result.status, "success");
 });
 
 // ── 6. Success: free slots mapped with starts_at/ends_at and counts ───────────
@@ -110,7 +106,7 @@ test("success result maps slots to starts_at/ends_at format and includes total_s
     env: VALID_ENV,
     adapterFactory: () => makeAdapter([]),
   });
-  const result = await executor({ requested_date: "2026-07-01" });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
   assert.equal(result.status, "success");
   if (result.status === "success") {
     assert.ok(result.data.total_slots > 0, "total_slots must be positive");
@@ -130,7 +126,7 @@ test("API error from adapter returns failed result", async () => {
     env: VALID_ENV,
     adapterFactory: () => makeErrorAdapter("HTTP 401: Unauthorized"),
   });
-  const result = await executor({ requested_date: "2026-07-01" });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
   assert.equal(result.status, "failed");
   if (result.status === "failed") {
     assert.match(result.error.message, /401/);
@@ -162,7 +158,7 @@ test("all slots booked returns success with empty slots array and zero free_slot
     env: VALID_ENV,
     adapterFactory: () => makeAdapter(visits),
   });
-  const result = await executor({ requested_date: "2026-07-01" });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
   assert.equal(result.status, "success");
   if (result.status === "success") {
     assert.equal(result.data.slots.length, 0);
@@ -187,16 +183,17 @@ test("executor source does not reference any write operations", () => {
   assert.doesNotMatch(src, /handoff\.create/, "must not reference handoff.create");
 });
 
-// ── 10. doctor_id/cabinet_id from config only — never from context ────────────
+// ── 10. doctor_id/cabinet_id from service authority — never from context ─────
 
-test("executor reads doctor_id and cabinet_id from config, not from context", () => {
+test("executor resolves doctor_id and cabinet_id from service authority, not context", () => {
   const dir = dirname(fileURLToPath(import.meta.url));
   const src = readFileSync(
     resolve(dir, "../src/integrations/cliniccard/clinicCardAvailabilityExecutor.ts"),
     "utf8",
   );
-  assert.match(src, /default_doctor_id/, "must reference default_doctor_id from config");
-  assert.match(src, /default_cabinet_id/, "must reference default_cabinet_id from config");
+  assert.match(src, /resolveClinicCardServiceResource/, "must resolve service resource authority");
+  assert.doesNotMatch(src, /config\.default_doctor_id/, "legacy default doctor must not authorize availability");
+  assert.doesNotMatch(src, /config\.default_cabinet_id/, "legacy default cabinet must not authorize availability");
   assert.doesNotMatch(src, /context\.doctor_id/, "must not read doctor_id from context");
   assert.doesNotMatch(src, /context\.cabinet_id/, "must not read cabinet_id from context");
 });
@@ -208,7 +205,7 @@ test("requested_time=15:00 excludes slots before 15:00 from returned slots", asy
     env: VALID_ENV,
     adapterFactory: () => makeAdapter([]),
   });
-  const result = await executor({ requested_date: "2026-07-01", requested_time: "15:00" });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01", requested_time: "15:00" });
   assert.equal(result.status, "success");
   if (result.status === "success") {
     for (const slot of result.data.slots) {
@@ -228,8 +225,8 @@ test("requested_time=natural-language string is ignored — all slots returned",
     env: VALID_ENV,
     adapterFactory: () => makeAdapter([]),
   });
-  const all = await executor({ requested_date: "2026-07-01" });
-  const filtered = await executor({ requested_date: "2026-07-01", requested_time: "afternoon" });
+  const all = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
+  const filtered = await executor({ service_interest: "availability", requested_date: "2026-07-01", requested_time: "afternoon" });
   assert.equal(all.status, "success");
   assert.equal(filtered.status, "success");
   if (all.status === "success" && filtered.status === "success") {
@@ -242,8 +239,8 @@ test("requested_time=9:00 (single-digit hour) normalises to 09:00 and returns al
     env: VALID_ENV,
     adapterFactory: () => makeAdapter([]),
   });
-  const withPad = await executor({ requested_date: "2026-07-01", requested_time: "09:00" });
-  const withoutPad = await executor({ requested_date: "2026-07-01", requested_time: "9:00" });
+  const withPad = await executor({ service_interest: "availability", requested_date: "2026-07-01", requested_time: "09:00" });
+  const withoutPad = await executor({ service_interest: "availability", requested_date: "2026-07-01", requested_time: "9:00" });
   assert.equal(withPad.status, "success");
   assert.equal(withoutPad.status, "success");
   if (withPad.status === "success" && withoutPad.status === "success") {
@@ -259,8 +256,8 @@ test("requested_time=99:99 is ignored — all slots returned", async () => {
     env: VALID_ENV,
     adapterFactory: () => makeAdapter([]),
   });
-  const all = await executor({ requested_date: "2026-07-01" });
-  const invalid = await executor({ requested_date: "2026-07-01", requested_time: "99:99" });
+  const all = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
+  const invalid = await executor({ service_interest: "availability", requested_date: "2026-07-01", requested_time: "99:99" });
   assert.equal(all.status, "success");
   assert.equal(invalid.status, "success");
   if (all.status === "success" && invalid.status === "success") {
@@ -273,8 +270,8 @@ test("requested_time=24:00 is ignored — all slots returned", async () => {
     env: VALID_ENV,
     adapterFactory: () => makeAdapter([]),
   });
-  const all = await executor({ requested_date: "2026-07-01" });
-  const invalid = await executor({ requested_date: "2026-07-01", requested_time: "24:00" });
+  const all = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
+  const invalid = await executor({ service_interest: "availability", requested_date: "2026-07-01", requested_time: "24:00" });
   assert.equal(all.status, "success");
   assert.equal(invalid.status, "success");
   if (all.status === "success" && invalid.status === "success") {
@@ -289,7 +286,7 @@ test("limit=3 returns at most 3 slots while total_slots and free_slots_count ref
     env: VALID_ENV,
     adapterFactory: () => makeAdapter([]),
   });
-  const result = await executor({ requested_date: "2026-07-01", limit: 3 });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01", limit: 3 });
   assert.equal(result.status, "success");
   if (result.status === "success") {
     assert.ok(result.data.slots.length <= 3, "slots must be capped to limit=3");
@@ -303,8 +300,8 @@ test("limit=0 is ignored — all slots returned", async () => {
     env: VALID_ENV,
     adapterFactory: () => makeAdapter([]),
   });
-  const all = await executor({ requested_date: "2026-07-01" });
-  const limited = await executor({ requested_date: "2026-07-01", limit: 0 });
+  const all = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
+  const limited = await executor({ service_interest: "availability", requested_date: "2026-07-01", limit: 0 });
   assert.equal(all.status, "success");
   assert.equal(limited.status, "success");
   if (all.status === "success" && limited.status === "success") {
@@ -321,6 +318,7 @@ test("past date with context.now returns failed result with availability_past_da
   });
   // now = 2026-07-15 in Europe/Prague, requested_date = 2026-07-01 (14 days in the past)
   const result = await executor({
+    service_interest: "availability",
     requested_date: "2026-07-01",
     now: new Date("2026-07-15T10:00:00+02:00"),
   });
@@ -340,6 +338,7 @@ test("yesterday with context.now returns availability_past_date", async () => {
     adapterFactory: () => makeAdapter([]),
   });
   const result = await executor({
+    service_interest: "availability",
     requested_date: "2026-07-14",
     now: new Date("2026-07-15T08:00:00+02:00"),
   });
@@ -356,6 +355,7 @@ test("today with context.now is not rejected by past-date guard", async () => {
   });
   // now = 2026-07-15 08:00 Prague time → today is 2026-07-15
   const result = await executor({
+    service_interest: "availability",
     requested_date: "2026-07-15",
     now: new Date("2026-07-15T08:00:00+02:00"),
   });
@@ -369,6 +369,7 @@ test("future date with context.now is not rejected", async () => {
     adapterFactory: () => makeAdapter([]),
   });
   const result = await executor({
+    service_interest: "availability",
     requested_date: "2026-07-20",
     now: new Date("2026-07-15T10:00:00+02:00"),
   });
@@ -381,6 +382,6 @@ test("past date WITHOUT context.now is not rejected (no now = no guard)", async 
     adapterFactory: () => makeAdapter([]),
   });
   // No now in context — guard must be skipped
-  const result = await executor({ requested_date: "2026-07-01" });
+  const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
   assert.equal(result.status, "success", "without context.now the past-date guard must not fire");
 });

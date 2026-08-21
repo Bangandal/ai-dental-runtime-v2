@@ -4,7 +4,6 @@ import {
   type RuntimeAgentFinalResponse,
   type RuntimeAgentToolRequest,
 } from "./openaiRuntimeAgent.ts";
-import { parseSubjectIntent, parsePhoneOwnershipIntent } from "./bookingSubjectsState.ts";
 import type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeAgentLoop.ts";
 import { readResponseOutputTextDeduped } from "./openaiResponsesOutputText.ts";
 import {
@@ -12,6 +11,7 @@ import {
   projectModelToolContract,
   resolveActiveInternalSubjectId,
 } from "./modelToolContractBridge.ts";
+import { parseModelPersonIntents } from "./modelPersonIntentBridge.ts";
 
 export interface OpenAIResponsesClient {
   responses: {
@@ -145,9 +145,9 @@ export function normalizeOpenAIResponse(
     };
   }
 
-  // Valid subject_intent was parsed but the model omitted a reply field.
-  // Use a safe fallback reply but do NOT mark as malformed_openai_response —
-  // isMalformedFinalResponse() checks for that note and would strip the intent.
+  // Valid person intent was parsed but the model omitted a reply field.
+  // Use a safe fallback reply but do NOT mark as malformed_openai_response because
+  // the runtime must still receive the already-validated intent from the bridge.
   if (finalResponse.subject_intent != null) {
     return {
       type: "final_response",
@@ -266,19 +266,7 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
       }
     : undefined;
 
-  // Step 3: Normalize envelope for known subject-intent actions, then parse.
-  // subject_intent may also live in response.final_response.subject_intent (structured-output path).
-  const normalizedEnvelope = envelope !== null ? normalizeSubjectIntentEnvelope(envelope) : null;
-  const subjectIntent =
-    parseSubjectIntent(final?.subject_intent) ??
-    (normalizedEnvelope !== null ? parseSubjectIntent(normalizedEnvelope) : null) ??
-    undefined;
-
-  // Step 4: Parse phone_ownership_intent from envelope or structured response.
-  const phoneOwnershipIntent =
-    parsePhoneOwnershipIntent(final?.phone_ownership_intent) ??
-    parsePhoneOwnershipIntent(envelope?.phone_ownership_intent) ??
-    undefined;
+  const personIntents = parseModelPersonIntents(final, envelope);
 
   return {
     final_patient_reply: outputText,
@@ -286,8 +274,7 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
     reply_reason: readString(final?.reply_reason) ?? null,
     safety_notes: toStringArray(final?.safety_notes),
     ...(ui !== undefined ? { ui } : {}),
-    ...(subjectIntent !== undefined ? { subject_intent: subjectIntent } : {}),
-    ...(phoneOwnershipIntent !== undefined ? { phone_ownership_intent: phoneOwnershipIntent } : {}),
+    ...personIntents,
   };
 }
 
@@ -360,65 +347,6 @@ function tryParseJsonEnvelope(text: string): ParsedJsonEnvelope | null {
     envelope,
     trailingText: trailingText.length > 0 ? trailingText : null,
   };
-}
-
-const KNOWN_SUBJECT_ACTIONS = new Set(["none", "switch_subject", "create_subjects", "create_or_switch_subject", "start_new_episode"]);
-const VALID_TARGETS = new Set(["self", "mentioned_person", "active"]);
-const SUBJECT_ID_RE = /^subject_\d+$/;
-
-/**
- * Apply bounded defaults for known subject-intent actions before parseSubjectIntent.
- * Returns null for unknown actions or when switch_subject target is unresolvable.
- * Does not invent semantics — only fills structurally missing defaults.
- */
-function normalizeSubjectIntentEnvelope(obj: Record<string, unknown>): Record<string, unknown> | null {
-  const action = readString(obj.action);
-  if (!action || !KNOWN_SUBJECT_ACTIONS.has(action)) return null;
-
-  if (action === "switch_subject") {
-    const target = readString(obj.target);
-    const subjectId = readString(obj.subject_id);
-    const hasValidTarget = VALID_TARGETS.has(target ?? "");
-    const hasValidSubjectId = subjectId !== null && SUBJECT_ID_RE.test(subjectId);
-
-    // An explicit canonical subject_id is sufficient to identify the subject.
-    // Normalize target to mentioned_person because applySubjectIntent prioritizes
-    // intent.subject_id inside that deterministic branch.
-    if (!hasValidTarget && !hasValidSubjectId) return null;
-    return {
-      ...obj,
-      target: hasValidTarget ? target : "mentioned_person",
-      ...(hasValidSubjectId ? { subject_id: subjectId } : {}),
-      confidence: readString(obj.confidence) ?? "medium",
-    };
-  }
-
-  if (action === "create_subjects") {
-    const rawLabels = Array.isArray(obj.labels)
-      ? (obj.labels as unknown[]).filter((l): l is string => typeof l === "string")
-      : [];
-    const rawCount = typeof obj.count === "number" ? obj.count : rawLabels.length || 1;
-    const count = Math.max(1, Math.min(4, rawCount));
-    return {
-      ...obj,
-      target: readString(obj.target) ?? "mentioned_person",
-      confidence: readString(obj.confidence) ?? "medium",
-      count,
-      labels: rawLabels.length > 0 ? rawLabels : null,
-    };
-  }
-
-  if (action === "create_or_switch_subject") {
-    const target = readString(obj.target);
-    return {
-      ...obj,
-      target: VALID_TARGETS.has(target ?? "") ? target : "mentioned_person",
-      confidence: readString(obj.confidence) ?? "medium",
-    };
-  }
-
-  // action === "none"
-  return obj;
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {

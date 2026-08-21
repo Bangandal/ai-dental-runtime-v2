@@ -10,6 +10,11 @@ import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecu
 import type { BookingApplyResult, BookingApplySuccessResult } from "../../runtime/toolResults.ts";
 import type { PatientIdentityAuthority } from "../../runtime/patientIdentityAuthority.ts";
 import type { BookingWriteAuthority } from "../../runtime/bookingWriteAuthority.ts";
+import type {
+  BookingReconciliationGuard,
+  BookingReconciliationKey,
+  BookingReconciliationLock,
+} from "../../runtime/bookingReconciliationCoordinator.ts";
 import { acquireBookingSlotLock } from "./bookingSlotMutex.ts";
 
 // Strict HH:MM, exactly two-digit hour and minute, valid range.
@@ -38,6 +43,27 @@ function bookingResult(partial: Omit<BookingApplyResult, "booking_action">): Boo
   };
 }
 
+function reconciliationBlockedResult(
+  lock: BookingReconciliationLock,
+  timezone: string,
+): BookingApplySuccessResult {
+  return bookingResult({
+    booking_status: "booking_outcome_unknown",
+    created_visit: false,
+    may_claim_booked: false,
+    cliniccard_visit_id: null,
+    ...(lock.patient_id !== undefined ? { cliniccard_patient_id: lock.patient_id } : {}),
+    date: lock.date,
+    time_start: lock.time_start,
+    time_end: lock.time_end,
+    doctor_id: lock.doctor_id,
+    cabinet_id: lock.cabinet_id,
+    timezone,
+    reason: "A previous ClinicCard booking write is still awaiting reconciliation. Automatic retry is blocked to prevent a duplicate visit.",
+    proof: null,
+  });
+}
+
 export const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
   "telegram_contact_button",
   "whatsapp_sender",
@@ -62,6 +88,7 @@ export interface BookingApplyExecutorDeps {
   adapterFactory?: (config: ClinicCardConfig) => ClinicCardAdapter;
   patientIdentityAuthorityFactory?: (adapter: ClinicCardAdapter) => PatientIdentityAuthority;
   bookingWriteAuthorityFactory?: (adapter: ClinicCardAdapter) => BookingWriteAuthority;
+  bookingReconciliationGuard?: BookingReconciliationGuard;
 }
 
 export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}): ToolExecutor {
@@ -201,6 +228,26 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
     }
     const timeEnd = slotPolicyResult.time_end;
 
+    const reconciliationKey: BookingReconciliationKey = {
+      clinic_id: context.clinic_id ?? "",
+      contact_id: context.contact_id,
+      case_id: context.case_id,
+    };
+    if (deps.bookingReconciliationGuard) {
+      const pending = await deps.bookingReconciliationGuard.getPending(reconciliationKey);
+      if (!pending.ok) {
+        return bookingResult({
+          booking_status: "cliniccard_write_failed",
+          created_visit: false,
+          may_claim_booked: false,
+          cliniccard_visit_id: null,
+          reason: `Durable booking reconciliation guard is unavailable: ${pending.reason}`,
+          proof: null,
+        });
+      }
+      if (pending.lock) return reconciliationBlockedResult(pending.lock, timezone);
+    }
+
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
     const patientIdentityAuthorityFactory =
@@ -270,6 +317,40 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         });
       }
 
+      let reconciliationArmed = false;
+      if (deps.bookingReconciliationGuard) {
+        const lock: BookingReconciliationLock = {
+          status: "pending",
+          armed_at: (context.now ?? new Date()).toISOString(),
+          reason: "write_in_flight_or_outcome_unknown",
+          date: requestedDate,
+          time_start: timeStart,
+          time_end: timeEnd,
+          doctor_id: doctorId,
+          cabinet_id: cabinetId,
+          service_interest: context.service_interest ?? null,
+          ...(identityResult.resolution === "existing_patient" ? { patient_id: identityResult.patient_id } : {}),
+        };
+        const armed = await deps.bookingReconciliationGuard.arm(reconciliationKey, lock);
+        if (!armed.ok) {
+          return bookingResult({
+            booking_status: "cliniccard_write_failed",
+            created_visit: false,
+            may_claim_booked: false,
+            cliniccard_visit_id: null,
+            date: requestedDate,
+            time_start: timeStart,
+            time_end: timeEnd,
+            doctor_id: doctorId,
+            cabinet_id: cabinetId,
+            timezone,
+            reason: `ClinicCard write was not attempted because the durable reconciliation lock could not be armed: ${armed.reason}`,
+            proof: null,
+          });
+        }
+        reconciliationArmed = true;
+      }
+
       const writeResult = await bookingWriteAuthority.write({
         patient: identityResult.resolution === "existing_patient"
           ? {
@@ -296,6 +377,13 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
         const outcomeUnknown =
           writeResult.failure === "patient_write_outcome_unknown"
           || writeResult.failure === "visit_write_outcome_unknown";
+
+        // Known failures are safe to unlock. Unknown outcomes deliberately retain the
+        // durable write-ahead lock so later turns cannot repeat the POST blindly.
+        if (!outcomeUnknown && reconciliationArmed && deps.bookingReconciliationGuard) {
+          await deps.bookingReconciliationGuard.clear(reconciliationKey);
+        }
+
         return bookingResult({
           booking_status: outcomeUnknown ? "booking_outcome_unknown" : "cliniccard_write_failed",
           created_visit: false,
@@ -309,10 +397,16 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
           cabinet_id: cabinetId,
           timezone,
           reason: outcomeUnknown
-            ? `ClinicCard write outcome is unknown; do not retry automatically before reconciliation. ${writeResult.reason}`
+            ? `ClinicCard write outcome is unknown; durable reconciliation lock retained and automatic retry blocked. ${writeResult.reason}`
             : writeResult.reason,
           proof: null,
         });
+      }
+
+      if (reconciliationArmed && deps.bookingReconciliationGuard) {
+        // Outcome is known successful. Failure to clear is conservative: the visit proof
+        // remains valid, while a stale lock can only block a future write until reconciled.
+        await deps.bookingReconciliationGuard.clear(reconciliationKey);
       }
 
       const patientId = writeResult.patient_id;

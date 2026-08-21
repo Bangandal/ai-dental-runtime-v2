@@ -3,6 +3,7 @@ import type { RuntimeAgentToolRequest, RuntimeAgentToolResult } from "./openaiRu
 export type AvailabilityOutcome =
   | "slots_available"
   | "no_slots"
+  | "needs_date"
   | "past_date"
   | "technical_failure"
   | "denied";
@@ -10,6 +11,7 @@ export type AvailabilityOutcome =
 export type AvailabilityRequiredNextAction =
   | "choose_slot"
   | "ask_for_alternative_time"
+  | "ask_for_date"
   | "ask_for_future_date"
   | "retry_or_contact_clinic";
 
@@ -173,6 +175,19 @@ export function buildAvailabilityActionTruth(
   }
 
   if (result.status === "failed") {
+    if (
+      result.error?.code === "availability_missing_requested_date" ||
+      result.error?.code === "availability_invalid_requested_date"
+    ) {
+      return {
+        outcome: "needs_date",
+        requested_date,
+        requested_time,
+        can_present_slots: false,
+        required_next_action: "ask_for_date",
+        allowed_slot_starts: [],
+      };
+    }
     if (result.error?.code === "availability_past_date") {
       return {
         outcome: "past_date",

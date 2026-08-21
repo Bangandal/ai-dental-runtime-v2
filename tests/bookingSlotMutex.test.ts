@@ -344,7 +344,7 @@ test("lock released when createVisit throws", async () => {
   _resetSlotLocks();
   const throwingAdapter: ClinicCardAdapter = {
     async listVisits() { return { ok: true, data: [] }; },
-    async findPatientByPhone() { return { ok: true, data: [{ id: 1, name: "x", phone: "y" }] }; },
+    async findPatientByPhone() { return { ok: true, data: [{ id: 1, name: "Ivan Petrov", phone: "+420777111222" }] }; },
     async createPatient(i) { return { ok: true, data: { id: 1, name: i.name } }; },
     async createVisit() { throw new Error("ClinicCard network failure"); },
     async listPayments() { return { ok: true, data: [] }; },

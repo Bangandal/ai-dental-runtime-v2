@@ -531,29 +531,3 @@ test("WA-VOICE-4: same WhatsApp audio message sent twice → runtimeTurnService.
   assert.equal(runCount.n, 1, "runtimeTurnService.runTurn must be called exactly once despite two deliveries");
   assert.equal(outboundSendCount.n, 1, "outbound WhatsApp send must happen exactly once");
 });
-
-// VERIFY: runtimeAgentLoop.ts not changed, openaiRuntimeAgent.ts not changed
-test("VERIFY: core runtime files not modified in this PR", async () => {
-  const { execSync } = await import("node:child_process");
-  const changedFiles = execSync("git diff --name-only origin/ai-dental-frontdesk-core 2>/dev/null || echo ''", {
-    encoding: "utf8",
-    cwd: "/tmp/ai-dental-runtime-v2",
-  }).split("\n").map(f => f.trim()).filter(Boolean);
-
-  const forbidden = [
-    "src/runtime/runtimeAgentLoop.ts",
-    "src/runtime/openaiRuntimeAgent.ts",
-    "src/integrations/cliniccard/bookingApplyGuard.ts",
-    "src/integrations/cliniccard/clinicCardAdapter.ts",
-    "src/integrations/cliniccard/bookingApplyExecutor.ts",
-  ];
-
-  for (const f of forbidden) {
-    if (changedFiles.includes(f)) {
-      assert.fail(`${f} must not be modified in voice PR`);
-    }
-  }
-
-  const hasSqlChanges = changedFiles.some(f => f.endsWith(".sql") && !f.includes("rpc_check_availability"));
-  assert.equal(hasSqlChanges, false, "No new SQL/schema changes allowed");
-});

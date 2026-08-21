@@ -124,6 +124,86 @@ test("R3a contract: simple self-booking defaults internal selection target to su
   assert.equal(result.tool_requests[0]?.arguments.subject_id, "subject_1");
 });
 
+test("R3a regression: first multi-patient same-batch selection inherits the one booking_apply target", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          tool_calls: [
+            {
+              name: "booking_select_slot",
+              call_id: "call_select",
+              arguments: JSON.stringify({
+                requested_date: "2099-08-21",
+                requested_time: "14:00",
+              }),
+            },
+            {
+              name: "booking_apply",
+              call_id: "call_apply",
+              arguments: JSON.stringify({
+                subject_id: "subject_2",
+                first_name: "Eva",
+                last_name: "Koval",
+                service: "consultation",
+                requested_date: "2099-08-21",
+                requested_time: "14:00",
+              }),
+            },
+          ],
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput() as never);
+  assert.equal(result.type, "tool_requests");
+  if (result.type !== "tool_requests") return;
+  const select = result.tool_requests.find((request) => request.tool === "booking.select_slot");
+  const apply = result.tool_requests.find((request) => request.tool === "booking.apply");
+  assert.equal(select?.arguments.subject_id, "subject_2");
+  assert.equal(apply?.arguments.subject_id, "subject_2");
+});
+
+test("R3a regression: persisted active patient wins over conflicting same-batch booking_apply target", async () => {
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: {
+      responses: {
+        create: async () => ({
+          tool_calls: [
+            {
+              name: "booking_select_slot",
+              call_id: "call_select",
+              arguments: JSON.stringify({
+                requested_date: "2099-08-21",
+                requested_time: "14:00",
+              }),
+            },
+            {
+              name: "booking_apply",
+              call_id: "call_apply",
+              arguments: JSON.stringify({
+                subject_id: "subject_4",
+                first_name: "Eva",
+                last_name: "Koval",
+                service: "consultation",
+                requested_date: "2099-08-21",
+                requested_time: "14:00",
+              }),
+            },
+          ],
+        }),
+      },
+    },
+  });
+
+  const result = await caller(makeInput("subject_2") as never);
+  assert.equal(result.type, "tool_requests");
+  if (result.type !== "tool_requests") return;
+  const select = result.tool_requests.find((request) => request.tool === "booking.select_slot");
+  assert.equal(select?.arguments.subject_id, "subject_2");
+});
+
 test("R3a regression: booking_apply still exposes subject_id until its own migration", () => {
   const defs = buildOpenAIToolDefinitions(makeInput() as never);
   const def = defs.find((item) => item.name === "booking_apply") as Record<string, any> | undefined;

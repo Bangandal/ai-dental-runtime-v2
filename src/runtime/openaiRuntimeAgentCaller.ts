@@ -228,8 +228,25 @@ function toToolRequests(value: unknown, activeBookingSubjectId: string | null): 
       .map((request) => request.arguments.subject_id)
       .filter((value): value is string => typeof value === "string" && /^subject_[1-4]$/.test(value)),
   ));
+  const legacySelectSubjects = Array.from(new Set(
+    parsedRequests
+      .filter((request) => request.tool === "booking.select_slot")
+      .map((request) => request.arguments.subject_id)
+      .filter((value): value is string => typeof value === "string" && /^subject_[1-4]$/.test(value)),
+  ));
+
+  // Priority is deliberate:
+  // 1) persisted runtime active patient owns an established multi-person flow;
+  // 2) a single same-batch booking.apply target preserves first-bootstrap behavior;
+  // 3) a hidden legacy select-slot target is preserved only for backward compatibility,
+  //    so old invalid subject_2-without-registry calls still fail closed in the kernel;
+  // 4) otherwise simple booking is self.
   const selectSlotSubjectId = activeBookingSubjectId
-    ?? (batchApplySubjects.length === 1 ? batchApplySubjects[0] : "subject_1");
+    ?? (batchApplySubjects.length === 1
+      ? batchApplySubjects[0]
+      : legacySelectSubjects.length === 1
+        ? legacySelectSubjects[0]
+        : "subject_1");
 
   return parsedRequests.map((request) => request.tool === "booking.select_slot"
     ? {

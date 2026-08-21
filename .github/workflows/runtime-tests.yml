@@ -34,4 +34,15 @@ jobs:
         run: npm ci
 
       - name: Run full test suite
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt
+
+      - name: Upload test output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-test-output
+          path: test-output.txt
+          if-no-files-found: error

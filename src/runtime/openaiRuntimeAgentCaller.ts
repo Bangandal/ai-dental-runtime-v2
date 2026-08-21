@@ -11,7 +11,10 @@ import {
   projectModelToolContract,
   resolveActiveInternalSubjectId,
 } from "./modelToolContractBridge.ts";
-import { parseModelPersonIntents } from "./modelPersonIntentBridge.ts";
+import {
+  parseModelPersonIntents,
+  projectModelPersonInstruction,
+} from "./modelPersonIntentBridge.ts";
 
 export interface OpenAIResponsesClient {
   responses: {
@@ -43,6 +46,7 @@ export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCal
       rawResponse,
       input.conversation_id ?? null,
       resolveActiveInternalSubjectId(input.input.context),
+      input.input.context,
     );
   };
 }
@@ -110,7 +114,7 @@ export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string,
 
   return {
     model: input.model,
-    instructions: input.system_instruction,
+    instructions: projectModelPersonInstruction(input.system_instruction),
     conversation: input.conversation_id ?? undefined,
     input: responseInput,
     tools: buildOpenAIToolDefinitions(input),
@@ -121,6 +125,7 @@ export function normalizeOpenAIResponse(
   raw: unknown,
   fallbackConversationId?: string | null,
   activeBookingSubjectId: string | null = null,
+  modelContext: Record<string, unknown> | null = null,
 ): RuntimeAgentCallerOutput {
   const response = asObject(raw);
   const conversationId = readString(response?.conversation_id) ?? readString(response?.conversation) ?? fallbackConversationId;
@@ -135,7 +140,7 @@ export function normalizeOpenAIResponse(
     };
   }
 
-  const finalResponse = readFinalResponse(response);
+  const finalResponse = readFinalResponse(response, modelContext);
   if (finalResponse.final_patient_reply.length > 0) {
     return {
       type: "final_response",
@@ -234,7 +239,10 @@ function parseArguments(value: unknown): Record<string, unknown> {
   return asObject(value) ?? {};
 }
 
-function readFinalResponse(response: Record<string, unknown> | null): RuntimeAgentFinalResponse {
+function readFinalResponse(
+  response: Record<string, unknown> | null,
+  modelContext: Record<string, unknown> | null,
+): RuntimeAgentFinalResponse {
   const final = asObject(response?.final_response);
   const rawOutputText =
     readResponseOutputTextDeduped(response?.output) ??
@@ -266,7 +274,7 @@ function readFinalResponse(response: Record<string, unknown> | null): RuntimeAge
       }
     : undefined;
 
-  const personIntents = parseModelPersonIntents(final, envelope);
+  const personIntents = parseModelPersonIntents(final, envelope, modelContext);
 
   return {
     final_patient_reply: outputText,

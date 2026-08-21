@@ -14,85 +14,118 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-+        with:
-+          fetch-depth: 0
-+
-+      - name: Remove same-batch forced retry
-+        run: |
-+          python - <<'PY'
-+          from pathlib import Path
-+
-+          p = Path('src/runtime/runtimeAgentLoopLegacy.ts')
-+          s = p.read_text()
-+
-+          old_import = 'import { executeBookingSelectSlot, type BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";\n'
-+          new_import = (
-+              'import type { BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";\n'
-+              'import { executeBookingSlotSelectionBatch } from "./bookingSlotSelectionBatch.ts";\n'
-+          )
-+          assert old_import in s
-+          s = s.replace(old_import, new_import, 1)
-+
-+          start_marker = '      // Guard S (round 1) — same-round booking.select_slot + booking.apply:'
-+          end_marker = '      // Guard J (round 1) — FIRST:'
-+          start = s.index(start_marker)
-+          end = s.index(end_marker, start)
-+          replacement = '''      // PF-004a: resolve slot selection before booking guards, independent of tool order\n      // inside the model batch. A failed/ambiguous selection revokes old proof before\n      // booking.apply is considered; a successful selection installs fresh proof immediately.\n      const round1SlotSelection = executeBookingSlotSelectionBatch({\n        requests: toolRequests,\n        active_evidence: bookingProcessState.active_availability_evidence,\n        subjects: effectiveBookingSubjects?.subjects ?? null,\n      });\n      toolResults.push(...round1SlotSelection.tool_results);\n\n      if (round1SlotSelection.attempted) {\n        bookingProcessState = computeBookingProcessState({\n          prior: priorProcessState,\n          channelContact: input.channel_contact,\n          selectSlotData: round1SlotSelection.success_data,\n          selectSlotAttemptedThisTurn: true,\n          now: turnNow,\n        });\n\n        // Persist selection/proof before any booking guard can return early.\n        if (deps.bookingProcessStateRepository) {\n          deps.bookingProcessStateRepository.saveState(\n            { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },\n            bookingProcessState,\n            (info) => { if (!info.saved) debug.booking_process_state_save = info; },\n          ).catch(() => undefined);\n        }\n      }\n\n'''
-+          s = s[:start] + replacement + s[end:]
-+
-+          # Guard S no longer exists. Existing booking guards always run normally.\n
-+          s = s.replace('if (!guardSFired && ', 'if (')
-+          s = s.replace('      // When Guard S fired, booking.apply was blocked in round-1 (not executed) — no resolution.\n', '')
-+          s = s.replace('      // Normal tool loop: skip when Guard S has already handled round-1 tools.\n      if (!guardSFired) {\n', '      // Normal tool loop. booking.select_slot was already resolved by the deterministic pre-pass.\n      {\n', 1)
-+          s = s.replace(
-+              '        // Track the first successful booking.select_slot result this turn.\n        let selectSlotSuccessData: BookingSelectSlotSuccessData | null = null;\n        // Multiple booking.select_slot calls in one round → ambiguous → no proof created.\n        const selectSlotRequestCount = toolRequests.filter((r) => r.tool === "booking.select_slot").length;\n        const selectSlotAmbiguous = selectSlotRequestCount > 1;\n',
-+              '        const selectSlotSuccessData: BookingSelectSlotSuccessData | null = round1SlotSelection.success_data;\n',
-+              1,
-+          )
-+
-+          # Replace the old in-loop select_slot executor with a skip: its result is already in toolResults.\n
-+          needle = '          if (request.tool === "booking.select_slot") {'
-+          block_start = s.index(needle)
-+          brace_start = s.index('{', block_start)
-+          depth = 0
-+          block_end = None
-+          for i in range(brace_start, len(s)):
-+              c = s[i]
-+              if c == '{': depth += 1
-+              elif c == '}':
-+                  depth -= 1
-+                  if depth == 0:
-+                      block_end = i + 1
-+                      break
-+          assert block_end is not None
-+          s = s[:block_start] + '          if (request.tool === "booking.select_slot") {\n            continue;\n          }' + s[block_end:]
-+
-+          assert 'selectSlotAttemptedThisTurn: selectSlotRequestCount > 0' in s
-+          s = s.replace(
-+              'selectSlotAttemptedThisTurn: selectSlotRequestCount > 0',
-+              'selectSlotAttemptedThisTurn: round1SlotSelection.attempted',
-+              1,
-+          )
-+
-+          # Remove the obsolete round-2 comment that referenced Guard S; behavior there is unchanged in PF-004a.\n
-+          s = s.replace(
-+              '        //     Skip when Guard S fired — Guard S\'s blocked result in toolResults must NOT prevent\n        //     the legitimate round-2 booking.apply from reaching the executor.\n',
-+              '',
-+              1,
-+          )
-+
-+          assert 'guardSFired' not in s
-+          assert 'select_slot_and_booking_apply_same_round' not in s
-+          assert 'guard_s_same_round_protocol' not in s
-+          p.write_text(s)
-+          PY
-+
-+      - name: Commit exact production patch
-+        run: |
-+          rm .github/workflows/apply-pf004a-loop.yml
-+          git config user.name "github-actions[bot]"
-+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-+          git add src/runtime/runtimeAgentLoopLegacy.ts .github/workflows/apply-pf004a-loop.yml
-+          git diff --cached --check
-+          git commit -m "fix(PF-004a): allow same-batch slot selection and booking"
-+          git push origin HEAD:fix/pf-004a-same-batch-slot-selection
+        with:
+          fetch-depth: 0
+
+      - name: Remove same-batch forced retry
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/runtime/runtimeAgentLoopLegacy.ts')
+          s = p.read_text()
+
+          old_import = 'import { executeBookingSelectSlot, type BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";\n'
+          new_import = (
+              'import type { BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";\n'
+              'import { executeBookingSlotSelectionBatch } from "./bookingSlotSelectionBatch.ts";\n'
+          )
+          assert old_import in s
+          s = s.replace(old_import, new_import, 1)
+
+          start_marker = '      // Guard S (round 1) — same-round booking.select_slot + booking.apply:'
+          end_marker = '      // Guard J (round 1) — FIRST:'
+          start = s.index(start_marker)
+          end = s.index(end_marker, start)
+          replacement = '''      // PF-004a: resolve slot selection before booking guards, independent of tool order
+      // inside the model batch. A failed/ambiguous selection revokes old proof before
+      // booking.apply is considered; a successful selection installs fresh proof immediately.
+      const round1SlotSelection = executeBookingSlotSelectionBatch({
+        requests: toolRequests,
+        active_evidence: bookingProcessState.active_availability_evidence,
+        subjects: effectiveBookingSubjects?.subjects ?? null,
+      });
+      toolResults.push(...round1SlotSelection.tool_results);
+
+      if (round1SlotSelection.attempted) {
+        bookingProcessState = computeBookingProcessState({
+          prior: priorProcessState,
+          channelContact: input.channel_contact,
+          selectSlotData: round1SlotSelection.success_data,
+          selectSlotAttemptedThisTurn: true,
+          now: turnNow,
+        });
+
+        // Persist selection/proof before any booking guard can return early.
+        if (deps.bookingProcessStateRepository) {
+          deps.bookingProcessStateRepository.saveState(
+            { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+            bookingProcessState,
+            (info) => { if (!info.saved) debug.booking_process_state_save = info; },
+          ).catch(() => undefined);
+        }
+      }
+
+'''
+          s = s[:start] + replacement + s[end:]
+
+          # Guard S no longer exists. Existing booking guards always run normally.
+          s = s.replace('if (!guardSFired && ', 'if (')
+          s = s.replace('      // When Guard S fired, booking.apply was blocked in round-1 (not executed) — no resolution.\n', '')
+          s = s.replace(
+              '      // Normal tool loop: skip when Guard S has already handled round-1 tools.\n      if (!guardSFired) {\n',
+              '      // Normal tool loop. booking.select_slot was already resolved by the deterministic pre-pass.\n      {\n',
+              1,
+          )
+          s = s.replace(
+              '        // Track the first successful booking.select_slot result this turn.\n        let selectSlotSuccessData: BookingSelectSlotSuccessData | null = null;\n        // Multiple booking.select_slot calls in one round → ambiguous → no proof created.\n        const selectSlotRequestCount = toolRequests.filter((r) => r.tool === "booking.select_slot").length;\n        const selectSlotAmbiguous = selectSlotRequestCount > 1;\n',
+              '        const selectSlotSuccessData: BookingSelectSlotSuccessData | null = round1SlotSelection.success_data;\n',
+              1,
+          )
+
+          # Replace the old in-loop select_slot executor with a skip: its result is already in toolResults.
+          needle = '          if (request.tool === "booking.select_slot") {'
+          block_start = s.index(needle)
+          brace_start = s.index('{', block_start)
+          depth = 0
+          block_end = None
+          for i in range(brace_start, len(s)):
+              c = s[i]
+              if c == '{':
+                  depth += 1
+              elif c == '}':
+                  depth -= 1
+                  if depth == 0:
+                      block_end = i + 1
+                      break
+          assert block_end is not None
+          s = s[:block_start] + '          if (request.tool === "booking.select_slot") {\n            continue;\n          }' + s[block_end:]
+
+          assert 'selectSlotAttemptedThisTurn: selectSlotRequestCount > 0' in s
+          s = s.replace(
+              'selectSlotAttemptedThisTurn: selectSlotRequestCount > 0',
+              'selectSlotAttemptedThisTurn: round1SlotSelection.attempted',
+              1,
+          )
+
+          s = s.replace(
+              '        //     Skip when Guard S fired — Guard S\'s blocked result in toolResults must NOT prevent\n        //     the legitimate round-2 booking.apply from reaching the executor.\n',
+              '',
+              1,
+          )
+
+          assert 'guardSFired' not in s
+          assert 'select_slot_and_booking_apply_same_round' not in s
+          assert 'guard_s_same_round_protocol' not in s
+          p.write_text(s)
+          PY
+
+      - name: Commit exact production patch
+        run: |
+          rm .github/workflows/apply-pf004a-loop.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/runtime/runtimeAgentLoopLegacy.ts .github/workflows/apply-pf004a-loop.yml
+          git diff --cached --check
+          git commit -m "fix(PF-004a): allow same-batch slot selection and booking"
+          git push origin HEAD:fix/pf-004a-same-batch-slot-selection

@@ -148,7 +148,7 @@ export function projectModelPersonInstruction(systemInstruction: string): string
   const start = systemInstruction.indexOf(startMarker);
   const end = systemInstruction.indexOf(endMarker, start >= 0 ? start : 0);
   if (start < 0 || end < 0 || end <= start) {
-    return `${systemInstruction}\n\n${SEMANTIC_PERSON_PROTOCOL}`;
+    return systemInstruction;
   }
   return `${systemInstruction.slice(0, start)}${SEMANTIC_PERSON_PROTOCOL}\n\n${systemInstruction.slice(end)}`;
 }
@@ -196,13 +196,19 @@ export function normalizeSubjectIntentEnvelope(
   const context = readResolutionContext(modelContext);
   const rawTarget = readString(obj.target);
   const semanticTarget = readSemanticTarget(rawTarget);
+  const hasPersonRef = Object.prototype.hasOwnProperty.call(obj, "person_ref");
   const personRef = readString(obj.person_ref) ?? readString(obj.display_name);
   const legacySubjectId = parseStrictSubjectId(obj.subject_id);
 
-  // Historical canonical calls remain accepted when they explicitly target a legacy
-  // mentioned_person and do not contain a semantic person_ref.
-  const isLegacyCanonical = rawTarget === "mentioned_person" && legacySubjectId !== null && !Object.prototype.hasOwnProperty.call(obj, "person_ref");
-  if (isLegacyCanonical) {
+  // Hidden historical callers may still identify a switch by canonical subject_id alone,
+  // or by mentioned_person + subject_id. Once semantic fields are present, they win and
+  // any model-hallucinated technical ID is ignored.
+  const isLegacyCanonicalSwitch = action === "switch_subject"
+    && legacySubjectId !== null
+    && semanticTarget === null
+    && !hasPersonRef
+    && (rawTarget === null || rawTarget === "mentioned_person");
+  if (isLegacyCanonicalSwitch) {
     return {
       ...obj,
       target: "mentioned_person",
@@ -211,11 +217,21 @@ export function normalizeSubjectIntentEnvelope(
     };
   }
 
+  // Preserve the historical internal create-or-switch bootstrap shape. This action is not
+  // part of the model-facing semantic protocol, so it remains a compatibility-only path.
+  if (action === "create_or_switch_subject" && rawTarget === null && !hasPersonRef) {
+    return {
+      ...obj,
+      target: "mentioned_person",
+      confidence: readString(obj.confidence) ?? "medium",
+    };
+  }
+
   // Historical mentioned_person without an ID is treated like semantic other_person,
   // but is no longer allowed to silently select the first of multiple people.
   const effectiveTarget: SemanticPersonTarget | null = semanticTarget
     ?? (rawTarget === "mentioned_person" ? "other_person" : null);
-  if (!effectiveTarget) return failClosedSubjectIntent(action, obj);
+  if (!effectiveTarget) return null;
 
   const resolvedSubjectId = resolveSemanticTarget(effectiveTarget, personRef, context);
   if (resolvedSubjectId) {

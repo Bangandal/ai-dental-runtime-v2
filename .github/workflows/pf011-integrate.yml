@@ -1,0 +1,246 @@
+name: PF011 integrate
+
+on:
+  push:
+    branches:
+      - fix/pf-011-service-resource-authority
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/pf-011-service-resource-authority
+      - name: Apply exact PF-011 integration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          # availability.check: service rule is the resource authority.
+          path = "src/integrations/cliniccard/clinicCardAvailabilityExecutor.ts"
+          replace_once(path,
+              'import { getIsoWeekday, isDateInsideAvailabilityPolicy, loadClinicCardAvailabilityPolicy } from "./clinicCardAvailabilityPolicy.ts";\n',
+              'import { getIsoWeekday, isDateInsideAvailabilityPolicy, loadClinicCardAvailabilityPolicy } from "./clinicCardAvailabilityPolicy.ts";\nimport { resolveClinicCardServiceResource } from "./clinicCardServiceResourcePolicy.ts";\n')
+          replace_once(path, '''    const doctorId = Number(config.default_doctor_id);
+              if (!Number.isFinite(doctorId) || !Number.isInteger(doctorId) || doctorId <= 0) {
+                return makeFailedToolResult(
+                  "availability.check",
+                  "cliniccard_config_invalid_doctor_id",
+                  "CLINICCARD_DEFAULT_DOCTOR_ID must be a positive integer",
+                  false,
+                );
+              }
+
+              const cabinetId = Number(config.default_cabinet_id);
+              if (!Number.isFinite(cabinetId) || !Number.isInteger(cabinetId) || cabinetId <= 0) {
+                return makeFailedToolResult(
+                  "availability.check",
+                  "cliniccard_config_invalid_cabinet_id",
+                  "CLINICCARD_DEFAULT_CABINET_ID must be a positive integer",
+                  false,
+                );
+              }
+
+              const requestedDate = context.requested_date;
+              if (!requestedDate) {
+                return makeFailedToolResult(
+                  "availability.check",
+                  "availability_missing_requested_date",
+                  "requested_date is required",
+                  false,
+                );
+              }
+''', '''    const requestedDate = context.requested_date;
+              if (!requestedDate) {
+                return makeFailedToolResult(
+                  "availability.check",
+                  "availability_missing_requested_date",
+                  "requested_date is required",
+                  false,
+                );
+              }
+
+              // PF-011: availability has no right to choose a provider/resource/duration from
+              // global defaults. Resolve the explicit service through operator-confirmed rules.
+              const serviceResource = resolveClinicCardServiceResource(deps.env, context.service_interest);
+              if (!serviceResource.ok) {
+                return makeFailedToolResult(
+                  "availability.check",
+                  serviceResource.failure === "service_missing"
+                    ? "availability_service_required"
+                    : "cliniccard_service_resource_unavailable",
+                  serviceResource.reason,
+                  false,
+                );
+              }
+              const doctorId = serviceResource.doctor_id;
+              const cabinetId = serviceResource.cabinet_id;
+''')
+          replace_once(path,
+              '        slot_duration_minutes: availabilityPolicy.slot_duration_minutes,\n',
+              '        slot_duration_minutes: serviceResource.duration_minutes,\n')
+
+          # booking.apply: independently resolve the same service rule before lock/re-read/write.
+          path = "src/integrations/cliniccard/bookingApplyExecutor.ts"
+          replace_once(path,
+              'import { resolveClinicCardBookingSlotPolicy } from "./clinicCardBookingSlotPolicy.ts";\n',
+              'import { resolveClinicCardBookingSlotPolicy } from "./clinicCardBookingSlotPolicy.ts";\nimport { resolveClinicCardServiceResource } from "./clinicCardServiceResourcePolicy.ts";\n')
+          replace_once(path, '''    // C. Config resolution, doctor_id and cabinet_id from trusted env only, never from patient.
+              const doctorId = Number(config.default_doctor_id);
+              if (!Number.isFinite(doctorId) || !Number.isInteger(doctorId) || doctorId <= 0) {
+                return bookingResult({
+                  booking_status: "config_missing",
+                  created_visit: false,
+                  may_claim_booked: false,
+                  cliniccard_visit_id: null,
+                  reason: "CLINICCARD_DEFAULT_DOCTOR_ID is missing or not a positive integer",
+                  proof: null,
+                });
+              }
+
+              const cabinetId = Number(config.default_cabinet_id);
+              if (!Number.isFinite(cabinetId) || !Number.isInteger(cabinetId) || cabinetId <= 0) {
+                return bookingResult({
+                  booking_status: "config_missing",
+                  created_visit: false,
+                  may_claim_booked: false,
+                  cliniccard_visit_id: null,
+                  reason: "CLINICCARD_DEFAULT_CABINET_ID is missing or not a positive integer",
+                  proof: null,
+                });
+              }
+''', '''    // C. PF-011 service/resource authority. The patient/model never supplies ClinicCard IDs.
+              // Exact operator-confirmed service rules own doctor, cabinet and visit duration.
+              const serviceResource = resolveClinicCardServiceResource(deps.env, context.service_interest);
+              if (!serviceResource.ok) {
+                return bookingResult({
+                  booking_status: "config_missing",
+                  created_visit: false,
+                  may_claim_booked: false,
+                  cliniccard_visit_id: null,
+                  reason: serviceResource.reason,
+                  proof: null,
+                });
+              }
+              const doctorId = serviceResource.doctor_id;
+              const cabinetId = serviceResource.cabinet_id;
+''')
+          replace_once(path,
+              '    const slotPolicyResult = resolveClinicCardBookingSlotPolicy(deps.env, requestedDate, timeStart);\n',
+              '    const slotPolicyResult = resolveClinicCardBookingSlotPolicy(deps.env, requestedDate, timeStart, serviceResource.duration_minutes);\n')
+
+          # Primary executor fixtures migrate off global resource defaults.
+          for path, anchor, rule in [
+              ("tests/bookingApplyExecutor.test.ts", '  CLINICCARD_CLOSED_DATES: "",\n',
+               '  CLINICCARD_SERVICE_RESOURCE_POLICY_CONFIRMED: "true",\n  CLINICCARD_SERVICE_RESOURCE_RULES_JSON: JSON.stringify([{ service_key: "cleaning", aliases: ["Чистка зубов", "чистка", "consultation", "консультация"], doctor_id: 1, cabinet_id: 2, duration_minutes: 30 }]),\n'),
+              ("tests/reliabilityGolden.test.ts", '  CLINICCARD_CLOSED_DATES: "",\n',
+               '  CLINICCARD_SERVICE_RESOURCE_POLICY_CONFIRMED: "true",\n  CLINICCARD_SERVICE_RESOURCE_RULES_JSON: JSON.stringify([{ service_key: "consultation", aliases: ["consultation", "Чистка зубов", "чистка", "консультация"], doctor_id: 10, cabinet_id: 20, duration_minutes: 30 }]),\n'),
+              ("tests/clinicCardAvailabilityExecutor.test.ts", '  CLINICCARD_CLOSED_DATES: "",\n',
+               '  CLINICCARD_SERVICE_RESOURCE_POLICY_CONFIRMED: "true",\n  CLINICCARD_SERVICE_RESOURCE_RULES_JSON: JSON.stringify([{ service_key: "consultation", aliases: ["consultation"], doctor_id: 111431, cabinet_id: 43393, duration_minutes: 30 }]),\n'),
+          ]:
+              replace_once(path, anchor, anchor + rule)
+
+          # Availability executor tests use a concrete service unless the scenario intentionally
+          # verifies missing-date/config precedence.
+          p = Path("tests/clinicCardAvailabilityExecutor.test.ts")
+          text = p.read_text()
+          text = text.replace('executor({ requested_date:', 'executor({ service_interest: "consultation", requested_date:')
+          old = '''test("non-integer CLINICCARD_DEFAULT_DOCTOR_ID returns failed result", async () => {
+            const executor = createClinicCardAvailabilityExecutor({
+              env: { ...VALID_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "abc" },
+              adapterFactory: () => makeAdapter([]),
+            });
+            const result = await executor({ service_interest: "consultation", requested_date: "2026-07-01" });
+            assert.equal(result.status, "failed");
+            if (result.status === "failed") {
+              assert.equal(result.error.code, "cliniccard_config_invalid_doctor_id");
+            }
+          });
+
+          // ── 5. Invalid CLINICCARD_DEFAULT_CABINET_ID ──────────────────────────────────
+          test("zero CLINICCARD_DEFAULT_CABINET_ID returns failed result", async () => {
+            const executor = createClinicCardAvailabilityExecutor({
+              env: { ...VALID_ENV, CLINICCARD_DEFAULT_CABINET_ID: "0" },
+              adapterFactory: () => makeAdapter([]),
+            });
+            const result = await executor({ service_interest: "consultation", requested_date: "2026-07-01" });
+            assert.equal(result.status, "failed");
+            if (result.status === "failed") {
+              assert.equal(result.error.code, "cliniccard_config_invalid_cabinet_id");
+            }
+          });
+'''
+          new = '''test("legacy default doctor id no longer controls service-aware availability", async () => {
+            const executor = createClinicCardAvailabilityExecutor({
+              env: { ...VALID_ENV, CLINICCARD_DEFAULT_DOCTOR_ID: "abc" },
+              adapterFactory: () => makeAdapter([]),
+            });
+            const result = await executor({ service_interest: "consultation", requested_date: "2026-07-01" });
+            assert.equal(result.status, "success");
+          });
+
+          // ── 5. Legacy default cabinet is no longer authority ───────────────────────────
+          test("legacy default cabinet id no longer controls service-aware availability", async () => {
+            const executor = createClinicCardAvailabilityExecutor({
+              env: { ...VALID_ENV, CLINICCARD_DEFAULT_CABINET_ID: "0" },
+              adapterFactory: () => makeAdapter([]),
+            });
+            const result = await executor({ service_interest: "consultation", requested_date: "2026-07-01" });
+            assert.equal(result.status, "success");
+          });
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"availability executor legacy-id test block: expected one match, found {text.count(old)}")
+          text = text.replace(old, new, 1)
+          old = '''test("executor reads doctor_id and cabinet_id from config, not from context", () => {
+            const dir = dirname(fileURLToPath(import.meta.url));
+            const src = readFileSync(
+              resolve(dir, "../src/integrations/cliniccard/clinicCardAvailabilityExecutor.ts"),
+              "utf8",
+            );
+            assert.match(src, /default_doctor_id/, "must reference default_doctor_id from config");
+            assert.match(src, /default_cabinet_id/, "must reference default_cabinet_id from config");
+            assert.doesNotMatch(src, /context\\.doctor_id/, "must not read doctor_id from context");
+            assert.doesNotMatch(src, /context\\.cabinet_id/, "must not read cabinet_id from context");
+          });
+'''
+          new = '''test("executor resolves doctor/cabinet/duration through service resource authority, never patient context or legacy defaults", () => {
+            const dir = dirname(fileURLToPath(import.meta.url));
+            const src = readFileSync(
+              resolve(dir, "../src/integrations/cliniccard/clinicCardAvailabilityExecutor.ts"),
+              "utf8",
+            );
+            assert.match(src, /resolveClinicCardServiceResource/, "must resolve service resource authority");
+            assert.doesNotMatch(src, /default_doctor_id/, "must not use legacy default_doctor_id");
+            assert.doesNotMatch(src, /default_cabinet_id/, "must not use legacy default_cabinet_id");
+            assert.doesNotMatch(src, /context\\.doctor_id/, "must not read doctor_id from context");
+            assert.doesNotMatch(src, /context\\.cabinet_id/, "must not read cabinet_id from context");
+          });
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f"availability executor source-shape test block: expected one match, found {text.count(old)}")
+          p.write_text(text.replace(old, new, 1))
+
+          # Remove this temporary workflow from the resulting feature tree.
+          Path(".github/workflows/pf011-integrate.yml").unlink()
+          PY
+      - name: Commit integration
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "fix(PF-011): bind availability and booking to service resources"
+          git push origin HEAD:fix/pf-011-service-resource-authority

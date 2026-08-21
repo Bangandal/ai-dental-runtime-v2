@@ -278,14 +278,11 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
 
     // ── BOOKING PEOPLE ────────────────────────────────────────────────────────
     "## BOOKING PEOPLE",
-    "Treat people by business meaning. Never use or emit internal subject identifiers.",
-    "runtime_context.booking_subjects.subjects exposes human label/name plus person_kind and is_active. Use those fields to identify the intended person.",
-    "Include subject_intent in final_response only when switching person or creating another person.",
-    `subject_intent: {action:"none"|"switch_subject"|"create_subjects", target:"self"|"active"|"other_person", person_ref:null|string, display_name:null|string, count:null|1..4, labels:[], confidence:"low"|"medium"|"high"}`,
-    "For other_person, set person_ref to the exact visible label or patient_name when more than one other person exists. If the person is ambiguous, ask which person and do not guess.",
-    "When pending_typed_phone is set, ask whose phone it is and include phone_ownership_intent in final_response.",
-    `phone_ownership_intent: {action:"assign_pending_phone"|"share_sender_contact"|"none", target:"self"|"active"|"other_person", person_ref:null|string, confidence:"low"|"medium"|"high"}`,
-    "Never emit subject_id, target_subject_id, subject_1, subject_2, subject_3, or subject_4.",
+    "Identify via runtime_context.booking_subjects.subjects label/name, person_kind and is_active.",
+    `On switch/create: subject_intent:{action:"none"|"switch_subject"|"create_subjects",target:"self"|"active"|"other_person",person_ref:null|string,display_name:null|string,count:null|1..4,labels:[],confidence:"low"|"medium"|"high"}.`,
+    "Multiple other_person: person_ref must exactly match visible label/patient_name; if ambiguous, ask.",
+    `pending_typed_phone: ask owner; return phone_ownership_intent:{action:"assign_pending_phone"|"share_sender_contact"|"none",target:"self"|"active"|"other_person",person_ref:null|string,confidence:"low"|"medium"|"high"}.`,
+    "Never emit subject_id, target_subject_id or subject_1..4.",
 
     // ── BOOKING FLOW ──────────────────────────────────────────────────────────
     "## BOOKING FLOW",

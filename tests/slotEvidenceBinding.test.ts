@@ -1829,28 +1829,24 @@ test("J-20: booking.select_slot round-1 then booking.apply round-2 → executor 
   assert.equal(executorCallCount, 1, "J-20: booking.apply executor must be called exactly once");
 });
 
-// ── R-6: round-2 booking.select_slot + booking.apply → both blocked ───────────
+// ── R-6: round-2 booking.select_slot + booking.apply is round-independent ─────
 
-// R-6: When round-2 contains booking.select_slot AND booking.apply, select_slot is rejected
-// and booking.apply must be blocked — the round-2 protocol error must not fall through to an
-// old persisted proof. Executor call count must be zero.
-test("R-6: round-2 booking.select_slot plus booking.apply — select_slot_not_allowed_in_round2, booking executor call count=0", async () => {
+// R-6: A valid slot choice must have identical business legality regardless of which
+// model-call round emitted it. Round-1 availability establishes evidence; round-2
+// select_slot installs fresh proof; matching booking.apply then reaches the executor.
+test("R-6: round-2 booking.select_slot plus booking.apply — valid selection authorizes booking, executor call count=1", async () => {
   let executorCallCount = 0;
-  // Provide persisted valid proof so booking.apply would normally succeed
   const loop = createRuntimeAgentLoop({
     model: "test-model",
     now: new Date("2028-01-14T20:00:00Z"),
     caller: (async (input) => {
       const results = input.input.tool_results ?? [];
-      // Round-1: model returns final_response (no tools)
-      if (!results.length) {
+      if (!results.length && input.input.tool_definitions) {
         return {
           type: "tool_requests" as const,
-          // Round-1: trigger availability check so there IS a round-2
           tool_requests: [{ tool: "availability.check", call_id: "ac_r6", arguments: { requested_date: "2028-01-15", requested_time: null } }],
         };
       }
-      // Round-2: model returns both booking.select_slot AND booking.apply
       if (results.some((r: { tool: string }) => r.tool === "availability.check")) {
         return {
           type: "tool_requests" as const,
@@ -1871,14 +1867,20 @@ test("R-6: round-2 booking.select_slot plus booking.apply — select_slot_not_al
     },
     bookingProcessStateRepository: makeSlotStateRepo("2028-01-15T10:00:00", "subject_1"),
   });
-  const result = await loop.runTurn({ clinic_id: "clinic_1", contact_id: "contact_r6", case_id: null, user_message: "запиши", locale: "ru", trace_id: "tr_r6", channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" } });
-  assert.equal(executorCallCount, 0, "R-6: booking executor must not be called");
+
+  const result = await loop.runTurn({
+    clinic_id: "clinic_1", contact_id: "contact_r6", case_id: null,
+    user_message: "запиши", locale: "ru", trace_id: "tr_r6",
+    channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" },
+  });
+
+  assert.equal(executorCallCount, 1, "R-6: booking executor must be called exactly once");
   const ssResult = result.tool_results.find((r) => r.tool === "booking.select_slot");
   assert.ok(ssResult, "R-6: select_slot result must be present");
-  assert.equal((ssResult!.error as Record<string, unknown>)?.code, "select_slot_not_allowed_in_round2", "R-6: select_slot must be rejected");
+  assert.equal(ssResult!.status, "success", "R-6: valid round-2 select_slot must succeed");
   const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
   assert.ok(baResult, "R-6: booking.apply result must be present");
-  assert.equal((baResult!.data as Record<string, unknown>)?.booking_status, "slot_not_verified", "R-6: booking.apply must be blocked with slot_not_verified");
+  assert.equal((baResult!.data as Record<string, unknown>)?.booking_status, "visit_created", "R-6: matching booking.apply must execute");
 });
 
 // ── S: same-round booking.select_slot + booking.apply → Guard S ──────────────

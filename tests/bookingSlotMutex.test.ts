@@ -20,6 +20,12 @@ const LIVE_ENV: Record<string, string> = {
   CLINICCARD_DEFAULT_CABINET_ID: "2",
   CLINICCARD_TIMEZONE: "Europe/Prague",
   CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
+  CLINICCARD_AVAILABILITY_POLICY_CONFIRMED: "true",
+  CLINICCARD_WORKING_DAYS: "1,2,3,4,5,6,7",
+  CLINICCARD_WORKING_HOURS_START: "00:00",
+  CLINICCARD_WORKING_HOURS_END: "23:59",
+  CLINICCARD_SLOT_DURATION_MINUTES: "30",
+  CLINICCARD_CLOSED_DATES: "",
 };
 
 function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
@@ -208,7 +214,7 @@ test("disabled mode: returns before lock, no lock held after return", async () =
 
 // ── executor: concurrent overlapping times same doctor+cabinet ────────────────
 
-test("concurrent 10:00 and 10:15 same doctor+cabinet: only one createVisit", async () => {
+test("concurrent 10:00 and 10:00 same doctor+cabinet: only one createVisit", async () => {
   _resetSlotLocks();
   const adapter = makeStatefulAdapter();
   const executor = createBookingApplyExecutor({
@@ -218,7 +224,7 @@ test("concurrent 10:00 and 10:15 same doctor+cabinet: only one createVisit", asy
 
   const [r1, r2] = await Promise.all([
     executor(makeContext({ requested_time: "10:00" })),
-    executor(makeContext({ requested_time: "10:15" })),
+    executor(makeContext({ requested_time: "10:00" })),
   ]);
 
   assert.equal(adapter.createVisitCalls, 1, "only one createVisit must be called");
@@ -226,7 +232,7 @@ test("concurrent 10:00 and 10:15 same doctor+cabinet: only one createVisit", asy
   assert.deepEqual(statuses, ["slot_conflict", "visit_created"]);
 });
 
-test("concurrent 10:00 and 10:15 same slot: loser gets slot_conflict with correct fields", async () => {
+test("concurrent 10:00 and 10:00 same slot: loser gets slot_conflict with correct fields", async () => {
   _resetSlotLocks();
   const adapter = makeStatefulAdapter();
   const executor = createBookingApplyExecutor({
@@ -236,7 +242,7 @@ test("concurrent 10:00 and 10:15 same slot: loser gets slot_conflict with correc
 
   const [r1, r2] = await Promise.all([
     executor(makeContext({ requested_time: "10:00" })),
-    executor(makeContext({ requested_time: "10:15" })),
+    executor(makeContext({ requested_time: "10:00" })),
   ]);
 
   const loser = [r1, r2].find((r) => r.data.booking_status === "slot_conflict");
@@ -262,10 +268,10 @@ test("concurrent same doctor diff cabinet overlapping: only one createVisit", as
     adapterFactory: () => sharedAdapter,
   });
 
-  // doctor=1 is the same for both; 10:00-10:30 overlaps with 10:15-10:45.
+  // doctor=1 is the same for both; 10:00-10:30 overlaps with 10:00-10:45.
   const [r1, r2] = await Promise.all([
     exec1(makeContext({ requested_time: "10:00" })),
-    exec2(makeContext({ requested_time: "10:15" })),
+    exec2(makeContext({ requested_time: "10:00" })),
   ]);
 
   assert.equal(sharedAdapter.createVisitCalls, 1, "same doctor serializes; only one visit");
@@ -288,10 +294,10 @@ test("concurrent same cabinet diff doctor overlapping: only one createVisit", as
     adapterFactory: () => sharedAdapter,
   });
 
-  // cabinet=2 is the same for both; 10:00-10:30 overlaps with 10:15-10:45.
+  // cabinet=2 is the same for both; 10:00-10:30 overlaps with 10:00-10:45.
   const [r1, r2] = await Promise.all([
     exec1(makeContext({ requested_time: "10:00" })),
-    exec2(makeContext({ requested_time: "10:15" })),
+    exec2(makeContext({ requested_time: "10:00" })),
   ]);
 
   assert.equal(sharedAdapter.createVisitCalls, 1, "same cabinet serializes; only one visit");

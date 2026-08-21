@@ -71,6 +71,12 @@ test("booking.apply detects conflict from real ClinicCard visit shape without pa
       CLINICCARD_DEFAULT_CABINET_ID: "43393",
       CLINICCARD_TIMEZONE: "Europe/Prague",
       CLINICCARD_LIVE_CLINIC_ALLOWLIST: CLINIC_UUID,
+      CLINICCARD_AVAILABILITY_POLICY_CONFIRMED: "true",
+      CLINICCARD_WORKING_DAYS: "1,2,3,4,5,6,7",
+      CLINICCARD_WORKING_HOURS_START: "00:00",
+      CLINICCARD_WORKING_HOURS_END: "23:59",
+      CLINICCARD_SLOT_DURATION_MINUTES: "30",
+      CLINICCARD_CLOSED_DATES: "",
     },
     adapterFactory: () => adapter,
   });

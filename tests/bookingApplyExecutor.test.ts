@@ -13,6 +13,12 @@ const LIVE_ENV: Record<string, string> = {
   CLINICCARD_DEFAULT_CABINET_ID: "2",
   CLINICCARD_TIMEZONE: "Europe/Prague",
   CLINICCARD_LIVE_CLINIC_ALLOWLIST: "clinic_1",
+  CLINICCARD_AVAILABILITY_POLICY_CONFIRMED: "true",
+  CLINICCARD_WORKING_DAYS: "1,2,3,4,5,6,7",
+  CLINICCARD_WORKING_HOURS_START: "00:00",
+  CLINICCARD_WORKING_HOURS_END: "23:59",
+  CLINICCARD_SLOT_DURATION_MINUTES: "30",
+  CLINICCARD_CLOSED_DATES: "",
 };
 
 function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
@@ -510,9 +516,9 @@ test("booking.apply: computes time_end as time_start + 30 minutes", async () => 
       }),
   });
 
-  const result = await executor(makeContext({ requested_time: "14:45" }));
-  assert.equal(result.data.time_start, "14:45");
-  assert.equal(result.data.time_end, "15:15");
+  const result = await executor(makeContext({ requested_time: "14:30" }));
+  assert.equal(result.data.time_start, "14:30");
+  assert.equal(result.data.time_end, "15:00");
 });
 
 // Fresh availability is re-read immediately before write (not trusted from context).

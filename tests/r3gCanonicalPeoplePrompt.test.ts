@@ -20,6 +20,7 @@ test("R3g: canonical runtime prompt contains semantic BOOKING PEOPLE protocol", 
   assert.match(instruction, /subject_intent.*final_response/is);
   assert.match(instruction, /phone_ownership_intent.*final_response/is);
   assert.match(instruction, /Never emit subject_id/);
+  assert.ok(instruction.length <= 6474, `canonical prompt exceeded the 50% budget: ${instruction.length}`);
 });
 
 test("R3g: canonical runtime prompt no longer contains legacy BOOKING SUBJECTS protocol", () => {

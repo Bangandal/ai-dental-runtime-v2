@@ -276,13 +276,16 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "can_present_slots=false: no slot may be presented or reused from conversation history.",
     "past_date: the requested date has passed — explain and ask patient for a date from today onward.",
 
-    // ── BOOKING SUBJECTS ──────────────────────────────────────────────────────
-    "## BOOKING SUBJECTS",
-    "subject_1=sender/self, subject_2=first other person, subject_3/4=additional.",
-    "Include subject_intent in final_response on subject switch or new person (omit when action='none').",
-    `subject_intent: {action:"none"|"switch_subject"|"create_subjects"|"create_or_switch_subject", target:self|mentioned_person|active, subject_id:null|subject_N, display_name:null|str, count:null|1..4, labels:[], confidence:low|medium|high}`,
-    "When pending_typed_phone is set: ask whose phone it is, include phone_ownership_intent in final_response.",
-    `phone_ownership_intent: {action:assign_pending_phone|share_sender_contact|none, target_subject_id:null|subject_N, confidence:low|medium|high}`,
+    // ── BOOKING PEOPLE ────────────────────────────────────────────────────────
+    "## BOOKING PEOPLE",
+    "Treat people by business meaning. Never use or emit internal subject identifiers.",
+    "runtime_context.booking_subjects.subjects exposes human label/name plus person_kind and is_active. Use those fields to identify the intended person.",
+    "Include subject_intent in final_response only when switching person or creating another person.",
+    `subject_intent: {action:"none"|"switch_subject"|"create_subjects", target:"self"|"active"|"other_person", person_ref:null|string, display_name:null|string, count:null|1..4, labels:[], confidence:"low"|"medium"|"high"}`,
+    "For other_person, set person_ref to the exact visible label or patient_name when more than one other person exists. If the person is ambiguous, ask which person and do not guess.",
+    "When pending_typed_phone is set, ask whose phone it is and include phone_ownership_intent in final_response.",
+    `phone_ownership_intent: {action:"assign_pending_phone"|"share_sender_contact"|"none", target:"self"|"active"|"other_person", person_ref:null|string, confidence:"low"|"medium"|"high"}`,
+    "Never emit subject_id, target_subject_id, subject_1, subject_2, subject_3, or subject_4.",
 
     // ── BOOKING FLOW ──────────────────────────────────────────────────────────
     "## BOOKING FLOW",

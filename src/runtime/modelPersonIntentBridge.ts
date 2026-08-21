@@ -40,18 +40,6 @@ const KNOWN_PHONE_ACTIONS = new Set([
 const LEGACY_TARGETS = new Set(["self", "mentioned_person", "active"]);
 const SEMANTIC_TARGETS = new Set<SemanticPersonTarget>(["self", "active", "other_person"]);
 
-const SEMANTIC_PERSON_PROTOCOL = [
-  "## BOOKING PEOPLE",
-  "Treat people by business meaning. Never use or emit internal subject identifiers.",
-  "runtime_context.booking_subjects.subjects exposes human label/name plus person_kind and is_active. Use those fields to identify the intended person.",
-  "Include subject_intent in final_response only when switching person or creating another person.",
-  'subject_intent: {action:"none"|"switch_subject"|"create_subjects", target:"self"|"active"|"other_person", person_ref:null|string, display_name:null|string, count:null|1..4, labels:[], confidence:"low"|"medium"|"high"}',
-  "For other_person, set person_ref to the exact visible label or patient_name when more than one other person exists. If the person is ambiguous, ask which person and do not guess.",
-  "When pending_typed_phone is set, ask whose phone it is and include phone_ownership_intent in final_response.",
-  'phone_ownership_intent: {action:"assign_pending_phone"|"share_sender_contact"|"none", target:"self"|"active"|"other_person", person_ref:null|string, confidence:"low"|"medium"|"high"}',
-  "Never emit subject_id, target_subject_id, subject_1, subject_2, subject_3, or subject_4.",
-].join("\n");
-
 function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -139,18 +127,11 @@ function failClosedSubjectIntent(
 }
 
 /**
- * Project the historical runtime instruction to the semantic model-facing people protocol.
- * The internal runtime may keep legacy subject_N terminology while the model never sees it.
+ * The runtime prompt is already canonical and business-semantic. Keep this boundary as
+ * an identity function so the OpenAI caller remains decoupled from prompt ownership.
  */
 export function projectModelPersonInstruction(systemInstruction: string): string {
-  const startMarker = "## BOOKING SUBJECTS";
-  const endMarker = "## BOOKING FLOW";
-  const start = systemInstruction.indexOf(startMarker);
-  const end = systemInstruction.indexOf(endMarker, start >= 0 ? start : 0);
-  if (start < 0 || end < 0 || end <= start) {
-    return systemInstruction;
-  }
-  return `${systemInstruction.slice(0, start)}${SEMANTIC_PERSON_PROTOCOL}\n\n${systemInstruction.slice(end)}`;
+  return systemInstruction;
 }
 
 /**

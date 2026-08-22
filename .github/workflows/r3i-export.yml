@@ -1,9 +1,9 @@
 name: R3i source export
 
 on:
-  push:
+  pull_request:
     branches:
-      - refactor/r3i-booking-apply-preparation
+      - ai-dental-frontdesk-core
 
 jobs:
   export:

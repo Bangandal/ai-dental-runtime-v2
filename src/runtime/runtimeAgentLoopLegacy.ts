@@ -37,7 +37,7 @@ import {
   type BookingProcessState,
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
-import { executeBookingSelectSlot, executeBookingSelectSlotBatch, type BookingSelectSlotSuccessData } from "./bookingSelectSlot.ts";
+import { executeBookingSelectSlotBatch } from "./bookingSelectSlot.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
 
 export interface RuntimeAgentCallerInput {
@@ -360,41 +360,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       let guardSFired = false;
 
       if (round1HasSelectSlot && bookingApplyRound1) {
-        const srAmbiguous = round1SelectSlotRequests.length > 1;
-        let srSuccessData: BookingSelectSlotSuccessData | null = null;
-
-        for (const req of round1SelectSlotRequests) {
-          if (srAmbiguous) {
-            toolResults.push({
-              tool: "booking.select_slot",
-              call_id: req.call_id,
-              status: "failed",
-              error: { code: "ambiguous_selection", message: "ambiguous_selection" },
-            });
-          } else {
-            const selectResult = executeBookingSelectSlot(
-              req.arguments,
-              priorProcessState?.active_availability_evidence ?? null,
-              effectiveBookingSubjects?.subjects ?? null,
-            );
-            if (selectResult.ok) {
-              srSuccessData = selectResult.data;
-              toolResults.push({
-                tool: "booking.select_slot",
-                call_id: req.call_id,
-                status: "success",
-                data: selectResult.data,
-              });
-            } else {
-              toolResults.push({
-                tool: "booking.select_slot",
-                call_id: req.call_id,
-                status: "failed",
-                error: { code: selectResult.reason, message: selectResult.reason },
-              });
-            }
-          }
-        }
+        const round1GuardSSelection = executeBookingSelectSlotBatch({
+          requests: round1SelectSlotRequests,
+          activeEvidence: priorProcessState?.active_availability_evidence ?? null,
+          subjects: effectiveBookingSubjects?.subjects ?? null,
+        });
+        toolResults.push(...round1GuardSSelection.tool_results);
+        const srSuccessData = round1GuardSSelection.success_data;
 
         // Close the same-round booking.apply call ID with a blocked result.
         toolResults.push({
@@ -532,11 +504,14 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
       // Normal tool loop: skip when Guard S has already handled round-1 tools.
       if (!guardSFired) {
-        // Track the first successful booking.select_slot result this turn.
-        let selectSlotSuccessData: BookingSelectSlotSuccessData | null = null;
-        // Multiple booking.select_slot calls in one round → ambiguous → no proof created.
-        const selectSlotRequestCount = toolRequests.filter((r) => r.tool === "booking.select_slot").length;
-        const selectSlotAmbiguous = selectSlotRequestCount > 1;
+        // Resolve booking.select_slot through the same round-agnostic batch helper used
+        // by later model calls. Results are inserted in original request order below.
+        const round1SlotSelection = executeBookingSelectSlotBatch({
+          requests: toolRequests,
+          activeEvidence: priorProcessState?.active_availability_evidence ?? null,
+          subjects: effectiveBookingSubjects?.subjects ?? null,
+        });
+        let nextSelectSlotResultIndex = 0;
 
         for (const request of toolRequests) {
           if (!ACTIVE_TOOL_SET.has(request.tool)) {
@@ -550,35 +525,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           }
 
           if (request.tool === "booking.select_slot") {
-            if (selectSlotAmbiguous) {
-              toolResults.push({
-                tool: "booking.select_slot",
-                call_id: request.call_id,
-                status: "failed",
-                error: { code: "ambiguous_selection", message: "ambiguous_selection" },
-              });
-              continue;
-            }
-            const selectResult = executeBookingSelectSlot(
-              request.arguments,
-              priorProcessState?.active_availability_evidence ?? null,
-              effectiveBookingSubjects?.subjects ?? null,
-            );
-            if (selectResult.ok) {
-              selectSlotSuccessData = selectResult.data;
-              toolResults.push({
-                tool: "booking.select_slot",
-                call_id: request.call_id,
-                status: "success",
-                data: selectResult.data,
-              });
-            } else {
-              toolResults.push({
-                tool: "booking.select_slot",
-                call_id: request.call_id,
-                status: "failed",
-                error: { code: selectResult.reason, message: selectResult.reason },
-              });
+            const selectToolResult = round1SlotSelection.tool_results[nextSelectSlotResultIndex++];
+            if (selectToolResult) {
+              toolResults.push(selectToolResult);
             }
             continue;
           }
@@ -626,9 +575,9 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           prior: priorProcessState,
           authoritativeAvailabilityAttempt: authAvailAttemptNormal,
           channelContact: input.channel_contact,
-          selectSlotData: selectSlotSuccessData,
+          selectSlotData: round1SlotSelection.success_data,
           // Any select_slot attempt (success or failure) revokes the prior proof.
-          selectSlotAttemptedThisTurn: selectSlotRequestCount > 0,
+          selectSlotAttemptedThisTurn: round1SlotSelection.attempted,
           now: turnNow,
         });
         // Persist updated state (best-effort — non-blocking).

@@ -1829,12 +1829,11 @@ test("J-20: booking.select_slot round-1 then booking.apply round-2 → executor 
   assert.equal(executorCallCount, 1, "J-20: booking.apply executor must be called exactly once");
 });
 
-// ── R-6: round-2 booking.select_slot + booking.apply is round-independent ─────
+// ── R-6: same-batch booking.select_slot + booking.apply is phase-independent ──
 
-// R-6: A valid slot choice must have identical business legality regardless of which
-// model-call round emitted it. Round-1 availability establishes evidence; round-2
-// select_slot installs fresh proof; matching booking.apply then reaches the executor.
-test("R-6: round-2 booking.select_slot plus booking.apply — valid selection authorizes booking, executor call count=1", async () => {
+// R3p: booking.apply depends on the completed RESULT of booking.select_slot. Emitting both
+// in one model tool batch is therefore blocked regardless of whether the batch is first or later.
+test("R-6: later batch booking.select_slot plus booking.apply — selection succeeds, booking is blocked, executor call count=0", async () => {
   let executorCallCount = 0;
   const loop = createRuntimeAgentLoop({
     model: "test-model",
@@ -1856,7 +1855,7 @@ test("R-6: round-2 booking.select_slot plus booking.apply — valid selection au
           ],
         };
       }
-      return { type: "final_response" as const, final_response: { final_patient_reply: "Готово." } };
+      return { type: "final_response" as const, final_response: { final_patient_reply: "Слот выбран. Запись нужно подтвердить следующим действием." } };
     }) as RuntimeAgentCaller,
     executors: {
       "availability.check": async () => ({ status: "success" as const, data: { slots: [{ starts_at: "2028-01-15T10:00:00" }] } }),
@@ -1874,13 +1873,14 @@ test("R-6: round-2 booking.select_slot plus booking.apply — valid selection au
     channel_contact: { phone_number: "+420111000000", phone_source: "telegram_contact_button" },
   });
 
-  assert.equal(executorCallCount, 1, "R-6: booking executor must be called exactly once");
-  const ssResult = result.tool_results.find((r) => r.tool === "booking.select_slot");
+  assert.equal(executorCallCount, 0, "R-6: same-batch booking.apply must not execute");
+  const ssResult = result.tool_results.find((r) => r.call_id === "ss_r6");
   assert.ok(ssResult, "R-6: select_slot result must be present");
-  assert.equal(ssResult!.status, "success", "R-6: valid round-2 select_slot must succeed");
-  const baResult = result.tool_results.find((r) => r.tool === "booking.apply");
-  assert.ok(baResult, "R-6: booking.apply result must be present");
-  assert.equal((baResult!.data as Record<string, unknown>)?.booking_status, "visit_created", "R-6: matching booking.apply must execute");
+  assert.equal(ssResult!.status, "success", "R-6: valid later-batch select_slot must still succeed");
+  const baResult = result.tool_results.find((r) => r.call_id === "ba_r6");
+  assert.ok(baResult, "R-6: blocked booking.apply result must be present");
+  assert.equal((baResult!.data as Record<string, unknown>)?.booking_status, "slot_not_verified");
+  assert.equal((baResult!.data as Record<string, unknown>)?.reason, "select_slot_and_booking_apply_same_round");
 });
 
 // ── S: same-round booking.select_slot + booking.apply → Guard S ──────────────

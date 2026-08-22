@@ -55,15 +55,21 @@ test("R3k: single select-slot batch preserves the deterministic success payload"
   assert.equal(result.tool_results[0]?.status, "success");
 });
 
-test("R3k structure: legacy loop delegates every current select-slot path to the batch helper", async () => {
+test("R3k structure: legacy loop delegates normal selection and same-batch conflicts to shared helpers", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
 
   assert.match(loopSource, /import \{ executeBookingSelectSlotBatch \} from ["']\.\/bookingSelectSlot\.ts["']/);
+  assert.match(loopSource, /import \{ resolveBookingSelectApplyBatchConflict \} from ["']\.\/bookingSelectApplyBatchConflict\.ts["']/);
   assert.equal(
     loopSource.match(/executeBookingSelectSlotBatch\(\{/g)?.length,
-    3,
-    "Guard S, first normal tool batch, and later tool batch must share one selector",
+    2,
+    "first and later normal selection paths must share one selector",
+  );
+  assert.equal(
+    loopSource.match(/resolveBookingSelectApplyBatchConflict\(\{/g)?.length,
+    2,
+    "first and later select+apply conflict paths must share one batch-content guard",
   );
   assert.doesNotMatch(loopSource, /executeBookingSelectSlot\(/);
   assert.doesNotMatch(loopSource, /BookingSelectSlotSuccessData/);

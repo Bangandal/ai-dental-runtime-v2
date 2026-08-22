@@ -173,6 +173,9 @@ export function normalizeOpenAIResponse(
   // Valid structured state was parsed but the model omitted a reply field.
   // Use a safe fallback reply but preserve already-validated structured state.
   if (finalResponse.subject_intent != null || finalResponse.qualification != null) {
+    const missingReplyDiagnostic = finalResponse.subject_intent != null
+      ? "subject_intent_reply_missing"
+      : "qualification_reply_missing";
     return {
       type: "final_response",
       conversation_id: conversationId,
@@ -181,7 +184,7 @@ export function normalizeOpenAIResponse(
         ...(finalResponse.subject_intent != null ? { subject_intent: finalResponse.subject_intent } : {}),
         ...(finalResponse.phone_ownership_intent != null ? { phone_ownership_intent: finalResponse.phone_ownership_intent } : {}),
         ...(finalResponse.qualification != null ? { qualification: finalResponse.qualification } : {}),
-        safety_notes: ["structured_state_reply_missing"],
+        safety_notes: [missingReplyDiagnostic],
       },
       usage: response?.usage,
     };

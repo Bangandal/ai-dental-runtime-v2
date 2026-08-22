@@ -40,3 +40,11 @@ test("dangerous launch authority switches remain fail-closed in the example", ()
   assert.match(envExample, /^CLINICCARD_SERVICE_RESOURCE_POLICY_CONFIRMED=false$/m);
   assert.match(envExample, /^CLINICCARD_SERVICE_RESOURCE_RULES_JSON=$/m);
 });
+
+test("launch env documents provider schedule inside each live service mapping", () => {
+  assert.match(envExample, /provider availability object/i);
+  assert.match(envExample, /\"availability\":\{\"working_days\":\[1,2,3,4,5\]/);
+  assert.match(envExample, /\"working_hours_start\":\"09:00\"/);
+  assert.match(envExample, /\"working_hours_end\":\"17:00\"/);
+  assert.match(envExample, /\"closed_dates\":\[\]/);
+});

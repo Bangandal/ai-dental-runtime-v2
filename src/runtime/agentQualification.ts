@@ -12,15 +12,6 @@ export interface AgentQualificationState {
   policy_applied?: boolean;
 }
 
-declare module "./openaiRuntimeAgent.ts" {
-  interface RuntimeAgentFinalResponse {
-    qualification?: AgentQualificationState | null;
-  }
-  interface RuntimeAgentTurnResult {
-    qualification?: AgentQualificationState | null;
-  }
-}
-
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -40,6 +31,19 @@ function cleanStringArray(value: unknown, maxItems = 12, maxChars = 300): string
     .map((item) => cleanString(item, maxChars))
     .filter((item): item is string => item !== null)
     .slice(0, maxItems);
+}
+
+function mergeUniqueStrings(
+  previous: string[] | undefined,
+  next: string[] | undefined,
+  maxItems: number,
+): string[] | undefined {
+  const merged = [...(previous ?? []), ...(next ?? [])]
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item, index, all) => all.indexOf(item) === index)
+    .slice(-maxItems);
+  return merged.length > 0 ? merged : undefined;
 }
 
 /**
@@ -88,5 +92,55 @@ export function parseAgentQualification(
     ...(trustedPolicy ? { policy_applied: true } : {}),
   };
 
+  return Object.keys(parsed).length > 0 ? parsed : null;
+}
+
+/**
+ * Merge a validated per-turn qualification update into durable state.
+ * Runtime, not the model, owns accumulation across turns.
+ */
+export function mergeAgentQualification(
+  previous: AgentQualificationState | null | undefined,
+  next: AgentQualificationState | null | undefined,
+): AgentQualificationState | null {
+  if (!previous && !next) return null;
+  if (!previous) return next ?? null;
+  if (!next) return previous;
+
+  const reportedFacts = mergeUniqueStrings(previous.reported_facts, next.reported_facts, 24);
+  const redFlags = mergeUniqueStrings(previous.red_flags, next.red_flags, 12);
+  const merged: AgentQualificationState = {
+    ...(next.complaint ?? previous.complaint ? { complaint: next.complaint ?? previous.complaint } : {}),
+    ...(reportedFacts ? { reported_facts: reportedFacts } : {}),
+    ...(next.summary ?? previous.summary ? { summary: next.summary ?? previous.summary } : {}),
+    ...(next.route ?? previous.route ? { route: next.route ?? previous.route } : {}),
+    ...(next.urgency ?? previous.urgency ? { urgency: next.urgency ?? previous.urgency } : {}),
+    ...(redFlags ? { red_flags: redFlags } : {}),
+    ...((next.policy_applied ?? previous.policy_applied) ? { policy_applied: true } : {}),
+  };
+
+  return Object.keys(merged).length > 0 ? merged : null;
+}
+
+/** Read previously validated qualification stored under collected.agent_qualification. */
+export function parseStoredAgentQualification(raw: unknown): AgentQualificationState | null {
+  const record = asRecord(raw);
+  if (!record) return null;
+  const complaint = cleanString(record.complaint, 500);
+  const reportedFacts = cleanStringArray(record.reported_facts, 24, 300);
+  const summary = cleanString(record.summary, 1000);
+  const route = cleanString(record.route, 200);
+  const urgency = cleanString(record.urgency, 100);
+  const redFlags = cleanStringArray(record.red_flags, 12, 200);
+
+  const parsed: AgentQualificationState = {
+    ...(complaint ? { complaint } : {}),
+    ...(reportedFacts.length > 0 ? { reported_facts: reportedFacts } : {}),
+    ...(summary ? { summary } : {}),
+    ...(route ? { route } : {}),
+    ...(urgency ? { urgency } : {}),
+    ...(redFlags.length > 0 ? { red_flags: redFlags } : {}),
+    ...(record.policy_applied === true ? { policy_applied: true } : {}),
+  };
   return Object.keys(parsed).length > 0 ? parsed : null;
 }

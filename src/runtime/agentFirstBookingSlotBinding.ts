@@ -8,7 +8,7 @@ import {
   type BookingProcessState,
 } from "./bookingProcessState.ts";
 import type { RuntimeAgentToolRequest } from "./openaiRuntimeAgent.ts";
-import type { SubjectId } from "./bookingSubjectsState.ts";
+import type { BookingSubject, SubjectId } from "./bookingSubjectsState.ts";
 
 /**
  * Agent-first compatibility seam for the old model-facing booking.select_slot ceremony.
@@ -25,7 +25,7 @@ export function deriveAgentFirstBookingSelection(params: {
   booking_apply: RuntimeAgentToolRequest;
   execution_subject_id: SubjectId | null;
   booking_process_state: BookingProcessState;
-  subjects?: Array<{ id: SubjectId }> | null;
+  subjects?: BookingSubject[] | null;
   now: Date;
 }): BookingSelectSlotSuccessData | null {
   if (!isAgentFirstRuntimeEnabled()) return null;

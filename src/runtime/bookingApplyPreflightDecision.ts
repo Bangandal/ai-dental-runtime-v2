@@ -43,7 +43,10 @@ export interface EvaluateBookingApplyPreflightParams {
   now: Date;
 }
 
-function legacyDebugReason(round: 1 | 2, code: BookingApplyPreflightGuardCode): string {
+export function buildLegacyBookingApplyDebugReason(
+  round: 1 | 2,
+  code: BookingApplyPreflightGuardCode,
+): string {
   if (code === "missing_trusted_phone" && round === 2) {
     return "booking_apply_intercepted_missing_trusted_phone";
   }
@@ -76,7 +79,7 @@ export function evaluateBookingApplyPreflight(
 
   return {
     outcome: "block",
-    debug_reason: legacyDebugReason(params.round, decision.guard_code),
+    debug_reason: buildLegacyBookingApplyDebugReason(params.round, decision.guard_code),
     guarded_data: decision.guarded_data,
     ...(decision.missing_fields !== undefined ? { missing_fields: decision.missing_fields } : {}),
     ...(decision.past_time_detail !== undefined ? { past_time_detail: decision.past_time_detail } : {}),

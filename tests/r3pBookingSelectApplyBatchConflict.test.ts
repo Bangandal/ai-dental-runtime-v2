@@ -108,15 +108,13 @@ test("R3p: conflict result set closes every call id in the model batch", () => {
   assert.equal(denied?.error?.code, "guard_s_same_round_protocol");
 });
 
-test("R3p structure: legacy loop delegates same-batch select/apply conflict in both tool phases", async () => {
+test("R3p structure: first batch and shared batch kernel use the same select/apply conflict owner", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const kernelSource = await readFile(resolve(thisDir, "../src/runtime/runtimeToolBatchKernel.ts"), "utf8");
 
-  assert.equal(
-    loopSource.match(/resolveBookingSelectApplyBatchConflict\(\{/g)?.length,
-    2,
-    "both current tool-batch paths must use the same content-based protocol guard",
-  );
+  assert.equal(loopSource.match(/resolveBookingSelectApplyBatchConflict\(\{/g)?.length, 1);
+  assert.equal(kernelSource.match(/resolveBookingSelectApplyBatchConflict\(\{/g)?.length, 1);
   assert.doesNotMatch(loopSource, /guard_s_same_round_protocol/);
   assert.doesNotMatch(loopSource, /Tool was not executed because booking\.select_slot and booking\.apply/);
 });

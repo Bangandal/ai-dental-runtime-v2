@@ -72,8 +72,8 @@ test("R3n structure: legacy loop uses the shared model-context composer for ever
 
   assert.equal(
     loopSource.match(/composeRuntimeModelContext\(/g)?.length,
-    7,
-    "all seven model-call paths must compose context through one owner",
+    5,
+    "all five remaining model-call paths must compose context through one owner",
   );
   assert.doesNotMatch(loopSource, /const secondCallContext = \{\s*\.\.\.callerContext/);
   assert.doesNotMatch(loopSource, /context: \{ \.\.\.callerContext, booking_process_state:/);

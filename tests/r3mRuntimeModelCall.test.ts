@@ -119,8 +119,8 @@ test("R3m structure: legacy loop delegates every direct model invocation to one 
 
   assert.equal(
     loopSource.match(/invokeRuntimeModelCall\(\{/g)?.length,
-    7,
-    "main, second, bounded continuation, two compatibility finalizers, and two guarded finalizers must share one transport boundary",
+    5,
+    "main, second, unified bounded continuation, and two guarded compatibility finalizers must share one transport boundary",
   );
   assert.doesNotMatch(loopSource, /await deps\.caller\(/);
   assert.match(loopSource, /export type \{ RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput \} from ["']\.\/runtimeModelCall\.ts["']/);

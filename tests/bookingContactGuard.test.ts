@@ -469,9 +469,10 @@ test("runtimeAgentLoop: trusted phone present — Guard B executes booking.apply
   assert.equal(result.final_patient_reply, CONFIRMATION_REPLY);
   assert.notEqual(result.ui?.telegram?.request_contact, true, "must not show contact button when phone is trusted");
 
-  // Conversation still dirty (round-2 had pending tool call)
+  // R3r closes the round-2 booking call with function_call_output before the final
+  // model step. This caller returns no conversation id, but the protocol is no longer dirty.
   assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  assert.notEqual(result.conversation_id_resumable, false);
 });
 
 // Test 3b (Requirement 2): trusted phone + booking.apply executed but visit NOT created

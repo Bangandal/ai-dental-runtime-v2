@@ -37,7 +37,7 @@ import { executeBookingSelectSlotBatch } from "./bookingSelectSlot.ts";
 import { resolveBookingSelectApplyBatchConflict } from "./bookingSelectApplyBatchConflict.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
 import { executeRuntimeToolRequest, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
-import { executeRuntimeNonWriteToolBatch } from "./runtimeNonWriteToolBatch.ts";
+import { executeRuntimeToolBatchKernel } from "./runtimeToolBatchKernel.ts";
 import { invokeRuntimeModelCall, type RuntimeAgentCaller, type RuntimeAgentCallerInput, type RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 export type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 export { buildSubjectAwarePhoneFields, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
@@ -602,7 +602,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       }
 
       if (secondOutput.type === "tool_requests") {
-        // Debug: append round-2 tool args (same PII-safe pattern as round 1).
+        // Debug: append current batch tool args using the same PII-safe projection as batch 1.
         if (Array.isArray(debug.tool_call_args)) {
           const round2Args = secondOutput.tool_requests.map((r) => {
             const args = r.arguments ?? {};
@@ -627,23 +627,18 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           debug.tool_call_args = [...(debug.tool_call_args as unknown[]), ...round2Args];
         }
 
-        // Round-2 guard order: find pendingBookingApply → push to processedToolRequests →
-        // one-booking-per-turn check → Guard J (strict parse) → bootstrap → freeze subject →
-        // no-slots → Guard I → past-time → slot guards → phone → name/service → execution.
+        const round2Requests = secondOutput.tool_requests;
+        processedToolRequests.push(...round2Requests);
 
-        // 1. Add ALL round-2 requests to processedToolRequests (not just booking.apply).
-        for (const req of secondOutput.tool_requests) processedToolRequests.push(req);
-
-        const allRound2BookingRequests = secondOutput.tool_requests.filter((r) => r.tool === "booking.apply");
+        const allRound2BookingRequests = round2Requests.filter((r) => r.tool === "booking.apply");
         const pendingBookingApply = allRound2BookingRequests[0] ?? null;
-        const round2StateBeforeBatch = bookingProcessState;
-        const round2ToolResults: RuntimeAgentToolResult[] = [];
 
-        // 2a. Round-2 multiple: more than one booking.apply — block ALL calls from this round.
+        // Stronger invariant: more than one booking write request aborts this whole batch.
+        // The existing helper is protocol-complete: every current call id receives a result.
         if (allRound2BookingRequests.length > 1) {
           debug.reason = "booking_apply_preflight_multiple_booking_apply_round2_multi";
           return await finalizeBlockedMultipleBookingApplies({
-            pendingRequestsForRound: secondOutput.tool_requests,  // ALL requests get results
+            pendingRequestsForRound: round2Requests,
             guardedData: {
               booking_status: "subject_resolution_conflict",
               created_visit: false,
@@ -664,14 +659,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           });
         }
 
-        // 2b. One booking write per turn: if round-1 already executed booking.apply,
-        //     block any round-2 booking.apply and preserve round-1 resolution.
-        //     Skip when Guard S fired — Guard S's blocked result in toolResults must NOT prevent
-        //     the legitimate round-2 booking.apply from reaching the executor.
+        // One external booking write per patient turn. This guard remains stronger than
+        // ordinary batch execution. Close the entire current batch, rather than only the
+        // booking call, so no sibling function_call is left dangling in OpenAI.
         if (!guardSFired && pendingBookingApply && toolResults.some((r) => r.tool === "booking.apply")) {
           debug.reason = "booking_apply_preflight_multiple_booking_apply_round2";
-          return await finalizeBlockedBookingApplyWithToolOutput({
-            pendingBookingApply,
+          return await finalizeBlockedMultipleBookingApplies({
+            pendingRequestsForRound: round2Requests,
             guardedData: {
               booking_status: "subject_resolution_conflict",
               created_visit: false,
@@ -692,19 +686,20 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           });
         }
 
-        // 3. Prepare/freeze booking target through the same round-agnostic boundary used
-        // by the first tool batch. Same-batch select/apply conflict has priority over
-        // booking.apply subject-validation, matching the first-path protocol rule.
-        let round2ExecutionSubjectId: SubjectId | null = null;
-        let round2SelectApplyConflict: ReturnType<typeof resolveBookingSelectApplyBatchConflict> = null;
-        if (pendingBookingApply) {
-          const round2BookingPreparation = prepareBookingApplyExecution({
-            booking_apply: pendingBookingApply,
-            booking_subjects: effectiveBookingSubjects,
-            channel_contact: input.channel_contact ?? null,
-            current_turn_typed_phone: input.current_turn_typed_phone ?? null,
-          });
+        // Prepare/freeze the booking target before the batch kernel so a missing registry
+        // can still be bootstrapped for subject_2+ and selection can bind to the same people
+        // view. A same-batch select+apply dependency conflict still has priority over a
+        // preparation failure, preserving the R3p protocol invariant.
+        const round2BookingPreparation = pendingBookingApply
+          ? prepareBookingApplyExecution({
+              booking_apply: pendingBookingApply,
+              booking_subjects: effectiveBookingSubjects,
+              channel_contact: input.channel_contact ?? null,
+              current_turn_typed_phone: input.current_turn_typed_phone ?? null,
+            })
+          : null;
 
+        if (round2BookingPreparation) {
           effectiveBookingSubjects = round2BookingPreparation.effective_booking_subjects;
           effectiveInput = effectiveBookingSubjects !== (input.booking_subjects ?? null)
             ? { ...input, booking_subjects: effectiveBookingSubjects }
@@ -712,529 +707,298 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           if (round2BookingPreparation.bootstrapped_registry) {
             bootstrappedRegistry = round2BookingPreparation.bootstrapped_registry;
           }
-
-          round2SelectApplyConflict = resolveBookingSelectApplyBatchConflict({
-            requests: secondOutput.tool_requests,
-            activeEvidence: bookingProcessState.active_availability_evidence,
-            subjects: effectiveBookingSubjects?.subjects ?? null,
-          });
-
-          if (!round2SelectApplyConflict && !round2BookingPreparation.ok) {
-            debug.reason = round2BookingPreparation.stage === "subject_validation"
-              ? "booking_apply_preflight_subject_id_invalid_round2"
-              : "booking_apply_preflight_subject_resolution_conflict_round2";
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: {
-                booking_status: "subject_resolution_conflict",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "clarify_subject",
-                reason: round2BookingPreparation.reason,
-              },
-              previousToolResults: toolResults,
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-
-          if (!round2SelectApplyConflict && round2BookingPreparation.ok) {
-            round2ExecutionSubjectId = round2BookingPreparation.execution_subject_id;
-          }
         }
 
-        const round2SlotSelection = round2SelectApplyConflict?.selection ?? executeBookingSelectSlotBatch({
-          requests: secondOutput.tool_requests,
-          activeEvidence: bookingProcessState.active_availability_evidence,
+        const round2Batch = await executeRuntimeToolBatchKernel({
+          requests: round2Requests,
+          input: effectiveInput,
+          executors: deps.executors,
+          prior_booking_process_state: bookingProcessState,
           subjects: effectiveBookingSubjects?.subjects ?? null,
+          channel_contact: input.channel_contact ?? null,
+          now: turnNow,
         });
-
-        if (round2SelectApplyConflict) {
-          round2ToolResults.push(...round2SelectApplyConflict.tool_results);
-          toolResults.push(...round2SelectApplyConflict.tool_results);
-          bookingProcessState = computeBookingProcessState({
-            prior: bookingProcessState,
-            channelContact: input.channel_contact,
-            selectSlotData: round2SelectApplyConflict.selection.success_data,
-            selectSlotAttemptedThisTurn: round2SelectApplyConflict.selection.attempted,
-            now: turnNow,
-          });
-
-          if (deps.bookingProcessStateRepository) {
-            deps.bookingProcessStateRepository.saveState(
-              { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
-              bookingProcessState,
-              (info) => { if (!info.saved) debug.booking_process_state_save = info; },
-            ).catch(() => undefined);
-          }
-
-          debug.reason = "booking_apply_preflight_select_slot_same_round";
-        } else if (round2SlotSelection.attempted) {
-          // Keep the current batch outputs separate until every non-write call id has
-          // been resolved. This is what lets the third model step continue the SAME
-          // conversation instead of abandoning it for a fresh forced-finalization call.
-          round2ToolResults.push(...round2SlotSelection.tool_results);
-
-          // Write-bearing batches keep the historical immediate state transition for now.
-          // Non-write batches below apply selection + availability as one atomic batch
-          // transition so a same-batch availability refresh wins and revokes old proof.
-          if (pendingBookingApply) {
-            toolResults.push(...round2SlotSelection.tool_results);
-            bookingProcessState = computeBookingProcessState({
-              prior: bookingProcessState,
-              channelContact: input.channel_contact,
-              selectSlotData: round2SlotSelection.success_data,
-              // Any selection attempt, including failed/ambiguous, revokes the previous proof.
-              selectSlotAttemptedThisTurn: true,
-              now: turnNow,
-            });
-
-            if (deps.bookingProcessStateRepository) {
-              deps.bookingProcessStateRepository.saveState(
-                { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
-                bookingProcessState,
-                (info) => { if (!info.saved) debug.booking_process_state_save = info; },
-              ).catch(() => undefined);
-            }
-          }
+        if (round2Batch.availability_diagnostic !== undefined) {
+          debug.availability_diagnostic = round2Batch.availability_diagnostic;
         }
 
-        // R3q bounded continuation: a later tool batch without booking.apply is fully
-        // executed, every pending call id is closed, and the outputs are submitted back
-        // to the SAME conversation for one final model step. This is the first production
-        // model -> tools -> model -> tools -> model path; max model calls remains three.
-        if (!pendingBookingApply) {
-          const nonWriteExecution = await executeRuntimeNonWriteToolBatch({
-            requests: secondOutput.tool_requests,
-            input: effectiveInput,
-            executors: deps.executors,
-            now: turnNow,
-          });
-          if (nonWriteExecution.availability_diagnostic !== undefined) {
-            debug.availability_diagnostic = nonWriteExecution.availability_diagnostic;
-          }
+        // The kernel owns the non-write phase and reduces availability + selection as one
+        // atomic state transition. This is the critical ordering guarantee: a fresh
+        // availability.check revokes old slot proof before booking preflight can run.
+        bookingProcessState = round2Batch.booking_process_state;
+        if (deps.bookingProcessStateRepository) {
+          deps.bookingProcessStateRepository.saveState(
+            { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+            bookingProcessState,
+            (info) => { if (!info.saved) debug.booking_process_state_save = info; },
+          ).catch(() => undefined);
+        }
 
-          // Reassemble outputs in model-request order. booking.select_slot results come
-          // from the slot kernel; every other request is owned by the non-write executor.
-          const selectResults = [...round2ToolResults];
-          const nonWriteResults = [...nonWriteExecution.tool_results];
-          let selectIndex = 0;
-          let nonWriteIndex = 0;
-          const orderedRound2Results: RuntimeAgentToolResult[] = [];
-          for (const request of secondOutput.tool_requests) {
-            const result = request.tool === "booking.select_slot"
-              ? selectResults[selectIndex++]
-              : nonWriteResults[nonWriteIndex++];
-            if (result) orderedRound2Results.push(result);
-          }
-          round2ToolResults.length = 0;
-          round2ToolResults.push(...orderedRound2Results);
-          toolResults.push(...orderedRound2Results);
+        const round2ExecutionSubjectId: SubjectId | null =
+          round2BookingPreparation?.ok ? round2BookingPreparation.execution_subject_id : null;
+        let round2BookingApplyResolution: BookingApplyResolution | null = round1BookingApplyResolution;
+        let round2BookingResult: RuntimeAgentToolResult | null = null;
+        let guardedData: GuardedBookingApplyData | null = null;
+        let terminalReason = "bounded_tool_batch_final_response";
 
-          // Apply the whole batch as one deterministic state transition. If availability
-          // and select_slot coexist, computeBookingProcessState intentionally lets the
-          // fresh availability attempt supersede selection proof from the same batch.
-          const round2AvailabilityAttempt = resolveAuthoritativeAvailabilityAttempt(
-            secondOutput.tool_requests,
-            round2ToolResults,
-          );
-          bookingProcessState = computeBookingProcessState({
-            prior: round2StateBeforeBatch,
-            authoritativeAvailabilityAttempt: round2AvailabilityAttempt,
-            channelContact: input.channel_contact,
-            selectSlotData: round2SlotSelection.success_data,
-            selectSlotAttemptedThisTurn: round2SlotSelection.attempted,
-            now: turnNow,
-          });
-
-          if (deps.bookingProcessStateRepository) {
-            deps.bookingProcessStateRepository.saveState(
-              { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
-              bookingProcessState,
-              (info) => { if (!info.saved) debug.booking_process_state_save = info; },
-            ).catch(() => undefined);
-          }
-
-          const boundedBookingTruth = buildBookingApplyActionTruth(toolResults);
-          const boundedAvailabilityAttempt = resolveAuthoritativeAvailabilityAttempt(
-            processedToolRequests,
-            toolResults,
-          );
-          const boundedAvailabilityTruth = buildAvailabilityActionTruth(boundedAvailabilityAttempt);
-          const boundedAvailabilityPresentation = buildAvailabilityPresentationTruth(boundedAvailabilityAttempt);
-          const boundedAppointmentTruth = buildAppointmentDisplayTruth(toolResults);
-          const boundedHasBookingToolResult = toolResults.some(
-            (r) => r.tool === "availability.check" || r.tool === "booking.apply" || r.tool === "booking.select_slot",
-          );
-          const boundedGrounded =
-            (priorProcessState !== null && hasMeaningfulBookingState(priorProcessState)) ||
-            boundedHasBookingToolResult ||
-            bookingProcessState.selected_slot != null;
-          const boundedVisibleState = buildModelVisibleBookingProcessState({
-            state: bookingProcessState,
-            priorProcessState,
-            bookingStateGrounded: boundedGrounded,
-            now: turnNow,
-            timezone,
-          });
-
-          const boundedCall = await invokeRuntimeModelCall({
-            caller: deps.caller,
-            model: deps.model,
-            conversation_id: conversationId,
-            system_instruction: systemInstruction,
-            message: input.user_message,
-            context: composeRuntimeModelContext(callerContext, {
-              booking_apply_action_truth: boundedBookingTruth,
-              availability_action_truth: boundedAvailabilityTruth,
-              availability_presentation_truth: boundedAvailabilityPresentation,
-              appointment_display_truth: boundedAppointmentTruth,
-              booking_process_state: boundedVisibleState,
-            }),
-            // Resolve exactly the pending second batch. No tool definitions on the final
-            // budgeted step: a further tool request is treated as budget exhaustion.
-            tool_results: round2ToolResults,
-          });
-
-          if (!boundedCall.ok) {
-            const error = boundedCall.error;
-            debug.reason = "bounded_tool_batch_final_call_exception";
-            debug.runtime_error = {
-              code: "agent_bounded_final_response_failed",
-              message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
-            };
-            debug.caller_exception = buildCallerExceptionDiagnostics(error, {
-              stage: "forced_finalization",
-              locale: input.locale,
-              conversationId,
-              toolResults,
-              bookingApplyActionTruth: boundedBookingTruth,
-            });
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: boundedBookingTruth
-                ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
-                : buildMultiRoundFallbackReply(input.locale),
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: processedToolRequests,
-              tool_results: toolResults,
-              debug,
-              ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
-              ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-              ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
-            };
-          }
-
-          const boundedOutput = boundedCall.output;
-          conversationId = boundedCall.conversation_id;
-
-          if (boundedOutput.type === "tool_requests") {
-            // We intentionally do not execute a third tool batch in this slice. Keep the
-            // unclosed requests observable, dirty the conversation, and fail closed.
-            processedToolRequests.push(...boundedOutput.tool_requests);
-            debug.reason = "bounded_tool_batch_budget_exhausted";
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: boundedBookingTruth
-                ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
-                : buildMultiRoundFallbackReply(input.locale),
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: processedToolRequests,
-              tool_results: toolResults,
-              debug,
-              ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
-              ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-              ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
-            };
-          }
-
-          if (isMalformedFinalResponse(boundedOutput)) {
-            debug.reason = "malformed_bounded_tool_batch_final_response";
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: boundedBookingTruth
-                ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
-                : buildMultiRoundFallbackReply(input.locale),
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: processedToolRequests,
-              tool_results: toolResults,
-              debug,
-              ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
-              ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-              ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
-            };
-          }
-
-          debug.reason = "bounded_tool_batch_final_response";
-          await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-          return {
-            final_patient_reply: boundedOutput.final_response.final_patient_reply,
-            conversation_id: conversationId,
-            tool_requests: processedToolRequests,
-            tool_results: toolResults,
-            debug,
-            ui: maybeAttachPhoneRequestUI(
-              boundedVisibleState,
-              boundedOutput.final_response.ui,
-              typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined,
-            ),
-            ...(boundedOutput.final_response.subject_intent != null ? { subject_intent: boundedOutput.final_response.subject_intent } : {}),
-            ...(boundedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: boundedOutput.final_response.phone_ownership_intent } : {}),
-            ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
-            ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-            ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
+        if (round2Batch.select_apply_conflict) {
+          // The conflict result set is already protocol-complete for the whole batch.
+          // No booking write may consume proof produced beside it in this same batch.
+          terminalReason = "booking_apply_preflight_select_slot_same_round";
+        } else if (pendingBookingApply && round2BookingPreparation && !round2BookingPreparation.ok) {
+          terminalReason = round2BookingPreparation.stage === "subject_validation"
+            ? "booking_apply_preflight_subject_id_invalid_round2"
+            : "booking_apply_preflight_subject_resolution_conflict_round2";
+          guardedData = {
+            booking_status: "subject_resolution_conflict",
+            created_visit: false,
+            may_claim_booked: false,
+            required_next_action: "clarify_subject",
+            reason: round2BookingPreparation.reason,
           };
-        }
+        } else if (pendingBookingApply) {
+          const completedBeforeBooking = [...toolResults, ...round2Batch.tool_results];
 
-        // 6. No-slots gate — fires AFTER Guard J, bootstrap, and execution subject freeze.
-        //    availability.check returned 0 slots so there is nothing to confirm.
-        if (!round2SelectApplyConflict && shouldInterceptNoSlotsBeforeBookingApply({
-          pendingToolRequests: secondOutput.tool_requests,
-          completedToolResults: toolResults,
-        })) {
-          const noSlotsPendingApply = pendingBookingApply ?? secondOutput.tool_requests.find((r) => r.tool === "booking.apply")!;
-          debug.reason = "booking_apply_preflight_no_slots";
-          return await finalizeBlockedBookingApplyWithToolOutput({
-            pendingBookingApply: noSlotsPendingApply,
-            guardedData: {
+          if (shouldInterceptNoSlotsBeforeBookingApply({
+            pendingToolRequests: round2Requests,
+            completedToolResults: completedBeforeBooking,
+          })) {
+            terminalReason = "booking_apply_preflight_no_slots";
+            guardedData = {
               booking_status: "no_available_slots",
               created_visit: false,
               may_claim_booked: false,
               required_next_action: "ask_for_alternative_time",
               reason: "availability_check_returned_no_slots",
-            },
-            previousToolResults: toolResults,
-            toolRequests: processedToolRequests,
-            conversationId,
-            systemInstruction,
-            callerContext,
-            input,
-            debug,
-            deps,
-            booking_subjects_after_resolution: bootstrappedRegistry,
-            execution_subject_id: round2ExecutionSubjectId,
-          });
+            };
+          } else {
+            const round2Preflight = evaluateBookingApplyPreflight({
+              round: 2,
+              pendingBookingApply,
+              pendingToolRequests: round2Requests,
+              pendingTypedPhone: Boolean(effectiveBookingSubjects?.pending_typed_phone),
+              hasBookingPhone: hasSubjectOrContactPhone(effectiveInput, round2ExecutionSubjectId),
+              activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
+              selectedSlot: bookingProcessState.selected_slot,
+              selectedSlotProof: bookingProcessState.selected_slot_proof,
+              timezone,
+              now: turnNow,
+            });
+
+            if (round2Preflight.outcome === "block") {
+              terminalReason = round2Preflight.debug_reason;
+              if (round2Preflight.past_time_detail) debug.past_time_detail = round2Preflight.past_time_detail;
+              if (round2Preflight.missing_fields) debug.missing_fields = round2Preflight.missing_fields;
+              guardedData = round2Preflight.guarded_data;
+            } else {
+              terminalReason = "booking_apply_executed_after_round2_request";
+              const bookingExecution = await executeRuntimeToolRequest({
+                input: effectiveInput,
+                request: pendingBookingApply,
+                executors: deps.executors,
+                now: turnNow,
+                execution_subject_id: round2ExecutionSubjectId,
+              });
+              round2BookingResult = bookingExecution.tool_result;
+              if (round2ExecutionSubjectId) {
+                round2BookingApplyResolution = {
+                  call_id: pendingBookingApply.call_id,
+                  subject_id: round2ExecutionSubjectId,
+                };
+              }
+            }
+          }
         }
 
-        // Shared booking business preflight (round 2). No-slots and subject resolution
-        // have already run; this owns pending-phone → time/slot proof → phone → name/service.
-        if (pendingBookingApply && !round2SelectApplyConflict) {
-          const round2Preflight = evaluateBookingApplyPreflight({
-            round: 2,
-            pendingBookingApply,
-            pendingToolRequests: secondOutput.tool_requests,
-            pendingTypedPhone: Boolean(effectiveBookingSubjects?.pending_typed_phone),
-            hasBookingPhone: hasSubjectOrContactPhone(effectiveInput, round2ExecutionSubjectId),
-            activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
-            selectedSlot: bookingProcessState.selected_slot,
-            selectedSlotProof: bookingProcessState.selected_slot_proof,
-            timezone,
-            now: turnNow,
-          });
-          if (round2Preflight.outcome === "block") {
-            debug.reason = round2Preflight.debug_reason;
-            if (round2Preflight.past_time_detail) debug.past_time_detail = round2Preflight.past_time_detail;
-            if (round2Preflight.missing_fields) debug.missing_fields = round2Preflight.missing_fields;
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply,
-              guardedData: round2Preflight.guarded_data,
-              previousToolResults: toolResults,
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              execution_subject_id: round2ExecutionSubjectId,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-
-          debug.reason = "booking_apply_executed_after_round2_request";
-          const bookingExecution = await executeRuntimeToolRequest({
-            input: effectiveInput,
-            request: pendingBookingApply,
-            executors: deps.executors,
-            now: turnNow,
-            execution_subject_id: round2ExecutionSubjectId,
-          });
-          const bookingToolResult = bookingExecution.tool_result;
-
-          const allResults = [...toolResults, bookingToolResult];
-          const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
-          const bookingApplyDisplayTruth = buildAppointmentDisplayTruth(allResults);
-
-          markConversationDirty(debug);
-          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-
-          const bookingFinalCall = await invokeRuntimeModelCall({
-            caller: deps.caller,
-            model: deps.model,
-            conversation_id: null,
-            system_instruction: systemInstruction,
-            message: input.user_message,
-            context: composeRuntimeModelContext(callerContext, {
-              resolved_context: allResults,
-              booking_apply_action_truth: bookingApplyTruth,
-              appointment_display_truth: bookingApplyDisplayTruth,
-            }),
-          });
-          let bookingFinalOutput: RuntimeAgentCallerOutput | undefined;
-          if (bookingFinalCall.ok) {
-            bookingFinalOutput = bookingFinalCall.output;
-          } else {
-            const error = bookingFinalCall.error;
-            debug.caller_exception = buildCallerExceptionDiagnostics(error, {
-              stage: "forced_finalization",
-              locale: input.locale,
-              conversationId: null,
-              toolResults: allResults,
-              bookingApplyActionTruth: bookingApplyTruth,
-            });
-          }
-
-          const round2BookingApplyResolution: BookingApplyResolution | null =
-            pendingBookingApply && round2ExecutionSubjectId
-              ? { call_id: pendingBookingApply.call_id, subject_id: round2ExecutionSubjectId }
-              : null;
-
-          if (bookingFinalOutput !== undefined && bookingFinalOutput.type === "final_response" && !isMalformedFinalResponse(bookingFinalOutput)) {
-            return {
-              final_patient_reply: bookingFinalOutput.final_response.final_patient_reply,
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: processedToolRequests,
-              tool_results: allResults,
-              debug,
-              ui: sanitizePhoneCaptureUiForChannel(bookingFinalOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
-              ...(bookingFinalOutput.final_response.subject_intent != null ? { subject_intent: bookingFinalOutput.final_response.subject_intent } : {}),
-              ...(bookingFinalOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: bookingFinalOutput.final_response.phone_ownership_intent } : {}),
-              ...(round2ExecutionSubjectId != null ? { execution_subject_id: round2ExecutionSubjectId } : {}),
-              ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-              ...(round2BookingApplyResolution != null ? { booking_apply_resolution: round2BookingApplyResolution } : {}),
-            };
-          }
-
-          const bFallback = bookingApplyTruth
-            ? buildBookingApplyEmergencyFallback(allResults, input.locale)
-            : buildMultiRoundFallbackReply(input.locale);
-          return {
-            final_patient_reply: bFallback,
-            conversation_id: null,
-            conversation_id_resumable: false,
-            tool_requests: processedToolRequests,
-            tool_results: allResults,
-            debug,
-            ...(round2ExecutionSubjectId != null ? { execution_subject_id: round2ExecutionSubjectId } : {}),
-            ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-            ...(round2BookingApplyResolution != null ? { booking_apply_resolution: round2BookingApplyResolution } : {}),
+        if (guardedData && pendingBookingApply) {
+          round2BookingResult = {
+            tool: "booking.apply",
+            call_id: pendingBookingApply.call_id,
+            status: "success",
+            data: guardedData,
           };
         }
 
-        // When round 2 requests more tools but useful results from round 1 exist,
-        // attempt one forced finalization call (round 3). Protocol rules:
-        // - conversation_id is null: fresh context so we don't continue a thread
-        //   that has round-2 tool calls pending (which we cannot resolve here).
-        // - No tool_results: avoids sending function_call_output for round-1 call_ids
-        //   into a conversation whose last model turn requested different call_ids.
-        // - Tool results are embedded as resolved_context in plain JSON — readable by
-        //   the model without requiring tool-call protocol mechanics.
-        // - No tool_definitions: model cannot request tools and must produce final_response.
-        // Bounded: max 3 LLM calls total. Does not implement a recursive loop.
-        if (hasUsefulToolResults(toolResults)) {
-          const forcedCall = await invokeRuntimeModelCall({
-            caller: deps.caller,
-            model: deps.model,
-            conversation_id: null,
-            system_instruction: systemInstruction,
-            message: input.user_message,
-            context: composeRuntimeModelContext(callerContext, {
-              resolved_context: toolResults,
-              booking_apply_action_truth: bookingActionTruth,
-              appointment_display_truth: appointmentDisplayTruth,
-            }),
-            // No tool_definitions/tool_results: fresh caller must produce final_response.
+        // Assemble exactly one output per current call id in model request order. The
+        // kernel owns read/select results; booking result is appended only after updated
+        // state has passed deterministic write guards. Missing ownership fails closed.
+        const remainingRound2Results: RuntimeAgentToolResult[] = [
+          ...round2Batch.tool_results,
+          ...(round2BookingResult ? [round2BookingResult] : []),
+        ];
+        const resolvedRound2Results: RuntimeAgentToolResult[] = [];
+        for (const request of round2Requests) {
+          const resultIndex = remainingRound2Results.findIndex((result) =>
+            result.tool === request.tool &&
+            (request.call_id !== undefined ? result.call_id === request.call_id : true)
+          );
+          if (resultIndex >= 0) {
+            resolvedRound2Results.push(remainingRound2Results.splice(resultIndex, 1)[0]!);
+            continue;
+          }
+          resolvedRound2Results.push({
+            tool: request.tool,
+            call_id: request.call_id,
+            status: "denied",
+            error: {
+              code: "batch_result_missing",
+              message: "Runtime failed closed because this tool request had no deterministic batch result",
+            },
           });
-          let forcedOutput: RuntimeAgentCallerOutput | undefined;
-          if (forcedCall.ok) {
-            forcedOutput = forcedCall.output;
-          } else {
-            const error = forcedCall.error;
-            // Forced finalization failed — fall through to locale-aware fallback.
-            debug.caller_exception = buildCallerExceptionDiagnostics(error, {
-              stage: "forced_finalization",
-              locale: input.locale,
-              conversationId,
-              toolResults,
-              bookingApplyActionTruth: bookingActionTruth,
-            });
-          }
-          if (forcedOutput !== undefined && forcedOutput.type === "final_response" && isMalformedFinalResponse(forcedOutput)) {
-            debug.reason = "malformed_forced_finalization_fallback";
-            const malformedForcedReply = bookingActionTruth
+        }
+
+        toolResults.push(...resolvedRound2Results);
+
+        const boundedBookingTruth = buildBookingApplyActionTruth(toolResults);
+        const boundedAvailabilityAttempt = resolveAuthoritativeAvailabilityAttempt(
+          processedToolRequests,
+          toolResults,
+        );
+        const boundedAvailabilityTruth = buildAvailabilityActionTruth(boundedAvailabilityAttempt);
+        const boundedAvailabilityPresentation = buildAvailabilityPresentationTruth(boundedAvailabilityAttempt);
+        const boundedAppointmentTruth = buildAppointmentDisplayTruth(toolResults);
+        const boundedHasBookingToolResult = toolResults.some(
+          (r) => r.tool === "availability.check" || r.tool === "booking.apply" || r.tool === "booking.select_slot",
+        );
+        const boundedGrounded =
+          (priorProcessState !== null && hasMeaningfulBookingState(priorProcessState)) ||
+          boundedHasBookingToolResult ||
+          bookingProcessState.selected_slot != null;
+        const boundedVisibleState = buildModelVisibleBookingProcessState({
+          state: bookingProcessState,
+          priorProcessState,
+          bookingStateGrounded: boundedGrounded,
+          now: turnNow,
+          timezone,
+        });
+
+        debug.reason = terminalReason;
+        const boundedCall = await invokeRuntimeModelCall({
+          caller: deps.caller,
+          model: deps.model,
+          conversation_id: conversationId,
+          system_instruction: systemInstruction,
+          message: input.user_message,
+          context: composeRuntimeModelContext(callerContext, {
+            booking_apply_action_truth: boundedBookingTruth,
+            availability_action_truth: boundedAvailabilityTruth,
+            availability_presentation_truth: boundedAvailabilityPresentation,
+            appointment_display_truth: boundedAppointmentTruth,
+            booking_process_state: boundedVisibleState,
+          }),
+          // Current batch is fully resolved. No tool definitions on the terminal budgeted
+          // model step, so no fourth hidden model/tool cycle can begin.
+          tool_results: resolvedRound2Results,
+        });
+
+        const finalExecutionSubjectId = round2ExecutionSubjectId ?? round1ExecutionSubjectId;
+        const finalBookingApplyResolution = round2BookingApplyResolution ?? round1BookingApplyResolution;
+
+        if (!boundedCall.ok) {
+          const error = boundedCall.error;
+          debug.reason = "bounded_tool_batch_final_call_exception";
+          debug.runtime_error = {
+            code: "agent_bounded_final_response_failed",
+            message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
+          };
+          debug.caller_exception = buildCallerExceptionDiagnostics(error, {
+            stage: "forced_finalization",
+            locale: input.locale,
+            conversationId,
+            toolResults,
+            bookingApplyActionTruth: boundedBookingTruth,
+          });
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: boundedBookingTruth
               ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
-              : buildMultiRoundFallbackReply(input.locale);
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: malformedForcedReply,
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: processedToolRequests,
-              tool_results: toolResults,
-              debug,
-              ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
-              ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-              ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
-            };
-          }
-          if (forcedOutput !== undefined && forcedOutput.type === "final_response") {
-            debug.reason = "forced_finalization_after_tool_results";
-            markConversationDirty(debug);
-            await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-            return {
-              final_patient_reply: forcedOutput.final_response.final_patient_reply,
-              conversation_id: null,
-              conversation_id_resumable: false,
-              tool_requests: processedToolRequests,
-              tool_results: toolResults,
-              debug,
-              ui: sanitizePhoneCaptureUiForChannel(forcedOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
-              ...(forcedOutput.final_response.subject_intent != null ? { subject_intent: forcedOutput.final_response.subject_intent } : {}),
-              ...(forcedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: forcedOutput.final_response.phone_ownership_intent } : {}),
-              ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
-              ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-              ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
+              : buildMultiRoundFallbackReply(input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: processedToolRequests,
+            tool_results: toolResults,
+            debug,
+            ...(finalExecutionSubjectId != null ? { execution_subject_id: finalExecutionSubjectId } : {}),
+            ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+            ...(finalBookingApplyResolution != null ? { booking_apply_resolution: finalBookingApplyResolution } : {}),
+          };
+        }
+
+        const boundedOutput = boundedCall.output;
+        conversationId = boundedCall.conversation_id;
+
+        if (boundedOutput.type === "tool_requests") {
+          processedToolRequests.push(...boundedOutput.tool_requests);
+          debug.reason = "bounded_tool_batch_budget_exhausted";
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: boundedBookingTruth
+              ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
+              : buildMultiRoundFallbackReply(input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: processedToolRequests,
+            tool_results: toolResults,
+            debug,
+            ...(finalExecutionSubjectId != null ? { execution_subject_id: finalExecutionSubjectId } : {}),
+            ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+            ...(finalBookingApplyResolution != null ? { booking_apply_resolution: finalBookingApplyResolution } : {}),
+          };
+        }
+
+        if (isMalformedFinalResponse(boundedOutput)) {
+          debug.reason = "malformed_bounded_tool_batch_final_response";
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: boundedBookingTruth
+              ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
+              : buildMultiRoundFallbackReply(input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: processedToolRequests,
+            tool_results: toolResults,
+            debug,
+            ...(finalExecutionSubjectId != null ? { execution_subject_id: finalExecutionSubjectId } : {}),
+            ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+            ...(finalBookingApplyResolution != null ? { booking_apply_resolution: finalBookingApplyResolution } : {}),
+          };
+        }
+
+        await saveConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        const channel = typeof input.business_context?.channel === "string"
+          ? input.business_context.channel
+          : undefined;
+        let finalUi = maybeAttachPhoneRequestUI(
+          boundedVisibleState,
+          boundedOutput.final_response.ui,
+          channel,
+        );
+        if (guardedData?.required_next_action === "ask_for_phone") {
+          const captureUi = buildPhoneCaptureUi(channel);
+          if (captureUi) {
+            finalUi = {
+              ...finalUi,
+              ...captureUi,
+              telegram: { ...(finalUi?.telegram ?? {}), ...(captureUi.telegram ?? {}) },
             };
           }
         }
 
-        debug.reason = "multi_round_tool_loop_not_implemented";
-        markConversationDirty(debug);
-        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
         return {
-          final_patient_reply: buildMultiRoundFallbackReply(input.locale),
-          conversation_id: null,
-          conversation_id_resumable: false,
+          final_patient_reply: boundedOutput.final_response.final_patient_reply,
+          conversation_id: conversationId,
           tool_requests: processedToolRequests,
           tool_results: toolResults,
           debug,
-          ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
+          ui: finalUi,
+          ...(boundedOutput.final_response.subject_intent != null ? { subject_intent: boundedOutput.final_response.subject_intent } : {}),
+          ...(boundedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: boundedOutput.final_response.phone_ownership_intent } : {}),
+          ...(finalExecutionSubjectId != null ? { execution_subject_id: finalExecutionSubjectId } : {}),
           ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
-          ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
+          ...(finalBookingApplyResolution != null ? { booking_apply_resolution: finalBookingApplyResolution } : {}),
         };
       }
 

@@ -26,8 +26,35 @@ export interface CreateDentalRuntimeAgentDeps {
   appointmentLookupExecutor?: ToolExecutor;
 }
 
+/**
+ * Stateful Responses calls mutate the OpenAI conversation thread. Retrying the same
+ * logical call inside the SDK is unsafe because an earlier attempt may have reached
+ * OpenAI and emitted a function_call even when Runtime never received its response.
+ * A later retry can then fail with 429 and make the thread look clean when it is not.
+ *
+ * Keep the shared client retry policy for stateless/background OpenAI operations, but
+ * force exactly one HTTP attempt for the dental agent's stateful responses.create call.
+ */
+export function createStatefulAgentResponsesClient(client: OpenAIResponsesClient): OpenAIResponsesClient {
+  type StatefulResponsesCreate = (
+    input: unknown,
+    options?: { maxRetries?: number } & Record<string, unknown>,
+  ) => Promise<unknown>;
+
+  const create = client.responses.create as StatefulResponsesCreate;
+  return {
+    responses: {
+      create(input: unknown): Promise<unknown> {
+        return create.call(client.responses, input, { maxRetries: 0 });
+      },
+    },
+  };
+}
+
 export function createDentalRuntimeAgent(deps: CreateDentalRuntimeAgentDeps): OpenAIRuntimeAgent {
-  const caller = createOpenAIRuntimeAgentCaller({ client: deps.openaiClient });
+  const caller = createOpenAIRuntimeAgentCaller({
+    client: createStatefulAgentResponsesClient(deps.openaiClient),
+  });
 
   const knowledgeRepository = createSupabaseKnowledgeRepository({
     rpc: deps.rpc,

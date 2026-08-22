@@ -112,6 +112,18 @@ function asTimeHHMM(value: unknown): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * ClinicCard may omit date/visit_date and instead return a full local datetime in
+ * visit_start (for example "2026-07-08 11:15:00" or ISO "2026-07-08T11:15:00").
+ * Preserve that per-visit date for multi-day reads. Time-only values deliberately do
+ * not produce a date because there is no safe day to infer inside a range response.
+ */
+function asDateYYYYMMDDFromDateTime(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(\d{4}-\d{2}-\d{2})(?:[ T]|$)/);
+  return match ? match[1] : null;
+}
+
 function asVisitStatus(value: unknown): ClinicCardNormalizedVisitStatus {
   return typeof value === "string" && VALID_NORMALIZED_VISIT_STATUSES.has(value)
     ? value as ClinicCardNormalizedVisitStatus
@@ -172,9 +184,14 @@ function normalizeVisit(raw: unknown, fallbackDate?: string): ClinicCardResult<C
   const patientId = asPositiveNumber(row.patient_id);
   const doctorId = asPositiveNumber(row.doctor_id);
   const cabinetId = asPositiveNumber(row.cabinet_id);
-  const date = asOptionalString(row.date ?? row.visit_date) ?? fallbackDate;
-  const timeStart = asTimeHHMM(row.time_start ?? row.visit_start ?? row.start_time);
-  const timeEnd = asTimeHHMM(row.time_end ?? row.visit_end ?? row.end_time);
+  const startValue = row.time_start ?? row.visit_start ?? row.start_time;
+  const endValue = row.time_end ?? row.visit_end ?? row.end_time;
+  const date =
+    asOptionalString(row.date ?? row.visit_date) ??
+    asDateYYYYMMDDFromDateTime(startValue) ??
+    fallbackDate;
+  const timeStart = asTimeHHMM(startValue);
+  const timeEnd = asTimeHHMM(endValue);
 
   if (doctorId === null) return validationError("ClinicCard visit response missing positive doctor_id");
   if (cabinetId === null) return validationError("ClinicCard visit response missing positive cabinet_id");

@@ -46,6 +46,15 @@ export function buildAgentFirstSystemInstruction(legacyInstruction: string): str
     "For relative dates, resolve them against the Runtime-provided current date/time before calling a tool.",
     "When the patient explicitly provides a booking phone, normalize it to 9-15 digits with an optional leading + and pass it as phone_number on booking.apply. Never invent a phone number. Omit phone_number when none is known.",
 
+    "## QUALIFICATION",
+    "When the patient describes a problem, symptoms or reason for visiting, understand it naturally and ask only clarifying questions that are genuinely useful for the clinic task.",
+    "Do not turn the dialogue into a fixed questionnaire. Do not diagnose.",
+    "Patient-reported facts may be summarized without a clinic qualification policy. Clinical red flags, urgency categories and routing decisions may only come from an explicit clinic-provided qualification_policy in model context.",
+    "When clinical/problem information is learned or corrected on this turn, return a structured qualification envelope together with the patient reply. Runtime accumulates it across turns, so include only facts you can support from the dialogue and do not fabricate missing fields.",
+    "Qualification fields are: complaint (short non-diagnostic description), reported_facts (short facts explicitly reported by the patient), summary (compact admin-facing summary). Only when qualification_policy is present may you also include route, urgency and red_flags.",
+    "Use this response shape when qualification data should be saved: {\"reply\":\"patient-facing reply\",\"qualification\":{\"complaint\":\"...\",\"reported_facts\":[\"...\"],\"summary\":\"...\"}}. Runtime removes the JSON envelope before sending the reply to the patient.",
+    "If model-visible context already contains qualification_state, use it as remembered intake context and do not ask the patient to repeat it.",
+
     "## TOOLS",
     "Use kb.search for clinic facts such as services, prices, location, insurance and opening hours.",
     "Use availability.check when real appointment availability is needed. Present only slots returned by current authoritative availability evidence.",
@@ -69,6 +78,6 @@ export function buildAgentFirstSystemInstruction(legacyInstruction: string): str
 
     "## RESPONSE",
     "If another tool call is useful, call the tool instead of narrating what you would do.",
-    "When no tool call is needed, give a concise natural patient-facing reply. Never include raw JSON unless a semantic subject_intent or phone_ownership_intent envelope is required by Runtime.",
+    "When no tool call is needed, give a concise natural patient-facing reply. Structured JSON envelopes are allowed only for Runtime-consumed subject_intent, phone_ownership_intent or qualification state; never expose raw internal JSON as patient-facing prose.",
   ].join("\n");
 }

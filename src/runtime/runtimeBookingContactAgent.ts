@@ -16,6 +16,7 @@ import {
 import {
   buildRuntimeBookingContactFields,
 } from "./runtimeBookingContactBridge.ts";
+import type { AgentQualificationState } from "./agentQualification.ts";
 
 export type RuntimeAgentLoopFactory = (
   deps: CreateRuntimeAgentLoopDeps,
@@ -117,7 +118,8 @@ export function captureBookingExecutionTarget(
  * Responsibilities kept at this boundary:
  * 1. preserve semantic phone ownership immediately before booking.apply writes;
  * 2. collapse the safe same-batch select_slot + booking.apply case without asking the
- *    model to make the same booking decision again.
+ *    model to make the same booking decision again;
+ * 3. carry validated agent-first qualification state around the frozen legacy loop.
  *
  * The shell never authorizes a booking itself. It only replays the exact already-issued
  * booking.apply after the matching select_slot result exists. The legacy Runtime still
@@ -139,6 +141,7 @@ export function createRuntimeAgentWithBookingContactBridge(
         execution_subject_id: null,
       };
       let stagedBooking: SameBatchBookingStage | null = null;
+      let capturedQualification: AgentQualificationState | null = null;
 
       const caller: RuntimeAgentCaller = async (callerInput) => {
         if (
@@ -178,6 +181,8 @@ export function createRuntimeAgentWithBookingContactBridge(
               tool_requests: nextStage.forwarded_requests,
             };
           }
+        } else if (output.final_response.qualification != null) {
+          capturedQualification = output.final_response.qualification;
         }
         return output;
       };
@@ -220,7 +225,10 @@ export function createRuntimeAgentWithBookingContactBridge(
         caller,
         executors,
       });
-      return loop.runTurn(loopInput);
+      const result = await loop.runTurn(loopInput);
+      return capturedQualification
+        ? { ...result, qualification: capturedQualification }
+        : result;
     },
   };
 }

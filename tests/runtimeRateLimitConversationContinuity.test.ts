@@ -8,6 +8,10 @@ import {
 } from "../src/runtime/runtimeTurnService.ts";
 import type { RuntimeAgentTurnResult } from "../src/runtime/openaiRuntimeAgent.ts";
 
+const SINGLE_ATTEMPT_POLICY = {
+  single_attempt_first_call_rate_limit_safe: true,
+} as const;
+
 function failedTurn(overrides: Partial<RuntimeAgentTurnResult> = {}): RuntimeAgentTurnResult {
   return {
     final_patient_reply: "Извините, сейчас не удалось обработать сообщение.",
@@ -26,13 +30,19 @@ function failedTurn(overrides: Partial<RuntimeAgentTurnResult> = {}): RuntimeAge
   };
 }
 
-test("exhausted first-call 429 preserves the existing conversation", () => {
+test("eligible first-call 429 preserves the existing conversation when single-attempt safety is explicit", () => {
   const result = failedTurn();
   assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), true);
 
-  const normalized = normalizeRuntimeTurnResult(result);
+  const normalized = normalizeRuntimeTurnResult(result, SINGLE_ATTEMPT_POLICY);
   assert.equal(normalized.conversation_id, "conv-existing");
   assert.equal(normalized.conversation_id_resumable, true);
+});
+
+test("generic normalization fails closed without explicit single-attempt safety", () => {
+  const result = failedTurn();
+  assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), true);
+  assert.equal(normalizeRuntimeTurnResult(result).conversation_id_resumable, false);
 });
 
 test("rate_limit_exceeded string code is also recognized", () => {
@@ -69,7 +79,10 @@ test("HTTP 429 is preserved when provider semantic code is insufficient_quota", 
   });
 
   assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), true);
-  assert.equal(normalizeRuntimeTurnResult(result).conversation_id_resumable, true);
+  assert.equal(
+    normalizeRuntimeTurnResult(result, SINGLE_ATTEMPT_POLICY).conversation_id_resumable,
+    true,
+  );
 });
 
 test("semantic quota code without HTTP 429 does not prove a safe rejected rate-limit call", () => {
@@ -85,7 +98,10 @@ test("semantic quota code without HTTP 429 does not prove a safe rejected rate-l
   });
 
   assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), false);
-  assert.equal(normalizeRuntimeTurnResult(result).conversation_id_resumable, false);
+  assert.equal(
+    normalizeRuntimeTurnResult(result, SINGLE_ATTEMPT_POLICY).conversation_id_resumable,
+    false,
+  );
 });
 
 test("second-call 429 remains non-resumable because a tool call may be pending", () => {
@@ -101,7 +117,10 @@ test("second-call 429 remains non-resumable because a tool call may be pending",
   });
 
   assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), false);
-  assert.equal(normalizeRuntimeTurnResult(result).conversation_id_resumable, false);
+  assert.equal(
+    normalizeRuntimeTurnResult(result, SINGLE_ATTEMPT_POLICY).conversation_id_resumable,
+    false,
+  );
 });
 
 test("first-call 500 remains non-resumable because outcome is not an explicit rejected 429", () => {
@@ -116,7 +135,10 @@ test("first-call 500 remains non-resumable because outcome is not an explicit re
   });
 
   assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), false);
-  assert.equal(normalizeRuntimeTurnResult(result).conversation_id_resumable, false);
+  assert.equal(
+    normalizeRuntimeTurnResult(result, SINGLE_ATTEMPT_POLICY).conversation_id_resumable,
+    false,
+  );
 });
 
 test("first-call 429 without a prior conversation cannot preserve one", () => {

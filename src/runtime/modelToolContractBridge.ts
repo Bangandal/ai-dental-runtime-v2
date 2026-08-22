@@ -1,45 +1,9 @@
-import {
-  ACTIVE_RUNTIME_AGENT_TOOLS,
-  type RuntimeAgentToolRequest,
-} from "./openaiRuntimeAgent.ts";
-
-export type ActiveRuntimeToolName = (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number];
-
-export interface InternalToolContract {
-  description: string;
-  required_args: readonly string[];
-  optional_args: readonly string[];
-  param_schemas?: Record<string, Record<string, unknown>>;
-}
-
-export interface ModelToolContract {
-  description: string;
-  required_args: string[];
-  optional_args: string[];
-  param_schemas?: Record<string, Record<string, unknown>>;
-}
+import type { RuntimeAgentToolRequest } from "./openaiRuntimeAgent.ts";
 
 const VALID_INTERNAL_SUBJECT_RE = /^subject_[1-4]$/;
 export const INVALID_SEMANTIC_SUBJECT_ID = "__patient_target_conflict__";
 
 type PatientTarget = "self" | "other_person";
-
-/**
- * The canonical runtime tool definitions are already business-semantic.
- * Keep this boundary as a detached copy so the OpenAI adapter does not own schemas,
- * while all semantic-to-legacy translation remains on the response path below.
- */
-export function projectModelToolContract(
-  _toolName: ActiveRuntimeToolName,
-  definition: InternalToolContract,
-): ModelToolContract {
-  return {
-    description: definition.description,
-    required_args: [...definition.required_args],
-    optional_args: [...definition.optional_args],
-    ...(definition.param_schemas ? { param_schemas: definition.param_schemas } : {}),
-  };
-}
 
 function asObject(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)

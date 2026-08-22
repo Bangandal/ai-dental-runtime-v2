@@ -1,0 +1,34 @@
+name: R3r test lock migration
+
+on:
+  pull_request:
+    branches:
+      - ai-dental-frontdesk-core
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.ref == 'refactor/r3r-second-batch-kernel'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Migrate structural locks
+        run: python .github/scripts/r3r_test_lock_migration.py
+      - name: Commit migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add tests/bookingContactGuard.test.ts tests/r3kSelectSlotBatchOwnership.test.ts tests/r3mRuntimeModelCall.test.ts tests/r3nModelContext.test.ts tests/r3pBookingSelectApplyBatchConflict.test.ts tests/r3qBoundedToolBatchLoop.test.ts
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "test(R3r): migrate second-batch ownership characterizations"
+          git push

@@ -9,7 +9,6 @@ import {
   type RuntimeAgentTurnInput,
   type RuntimeAgentTurnResult,
 } from "./openaiRuntimeAgent.ts";
-import { prepareBookingApplyExecution } from "./bookingApplyExecutionPreparation.ts";
 import type { SubjectId, BookingSubjectsState } from "./bookingSubjectsState.ts";
 import type { ToolExecutorRegistry } from "./toolExecutor.ts";
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
@@ -18,8 +17,6 @@ import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { hasTrustedPhone, hasBookingApplyPending } from "./bookingContactGuard.ts";
-import { shouldInterceptNoSlotsBeforeBookingApply } from "./bookingApplyPreflight.ts";
-import { evaluateBookingApplyPreflight } from "./bookingApplyPreflightDecision.ts";
 import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAvailabilityActionTruth, resolveAuthoritativeAvailabilityAttempt, findLastAvailabilityRequest } from "./availabilityActionTruth.ts";
@@ -33,8 +30,6 @@ import {
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
-import { executeRuntimeToolRequest, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
-import { executeRuntimeToolBatchKernel, completeRuntimeToolBatchWithBookingResult } from "./runtimeToolBatchKernel.ts";
 import { executeRuntimeTurnToolBatch } from "./runtimeTurnToolBatch.ts";
 import { getLegacyRuntimeTurnToolBatchDebugReason } from "./runtimeTurnToolBatchLegacyDebug.ts";
 import { invokeRuntimeModelCall, type RuntimeAgentCaller, type RuntimeAgentCallerInput, type RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";

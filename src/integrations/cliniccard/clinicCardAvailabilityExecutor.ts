@@ -277,6 +277,72 @@ export function createClinicCardAvailabilityExecutor(
     const limit = context.limit;
     const limitedSlots = limit !== undefined && limit > 0 ? mappedSlots.slice(0, limit) : mappedSlots;
 
+    // Auto-extend: when the requested date has no matching slots and no specific time
+    // was requested, scan forward up to 7 calendar days for the nearest working day
+    // with available slots. This removes the need for the model to manually loop.
+    if (limitedSlots.length === 0 && requestedTime === null) {
+      const workingDaysEnv = deps.env?.["CLINICCARD_WORKING_DAYS"] ?? "1,2,3,4,5";
+      const workingDays = new Set(
+        workingDaysEnv.split(",").map((d) => Number(d.trim())).filter((d) => d >= 1 && d <= 7),
+      );
+      if (workingDays.size === 0) {
+        [1, 2, 3, 4, 5].forEach((d) => workingDays.add(d));
+      }
+
+      for (let i = 1; i <= 7; i++) {
+        const nextD = new Date(requestedDate + "T12:00:00Z");
+        nextD.setUTCDate(nextD.getUTCDate() + i);
+        const nextDate = nextD.toISOString().slice(0, 10);
+
+        const isoDay = getIsoWeekday(nextDate);
+        if (isoDay === null || !workingDays.has(isoDay)) continue;
+        if (!isDateInsideAvailabilityPolicy(nextDate, availabilityPolicy)) continue;
+        if (!isDateInsideClinicCardServiceSchedule(nextDate, serviceSchedule.schedule)) continue;
+
+        const nextResult = await checkClinicCardAvailability(
+          {
+            date: nextDate,
+            working_hours_start: effectiveWindow.start,
+            working_hours_end: effectiveWindow.end,
+            slot_duration_minutes: availabilityPolicy.slot_duration_minutes,
+            slot_interval_minutes: availabilityPolicy.slot_duration_minutes,
+            appointment_duration_minutes: serviceResource.duration_minutes,
+            doctor_id: doctorId,
+            cabinet_id: cabinetId,
+            timezone,
+          },
+          adapter,
+        );
+
+        if (!nextResult.ok) continue;
+
+        let nextSlots = nextResult.data.slots;
+        if (context.now && nextDate === getTodayInTimezone(context.now, timezone)) {
+          nextSlots = nextSlots.filter((s) => !isPastSlotTime(s.time_start, context.now!, timezone));
+        }
+        if (nextSlots.length === 0) continue;
+
+        const nextMapped = nextSlots.map((s) => ({
+          slot_id: `${s.date}T${s.time_start}`,
+          starts_at: `${s.date}T${s.time_start}:00`,
+          ends_at: `${s.date}T${s.time_end}:00`,
+        }));
+        const nextLimited = limit !== undefined && limit > 0 ? nextMapped.slice(0, limit) : nextMapped;
+
+        return {
+          tool: "availability.check",
+          status: "success",
+          data: {
+            slots: nextLimited,
+            timezone,
+            nearest_available_date: nextDate,
+            total_slots: nextResult.data.total_slots,
+            free_slots_count: nextResult.data.free_slots_count,
+          },
+        };
+      }
+    }
+
     // Patch post-filter counts into diagnostic if it was collected.
     const diagnostic = result.data.diagnostic
       ? {

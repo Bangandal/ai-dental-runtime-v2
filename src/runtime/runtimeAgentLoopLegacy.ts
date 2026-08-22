@@ -5,7 +5,6 @@ import {
   type AgentUiActions,
   type BookingApplyResolution,
   type OpenAIRuntimeAgent,
-  type RuntimeAgentFinalResponse,
   type RuntimeAgentToolRequest,
   type RuntimeAgentToolResult,
   type RuntimeAgentTurnInput,
@@ -37,35 +36,9 @@ import {
 import { executeBookingSelectSlotBatch } from "./bookingSelectSlot.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
 import { executeRuntimeToolRequest, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
+import { invokeRuntimeModelCall, type RuntimeAgentCaller, type RuntimeAgentCallerInput, type RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
+export type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 export { buildSubjectAwarePhoneFields, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
-
-export interface RuntimeAgentCallerInput {
-  model: string;
-  conversation_id?: string | null;
-  system_instruction: string;
-  input: {
-    message: string;
-    context: Record<string, unknown>;
-    tool_definitions?: typeof RUNTIME_AGENT_TOOL_DEFINITIONS;
-    tool_results?: RuntimeAgentToolResult[];
-  };
-}
-
-export type RuntimeAgentCallerOutput =
-  | {
-    type: "tool_requests";
-    conversation_id?: string | null;
-    tool_requests: RuntimeAgentToolRequest[];
-    usage?: unknown;
-  }
-  | {
-    type: "final_response";
-    conversation_id?: string | null;
-    final_response: RuntimeAgentFinalResponse;
-    usage?: unknown;
-  };
-
-export type RuntimeAgentCaller = (input: RuntimeAgentCallerInput) => Promise<RuntimeAgentCallerOutput>;
 
 export interface CreateRuntimeAgentLoopDeps {
   model: string;
@@ -153,20 +126,18 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         timezone,
       });
 
-      let firstOutput: RuntimeAgentCallerOutput;
-      try {
-        debug.llm_calls = buildRuntimeLlmCallDebug({ main_agent_called: true });
-        firstOutput = await deps.caller({
-          model: deps.model,
-          conversation_id: conversationId,
-          system_instruction: systemInstruction,
-          input: {
-            message: input.user_message,
-            context: { ...callerContext, booking_process_state: firstCallVisibleState },
-            tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
-          },
-        });
-      } catch (error) {
+      debug.llm_calls = buildRuntimeLlmCallDebug({ main_agent_called: true });
+      const firstCall = await invokeRuntimeModelCall({
+        caller: deps.caller,
+        model: deps.model,
+        conversation_id: conversationId,
+        system_instruction: systemInstruction,
+        message: input.user_message,
+        context: { ...callerContext, booking_process_state: firstCallVisibleState },
+        tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
+      });
+      if (!firstCall.ok) {
+        const error = firstCall.error;
         debug.runtime_error = {
           code: "agent_caller_failed",
           message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
@@ -190,9 +161,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         };
       }
 
-      if (firstOutput.conversation_id !== undefined) {
-        conversationId = firstOutput.conversation_id;
-      }
+      const firstOutput = firstCall.output;
+      conversationId = firstCall.conversation_id;
 
       if (firstOutput.type === "final_response" && isMalformedFinalResponse(firstOutput)) {
         debug.reason = "malformed_first_model_response";
@@ -602,20 +572,18 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         booking_process_state: secondCallVisibleState,
       };
 
-      let secondOutput: RuntimeAgentCallerOutput;
-      try {
-        secondOutput = await deps.caller({
-          model: deps.model,
-          conversation_id: conversationId,
-          system_instruction: systemInstruction,
-          input: {
-            message: input.user_message,
-            context: secondCallContext,
-            tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
-            tool_results: toolResults,
-          },
-        });
-      } catch (error) {
+      const secondCall = await invokeRuntimeModelCall({
+        caller: deps.caller,
+        model: deps.model,
+        conversation_id: conversationId,
+        system_instruction: systemInstruction,
+        message: input.user_message,
+        context: secondCallContext,
+        tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
+        tool_results: toolResults,
+      });
+      if (!secondCall.ok) {
+        const error = secondCall.error;
         debug.runtime_error = {
           code: "agent_final_response_failed",
           message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
@@ -649,9 +617,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         };
       }
 
-      if (secondOutput.conversation_id !== undefined) {
-        conversationId = secondOutput.conversation_id;
-      }
+      const secondOutput = secondCall.output;
+      conversationId = secondCall.conversation_id;
 
       if (secondOutput.type === "final_response" && isMalformedFinalResponse(secondOutput)) {
         const malformedReply = bookingActionTruth
@@ -924,23 +891,24 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           markConversationDirty(debug);
           await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
 
+          const bookingFinalCall = await invokeRuntimeModelCall({
+            caller: deps.caller,
+            model: deps.model,
+            conversation_id: null,
+            system_instruction: systemInstruction,
+            message: input.user_message,
+            context: {
+              ...callerContext,
+              resolved_context: allResults,
+              ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
+              ...(bookingApplyDisplayTruth ? { appointment_display_truth: bookingApplyDisplayTruth } : {}),
+            },
+          });
           let bookingFinalOutput: RuntimeAgentCallerOutput | undefined;
-          try {
-            bookingFinalOutput = await deps.caller({
-              model: deps.model,
-              conversation_id: null,
-              system_instruction: systemInstruction,
-              input: {
-                message: input.user_message,
-                context: {
-                  ...callerContext,
-                  resolved_context: allResults,
-                  ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
-                  ...(bookingApplyDisplayTruth ? { appointment_display_truth: bookingApplyDisplayTruth } : {}),
-                },
-              },
-            });
-          } catch (error) {
+          if (bookingFinalCall.ok) {
+            bookingFinalOutput = bookingFinalCall.output;
+          } else {
+            const error = bookingFinalCall.error;
             debug.caller_exception = buildCallerExceptionDiagnostics(error, {
               stage: "forced_finalization",
               locale: input.locale,
@@ -999,25 +967,25 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // - No tool_definitions: model cannot request tools and must produce final_response.
         // Bounded: max 3 LLM calls total. Does not implement a recursive loop.
         if (hasUsefulToolResults(toolResults)) {
+          const forcedCall = await invokeRuntimeModelCall({
+            caller: deps.caller,
+            model: deps.model,
+            conversation_id: null,
+            system_instruction: systemInstruction,
+            message: input.user_message,
+            context: {
+              ...callerContext,
+              resolved_context: toolResults,
+              ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
+              ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
+            },
+            // No tool_definitions/tool_results: fresh caller must produce final_response.
+          });
           let forcedOutput: RuntimeAgentCallerOutput | undefined;
-          try {
-            forcedOutput = await deps.caller({
-              model: deps.model,
-              conversation_id: null,
-              system_instruction: systemInstruction,
-              input: {
-                message: input.user_message,
-                context: {
-                  ...callerContext,
-                  resolved_context: toolResults,
-                  ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
-                  ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
-                },
-                // No tool_definitions → caller sends tools:[] → model must produce final_response.
-                // No tool_results → no function_call_output protocol messages.
-              },
-            });
-          } catch (error) {
+          if (forcedCall.ok) {
+            forcedOutput = forcedCall.output;
+          } else {
+            const error = forcedCall.error;
             // Forced finalization failed — fall through to locale-aware fallback.
             debug.caller_exception = buildCallerExceptionDiagnostics(error, {
               stage: "forced_finalization",
@@ -1156,23 +1124,21 @@ export async function finalizeBlockedMultipleBookingApplies(params: {
   const allResults = [...previousToolResults, ...guardedResults];
   const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
 
-  let guardedOutput: RuntimeAgentCallerOutput;
-  try {
-    guardedOutput = await deps.caller({
-      model: deps.model,
-      conversation_id: conversationId,
-      system_instruction: systemInstruction,
-      input: {
-        message: input.user_message,
-        context: {
-          ...callerContext,
-          ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
-        },
-        tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
-        tool_results: guardedResults,
-      },
-    });
-  } catch (error) {
+  const guardedCall = await invokeRuntimeModelCall({
+    caller: deps.caller,
+    model: deps.model,
+    conversation_id: conversationId,
+    system_instruction: systemInstruction,
+    message: input.user_message,
+    context: {
+      ...callerContext,
+      ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
+    },
+    tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
+    tool_results: guardedResults,
+  });
+  if (!guardedCall.ok) {
+    const error = guardedCall.error;
     debug.runtime_error = {
       code: "guarded_multiple_booking_caller_failed",
       message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
@@ -1199,10 +1165,8 @@ export async function finalizeBlockedMultipleBookingApplies(params: {
     };
   }
 
-  let updatedConversationId = conversationId;
-  if (guardedOutput.conversation_id !== undefined) {
-    updatedConversationId = guardedOutput.conversation_id;
-  }
+  const guardedOutput = guardedCall.output;
+  const updatedConversationId = guardedCall.conversation_id;
 
   if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
     await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
@@ -1289,23 +1253,21 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
   const allResults = [...previousToolResults, guardedToolResult];
   const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
 
-  let guardedOutput: RuntimeAgentCallerOutput;
-  try {
-    guardedOutput = await deps.caller({
-      model: deps.model,
-      conversation_id: conversationId,
-      system_instruction: systemInstruction,
-      input: {
-        message: input.user_message,
-        context: {
-          ...callerContext,
-          ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
-        },
-        tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
-        tool_results: [guardedToolResult],
-      },
-    });
-  } catch (error) {
+  const guardedCall = await invokeRuntimeModelCall({
+    caller: deps.caller,
+    model: deps.model,
+    conversation_id: conversationId,
+    system_instruction: systemInstruction,
+    message: input.user_message,
+    context: {
+      ...callerContext,
+      ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
+    },
+    tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
+    tool_results: [guardedToolResult],
+  });
+  if (!guardedCall.ok) {
+    const error = guardedCall.error;
     debug.runtime_error = {
       code: "guarded_booking_apply_caller_failed",
       message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
@@ -1333,10 +1295,8 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
     };
   }
 
-  let updatedConversationId = conversationId;
-  if (guardedOutput.conversation_id !== undefined) {
-    updatedConversationId = guardedOutput.conversation_id;
-  }
+  const guardedOutput = guardedCall.output;
+  const updatedConversationId = guardedCall.conversation_id;
 
   if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
     await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);

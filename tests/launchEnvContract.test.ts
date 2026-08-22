@@ -8,6 +8,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const envExample = readFileSync(resolve(here, "../.env.example"), "utf8");
 
 const REQUIRED_LAUNCH_KEYS = [
+  "RUNTIME_OPENAI_MODEL",
   "RUNTIME_AGENT_MODE",
   "RUNTIME_AGENT_MAX_MODEL_CALLS",
   "CLINICCARD_BOOKING_MODE",
@@ -30,6 +31,11 @@ test("launch env example exposes every fail-closed ClinicCard authority prerequi
       `.env.example must expose ${key}`,
     );
   }
+});
+
+test("launch env recommends the agent-first primary model without changing rollout safety defaults", () => {
+  assert.match(envExample, /^RUNTIME_OPENAI_MODEL=gpt-5\.4-mini$/m);
+  assert.match(envExample, /^RUNTIME_AGENT_MODE=legacy$/m);
 });
 
 test("dangerous launch authority switches remain fail-closed in the example", () => {

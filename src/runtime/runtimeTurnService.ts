@@ -59,16 +59,50 @@ export function createDentalRuntimeTurnService(deps: CreateDentalRuntimeAgentDep
   return createRuntimeTurnService({ agent });
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+/**
+ * The OpenAI SDK already owns bounded HTTP retries. If those retries are exhausted on
+ * the FIRST model call with an explicit 429, no model response/function_call was accepted
+ * in this turn and the previously existing conversation remains safe to resume.
+ *
+ * Later-call failures are intentionally excluded: after a model-emitted tool request there
+ * may be a pending function_call without its output, so those conversations must stay dirty.
+ */
+export function shouldPreserveConversationAfterFirstCallRateLimit(
+  result: RuntimeAgentTurnResult,
+): boolean {
+  if (result.conversation_id_resumable !== false) return false;
+  if (typeof result.conversation_id !== "string" || result.conversation_id.length === 0) return false;
+  if (result.tool_requests.length > 0 || result.tool_results.length > 0) return false;
+
+  const debug = asRecord(result.debug);
+  if (debug?.reason !== "agent_first_call_exception") return false;
+
+  const callerException = asRecord(debug.caller_exception);
+  if (callerException?.stage !== "first_call") return false;
+  const code = callerException.error_code;
+  return code === 429 || code === "429" || code === "rate_limit_exceeded";
+}
+
 export function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): RuntimeTurnResult {
   const finalPatientReply = result.final_patient_reply?.trim();
   if (!finalPatientReply) {
     throw new Error("runtime_turn_result_missing_final_patient_reply");
   }
 
+  const preserveAfterRateLimit = shouldPreserveConversationAfterFirstCallRateLimit(result);
+
   return {
     final_patient_reply: finalPatientReply,
     conversation_id: result.conversation_id,
-    conversation_id_resumable: result.conversation_id_resumable,
+    conversation_id_resumable: preserveAfterRateLimit
+      ? true
+      : result.conversation_id_resumable,
     tool_requests: result.tool_requests,
     tool_results: result.tool_results,
     debug: result.debug,

@@ -36,6 +36,7 @@ import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channel
 import { executeRuntimeToolRequest, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
 import { executeRuntimeToolBatchKernel, completeRuntimeToolBatchWithBookingResult } from "./runtimeToolBatchKernel.ts";
 import { invokeRuntimeModelCall, type RuntimeAgentCaller, type RuntimeAgentCallerInput, type RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
+import { createRuntimeModelIterationState, invokeRuntimeModelIteration } from "./runtimeModelIteration.ts";
 export type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 export { buildSubjectAwarePhoneFields, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
 
@@ -85,6 +86,8 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
       }
 
+      let modelIteration = createRuntimeModelIterationState(conversationId);
+
       const callerContext = buildModelVisibleCallerContext(input);
 
       // Load prior booking process state; compute initial per-turn state from it.
@@ -124,17 +127,30 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       });
 
       debug.llm_calls = buildRuntimeLlmCallDebug({ main_agent_called: true });
-      const firstCall = await invokeRuntimeModelCall({
+      const firstStep = await invokeRuntimeModelIteration({
+        state: modelIteration,
         caller: deps.caller,
         model: deps.model,
-        conversation_id: conversationId,
         system_instruction: systemInstruction,
         message: input.user_message,
         context: composeRuntimeModelContext(callerContext, { booking_process_state: firstCallVisibleState }),
         tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
       });
-      if (!firstCall.ok) {
-        const error = firstCall.error;
+      modelIteration = firstStep.state;
+      conversationId = modelIteration.conversation_id;
+      if (firstStep.kind === "budget_exhausted") {
+        debug.reason = "model_call_budget_exhausted_before_first_call";
+        return {
+          final_patient_reply: buildMalformedResponseFallback(input.locale),
+          conversation_id: conversationId,
+          conversation_id_resumable: false,
+          tool_requests: [],
+          tool_results: [],
+          debug,
+        };
+      }
+      if (firstStep.kind === "call_failed") {
+        const error = firstStep.error;
         debug.runtime_error = {
           code: "agent_caller_failed",
           message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
@@ -158,8 +174,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         };
       }
 
-      const firstOutput = firstCall.output;
-      conversationId = firstCall.conversation_id;
+      const firstOutput = firstStep.output;
 
       if (firstOutput.type === "final_response" && isMalformedFinalResponse(firstOutput)) {
         debug.reason = "malformed_first_model_response";
@@ -478,18 +493,38 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       // after select_slot proof was persisted.
       const secondCallAllowsTools = round1GuardedData === null;
 
-      const secondCall = await invokeRuntimeModelCall({
+      const secondStep = await invokeRuntimeModelIteration({
+        state: modelIteration,
         caller: deps.caller,
         model: deps.model,
-        conversation_id: conversationId,
         system_instruction: systemInstruction,
         message: input.user_message,
         context: secondCallContext,
         ...(secondCallAllowsTools ? { tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS } : {}),
         tool_results: toolResults,
       });
-      if (!secondCall.ok) {
-        const error = secondCall.error;
+      modelIteration = secondStep.state;
+      conversationId = modelIteration.conversation_id;
+      if (secondStep.kind === "budget_exhausted") {
+        debug.reason = "model_call_budget_exhausted_before_second_call";
+        markConversationDirty(debug);
+        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        return {
+          final_patient_reply: bookingActionTruth
+            ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
+            : buildMalformedResponseFallback(input.locale),
+          conversation_id: null,
+          conversation_id_resumable: false,
+          tool_requests: toolRequests,
+          tool_results: toolResults,
+          debug,
+          ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
+          ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+          ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
+        };
+      }
+      if (secondStep.kind === "call_failed") {
+        const error = secondStep.error;
         debug.runtime_error = {
           code: "agent_final_response_failed",
           message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
@@ -523,8 +558,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         };
       }
 
-      const secondOutput = secondCall.output;
-      conversationId = secondCall.conversation_id;
+      const secondOutput = secondStep.output;
 
       if (secondOutput.type === "final_response" && isMalformedFinalResponse(secondOutput)) {
         const malformedReply = bookingActionTruth
@@ -846,10 +880,10 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         });
 
         debug.reason = terminalReason;
-        const boundedCall = await invokeRuntimeModelCall({
+        const boundedStep = await invokeRuntimeModelIteration({
+          state: modelIteration,
           caller: deps.caller,
           model: deps.model,
-          conversation_id: conversationId,
           system_instruction: systemInstruction,
           message: input.user_message,
           context: composeRuntimeModelContext(callerContext, {
@@ -859,16 +893,35 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             appointment_display_truth: boundedAppointmentTruth,
             booking_process_state: boundedVisibleState,
           }),
-          // Current batch is fully resolved. No tool definitions on the terminal budgeted
-          // model step, so no fourth hidden model/tool cycle can begin.
           tool_results: resolvedRound2Results,
         });
+        modelIteration = boundedStep.state;
+        conversationId = modelIteration.conversation_id;
 
         const finalExecutionSubjectId = round2ExecutionSubjectId ?? round1ExecutionSubjectId;
         const finalBookingApplyResolution = round2BookingApplyResolution ?? round1BookingApplyResolution;
 
-        if (!boundedCall.ok) {
-          const error = boundedCall.error;
+        if (boundedStep.kind === "budget_exhausted") {
+          debug.reason = "bounded_tool_batch_budget_exhausted_before_final_call";
+          markConversationDirty(debug);
+          await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+          return {
+            final_patient_reply: boundedBookingTruth
+              ? buildBookingApplyEmergencyFallback(toolResults, input.locale)
+              : buildMultiRoundFallbackReply(input.locale),
+            conversation_id: null,
+            conversation_id_resumable: false,
+            tool_requests: processedToolRequests,
+            tool_results: toolResults,
+            debug,
+            ...(finalExecutionSubjectId != null ? { execution_subject_id: finalExecutionSubjectId } : {}),
+            ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+            ...(finalBookingApplyResolution != null ? { booking_apply_resolution: finalBookingApplyResolution } : {}),
+          };
+        }
+
+        if (boundedStep.kind === "call_failed") {
+          const error = boundedStep.error;
           debug.reason = "bounded_tool_batch_final_call_exception";
           debug.runtime_error = {
             code: "agent_bounded_final_response_failed",
@@ -898,8 +951,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           };
         }
 
-        const boundedOutput = boundedCall.output;
-        conversationId = boundedCall.conversation_id;
+        const boundedOutput = boundedStep.output;
 
         if (boundedOutput.type === "tool_requests") {
           processedToolRequests.push(...boundedOutput.tool_requests);

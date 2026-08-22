@@ -46,7 +46,8 @@ test("agent-first replaces legacy scripted intake instead of appending an overri
 
   assert.notEqual(resolved, LEGACY_PROMPT);
   assert.match(resolved, /Today is 2026-08-22 \(timezone: Europe\/Prague\)/);
-  assert.match(resolved, /You own language understanding, conversation, clarification, planning/);
+  assert.match(resolved, /You own the conversation, planning, clarification and recovery/);
+  assert.match(resolved, /language understanding and natural-language normalization/);
   assert.match(resolved, /call booking\.apply directly/);
   assert.match(resolved, /booking\.select_slot is an internal Runtime detail/);
 

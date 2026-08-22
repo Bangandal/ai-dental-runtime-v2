@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { createRuntimeAgentLoop, type RuntimeAgentCaller } from "../src/runtime/runtimeAgentLoop.ts";
 
@@ -170,4 +173,23 @@ test("R3q: third model step requesting more tools exhausts the budget and dirtie
   assert.equal((result.debug as Record<string, unknown>)?.reason, "bounded_tool_batch_budget_exhausted");
   assert.ok(result.tool_requests.some((item) => item.call_id === "kb_3_unresolved"), "unresolved final request remains observable");
   assert.equal(result.tool_results.some((item) => item.call_id === "kb_3_unresolved"), false);
+});
+
+test("R3q structure: second non-write batch has one executor and one bounded continuation path", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+
+  assert.match(loopSource, /import \{ executeRuntimeNonWriteToolBatch \} from ["']\.\/runtimeNonWriteToolBatch\.ts["']/);
+  assert.equal(
+    loopSource.match(/executeRuntimeNonWriteToolBatch\(\{/g)?.length,
+    1,
+    "later non-write batches must have one execution owner",
+  );
+  assert.equal(
+    loopSource.match(/bounded_tool_batch_final_response/g)?.length,
+    1,
+    "bounded continuation must have one successful terminal marker",
+  );
+  assert.match(loopSource, /tool_results: round2ToolResults/);
+  assert.match(loopSource, /conversation_id: conversationId/);
 });

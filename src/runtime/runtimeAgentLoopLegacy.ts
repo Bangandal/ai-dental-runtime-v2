@@ -11,8 +11,7 @@ import {
   type RuntimeAgentTurnInput,
   type RuntimeAgentTurnResult,
 } from "./openaiRuntimeAgent.ts";
-import { resolveBookingExecutionSubject } from "./bookingSubjectExecutionResolver.ts";
-import { bootstrapRegistryFromBookingApplyArgs, parseSubjectTarget } from "./bookingSubjectsState.ts";
+import { prepareBookingApplyExecution } from "./bookingApplyExecutionPreparation.ts";
 import type { SubjectId, BookingSubjectsState } from "./bookingSubjectsState.ts";
 import { applyToolPolicy, type PlannerOutput, type ToolName, type TruthSnapshot } from "./toolPolicy.ts";
 import { executeAllowedTools, type ToolExecutorRegistry, type ToolExecutionContext } from "./toolExecutor.ts";
@@ -330,27 +329,25 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       // Applies to round 1 (booking.apply as the first tool of a turn).
       const bookingApplyRound1 = toolRequests.find((r) => r.tool === "booking.apply");
 
-      // Bootstrap registry: when model targets subject_2+ but no registry exists yet,
-      // create a minimal multi-subject registry so subject-aware guards can resolve
-      // execution subject. Returns null for subject_1 (single-subject flow — no registry).
-      let effectiveBookingSubjects: BookingSubjectsState | null = input.booking_subjects ?? null;
-      if (!effectiveBookingSubjects && bookingApplyRound1) {
-        const bootstrapped = bootstrapRegistryFromBookingApplyArgs(
-          bookingApplyRound1.arguments,
-          input.channel_contact ?? null,
-          input.current_turn_typed_phone ?? null,
-        );
-        if (bootstrapped) {
-          effectiveBookingSubjects = bootstrapped;
-        }
-      }
+      // Prepare booking target independently of model-call round. Guard S below may still
+      // intentionally ignore a target conflict while preserving a newly bootstrapped registry.
+      const round1BookingPreparation = bookingApplyRound1
+        ? prepareBookingApplyExecution({
+            booking_apply: bookingApplyRound1,
+            booking_subjects: input.booking_subjects ?? null,
+            channel_contact: input.channel_contact ?? null,
+            current_turn_typed_phone: input.current_turn_typed_phone ?? null,
+          })
+        : null;
+      let effectiveBookingSubjects: BookingSubjectsState | null =
+        round1BookingPreparation?.effective_booking_subjects ?? input.booking_subjects ?? null;
       let effectiveInput: RuntimeAgentTurnInput = effectiveBookingSubjects !== (input.booking_subjects ?? null)
         ? { ...input, booking_subjects: effectiveBookingSubjects }
         : input;
-      // Non-null when bootstrap created a new registry this turn; orchestrator persists it.
-      // Updated again in round-2 if round-2 bootstrap creates a registry.
+      // Non-null when preparation bootstrapped a new registry this turn; orchestrator persists it.
+      // Updated again if a later tool batch bootstraps a registry.
       let bootstrappedRegistry: BookingSubjectsState | null =
-        effectiveInput !== input ? effectiveBookingSubjects : null;
+        round1BookingPreparation?.bootstrapped_registry ?? null;
 
       // Guard S (round 1) — same-round booking.select_slot + booking.apply:
       // Process select_slot deterministically, revoke old proof, persist state, and
@@ -456,13 +453,14 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         guardSFired = true;
       }
 
-      // Guard J (round 1) — FIRST: subject_id must be valid (subject_1..subject_4) for ALL
-      // booking.apply calls. Resolve/freeze execution subject before ANY other booking guards fire.
+      // Guard J (first tool batch) — consume the shared preparation result only after
+      // Guard S has had priority. This preserves historical same-batch select/apply behavior.
       let round1ExecutionSubjectId: SubjectId | null = null;
-      if (!guardSFired && bookingApplyRound1) {
-        const subjectParse1 = parseSubjectTarget(bookingApplyRound1.arguments.subject_id);
-        if (!subjectParse1.ok) {
-          debug.reason = "booking_apply_preflight_subject_id_invalid_round1";
+      if (!guardSFired && bookingApplyRound1 && round1BookingPreparation) {
+        if (!round1BookingPreparation.ok) {
+          debug.reason = round1BookingPreparation.stage === "subject_validation"
+            ? "booking_apply_preflight_subject_id_invalid_round1"
+            : "booking_apply_preflight_subject_resolution_conflict_round1";
           return await finalizeBlockedBookingApplyWithToolOutput({
             pendingBookingApply: bookingApplyRound1,
             guardedData: {
@@ -470,7 +468,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
               created_visit: false,
               may_claim_booked: false,
               required_next_action: "clarify_subject",
-              reason: subjectParse1.reason,
+              reason: round1BookingPreparation.reason,
             },
             previousToolResults: [],
             toolRequests: processedToolRequests,
@@ -483,38 +481,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             booking_subjects_after_resolution: bootstrappedRegistry,
           });
         }
-        if (effectiveBookingSubjects) {
-          const round1Resolution = resolveBookingExecutionSubject(
-            effectiveBookingSubjects,
-            bookingApplyRound1.arguments,
-          );
-          if (!round1Resolution.ok) {
-            debug.reason = "booking_apply_preflight_subject_resolution_conflict_round1";
-            return await finalizeBlockedBookingApplyWithToolOutput({
-              pendingBookingApply: bookingApplyRound1,
-              guardedData: {
-                booking_status: "subject_resolution_conflict",
-                created_visit: false,
-                may_claim_booked: false,
-                required_next_action: "clarify_subject",
-                reason: round1Resolution.reason,
-              },
-              previousToolResults: [],
-              toolRequests: processedToolRequests,
-              conversationId,
-              systemInstruction,
-              callerContext,
-              input,
-              debug,
-              deps,
-              booking_subjects_after_resolution: bootstrappedRegistry,
-            });
-          }
-          round1ExecutionSubjectId = round1Resolution.execution_subject_id;
-        } else {
-          // No registry: freeze to validated subject_id (subject_1 for self-booking)
-          round1ExecutionSubjectId = subjectParse1.subject_id;
-        }
+        round1ExecutionSubjectId = round1BookingPreparation.execution_subject_id;
       }
 
       // Shared booking business preflight (round 1) — execution patient is already frozen.
@@ -874,12 +841,29 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           });
         }
 
-        // 3. Guard J (round 2) — strict subject_id validation (subject_1..subject_4 only).
+        // 3. Prepare/freeze booking target through the same round-agnostic boundary used
+        // by the first tool batch. Multiple-write guards above intentionally retain priority.
         let round2ExecutionSubjectId: SubjectId | null = null;
         if (pendingBookingApply) {
-          const subjectParse2 = parseSubjectTarget(pendingBookingApply.arguments.subject_id);
-          if (!subjectParse2.ok) {
-            debug.reason = "booking_apply_preflight_subject_id_invalid_round2";
+          const round2BookingPreparation = prepareBookingApplyExecution({
+            booking_apply: pendingBookingApply,
+            booking_subjects: effectiveBookingSubjects,
+            channel_contact: input.channel_contact ?? null,
+            current_turn_typed_phone: input.current_turn_typed_phone ?? null,
+          });
+
+          effectiveBookingSubjects = round2BookingPreparation.effective_booking_subjects;
+          effectiveInput = effectiveBookingSubjects !== (input.booking_subjects ?? null)
+            ? { ...input, booking_subjects: effectiveBookingSubjects }
+            : input;
+          if (round2BookingPreparation.bootstrapped_registry) {
+            bootstrappedRegistry = round2BookingPreparation.bootstrapped_registry;
+          }
+
+          if (!round2BookingPreparation.ok) {
+            debug.reason = round2BookingPreparation.stage === "subject_validation"
+              ? "booking_apply_preflight_subject_id_invalid_round2"
+              : "booking_apply_preflight_subject_resolution_conflict_round2";
             return await finalizeBlockedBookingApplyWithToolOutput({
               pendingBookingApply,
               guardedData: {
@@ -887,7 +871,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
                 created_visit: false,
                 may_claim_booked: false,
                 required_next_action: "clarify_subject",
-                reason: subjectParse2.reason,
+                reason: round2BookingPreparation.reason,
               },
               previousToolResults: toolResults,
               toolRequests: processedToolRequests,
@@ -901,54 +885,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             });
           }
 
-          // 4. Round-2 bootstrap: when registry absent (e.g. round-1 was availability.check
-          //    only) and booking.apply targets subject_2+, create the registry now.
-          if (!effectiveBookingSubjects) {
-            const r2Bootstrapped = bootstrapRegistryFromBookingApplyArgs(
-              pendingBookingApply.arguments,
-              input.channel_contact ?? null,
-              input.current_turn_typed_phone ?? null,
-            );
-            if (r2Bootstrapped) {
-              effectiveBookingSubjects = r2Bootstrapped;
-              effectiveInput = { ...input, booking_subjects: effectiveBookingSubjects };
-              bootstrappedRegistry = r2Bootstrapped;
-            }
-          }
-
-          // 5. Freeze execution subject.
-          if (effectiveBookingSubjects) {
-            const round2Resolution = resolveBookingExecutionSubject(
-              effectiveBookingSubjects,
-              pendingBookingApply.arguments,
-            );
-            if (!round2Resolution.ok) {
-              debug.reason = "booking_apply_preflight_subject_resolution_conflict_round2";
-              return await finalizeBlockedBookingApplyWithToolOutput({
-                pendingBookingApply,
-                guardedData: {
-                  booking_status: "subject_resolution_conflict",
-                  created_visit: false,
-                  may_claim_booked: false,
-                  required_next_action: "clarify_subject",
-                  reason: round2Resolution.reason,
-                },
-                previousToolResults: toolResults,
-                toolRequests: processedToolRequests,
-                conversationId,
-                systemInstruction,
-                callerContext,
-                input,
-                debug,
-                deps,
-                booking_subjects_after_resolution: bootstrappedRegistry,
-              });
-            }
-            round2ExecutionSubjectId = round2Resolution.execution_subject_id;
-          } else {
-            // No registry: freeze to validated subject_id.
-            round2ExecutionSubjectId = subjectParse2.subject_id;
-          }
+          round2ExecutionSubjectId = round2BookingPreparation.execution_subject_id;
         }
 
         // PF-004b: booking.select_slot legality is independent of model-call round.
@@ -1806,7 +1743,7 @@ function resolveBookingContactFields(
 /**
  * Returns phone fields for booking.apply execution, using the resolved execution subject
  * when booking_subjects registry is active. Falls back to global phone contacts otherwise.
- * @param executionSubjectId - frozen subject id from resolveBookingExecutionSubject(); overrides active_subject_id
+ * @param executionSubjectId - frozen subject id from booking.apply preparation; overrides active_subject_id
  */
 export function buildSubjectAwarePhoneFields(
   input: RuntimeAgentTurnInput,

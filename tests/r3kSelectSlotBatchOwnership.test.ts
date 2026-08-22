@@ -55,14 +55,14 @@ test("R3k: single select-slot batch preserves the deterministic success payload"
   assert.equal(result.tool_results[0]?.status, "success");
 });
 
-test("R3k structure: first batch and shared batch kernel delegate selection/conflicts to canonical helpers", async () => {
+test("R3k/R3s structure: legacy loop no longer owns slot selection or select/apply conflict", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
   const kernelSource = await readFile(resolve(thisDir, "../src/runtime/runtimeToolBatchKernel.ts"), "utf8");
 
-  assert.equal(loopSource.match(/executeBookingSelectSlotBatch\(\{/g)?.length, 1);
+  assert.equal(loopSource.match(/executeBookingSelectSlotBatch\(\{/g)?.length ?? 0, 0);
   assert.equal(kernelSource.match(/executeBookingSelectSlotBatch\(\{/g)?.length, 1);
-  assert.equal(loopSource.match(/resolveBookingSelectApplyBatchConflict\(\{/g)?.length, 1);
+  assert.equal(loopSource.match(/resolveBookingSelectApplyBatchConflict\(\{/g)?.length ?? 0, 0);
   assert.equal(kernelSource.match(/resolveBookingSelectApplyBatchConflict\(\{/g)?.length, 1);
   assert.doesNotMatch(loopSource, /executeBookingSelectSlot\(/);
   assert.doesNotMatch(loopSource, /BookingSelectSlotSuccessData/);

@@ -6,10 +6,7 @@ import {
   createOpenAIRuntimeAgentCaller,
 } from "../src/runtime/openaiRuntimeAgentCaller.ts";
 import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntimeAgent.ts";
-import {
-  parseModelPersonIntents,
-  projectModelPersonInstruction,
-} from "../src/runtime/modelPersonIntentBridge.ts";
+import { parseModelPersonIntents } from "../src/runtime/modelPersonIntentBridge.ts";
 import { buildModelVisiblePeopleContext } from "../src/runtime/modelPeopleContextBridge.ts";
 import type { BookingSubjectsState } from "../src/runtime/bookingSubjectsState.ts";
 
@@ -44,17 +41,17 @@ function makeCallerInput() {
   };
 }
 
-test("R3d model instruction removes legacy subject-id protocol", () => {
-  const projected = projectModelPersonInstruction(makeCallerInput().system_instruction);
-  assert.match(projected, /## BOOKING PEOPLE/);
-  assert.match(projected, /person_ref/);
-  assert.match(projected, /other_person/);
-  assert.doesNotMatch(projected, /subject_1=sender\/self/);
-  assert.doesNotMatch(projected, /subject_id:null\|subject_N/);
-  assert.doesNotMatch(projected, /target_subject_id:null\|subject_N/);
+test("R3d canonical model instruction contains only semantic people protocol", () => {
+  const instruction = makeCallerInput().system_instruction;
+  assert.match(instruction, /## BOOKING PEOPLE/);
+  assert.match(instruction, /person_ref/);
+  assert.match(instruction, /other_person/);
+  assert.doesNotMatch(instruction, /subject_1=sender\/self/);
+  assert.doesNotMatch(instruction, /subject_id:null\|subject_N/);
+  assert.doesNotMatch(instruction, /target_subject_id:null\|subject_N/);
 });
 
-test("R3d OpenAI payload receives projected semantic instruction", () => {
+test("R3d OpenAI payload receives canonical semantic instruction", () => {
   const payload = buildOpenAIInput(makeCallerInput() as never);
   const instructions = String(payload.instructions);
   assert.match(instructions, /## BOOKING PEOPLE/);

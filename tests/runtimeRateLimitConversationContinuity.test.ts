@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { buildCallerExceptionDiagnostics } from "../src/runtime/callerExceptionDiagnostics.ts";
 import {
   normalizeRuntimeTurnResult,
   shouldPreserveConversationAfterFirstCallRateLimit,
@@ -45,6 +46,46 @@ test("rate_limit_exceeded string code is also recognized", () => {
     },
   });
   assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), true);
+});
+
+test("HTTP 429 is preserved when provider semantic code is insufficient_quota", () => {
+  const error = Object.assign(new Error("quota exhausted"), {
+    code: "insufficient_quota",
+    status: 429,
+  });
+  const callerException = buildCallerExceptionDiagnostics(error, {
+    stage: "first_call",
+    conversationId: "conv-existing",
+  });
+
+  assert.equal(callerException.error_code, "insufficient_quota");
+  assert.equal(callerException.http_status, 429);
+
+  const result = failedTurn({
+    debug: {
+      reason: "agent_first_call_exception",
+      caller_exception: callerException,
+    },
+  });
+
+  assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), true);
+  assert.equal(normalizeRuntimeTurnResult(result).conversation_id_resumable, true);
+});
+
+test("semantic quota code without HTTP 429 does not prove a safe rejected rate-limit call", () => {
+  const result = failedTurn({
+    debug: {
+      reason: "agent_first_call_exception",
+      caller_exception: {
+        stage: "first_call",
+        error_code: "insufficient_quota",
+        http_status: 400,
+      },
+    },
+  });
+
+  assert.equal(shouldPreserveConversationAfterFirstCallRateLimit(result), false);
+  assert.equal(normalizeRuntimeTurnResult(result).conversation_id_resumable, false);
 });
 
 test("second-call 429 remains non-resumable because a tool call may be pending", () => {

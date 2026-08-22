@@ -43,20 +43,22 @@ test("R3v: model projection is determined by accumulated state/results, not mode
 });
 
 test("R3v: accumulated availability evidence is projected through the same owner", () => {
+  const availabilityResult = {
+    tool: "availability.check" as const,
+    call_id: "avail_1",
+    status: "success" as const,
+    data: { slots: [{ starts_at: "2099-08-22T10:00:00" }], total_slots: 1, free_slots_count: 1 },
+  };
+  const availabilityRequest = {
+    tool: "availability.check" as const,
+    call_id: "avail_1",
+    arguments: { requested_date: "2099-08-22" },
+  };
+
   const bookingState = computeBookingProcessState({
     prior: null,
     channelContact: null,
-    toolRequests: [
-      { tool: "availability.check", call_id: "avail_1", arguments: { requested_date: "2099-08-22" } },
-    ],
-    toolResults: [
-      {
-        tool: "availability.check",
-        call_id: "avail_1",
-        status: "success",
-        data: { slots: [{ starts_at: "2099-08-22T10:00:00" }], total_slots: 1, free_slots_count: 1 },
-      },
-    ],
+    toolResults: [availabilityResult],
     now: NOW,
   });
 
@@ -64,17 +66,8 @@ test("R3v: accumulated availability evidence is projected through the same owner
     caller_context: { locale: "ru" },
     prior_booking_process_state: null,
     booking_process_state: bookingState,
-    processed_tool_requests: [
-      { tool: "availability.check", call_id: "avail_1", arguments: { requested_date: "2099-08-22" } },
-    ],
-    tool_results: [
-      {
-        tool: "availability.check",
-        call_id: "avail_1",
-        status: "success",
-        data: { slots: [{ starts_at: "2099-08-22T10:00:00" }], total_slots: 1, free_slots_count: 1 },
-      },
-    ],
+    processed_tool_requests: [availabilityRequest],
+    tool_results: [availabilityResult],
     now: NOW,
     timezone: "Europe/Prague",
   });

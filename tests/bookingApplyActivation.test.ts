@@ -534,13 +534,15 @@ test("proof: UNSAFE_BOOKING_TEXT_RE and guardBookingApplyFinalReply are removed 
   assert.deepEqual(violations, [], `Regex guard must be fully removed: ${violations.join(", ")}`);
 });
 
-// ── Proof: booking_apply_action_truth is passed to model in legacy Runtime implementation ──
+// ── Proof: booking_apply_action_truth is projected through the roundless model-context owner ──
 
-test("proof: runtimeAgentLoopLegacy.ts injects booking_apply_action_truth into second model call context", async () => {
+test("proof: roundless model projection injects booking_apply_action_truth into model context", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSrc = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
-  assert.match(loopSrc, /booking_apply_action_truth/, "runtimeAgentLoopLegacy must inject booking_apply_action_truth into model context");
-  assert.match(loopSrc, /buildBookingApplyActionTruth/, "runtimeAgentLoopLegacy must call buildBookingApplyActionTruth");
+  const projectionSrc = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnModelContext.ts"), "utf8");
+  assert.doesNotMatch(loopSrc, /buildBookingApplyActionTruth/, "legacy shell must not own booking truth projection");
+  assert.match(projectionSrc, /buildBookingApplyActionTruth\(params\.tool_results\)/, "roundless projection must build booking_apply_action_truth from accumulated tool results");
+  assert.match(projectionSrc, /booking_apply_action_truth:\s*bookingApplyTruth/, "roundless projection must inject booking_apply_action_truth into model context");
 });
 
 // ── PR #180 R4: Emergency fallback gated by complete ClinicCard proof ──────────

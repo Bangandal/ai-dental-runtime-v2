@@ -613,10 +613,10 @@ test("runtimeAgentLoop: forced_finalization without booking context still produc
       conversation_id: "conv_pr121",
       tool_requests: [{ tool: "kb.search", call_id: "call_kb_2", arguments: { query: "more info" } }],
     },
-    // forced_finalization round
+    // bounded third step after the second kb.search call has been resolved
     {
       type: "final_response",
-      conversation_id: null,
+      conversation_id: "conv_pr121",
       final_response: { final_patient_reply: FALLBACK_REPLY, safety_notes: [] },
     },
   ]);
@@ -636,8 +636,8 @@ test("runtimeAgentLoop: forced_finalization without booking context still produc
 
   // Guard should NOT fire (no booking.apply pending)
   assert.notEqual((result.debug as Record<string, unknown>)?.reason, "booking_apply_intercepted_missing_trusted_phone");
-  // forced_finalization should produce the model reply
+  // The second batch is resolved, so the model reply can keep the conversation resumable.
   assert.equal(result.final_patient_reply, FALLBACK_REPLY);
-  assert.equal(result.conversation_id, null); // dirty as expected by PR #121
-  assert.equal(result.conversation_id_resumable, false);
+  assert.equal(result.conversation_id, "conv_pr121");
+  assert.notEqual(result.conversation_id_resumable, false);
 });

@@ -175,21 +175,16 @@ test("R3q: third model step requesting more tools exhausts the budget and dirtie
   assert.equal(result.tool_results.some((item) => item.call_id === "kb_3_unresolved"), false);
 });
 
-test("R3q structure: second non-write batch has one executor and one bounded continuation path", async () => {
+test("R3q structure: bounded continuation is now fed by the shared second-batch kernel", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const kernelSource = await readFile(resolve(thisDir, "../src/runtime/runtimeToolBatchKernel.ts"), "utf8");
 
-  assert.match(loopSource, /import \{ executeRuntimeNonWriteToolBatch \} from ["']\.\/runtimeNonWriteToolBatch\.ts["']/);
-  assert.equal(
-    loopSource.match(/executeRuntimeNonWriteToolBatch\(\{/g)?.length,
-    1,
-    "later non-write batches must have one execution owner",
-  );
-  assert.equal(
-    loopSource.match(/debug\.reason = "bounded_tool_batch_final_response"/g)?.length,
-    1,
-    "bounded continuation must have one successful terminal marker",
-  );
-  assert.match(loopSource, /tool_results: round2ToolResults/);
+  assert.match(loopSource, /import \{ executeRuntimeToolBatchKernel \} from ["']\.\/runtimeToolBatchKernel\.ts["']/);
+  assert.doesNotMatch(loopSource, /executeRuntimeNonWriteToolBatch/);
+  assert.match(kernelSource, /import \{ executeRuntimeNonWriteToolBatch \} from ["']\.\/runtimeNonWriteToolBatch\.ts["']/);
+  assert.equal(kernelSource.match(/executeRuntimeNonWriteToolBatch\(\{/g)?.length, 1);
+  assert.match(loopSource, /let terminalReason = "bounded_tool_batch_final_response"/);
+  assert.match(loopSource, /tool_results: resolvedRound2Results/);
   assert.match(loopSource, /conversation_id: conversationId/);
 });

@@ -3,6 +3,7 @@ import {
   type RuntimeAgentToolRequest,
   type RuntimeAgentToolResult,
 } from "./openaiRuntimeAgent.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 import type { RuntimeAgentCaller, RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 import {
   invokeRuntimeModelIteration,
@@ -76,6 +77,10 @@ export type RuntimeBoundedModelToolLoopOutcome<TDomainState> =
  * It owns transport sequencing only. Tool/business legality lives in execute_batch.
  * The final model-call budget slot is always terminal: tool definitions are omitted because
  * there is no remaining call budget to execute a new batch and submit its outputs safely.
+ *
+ * In agent-first pilot mode, a domain frame with allow_tools=false no longer terminates the
+ * model's ability to recover. The deterministic kernel still blocks illegal writes; the model
+ * may continue with other tools or clarification until the hard transport budget is reached.
  */
 export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
   model_state: RuntimeModelIterationState;
@@ -98,11 +103,12 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
     allow_tools: true,
   };
   let batchNumber = 0;
+  const agentFirst = isAgentFirstRuntimeEnabled();
 
   while (true) {
     const callNumber = modelState.calls_used + 1;
     const hasFutureModelCall = modelState.calls_used < modelState.max_calls - 1;
-    const toolsEnabledForCall = frame.allow_tools && hasFutureModelCall;
+    const toolsEnabledForCall = (agentFirst || frame.allow_tools) && hasFutureModelCall;
 
     const step = await invokeRuntimeModelIteration({
       state: modelState,
@@ -145,7 +151,7 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
       };
     }
 
-    if (!frame.allow_tools) {
+    if (!frame.allow_tools && !agentFirst) {
       return {
         kind: "terminal_tool_request",
         requests: step.output.tool_requests,

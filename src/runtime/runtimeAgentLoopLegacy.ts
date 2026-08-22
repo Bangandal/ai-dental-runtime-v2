@@ -437,7 +437,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
           selectedSlot: bookingProcessState.selected_slot,
           selectedSlotProof: bookingProcessState.selected_slot_proof,
-          includeInvalidSlotGuard: false,
           timezone,
           now: turnNow,
         });
@@ -849,7 +848,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
             selectedSlot: bookingProcessState.selected_slot,
             selectedSlotProof: bookingProcessState.selected_slot_proof,
-            includeInvalidSlotGuard: true,
             timezone,
             now: turnNow,
           });

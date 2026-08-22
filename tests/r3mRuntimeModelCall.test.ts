@@ -10,31 +10,29 @@ import {
 } from "../src/runtime/runtimeModelCall.ts";
 import { RUNTIME_AGENT_TOOL_DEFINITIONS } from "../src/runtime/openaiRuntimeAgent.ts";
 
-test("R3m: model call preserves conversation id when caller omits one", async () => {
+test("R3m: transport boundary preserves conversation id returned by caller", async () => {
   const outcome = await invokeRuntimeModelCall({
     caller: async () => ({
-      type: "final_response",
+      type: "final_response" as const,
+      conversation_id: "conv_new",
       final_response: { final_patient_reply: "ok" },
     }),
     model: "test-model",
-    conversation_id: "conv_existing",
+    conversation_id: "conv_old",
     system_instruction: "system",
     message: "hello",
-    context: { a: 1 },
+    context: {},
   });
 
   assert.equal(outcome.ok, true);
-  if (!outcome.ok) return;
-  assert.equal(outcome.conversation_id, "conv_existing");
-  assert.equal(outcome.output.type, "final_response");
+  if (outcome.ok) assert.equal(outcome.conversation_id, "conv_new");
 });
 
-test("R3m: model call accepts caller conversation-id replacement including null", async () => {
-  const replaced = await invokeRuntimeModelCall({
+test("R3m: transport boundary preserves prior conversation id when caller omits replacement", async () => {
+  const outcome = await invokeRuntimeModelCall({
     caller: async () => ({
-      type: "tool_requests",
-      conversation_id: "conv_next",
-      tool_requests: [],
+      type: "final_response" as const,
+      final_response: { final_patient_reply: "ok" },
     }),
     model: "test-model",
     conversation_id: "conv_old",
@@ -42,14 +40,17 @@ test("R3m: model call accepts caller conversation-id replacement including null"
     message: "hello",
     context: {},
   });
-  assert.equal(replaced.ok, true);
-  if (replaced.ok) assert.equal(replaced.conversation_id, "conv_next");
 
-  const cleared = await invokeRuntimeModelCall({
+  assert.equal(outcome.ok, true);
+  if (outcome.ok) assert.equal(outcome.conversation_id, "conv_old");
+});
+
+test("R3m: transport boundary can explicitly clear conversation id", async () => {
+  const outcome = await invokeRuntimeModelCall({
     caller: async () => ({
-      type: "final_response",
+      type: "final_response" as const,
       conversation_id: null,
-      final_response: { final_patient_reply: "done" },
+      final_response: { final_patient_reply: "ok" },
     }),
     model: "test-model",
     conversation_id: "conv_old",
@@ -57,8 +58,9 @@ test("R3m: model call accepts caller conversation-id replacement including null"
     message: "hello",
     context: {},
   });
-  assert.equal(cleared.ok, true);
-  if (cleared.ok) assert.equal(cleared.conversation_id, null);
+
+  assert.equal(outcome.ok, true);
+  if (outcome.ok) assert.equal(outcome.conversation_id, null);
 });
 
 test("R3m: transport boundary preserves optional tool protocol fields exactly", async () => {
@@ -113,14 +115,25 @@ test("R3m: caller exceptions become typed failure outcomes without changing conv
   assert.equal(outcome.conversation_id, "conv_safe");
 });
 
-test("R3m structure: legacy loop delegates every direct model invocation to one boundary", async () => {
+test("R3m structure: main loop uses bounded iteration state while terminal helpers retain canonical transport boundary", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const helperBoundary = loopSource.indexOf("// ── Multiple-blocked booking.apply helper");
+  assert.ok(helperBoundary > 0);
+
+  const mainRunTurn = loopSource.slice(0, helperBoundary);
+  const terminalHelpers = loopSource.slice(helperBoundary);
 
   assert.equal(
-    loopSource.match(/invokeRuntimeModelCall\(\{/g)?.length,
-    5,
-    "main, second, unified bounded continuation, and two guarded compatibility finalizers must share one transport boundary",
+    mainRunTurn.match(/invokeRuntimeModelIteration\(\{/g)?.length,
+    3,
+    "the three main model steps must share the bounded iteration owner",
+  );
+  assert.doesNotMatch(mainRunTurn, /invokeRuntimeModelCall\(\{/);
+  assert.equal(
+    terminalHelpers.match(/invokeRuntimeModelCall\(\{/g)?.length,
+    2,
+    "terminal compatibility helpers may still use the canonical one-call transport boundary",
   );
   assert.doesNotMatch(loopSource, /await deps\.caller\(/);
   assert.match(loopSource, /export type \{ RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput \} from ["']\.\/runtimeModelCall\.ts["']/);

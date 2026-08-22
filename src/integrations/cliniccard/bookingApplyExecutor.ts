@@ -64,6 +64,62 @@ function reconciliationBlockedResult(
   });
 }
 
+async function reconcilePendingVisit(
+  adapter: ClinicCardAdapter,
+  guard: BookingReconciliationGuard,
+  key: BookingReconciliationKey,
+  lock: BookingReconciliationLock,
+  timezone: string,
+): Promise<BookingApplySuccessResult | null> {
+  // Without a patient id we cannot uniquely attribute a ClinicCard visit to this
+  // write. Keep the lock and require operator reconciliation rather than guessing.
+  if (lock.patient_id === undefined) return null;
+
+  const visitsResult = await adapter.listVisits(lock.date, lock.date);
+  if (!visitsResult.ok) return null;
+
+  const exactMatches = visitsResult.data.filter((visit) =>
+    visit.status !== "UNKNOWN"
+    && visit.patient_id === lock.patient_id
+    && visit.doctor_id === lock.doctor_id
+    && visit.cabinet_id === lock.cabinet_id
+    && visit.date === lock.date
+    && visit.time_start === lock.time_start
+    && visit.time_end === lock.time_end,
+  );
+
+  // A missing read can be stale, and multiple matches indicate an anomaly. Neither
+  // authorizes a retry or an automatic unlock. Only one exact authoritative visit does.
+  if (exactMatches.length !== 1) return null;
+
+  const visit = exactMatches[0];
+  const cleared = await guard.clear(key);
+  return bookingResult({
+    booking_status: "visit_created",
+    created_visit: true,
+    may_claim_booked: true,
+    cliniccard_visit_id: String(visit.id),
+    cliniccard_patient_id: lock.patient_id,
+    date: visit.date,
+    time_start: visit.time_start,
+    time_end: visit.time_end,
+    doctor_id: visit.doctor_id,
+    cabinet_id: visit.cabinet_id,
+    timezone,
+    reason: cleared.ok
+      ? "ClinicCard visit confirmed by reconciliation after an earlier unknown write outcome"
+      : `ClinicCard visit confirmed by reconciliation; durable lock could not be cleared yet: ${cleared.reason}`,
+    proof: {
+      cliniccard_visit_id: String(visit.id),
+      cliniccard_patient_id: lock.patient_id,
+      date: visit.date,
+      time_start: visit.time_start,
+      time_end: visit.time_end,
+      reconciled_after_unknown_write: true,
+    },
+  });
+}
+
 export const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
   "telegram_contact_button",
   "whatsapp_sender",
@@ -233,6 +289,10 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       contact_id: context.contact_id,
       case_id: context.case_id,
     };
+
+    const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
+    const adapter = adapterFactory(config);
+
     if (deps.bookingReconciliationGuard) {
       const pending = await deps.bookingReconciliationGuard.getPending(reconciliationKey);
       if (!pending.ok) {
@@ -245,11 +305,19 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
           proof: null,
         });
       }
-      if (pending.lock) return reconciliationBlockedResult(pending.lock, timezone);
+      if (pending.lock) {
+        const reconciled = await reconcilePendingVisit(
+          adapter,
+          deps.bookingReconciliationGuard,
+          reconciliationKey,
+          pending.lock,
+          timezone,
+        );
+        if (reconciled) return reconciled;
+        return reconciliationBlockedResult(pending.lock, timezone);
+      }
     }
 
-    const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
-    const adapter = adapterFactory(config);
     const patientIdentityAuthorityFactory =
       deps.patientIdentityAuthorityFactory ?? createClinicCardPatientIdentityAuthority;
     const patientIdentityAuthority = patientIdentityAuthorityFactory(adapter);
@@ -378,6 +446,20 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
           writeResult.failure === "patient_write_outcome_unknown"
           || writeResult.failure === "visit_write_outcome_unknown";
 
+        let reconciliationBindingFailure: string | null = null;
+        if (
+          writeResult.failure === "visit_write_outcome_unknown"
+          && writeResult.patient_id !== undefined
+          && reconciliationArmed
+          && deps.bookingReconciliationGuard
+        ) {
+          const attached = await deps.bookingReconciliationGuard.attachPatientId(
+            reconciliationKey,
+            writeResult.patient_id,
+          );
+          if (!attached.ok) reconciliationBindingFailure = attached.reason;
+        }
+
         // Known failures are safe to unlock. Unknown outcomes deliberately retain the
         // durable write-ahead lock so later turns cannot repeat the POST blindly.
         if (!outcomeUnknown && reconciliationArmed && deps.bookingReconciliationGuard) {
@@ -397,7 +479,7 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
           cabinet_id: cabinetId,
           timezone,
           reason: outcomeUnknown
-            ? `ClinicCard write outcome is unknown; durable reconciliation lock retained and automatic retry blocked. ${writeResult.reason}`
+            ? `ClinicCard write outcome is unknown; durable reconciliation lock retained and automatic retry blocked. ${writeResult.reason}${reconciliationBindingFailure ? ` Patient id could not be bound to the reconciliation lock: ${reconciliationBindingFailure}` : ""}`
             : writeResult.reason,
           proof: null,
         });

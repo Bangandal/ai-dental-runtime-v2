@@ -11,7 +11,10 @@ test("R3v structure target: bounded iterator owns model/tool transport sequencin
 
   assert.equal(iteratorSource.match(/invokeRuntimeModelIteration\(\{/g)?.length, 1);
   assert.match(iteratorSource, /while \(true\)/);
-  assert.match(iteratorSource, /toolsEnabledForCall = frame\.allow_tools && hasFutureModelCall/);
+  // Transport owns tool availability. Legacy still respects frame.allow_tools; the opt-in
+  // agent-first pilot may continue after a recoverable guard while the hard budget remains.
+  assert.match(iteratorSource, /toolsEnabledForCall = \(agentFirst \|\| frame\.allow_tools\) && hasFutureModelCall/);
+  assert.match(iteratorSource, /if \(!frame\.allow_tools && !agentFirst\)/);
   assert.match(iteratorSource, /execute_batch/);
   assert.doesNotMatch(iteratorSource, /booking\.apply|availability\.check|booking\.select_slot/);
   assert.match(projectionSource, /buildRuntimeTurnModelProjection/);

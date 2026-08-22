@@ -1,34 +1,21 @@
 import type { RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
 import { hasCompleteBookingApplyProof, findAuthoritativeBookingApplyResult } from "./bookingApplyGuard.ts";
+import {
+  buildCalendarDisplayTruth,
+  type CalendarLocalizedText,
+} from "./calendarDisplayTruth.ts";
 
 export interface AppointmentDisplayTruth {
   source: "booking.apply";
   date: string;
   time_start: string;
   time_end?: string;
-  weekday: {
-    ru: string;
-    uk: string;
-    cs: string;
-    en: string;
-  };
-  date_display: {
-    ru: string;
-    uk: string;
-    cs: string;
-    en: string;
-  };
+  weekday: CalendarLocalizedText;
+  date_display: CalendarLocalizedText;
   service?: string;
   cliniccard_visit_id?: string;
   cliniccard_patient_id?: string;
 }
-
-const LOCALE_MAP: Record<keyof AppointmentDisplayTruth["weekday"], string> = {
-  ru: "ru-RU",
-  uk: "uk-UA",
-  cs: "cs-CZ",
-  en: "en-US",
-};
 
 function extractDateFromResult(data: Record<string, unknown>): string | null {
   // Try visit_start first: "YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS"
@@ -64,49 +51,10 @@ function extractTimeFromResult(data: Record<string, unknown>, timeKey: "time_sta
   return null;
 }
 
-function buildWeekdayAndDateDisplay(
-  dateStr: string,
-  _timezone: string,
-): { weekday: AppointmentDisplayTruth["weekday"]; date_display: AppointmentDisplayTruth["date_display"] } | null {
-  // Parse YYYY-MM-DD manually to avoid host-TZ shifting the calendar date.
-  // dateStr is the appointment's local calendar date (e.g. "2026-07-07") as
-  // returned by the backend — not a UTC instant. We anchor it to noon UTC so
-  // that no host timezone (including UTC-12 through UTC+14) can roll it over
-  // to a different calendar day when Intl formats it with timeZone:"UTC".
-  const parts = dateStr.split("-").map(Number);
-  if (parts.length !== 3 || parts.some(isNaN)) return null;
-  const [year, month, day] = parts;
-  const dt = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
-  if (isNaN(dt.getTime())) return null;
-
-  const weekday: AppointmentDisplayTruth["weekday"] = { ru: "", uk: "", cs: "", en: "" };
-  const date_display: AppointmentDisplayTruth["date_display"] = { ru: "", uk: "", cs: "", en: "" };
-
-  for (const lang of Object.keys(LOCALE_MAP) as Array<keyof typeof LOCALE_MAP>) {
-    const locale = LOCALE_MAP[lang];
-    // timeZone:"UTC" is intentional: the date is already the appointment's
-    // local calendar date; formatting in UTC preserves it regardless of
-    // the host process TZ environment variable.
-    weekday[lang] = new Intl.DateTimeFormat(locale, {
-      weekday: "long",
-      timeZone: "UTC",
-    }).format(dt);
-    date_display[lang] = new Intl.DateTimeFormat(locale, {
-      day: "numeric",
-      month: "long",
-      timeZone: "UTC",
-    }).format(dt);
-  }
-
-  return { weekday, date_display };
-}
-
 export function buildAppointmentDisplayTruth(
   toolResults: RuntimeAgentToolResult[],
-  timezone?: string,
+  _timezone?: string,
 ): AppointmentDisplayTruth | null {
-  const tz = timezone ?? "Europe/Prague";
-
   // Use the authoritative result: last with complete ClinicCard proof wins, so that a
   // successful round-2 result overrides a synthetic blocked round-1 result in toolResults.
   const bookingSuccess = findAuthoritativeBookingApplyResult(toolResults);
@@ -126,8 +74,8 @@ export function buildAppointmentDisplayTruth(
 
   const time_end = extractTimeFromResult(data, "time_end") ?? undefined;
 
-  const display = buildWeekdayAndDateDisplay(date, tz);
-  if (!display) return null;
+  const calendar = buildCalendarDisplayTruth(date);
+  if (!calendar) return null;
 
   const service =
     typeof data.service === "string" && data.service.trim()
@@ -151,8 +99,8 @@ export function buildAppointmentDisplayTruth(
     date,
     time_start,
     ...(time_end ? { time_end } : {}),
-    weekday: display.weekday,
-    date_display: display.date_display,
+    weekday: calendar.weekday,
+    date_display: calendar.date_display,
     ...(service ? { service } : {}),
     ...(cliniccard_visit_id ? { cliniccard_visit_id } : {}),
     ...(cliniccard_patient_id ? { cliniccard_patient_id } : {}),

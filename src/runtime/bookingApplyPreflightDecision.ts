@@ -28,7 +28,7 @@ export type BookingApplyPreflightDecision =
 /**
  * Historical loop-facing contract. `round` remains here only to preserve existing
  * diagnostic strings while runtimeAgentLoopLegacy still has explicit model-call phases.
- * The underlying business policy is round-agnostic.
+ * The underlying business policy and booking legality are round-agnostic.
  */
 export interface EvaluateBookingApplyPreflightParams {
   round: 1 | 2;
@@ -39,7 +39,6 @@ export interface EvaluateBookingApplyPreflightParams {
   activeAvailabilityEvidence: AvailabilityEvidence | null | undefined;
   selectedSlot?: AvailableSlot | null;
   selectedSlotProof?: SelectedSlotProof | null;
-  includeInvalidSlotGuard: boolean;
   timezone: string;
   now: Date;
 }
@@ -55,8 +54,8 @@ function legacyDebugReason(round: 1 | 2, code: BookingApplyPreflightGuardCode): 
  * Compatibility adapter for the historical runtime loop.
  *
  * Business guard ordering and outcomes are owned by `evaluateBookingApplyPreflightPolicy`.
- * This adapter contributes only the old round-shaped debug reason strings and maps the old
- * `includeInvalidSlotGuard` knob to an explicit business-policy option.
+ * This adapter contributes only the old round-shaped debug reason strings; it cannot weaken
+ * selected-slot evidence requirements based on model-call phase.
  */
 export function evaluateBookingApplyPreflight(
   params: EvaluateBookingApplyPreflightParams,
@@ -69,7 +68,6 @@ export function evaluateBookingApplyPreflight(
     activeAvailabilityEvidence: params.activeAvailabilityEvidence,
     selectedSlot: params.selectedSlot,
     selectedSlotProof: params.selectedSlotProof,
-    enforceSelectedSlotMembership: params.includeInvalidSlotGuard,
     timezone: params.timezone,
     now: params.now,
   });

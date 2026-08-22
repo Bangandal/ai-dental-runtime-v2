@@ -157,24 +157,30 @@ test("R3i: completed registry blocks booking through the same preparation bounda
   assert.equal(result.reason, "registry_completed");
 });
 
-test("R3u structure: complete turn-batch owner delegates booking target plumbing to one preparation boundary", async () => {
+test("R3v structure: roundless orchestrator reaches booking preparation only through the complete batch owner", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const orchestratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnModelToolOrchestrator.ts"), "utf8");
   const batchSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnToolBatch.ts"), "utf8");
 
-  assert.match(loopSource, /from\s+["']\.\/runtimeTurnToolBatch\.ts["']/);
-  assert.equal(
-    loopSource.match(/executeRuntimeTurnToolBatch\(\{/g)?.length,
-    2,
-    "both current model tool batches must share the complete turn-batch owner",
-  );
-  assert.doesNotMatch(loopSource, /bookingApplyExecutionPreparation\.ts/);
+  assert.match(loopSource, /from\s+["']\.\/runtimeTurnModelToolOrchestrator\.ts["']/);
+  assert.equal(loopSource.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length, 1);
+  assert.doesNotMatch(loopSource, /runtimeTurnToolBatch\.ts/);
   assert.doesNotMatch(loopSource, /prepareBookingApplyExecution\(/);
+
+  assert.match(orchestratorSource, /from\s+["']\.\/runtimeTurnToolBatch\.ts["']/);
+  assert.equal(
+    orchestratorSource.match(/executeRuntimeTurnToolBatch\(\{/g)?.length,
+    1,
+    "roundless orchestrator must enter the complete batch owner through one callback path",
+  );
+  assert.doesNotMatch(orchestratorSource, /prepareBookingApplyExecution\(/);
+
   assert.match(batchSource, /from\s+["']\.\/bookingApplyExecutionPreparation\.ts["']/);
   assert.equal(
     batchSource.match(/prepareBookingApplyExecution\(\{/g)?.length,
     1,
-    "complete turn-batch owner must prepare the booking target through one boundary",
+    "complete batch owner must prepare the booking target through one deterministic boundary",
   );
   assert.doesNotMatch(loopSource, /from\s+["']\.\/bookingSubjectExecutionResolver\.ts["']/);
   assert.doesNotMatch(loopSource, /bootstrapRegistryFromBookingApplyArgs/);

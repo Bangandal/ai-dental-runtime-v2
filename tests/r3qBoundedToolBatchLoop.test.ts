@@ -175,19 +175,23 @@ test("R3q: third model step requesting more tools exhausts the budget and dirtie
   assert.equal(result.tool_results.some((item) => item.call_id === "kb_3_unresolved"), false);
 });
 
-test("R3u structure: bounded continuation is fed by the complete turn-batch handler", async () => {
+test("R3v structure: bounded continuation flows through roundless orchestrator and complete batch owner", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const orchestratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnModelToolOrchestrator.ts"), "utf8");
   const handlerSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnToolBatch.ts"), "utf8");
   const kernelSource = await readFile(resolve(thisDir, "../src/runtime/runtimeToolBatchKernel.ts"), "utf8");
 
-  assert.match(loopSource, /import \{ executeRuntimeTurnToolBatch \} from ["']\.\/runtimeTurnToolBatch\.ts["']/);
+  assert.match(loopSource, /import \{ runRuntimeTurnModelToolOrchestration \} from ["']\.\/runtimeTurnModelToolOrchestrator\.ts["']/);
+  assert.equal(loopSource.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length, 1);
+  assert.doesNotMatch(loopSource, /executeRuntimeTurnToolBatch\(/);
   assert.doesNotMatch(loopSource, /executeRuntimeToolBatchKernel/);
   assert.doesNotMatch(loopSource, /executeRuntimeNonWriteToolBatch/);
+
+  assert.match(orchestratorSource, /runRuntimeBoundedModelToolLoop\(\{/);
+  assert.equal(orchestratorSource.match(/executeRuntimeTurnToolBatch\(\{/g)?.length, 1);
   assert.equal(handlerSource.match(/executeRuntimeToolBatchKernel\(\{/g)?.length, 1);
   assert.match(kernelSource, /import \{ executeRuntimeNonWriteToolBatch \} from ["']\.\/runtimeNonWriteToolBatch\.ts["']/);
   assert.equal(kernelSource.match(/executeRuntimeNonWriteToolBatch\(\{/g)?.length, 1);
-  assert.match(loopSource, /const terminalReason = getLegacyRuntimeTurnToolBatchDebugReason/);
-  assert.match(loopSource, /tool_results: resolvedRound2Results/);
-  assert.match(loopSource, /conversation_id: conversationId/);
+  assert.match(orchestratorSource, /tool_results: batch\.tool_results/);
 });

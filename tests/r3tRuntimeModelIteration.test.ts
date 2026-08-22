@@ -89,22 +89,29 @@ test("R3t: invalid model-call budget fails at state construction", () => {
   assert.throws(() => createRuntimeModelIterationState(null, 1.5), /positive integer/);
 });
 
-test("R3t structure: the main runTurn shell uses one bounded iteration transport state", async () => {
+test("R3v structure: the main runTurn shell delegates one bounded iteration transport state to the iterator", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const iteratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeBoundedModelToolLoop.ts"), "utf8");
   const helperBoundary = loopSource.indexOf("// ── Multiple-blocked booking.apply helper");
   assert.ok(helperBoundary > 0);
   const runTurnSource = loopSource.slice(0, helperBoundary);
 
   assert.match(runTurnSource, /createRuntimeModelIterationState\(conversationId\)/);
+  assert.equal(runTurnSource.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length, 1);
   assert.equal(
-    runTurnSource.match(/invokeRuntimeModelIteration\(\{/g)?.length,
-    3,
-    "first, second, and bounded terminal model steps must share the iteration budget owner",
+    runTurnSource.match(/invokeRuntimeModelIteration\(\{/g)?.length ?? 0,
+    0,
+    "legacy shell must not own numbered model steps anymore",
+  );
+  assert.equal(
+    iteratorSource.match(/invokeRuntimeModelIteration\(\{/g)?.length,
+    1,
+    "generic iterator must be the single owner of bounded model-call progression",
   );
   assert.doesNotMatch(
     runTurnSource,
     /invokeRuntimeModelCall\(\{/,
-    "main runTurn path must not bypass the bounded iteration state",
+    "main runTurn path must not bypass bounded iteration transport",
   );
 });

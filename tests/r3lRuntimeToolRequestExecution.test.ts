@@ -175,22 +175,22 @@ test("R3l: phone helper still suppresses stale typed phone after a multi-person 
   assert.equal(fields.phone_trust, undefined);
 });
 
-test("R3u structure: complete turn-batch owner contains policy-backed write execution plumbing", async () => {
+test("R3v structure: roundless orchestration reaches canonical write execution only through the complete batch owner", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const orchestratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnModelToolOrchestrator.ts"), "utf8");
   const batchSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnToolBatch.ts"), "utf8");
 
-  assert.equal(
-    loopSource.match(/executeRuntimeTurnToolBatch\(\{/g)?.length,
-    2,
-    "first and later model tool batches must share one complete turn-batch owner",
-  );
+  assert.equal(loopSource.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length, 1);
+  assert.doesNotMatch(loopSource, /executeRuntimeTurnToolBatch\(/);
   assert.doesNotMatch(loopSource, /executeRuntimeToolRequest\(/);
+  assert.equal(orchestratorSource.match(/executeRuntimeTurnToolBatch\(\{/g)?.length, 1);
+  assert.doesNotMatch(orchestratorSource, /executeRuntimeToolRequest\(/);
   assert.match(batchSource, /from ["']\.\/runtimeToolRequestExecution\.ts["']/);
   assert.equal(
     batchSource.match(/executeRuntimeToolRequest\(\{/g)?.length,
     1,
-    "complete turn-batch owner must use the canonical request execution pipeline for the booking write",
+    "complete batch owner must use the canonical request execution pipeline for booking writes",
   );
   assert.match(loopSource, /export \{ buildSubjectAwarePhoneFields, hasSubjectOrContactPhone \} from ["']\.\/runtimeToolRequestExecution\.ts["']/);
   assert.doesNotMatch(loopSource, /applyToolPolicy\(/);

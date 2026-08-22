@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { prepareBookingApplyExecution } from "../src/runtime/bookingApplyExecutionPreparation.ts";
 import type { BookingSubjectsState } from "../src/runtime/bookingSubjectsState.ts";
@@ -152,4 +155,20 @@ test("R3i: completed registry blocks booking through the same preparation bounda
   if (result.ok) return;
   assert.equal(result.stage, "subject_resolution");
   assert.equal(result.reason, "registry_completed");
+});
+
+test("R3i structure: legacy loop delegates booking target plumbing to one preparation boundary", async () => {
+  const thisDir = dirname(fileURLToPath(import.meta.url));
+  const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+
+  assert.match(loopSource, /from\s+["']\.\/bookingApplyExecutionPreparation\.ts["']/);
+  assert.equal(
+    loopSource.match(/prepareBookingApplyExecution\(\{/g)?.length,
+    2,
+    "both current tool-batch paths must share the same preparation boundary",
+  );
+  assert.doesNotMatch(loopSource, /from\s+["']\.\/bookingSubjectExecutionResolver\.ts["']/);
+  assert.doesNotMatch(loopSource, /bootstrapRegistryFromBookingApplyArgs/);
+  assert.doesNotMatch(loopSource, /parseSubjectTarget/);
+  assert.doesNotMatch(loopSource, /resolveBookingExecutionSubject/);
 });

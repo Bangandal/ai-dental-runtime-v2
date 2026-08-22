@@ -7,6 +7,7 @@ import {
 } from "../src/runtime/agentQualification.ts";
 import { normalizeOpenAIResponse } from "../src/runtime/openaiRuntimeAgentCaller.ts";
 import { buildModelVisibleRuntimeContext } from "../src/runtime/modelVisibleRuntimeContext.ts";
+import { withAgentQualificationPersistence } from "../src/runtime/runtimeTurnOrchestrator.ts";
 
 function withAgentFirst<T>(fn: () => T): T {
   const previous = process.env.RUNTIME_AGENT_MODE;
@@ -140,5 +141,81 @@ test("stored qualification is projected back to the main agent on the next turn"
     complaint: "болит зуб",
     reported_facts: ["болит ночью"],
     summary: "Зубная боль ночью.",
+  });
+});
+
+test("orchestration adapter merges qualification into the existing single conversation-state write", async () => {
+  let persistedInput: Record<string, any> | null = null;
+  let mergeCalls = 0;
+
+  const deps = {
+    runtimeTurnService: {
+      async runTurn() {
+        return {
+          final_patient_reply: "Уточните, пожалуйста, боль постоянная?",
+          tool_requests: [],
+          tool_results: [],
+          qualification: {
+            reported_facts: ["есть чувствительность при накусывании"],
+            summary: "Боль ночью и чувствительность при накусывании.",
+          },
+        };
+      },
+    },
+    runtimeContextRepository: {
+      async loadRuntimeContext() {
+        return {
+          ok: true,
+          data: {
+            conversation_state: {
+              collected: {
+                agent_qualification: {
+                  complaint: "болит зуб",
+                  reported_facts: ["болит ночью"],
+                  summary: "Боль ночью.",
+                },
+              },
+            },
+          },
+        };
+      },
+    },
+    turnPersistenceRepository: {
+      async getOrCreateContact() { throw new Error("not used"); },
+      async registerInboundEvent() { throw new Error("not used"); },
+      async saveMessage() { throw new Error("not used"); },
+      async mergeConversationState(input: Record<string, any>) {
+        mergeCalls += 1;
+        persistedInput = input;
+        return { ok: true, data: { ok: true } };
+      },
+    },
+  } as any;
+
+  const wrapped = withAgentQualificationPersistence(deps);
+  await wrapped.runtimeTurnService.runTurn({ clinic_id: "clinic", user_message: "test" } as any);
+  await wrapped.turnPersistenceRepository!.mergeConversationState({
+    clinic_id: "clinic",
+    contact_id: "contact",
+    user_text: "test",
+    reply_text: "reply",
+    requested_action: "continue",
+    conversation_intent: "unknown",
+    handoff_recommended: false,
+    confidence: "medium",
+    control_flags: {
+      openai_conversation_id: "conv_1",
+      collected: { existing_field: "keep_me" },
+    },
+  });
+
+  assert.equal(mergeCalls, 1);
+  assert.deepEqual(persistedInput?.control_flags.collected, {
+    existing_field: "keep_me",
+    agent_qualification: {
+      complaint: "болит зуб",
+      reported_facts: ["болит ночью", "есть чувствительность при накусывании"],
+      summary: "Боль ночью и чувствительность при накусывании.",
+    },
   });
 });

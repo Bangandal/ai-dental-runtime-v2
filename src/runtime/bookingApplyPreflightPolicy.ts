@@ -1,0 +1,222 @@
+import type { RuntimeAgentToolRequest } from "./openaiRuntimeAgent.ts";
+import type { AvailableSlot } from "./bookingProcessState.ts";
+import type { AvailabilityEvidence, SelectedSlotProof } from "./slotEvidence.ts";
+import {
+  bookingApplyArgsMissingService,
+  bookingApplyArgsMissingSlot,
+  getMissingBookingApplyNameFields,
+  shouldInterceptInvalidSlotDateTime,
+  shouldInterceptMissingSlotProof,
+} from "./bookingApplyPreflight.ts";
+import { getTodayInTimezone, isPastBookingTime } from "./bookingPreflight.ts";
+
+export type BookingApplyPreflightGuardCode =
+  | "pending_typed_phone"
+  | "past_time"
+  | "missing_slot"
+  | "missing_slot_proof"
+  | "invalid_slot"
+  | "missing_trusted_phone"
+  | "missing_name"
+  | "missing_service";
+
+export interface BookingApplyGuardedData {
+  booking_status: string;
+  created_visit: false;
+  may_claim_booked: false;
+  required_next_action: string;
+  reason: string;
+  missing_fields?: string[];
+}
+
+export interface BookingApplyPastTimeDetail {
+  requestedDate: string | undefined;
+  requestedTime: string | undefined;
+  timezone: string;
+  nowISO: string;
+  todayInTimezone: string;
+}
+
+export type BookingApplyPreflightPolicyDecision =
+  | { outcome: "allow" }
+  | {
+      outcome: "block";
+      guard_code: BookingApplyPreflightGuardCode;
+      guarded_data: BookingApplyGuardedData;
+      missing_fields?: string[];
+      past_time_detail?: BookingApplyPastTimeDetail;
+    };
+
+export interface EvaluateBookingApplyPreflightPolicyParams {
+  pendingBookingApply: RuntimeAgentToolRequest;
+  pendingToolRequests: RuntimeAgentToolRequest[];
+  pendingTypedPhone: boolean;
+  hasBookingPhone: boolean;
+  activeAvailabilityEvidence: AvailabilityEvidence | null | undefined;
+  selectedSlot?: AvailableSlot | null;
+  selectedSlotProof?: SelectedSlotProof | null;
+  /**
+   * Whether a proof-backed selected slot must also be a member of the active availability
+   * evidence. Kept explicit while historical paths differ; the business policy itself does
+   * not know why a caller selected this mode or which LLM call produced the request.
+   */
+  enforceSelectedSlotMembership: boolean;
+  timezone: string;
+  now: Date;
+}
+
+/**
+ * Deterministic booking business preflight after the execution patient has been frozen.
+ *
+ * This layer deliberately has no concept of model-call rounds, OpenAI conversations, or
+ * transport diagnostics. It returns a stable business guard code and guarded outcome;
+ * legacy callers may translate that code into historical debug strings outside this file.
+ */
+export function evaluateBookingApplyPreflightPolicy(
+  params: EvaluateBookingApplyPreflightPolicyParams,
+): BookingApplyPreflightPolicyDecision {
+  const { pendingBookingApply, pendingToolRequests } = params;
+
+  if (params.pendingTypedPhone) {
+    return {
+      outcome: "block",
+      guard_code: "pending_typed_phone",
+      guarded_data: {
+        booking_status: "pending_phone_classification",
+        created_visit: false,
+        may_claim_booked: false,
+        required_next_action: "none",
+        reason: "typed_phone_subject_unclear",
+      },
+    };
+  }
+
+  const requestedDate = typeof pendingBookingApply.arguments.requested_date === "string"
+    ? pendingBookingApply.arguments.requested_date
+    : undefined;
+  const requestedTime = typeof pendingBookingApply.arguments.requested_time === "string"
+    ? pendingBookingApply.arguments.requested_time
+    : undefined;
+
+  if (isPastBookingTime({
+    requestedDate,
+    requestedTime,
+    timezone: params.timezone,
+    now: params.now,
+  })) {
+    return {
+      outcome: "block",
+      guard_code: "past_time",
+      guarded_data: {
+        booking_status: "past_time",
+        created_visit: false,
+        may_claim_booked: false,
+        required_next_action: "ask_for_alternative_time",
+        reason: "requested_time_is_in_past",
+      },
+      past_time_detail: {
+        requestedDate,
+        requestedTime,
+        timezone: params.timezone,
+        nowISO: params.now.toISOString(),
+        todayInTimezone: getTodayInTimezone(params.now, params.timezone),
+      },
+    };
+  }
+
+  if (bookingApplyArgsMissingSlot(pendingBookingApply.arguments)) {
+    return {
+      outcome: "block",
+      guard_code: "missing_slot",
+      guarded_data: {
+        booking_status: "missing_slot",
+        created_visit: false,
+        may_claim_booked: false,
+        required_next_action: "ask_for_slot",
+        reason: "requested_date_time_required",
+      },
+    };
+  }
+
+  const slotEvidenceParams = {
+    pendingToolRequests,
+    activeAvailabilityEvidence: params.activeAvailabilityEvidence,
+    selectedSlot: params.selectedSlot,
+    selectedSlotProof: params.selectedSlotProof,
+  };
+
+  if (shouldInterceptMissingSlotProof(slotEvidenceParams)) {
+    return {
+      outcome: "block",
+      guard_code: "missing_slot_proof",
+      guarded_data: {
+        booking_status: "slot_not_verified",
+        created_visit: false,
+        may_claim_booked: false,
+        required_next_action: "ask_for_slot",
+        reason: "slot_proof_required",
+      },
+    };
+  }
+
+  if (params.enforceSelectedSlotMembership && shouldInterceptInvalidSlotDateTime(slotEvidenceParams)) {
+    return {
+      outcome: "block",
+      guard_code: "invalid_slot",
+      guarded_data: {
+        booking_status: "invalid_slot",
+        created_visit: false,
+        may_claim_booked: false,
+        required_next_action: "choose_from_available_slots",
+        reason: "requested_time_not_in_available_slots",
+      },
+    };
+  }
+
+  if (!params.hasBookingPhone) {
+    return {
+      outcome: "block",
+      guard_code: "missing_trusted_phone",
+      guarded_data: {
+        booking_status: "missing_trusted_phone",
+        created_visit: false,
+        may_claim_booked: false,
+        required_next_action: "ask_for_phone",
+        reason: "trusted_phone_required",
+      },
+    };
+  }
+
+  const missingNames = getMissingBookingApplyNameFields(pendingBookingApply.arguments);
+  if (missingNames.length > 0) {
+    return {
+      outcome: "block",
+      guard_code: "missing_name",
+      guarded_data: {
+        booking_status: "missing_patient_name",
+        created_visit: false,
+        may_claim_booked: false,
+        required_next_action: "ask_for_name",
+        reason: "patient_name_required",
+        missing_fields: missingNames,
+      },
+      missing_fields: missingNames,
+    };
+  }
+
+  if (bookingApplyArgsMissingService(pendingBookingApply.arguments)) {
+    return {
+      outcome: "block",
+      guard_code: "missing_service",
+      guarded_data: {
+        booking_status: "missing_service",
+        created_visit: false,
+        may_claim_booked: false,
+        required_next_action: "ask_for_service",
+        reason: "service_required",
+      },
+    };
+  }
+
+  return { outcome: "allow" };
+}

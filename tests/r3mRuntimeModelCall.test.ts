@@ -115,35 +115,31 @@ test("R3m: caller exceptions become typed failure outcomes without changing conv
   assert.equal(outcome.conversation_id, "conv_safe");
 });
 
-test("R3v structure: bounded iterator owns main model transport while terminal helpers retain canonical boundary", async () => {
+test("R3w structure: bounded iterator is the only runtime model transport owner", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
   const iteratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeBoundedModelToolLoop.ts"), "utf8");
   const orchestratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnModelToolOrchestrator.ts"), "utf8");
-  const helperBoundary = loopSource.indexOf("// ── Multiple-blocked booking.apply helper");
-  assert.ok(helperBoundary > 0);
 
-  const mainRunTurn = loopSource.slice(0, helperBoundary);
-  const terminalHelpers = loopSource.slice(helperBoundary);
-
-  assert.equal(mainRunTurn.match(/invokeRuntimeModelIteration\(\{/g)?.length ?? 0, 0);
-  assert.equal(mainRunTurn.match(/invokeRuntimeModelCall\(\{/g)?.length ?? 0, 0);
+  assert.equal(loopSource.match(/invokeRuntimeModelIteration\(\{/g)?.length ?? 0, 0);
   assert.equal(
-    mainRunTurn.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length,
+    loopSource.match(/invokeRuntimeModelCall\(\{/g)?.length ?? 0,
+    0,
+    "legacy shell must contain no compatibility-only direct model calls",
+  );
+  assert.equal(
+    loopSource.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length,
     1,
-    "legacy shell must delegate the whole main model/tool sequence to one orchestrator",
+    "legacy shell must delegate the whole model/tool sequence to one orchestrator",
   );
   assert.equal(
     iteratorSource.match(/invokeRuntimeModelIteration\(\{/g)?.length,
     1,
-    "generic bounded iterator must be the single main iteration transport owner",
+    "generic bounded iterator must be the single iteration transport owner",
   );
   assert.match(orchestratorSource, /runRuntimeBoundedModelToolLoop\(\{/);
-  assert.equal(
-    terminalHelpers.match(/invokeRuntimeModelCall\(\{/g)?.length,
-    2,
-    "terminal compatibility helpers may still use the canonical one-call transport boundary",
-  );
+  assert.doesNotMatch(loopSource, /finalizeBlockedMultipleBookingApplies/);
+  assert.doesNotMatch(loopSource, /finalizeBlockedBookingApplyWithToolOutput/);
   assert.doesNotMatch(loopSource, /await deps\.caller\(/);
   assert.match(loopSource, /export type \{ RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput \} from ["']\.\/runtimeModelCall\.ts["']/);
 });

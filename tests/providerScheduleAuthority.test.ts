@@ -55,7 +55,7 @@ test("PF-013: resource mapping without provider schedule is not availability aut
   if (!result.ok) assert.equal(result.failure, "schedule_unavailable");
 });
 
-test("PF-013: provider non-working day returns no slots without treating no-visits as availability", async () => {
+test("PF-013: provider non-working date-only request auto-extends to the nearest provider working day", async () => {
   let listVisitsCount = 0;
   const executor = createClinicCardAvailabilityExecutor({
     env: envWithProviderSchedule({
@@ -72,7 +72,7 @@ test("PF-013: provider non-working day returns no slots without treating no-visi
     }),
   });
 
-  // 2099-08-22 is Saturday (ISO weekday 6), while this provider works Monday only.
+  // 2099-08-22 is Saturday; the provider works Monday only.
   const result = await executor({
     requested_date: "2099-08-22",
     service_interest: "consultation",
@@ -80,8 +80,50 @@ test("PF-013: provider non-working day returns no slots without treating no-visi
 
   assert.equal(result.status, "success");
   if (result.status === "success") {
+    assert.equal(result.data.nearest_available_date, "2099-08-24");
+    assert.equal(result.data.free_slots_count, 4);
+    assert.deepEqual(
+      result.data.slots.map((slot) => [slot.starts_at, slot.ends_at]),
+      [
+        ["2099-08-24T10:00:00", "2099-08-24T10:30:00"],
+        ["2099-08-24T10:30:00", "2099-08-24T11:00:00"],
+        ["2099-08-24T11:00:00", "2099-08-24T11:30:00"],
+        ["2099-08-24T11:30:00", "2099-08-24T12:00:00"],
+      ],
+    );
+  }
+  assert.equal(listVisitsCount, 1);
+});
+
+test("PF-013: specific time on provider non-working day remains unavailable without auto-extension", async () => {
+  let listVisitsCount = 0;
+  const executor = createClinicCardAvailabilityExecutor({
+    env: envWithProviderSchedule({
+      working_days: [1],
+      working_hours_start: "10:00",
+      working_hours_end: "12:00",
+      closed_dates: [],
+    }),
+    adapterFactory: () => ({
+      listVisits: async () => {
+        listVisitsCount += 1;
+        return { ok: true as const, data: [] };
+      },
+    }),
+  });
+
+  const result = await executor({
+    requested_date: "2099-08-22",
+    requested_time: "10:00",
+    service_interest: "consultation",
+  });
+
+  assert.equal(result.status, "success");
+  if (result.status === "success") {
     assert.deepEqual(result.data.slots, []);
     assert.equal(result.data.free_slots_count, 0);
+    assert.equal(result.data.requested_time, "10:00");
+    assert.equal(result.data.requested_time_available, false);
   }
   assert.equal(listVisitsCount, 0);
 });
@@ -119,7 +161,7 @@ test("PF-013: generated availability is restricted to the provider working windo
   }
 });
 
-test("PF-013: provider closed date overrides an otherwise working weekday", async () => {
+test("PF-013: provider closed date-only request auto-extends to the next authorized working day", async () => {
   let listVisitsCount = 0;
   const executor = createClinicCardAvailabilityExecutor({
     env: envWithProviderSchedule({
@@ -142,7 +184,52 @@ test("PF-013: provider closed date overrides an otherwise working weekday", asyn
   });
 
   assert.equal(result.status, "success");
-  if (result.status === "success") assert.deepEqual(result.data.slots, []);
+  if (result.status === "success") {
+    assert.equal(result.data.nearest_available_date, "2099-08-31");
+    assert.equal(result.data.free_slots_count, 4);
+    assert.deepEqual(
+      result.data.slots.map((slot) => slot.starts_at),
+      [
+        "2099-08-31T10:00:00",
+        "2099-08-31T10:30:00",
+        "2099-08-31T11:00:00",
+        "2099-08-31T11:30:00",
+      ],
+    );
+  }
+  assert.equal(listVisitsCount, 1);
+});
+
+test("PF-013: specific time on provider closed date remains unavailable without auto-extension", async () => {
+  let listVisitsCount = 0;
+  const executor = createClinicCardAvailabilityExecutor({
+    env: envWithProviderSchedule({
+      working_days: [1],
+      working_hours_start: "10:00",
+      working_hours_end: "12:00",
+      closed_dates: ["2099-08-24"],
+    }),
+    adapterFactory: () => ({
+      listVisits: async () => {
+        listVisitsCount += 1;
+        return { ok: true as const, data: [] };
+      },
+    }),
+  });
+
+  const result = await executor({
+    requested_date: "2099-08-24",
+    requested_time: "10:00",
+    service_interest: "consultation",
+  });
+
+  assert.equal(result.status, "success");
+  if (result.status === "success") {
+    assert.deepEqual(result.data.slots, []);
+    assert.equal(result.data.free_slots_count, 0);
+    assert.equal(result.data.requested_time, "10:00");
+    assert.equal(result.data.requested_time_available, false);
+  }
   assert.equal(listVisitsCount, 0);
 });
 

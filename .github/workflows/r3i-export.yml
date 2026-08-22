@@ -1,0 +1,17 @@
+name: R3i source export
+
+on:
+  push:
+    branches:
+      - refactor/r3i-booking-apply-preparation
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-artifact@v4
+        with:
+          name: r3i-source
+          path: src/runtime/runtimeAgentLoopLegacy.ts
+          if-no-files-found: error

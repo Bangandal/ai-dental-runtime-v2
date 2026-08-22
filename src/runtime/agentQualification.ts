@@ -12,6 +12,16 @@ export interface AgentQualificationState {
   policy_applied?: boolean;
 }
 
+declare module "./openaiRuntimeAgent.ts" {
+  interface RuntimeAgentFinalResponse {
+    qualification?: AgentQualificationState | null;
+  }
+
+  interface RuntimeAgentTurnResult {
+    qualification?: AgentQualificationState | null;
+  }
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -107,16 +117,22 @@ export function mergeAgentQualification(
   if (!previous) return next ?? null;
   if (!next) return previous;
 
+  const complaint = next.complaint ?? previous.complaint;
+  const summary = next.summary ?? previous.summary;
+  const route = next.route ?? previous.route;
+  const urgency = next.urgency ?? previous.urgency;
   const reportedFacts = mergeUniqueStrings(previous.reported_facts, next.reported_facts, 24);
   const redFlags = mergeUniqueStrings(previous.red_flags, next.red_flags, 12);
+  const policyApplied = next.policy_applied === true || previous.policy_applied === true;
+
   const merged: AgentQualificationState = {
-    ...(next.complaint ?? previous.complaint ? { complaint: next.complaint ?? previous.complaint } : {}),
+    ...(complaint ? { complaint } : {}),
     ...(reportedFacts ? { reported_facts: reportedFacts } : {}),
-    ...(next.summary ?? previous.summary ? { summary: next.summary ?? previous.summary } : {}),
-    ...(next.route ?? previous.route ? { route: next.route ?? previous.route } : {}),
-    ...(next.urgency ?? previous.urgency ? { urgency: next.urgency ?? previous.urgency } : {}),
+    ...(summary ? { summary } : {}),
+    ...(route ? { route } : {}),
+    ...(urgency ? { urgency } : {}),
     ...(redFlags ? { red_flags: redFlags } : {}),
-    ...((next.policy_applied ?? previous.policy_applied) ? { policy_applied: true } : {}),
+    ...(policyApplied ? { policy_applied: true } : {}),
   };
 
   return Object.keys(merged).length > 0 ? merged : null;

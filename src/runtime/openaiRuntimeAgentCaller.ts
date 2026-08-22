@@ -12,6 +12,7 @@ import {
 } from "./modelToolContractBridge.ts";
 import { parseModelPersonIntents } from "./modelPersonIntentBridge.ts";
 import { projectModelFacingContext } from "./modelFacingContextProjection.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 
 export interface OpenAIResponsesClient {
   responses: {
@@ -35,6 +36,12 @@ const OPENAI_TO_INTERNAL_TOOL_NAME = Object.fromEntries(
   Object.entries(INTERNAL_TO_OPENAI_TOOL_NAME).map(([internalName, openAIName]) => [openAIName, internalName]),
 ) as Record<string, (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number]>;
 
+const AGENT_FIRST_PHONE_SCHEMA = {
+  type: "string",
+  pattern: "^\\+?\\d{9,15}$",
+  description: "Booking contact explicitly provided by the patient. Normalize it yourself to 9-15 digits with an optional leading +. Do not invent a number and omit this field when no booking contact is known.",
+} as const;
+
 export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCallerDeps): RuntimeAgentCaller {
   return async (input) => {
     const openAIInput = buildOpenAIInput(input);
@@ -51,20 +58,37 @@ export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCal
 export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Array<Record<string, unknown>> {
   const defs = input.input.tool_definitions;
   if (!defs) return [];
+  const agentFirst = isAgentFirstRuntimeEnabled();
+
   return ACTIVE_RUNTIME_AGENT_TOOLS.flatMap((toolName) => {
+    // booking.select_slot remains an internal compatibility tool for legacy Runtime only.
+    // In agent-first the model thinks in business actions: check availability, then book.
+    if (agentFirst && toolName === "booking.select_slot") return [];
+
     const def = defs[toolName];
     if (!def) return [];
+
+    const optionalArgs = agentFirst && toolName === "booking.apply"
+      ? [...def.optional_args, "phone_number"]
+      : [...def.optional_args];
+    const baseSchemas = (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas;
+    const paramSchemas = agentFirst && toolName === "booking.apply"
+      ? { ...(baseSchemas ?? {}), phone_number: AGENT_FIRST_PHONE_SCHEMA }
+      : baseSchemas;
+    const description = agentFirst && toolName === "booking.apply"
+      ? `${def.description} If the patient supplied a booking phone, understand and normalize it yourself and pass it as phone_number.`
+      : def.description;
 
     return [{
       type: "function",
       name: INTERNAL_TO_OPENAI_TOOL_NAME[toolName],
-      description: def.description,
+      description,
       parameters: {
         type: "object",
         properties: buildParameterProperties(
           def.required_args,
-          def.optional_args,
-          (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas,
+          optionalArgs,
+          paramSchemas,
         ),
         required: def.required_args,
         additionalProperties: true,
@@ -218,6 +242,7 @@ function toInternalToolName(name: string): string {
 }
 
 function isActiveTool(name: string): name is (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number] {
+  if (isAgentFirstRuntimeEnabled() && name === "booking.select_slot") return false;
   return ACTIVE_RUNTIME_AGENT_TOOLS.includes(name as (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number]);
 }
 

@@ -38,7 +38,7 @@ function asRecord(value: unknown): Record<string, unknown> {
  *
  * No second model, table, RPC or extra state-machine path is introduced.
  */
-function withAgentQualificationPersistence(
+export function withAgentQualificationPersistence(
   deps: Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1],
 ): Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1] {
   let capturedQualification: AgentQualificationState | null = null;

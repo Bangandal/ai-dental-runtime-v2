@@ -228,13 +228,14 @@ test("PF-012 GOLDEN: durable reconciliation lock blocks cross-turn retry even wh
     },
   );
 
-  // Turn 2 occurs before ClinicCard's read model has caught up. Durable local truth wins:
-  // no listVisits re-read and, crucially, no second createVisit POST.
+  // Turn 2 may perform a read-only reconciliation check, but a stale empty read is
+  // never evidence that the POST failed. The durable lock remains authoritative and
+  // no second createVisit is allowed.
   const second = await executor(bookingContext());
   assert.equal(second.data.booking_status, "booking_outcome_unknown");
   assert.equal(second.data.created_visit, false);
   assert.equal(second.data.may_claim_booked, false);
   assert.match(second.data.reason, /Automatic retry is blocked/i);
-  assert.equal(listVisitsCount, 1, "pending reconciliation must block before any ClinicCard read");
+  assert.equal(listVisitsCount, 2, "pending reconciliation may read ClinicCard but must not unlock on an empty/stale read");
   assert.equal(createVisitCount, 1, "cross-turn retry must never issue a second createVisit POST");
 });

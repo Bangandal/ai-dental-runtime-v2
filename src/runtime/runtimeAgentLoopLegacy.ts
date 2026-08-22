@@ -1,20 +1,16 @@
 import {
-  RUNTIME_AGENT_TOOL_DEFINITIONS,
   buildRuntimeAgentSystemInstruction,
   type AgentUiActions,
-  type BookingApplyResolution,
   type OpenAIRuntimeAgent,
-  type RuntimeAgentToolRequest,
   type RuntimeAgentToolResult,
   type RuntimeAgentTurnInput,
   type RuntimeAgentTurnResult,
 } from "./openaiRuntimeAgent.ts";
-import type { SubjectId, BookingSubjectsState } from "./bookingSubjectsState.ts";
 import type { ToolExecutorRegistry } from "./toolExecutor.ts";
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
-import { buildModelVisibleCallerContext, composeRuntimeModelContext } from "./modelVisibleCallerContext.ts";
+import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
-import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
+import { buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { hasTrustedPhone, hasBookingApplyPending } from "./bookingContactGuard.ts";
 import { buildPastTimeReply } from "./bookingPreflight.ts";
@@ -28,7 +24,7 @@ import {
 } from "./bookingProcessState.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
 import { runRuntimeTurnModelToolOrchestration } from "./runtimeTurnModelToolOrchestrator.ts";
-import { invokeRuntimeModelCall, type RuntimeAgentCaller, type RuntimeAgentCallerInput, type RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
+import type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 import { createRuntimeModelIterationState } from "./runtimeModelIteration.ts";
 export type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 export { buildSubjectAwarePhoneFields, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
@@ -388,138 +384,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
   };
 }
 
-// ── Multiple-blocked booking.apply helper (Variant A) ────────────────────────
-
-/**
- * When multiple booking.apply calls are present in the same round, create a
- * synthetic "blocked" result for EACH call_id and submit them all at once to
- * the model. This closes all pending function_calls cleanly so the conversation
- * stays resumable, and prevents any single call_id from being left dangling.
- */
-export async function finalizeBlockedMultipleBookingApplies(params: {
-  /** All pending requests from the current model response — every call_id must get a result. */
-  pendingRequestsForRound: RuntimeAgentToolRequest[];
-  guardedData: GuardedBookingApplyData;
-  previousToolResults: RuntimeAgentToolResult[];
-  toolRequests: RuntimeAgentToolRequest[];
-  conversationId: string | null;
-  systemInstruction: string;
-  callerContext: Record<string, unknown>;
-  input: RuntimeAgentTurnInput;
-  debug: Record<string, unknown>;
-  deps: CreateRuntimeAgentLoopDeps;
-  booking_apply_resolution?: BookingApplyResolution | null;
-  booking_subjects_after_resolution?: BookingSubjectsState | null;
-}): Promise<RuntimeAgentTurnResult> {
-  const {
-    pendingRequestsForRound, guardedData, previousToolResults, toolRequests,
-    conversationId, systemInstruction, callerContext, input, debug, deps,
-    booking_apply_resolution, booking_subjects_after_resolution,
-  } = params;
-
-  // Create a result for each call_id — booking.apply gets the blocked data,
-  // other tools get a denial explaining why they were not executed.
-  const guardedResults: RuntimeAgentToolResult[] = pendingRequestsForRound.map((req) => {
-    if (req.tool === "booking.apply") {
-      return {
-        tool: "booking.apply",
-        call_id: req.call_id,
-        status: "success" as const,
-        data: guardedData,
-      };
-    }
-    return {
-      tool: req.tool,
-      call_id: req.call_id,
-      status: "denied" as const,
-      error: {
-        code: "turn_aborted_due_to_multiple_booking_requests",
-        message: "Tool was not executed because multiple booking.apply requests were emitted.",
-      },
-    };
-  });
-
-  const allResults = [...previousToolResults, ...guardedResults];
-  const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
-
-  const guardedCall = await invokeRuntimeModelCall({
-    caller: deps.caller,
-    model: deps.model,
-    conversation_id: conversationId,
-    system_instruction: systemInstruction,
-    message: input.user_message,
-    context: composeRuntimeModelContext(callerContext, {
-      booking_apply_action_truth: bookingApplyTruth,
-    }),
-    tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
-    tool_results: guardedResults,
-  });
-  if (!guardedCall.ok) {
-    const error = guardedCall.error;
-    debug.runtime_error = {
-      code: "guarded_multiple_booking_caller_failed",
-      message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
-    };
-    debug.finalization_reason = "guarded_multiple_booking_caller_exception";
-    debug.caller_exception = buildCallerExceptionDiagnostics(error, {
-      stage: "second_call",
-      locale: input.locale,
-      conversationId,
-      toolResults: allResults,
-      bookingApplyActionTruth: bookingApplyTruth,
-    });
-    markConversationDirty(debug);
-    await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-    return {
-      final_patient_reply: buildBookingApplyEmergencyFallback(allResults, input.locale),
-      conversation_id: null,
-      conversation_id_resumable: false,
-      tool_requests: toolRequests,
-      tool_results: allResults,
-      debug,
-      ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
-      ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
-    };
-  }
-
-  const guardedOutput = guardedCall.output;
-  const updatedConversationId = guardedCall.conversation_id;
-
-  if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
-    await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
-    return {
-      final_patient_reply: guardedOutput.final_response.final_patient_reply,
-      conversation_id: updatedConversationId,
-      tool_requests: toolRequests,
-      tool_results: allResults,
-      debug,
-      ui: sanitizePhoneCaptureUiForChannel(guardedOutput.final_response.ui, typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined),
-      ...(guardedOutput.final_response.subject_intent != null ? { subject_intent: guardedOutput.final_response.subject_intent } : {}),
-      ...(guardedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: guardedOutput.final_response.phone_ownership_intent } : {}),
-      ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
-      ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
-    };
-  }
-
-  debug.finalization_reason = guardedOutput.type === "tool_requests"
-    ? "guarded_multiple_booking_second_call_still_tool_requests"
-    : "guarded_multiple_booking_second_call_malformed";
-  markConversationDirty(debug);
-  await clearConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
-  return {
-    final_patient_reply: buildBookingApplyEmergencyFallback(allResults, input.locale),
-    conversation_id: null,
-    conversation_id_resumable: false,
-    tool_requests: toolRequests,
-    tool_results: allResults,
-    debug,
-    ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
-    ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
-  };
-}
-
-// ── Guarded booking.apply helper ─────────────────────────────────────────────
-
 export interface GuardedBookingApplyData {
   booking_status: string;
   created_visit: false;
@@ -527,141 +391,6 @@ export interface GuardedBookingApplyData {
   required_next_action: string;
   reason: string;
   missing_fields?: string[];
-}
-
-/**
- * When a booking.apply call is blocked by a deterministic preflight guard, this
- * helper submits a synthetic "guarded" tool_result for the pending call_id back
- * to the same OpenAI conversation instead of early-returning dirty.  The model
- * then produces a natural final_response (e.g. "please share your phone") while
- * conversation_id stays clean and resumable on the next patient turn.
- *
- * On failure of the second caller call the conversation IS marked dirty — the
- * pending function_call may be unresolved and the 400 risk is real.
- */
-export async function finalizeBlockedBookingApplyWithToolOutput(params: {
-  pendingBookingApply: RuntimeAgentToolRequest;
-  guardedData: GuardedBookingApplyData;
-  previousToolResults: RuntimeAgentToolResult[];
-  toolRequests: RuntimeAgentToolRequest[];
-  conversationId: string | null;
-  systemInstruction: string;
-  callerContext: Record<string, unknown>;
-  input: RuntimeAgentTurnInput;
-  debug: Record<string, unknown>;
-  deps: CreateRuntimeAgentLoopDeps;
-  execution_subject_id?: SubjectId | null;
-  booking_subjects_after_resolution?: BookingSubjectsState | null;
-  booking_apply_resolution?: BookingApplyResolution | null;
-}): Promise<RuntimeAgentTurnResult> {
-  const {
-    pendingBookingApply, guardedData, previousToolResults, toolRequests,
-    conversationId, systemInstruction, callerContext, input, debug, deps,
-    execution_subject_id, booking_subjects_after_resolution, booking_apply_resolution,
-  } = params;
-
-  const guardedToolResult: RuntimeAgentToolResult = {
-    tool: "booking.apply",
-    call_id: pendingBookingApply.call_id,
-    status: "success",
-    data: guardedData,
-  };
-
-  const allResults = [...previousToolResults, guardedToolResult];
-  const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
-
-  const guardedCall = await invokeRuntimeModelCall({
-    caller: deps.caller,
-    model: deps.model,
-    conversation_id: conversationId,
-    system_instruction: systemInstruction,
-    message: input.user_message,
-    context: composeRuntimeModelContext(callerContext, {
-      booking_apply_action_truth: bookingApplyTruth,
-    }),
-    tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
-    tool_results: [guardedToolResult],
-  });
-  if (!guardedCall.ok) {
-    const error = guardedCall.error;
-    debug.runtime_error = {
-      code: "guarded_booking_apply_caller_failed",
-      message: sanitizeErrorMessage(error instanceof Error ? error.message : String(error)),
-    };
-    debug.finalization_reason = "guarded_booking_apply_caller_exception";
-    debug.caller_exception = buildCallerExceptionDiagnostics(error, {
-      stage: "second_call",
-      locale: input.locale,
-      conversationId,
-      toolResults: allResults,
-      bookingApplyActionTruth: bookingApplyTruth,
-    });
-    markConversationDirty(debug);
-    await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
-    return {
-      final_patient_reply: buildBookingApplyEmergencyFallback(allResults, input.locale),
-      conversation_id: null,
-      conversation_id_resumable: false,
-      tool_requests: toolRequests,
-      tool_results: allResults,
-      debug,
-      ...(execution_subject_id != null ? { execution_subject_id } : {}),
-      ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
-      ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
-    };
-  }
-
-  const guardedOutput = guardedCall.output;
-  const updatedConversationId = guardedCall.conversation_id;
-
-  if (guardedOutput.type === "final_response" && !isMalformedFinalResponse(guardedOutput)) {
-    await saveConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
-
-    // Sanitize model-emitted Telegram UI for non-Telegram channels before merging.
-    const channel = typeof input.business_context?.channel === "string" ? input.business_context.channel : undefined;
-    let ui = sanitizePhoneCaptureUiForChannel(guardedOutput.final_response.ui, channel);
-    // For phone guards, force the contact capture UI regardless of what the model returned —
-    // the model may omit it, but the UI must always show it deterministically.
-    if (guardedData.required_next_action === "ask_for_phone") {
-      const captureUi = buildPhoneCaptureUi(channel);
-      if (captureUi) {
-        ui = { ...ui, ...captureUi, telegram: { ...(ui?.telegram ?? {}), ...(captureUi.telegram ?? {}) } };
-      }
-    }
-
-    return {
-      final_patient_reply: guardedOutput.final_response.final_patient_reply,
-      conversation_id: updatedConversationId,
-      tool_requests: toolRequests,
-      tool_results: allResults,
-      debug,
-      ui,
-      ...(guardedOutput.final_response.subject_intent != null ? { subject_intent: guardedOutput.final_response.subject_intent } : {}),
-      ...(guardedOutput.final_response.phone_ownership_intent != null ? { phone_ownership_intent: guardedOutput.final_response.phone_ownership_intent } : {}),
-      ...(execution_subject_id != null ? { execution_subject_id } : {}),
-      ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
-      ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
-    };
-  }
-
-  // Second caller returned further tool_requests or a malformed response — cannot
-  // resolve cleanly.  Mark dirty so the conversation is not resumed with a pending call.
-  debug.finalization_reason = guardedOutput.type === "tool_requests"
-    ? "guarded_booking_apply_second_call_still_tool_requests"
-    : "guarded_booking_apply_second_call_malformed";
-  markConversationDirty(debug);
-  await clearConversationMemory(deps.conversationMemoryRepository, input, updatedConversationId, debug);
-  return {
-    final_patient_reply: buildBookingApplyEmergencyFallback(allResults, input.locale),
-    conversation_id: null,
-    conversation_id_resumable: false,
-    tool_requests: toolRequests,
-    tool_results: allResults,
-    debug,
-    ...(execution_subject_id != null ? { execution_subject_id } : {}),
-    ...(booking_subjects_after_resolution != null ? { booking_subjects_after_resolution } : {}),
-    ...(booking_apply_resolution != null ? { booking_apply_resolution } : {}),
-  };
 }
 
 // Returns true when at least one tool result has status=success with non-empty

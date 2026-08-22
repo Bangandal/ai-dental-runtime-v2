@@ -89,18 +89,15 @@ test("R3t: invalid model-call budget fails at state construction", () => {
   assert.throws(() => createRuntimeModelIterationState(null, 1.5), /positive integer/);
 });
 
-test("R3v structure: the main runTurn shell delegates one bounded iteration transport state to the iterator", async () => {
+test("R3w structure: the legacy shell delegates one bounded iteration transport state to the iterator", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
   const iteratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeBoundedModelToolLoop.ts"), "utf8");
-  const helperBoundary = loopSource.indexOf("// ── Multiple-blocked booking.apply helper");
-  assert.ok(helperBoundary > 0);
-  const runTurnSource = loopSource.slice(0, helperBoundary);
 
-  assert.match(runTurnSource, /createRuntimeModelIterationState\(conversationId\)/);
-  assert.equal(runTurnSource.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length, 1);
+  assert.match(loopSource, /createRuntimeModelIterationState\(conversationId\)/);
+  assert.equal(loopSource.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length, 1);
   assert.equal(
-    runTurnSource.match(/invokeRuntimeModelIteration\(\{/g)?.length ?? 0,
+    loopSource.match(/invokeRuntimeModelIteration\(\{/g)?.length ?? 0,
     0,
     "legacy shell must not own numbered model steps anymore",
   );
@@ -110,8 +107,9 @@ test("R3v structure: the main runTurn shell delegates one bounded iteration tran
     "generic iterator must be the single owner of bounded model-call progression",
   );
   assert.doesNotMatch(
-    runTurnSource,
+    loopSource,
     /invokeRuntimeModelCall\(\{/,
-    "main runTurn path must not bypass bounded iteration transport",
+    "legacy shell must not bypass bounded iteration transport",
   );
+  assert.doesNotMatch(loopSource, /finalizeBlockedMultipleBookingApplies|finalizeBlockedBookingApplyWithToolOutput/);
 });

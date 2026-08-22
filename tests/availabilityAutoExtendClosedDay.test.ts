@@ -40,10 +40,17 @@ function buildEnv(params?: {
   };
 }
 
-test("clinic-closed requested date auto-extends to the nearest working day", async () => {
+test("clinic-closed requested date auto-extends to the nearest working day with one range read", async () => {
+  const reads: Array<{ from: string; to: string }> = [];
+  const adapter: AvailabilityAdapter = {
+    listVisits: async (from, to) => {
+      reads.push({ from, to });
+      return { ok: true, data: [] };
+    },
+  };
   const executor = createClinicCardAvailabilityExecutor({
     env: buildEnv(),
-    adapterFactory: () => makeOpenAdapter(),
+    adapterFactory: () => adapter,
   });
 
   // 2026-08-22 is Saturday; next clinic/provider working day is Monday 2026-08-24.
@@ -58,6 +65,7 @@ test("clinic-closed requested date auto-extends to the nearest working day", asy
     assert.ok(result.data.slots.length > 0);
     assert.ok(result.data.slots.every((slot) => slot.starts_at.startsWith("2026-08-24T")));
   }
+  assert.deepEqual(reads, [{ from: "2026-08-23", to: "2026-08-29" }]);
 });
 
 test("provider non-working requested date auto-extends even when clinic is open", async () => {
@@ -84,9 +92,16 @@ test("provider non-working requested date auto-extends even when clinic is open"
 });
 
 test("specific time on a closed day remains an authoritative unavailable result", async () => {
+  let reads = 0;
+  const adapter: AvailabilityAdapter = {
+    listVisits: async () => {
+      reads += 1;
+      return { ok: true, data: [] };
+    },
+  };
   const executor = createClinicCardAvailabilityExecutor({
     env: buildEnv(),
-    adapterFactory: () => makeOpenAdapter(),
+    adapterFactory: () => adapter,
   });
 
   const result = await executor({
@@ -103,4 +118,5 @@ test("specific time on a closed day remains an authoritative unavailable result"
     assert.equal(result.data.requested_time_status, "unavailable");
     assert.equal(result.data.nearest_available_date, undefined);
   }
+  assert.equal(reads, 0, "closed-day time truth needs no ClinicCard read");
 });

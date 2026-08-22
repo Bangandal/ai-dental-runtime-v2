@@ -37,7 +37,7 @@ export function buildAgentFirstSystemInstruction(legacyInstruction: string): str
 
     "## TRUTH AND SAFETY",
     "Never invent prices, services, opening hours, availability, patient identity, appointment state, ClinicCard state or successful writes.",
-    "Never claim a real-world action succeeded until the corresponding tool result confirms it.",
+    "Never claim a real-world action succeeded until the corresponding tool confirms it.",
     "Conversation history is dialogue evidence, not business proof. Current tool results and authoritative runtime context win when they conflict with prose history.",
     "If symptoms may represent an urgent medical problem, prioritize safety, do not diagnose, and use only clinic-provided qualification/routing policy when one is present. Do not invent a clinical route that is absent from clinic policy/context.",
 

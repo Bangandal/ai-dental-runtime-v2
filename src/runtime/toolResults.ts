@@ -45,6 +45,13 @@ export interface AvailabilityCheckSuccessResult extends ToolExecutionBase {
     provider?: string | null;
     total_slots?: number;
     free_slots_count?: number;
+    /** Present when Runtime searched forward and returned slots from a later working day. */
+    nearest_available_date?: string;
+    /** Echo of the normalized HH:MM anchor when a specific time was requested. */
+    requested_time?: string;
+    /** Authoritative availability result for requested_time after all policy/time filters. */
+    requested_time_available?: boolean;
+    requested_time_status?: "available" | "unavailable";
   };
   /** Server-side debug only — never forwarded to the model. */
   _diagnostic?: unknown;

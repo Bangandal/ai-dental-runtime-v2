@@ -1,0 +1,140 @@
+name: R3i unify booking target metadata
+
+on:
+  push:
+    branches:
+      - refactor/r2f-unify-booking-target-resolution
+
+permissions:
+  contents: write
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refactor/r2f-unify-booking-target-resolution
+      - name: Apply exact R3i migration
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          loop = Path('src/runtime/runtimeAgentLoopLegacy.ts')
+          text = loop.read_text()
+
+          round1_marker = '''      // Shared booking business preflight (round 1) — execution patient is already frozen.\n'''
+          round1_resolution = '''      // Frozen booking target metadata is created immediately after Guard J. Later guards may\n      // block the write, but post-turn persistence still needs the same resolved patient target.\n      const round1BookingApplyResolution: BookingApplyResolution | null =\n        !guardSFired && bookingApplyRound1 && round1ExecutionSubjectId\n          ? { call_id: bookingApplyRound1.call_id, subject_id: round1ExecutionSubjectId }\n          : null;\n\n'''
+          if text.count(round1_marker) != 1:
+              raise SystemExit(f'round1 marker count={text.count(round1_marker)}')
+          text = text.replace(round1_marker, round1_resolution + round1_marker, 1)
+
+          old_round1_late = '''      // When Guard S fired, booking.apply was blocked in round-1 (not executed) — no resolution.\n      let round1BookingApplyResolution: BookingApplyResolution | null = null;\n      if (!guardSFired && bookingApplyRound1 && round1ExecutionSubjectId) {\n        round1BookingApplyResolution = {\n          call_id: bookingApplyRound1.call_id,\n          subject_id: round1ExecutionSubjectId,\n        };\n      }\n\n'''
+          if text.count(old_round1_late) != 1:
+              raise SystemExit(f'late round1 resolution count={text.count(old_round1_late)}')
+          text = text.replace(old_round1_late, '', 1)
+
+          round2_marker = '''        // PF-004b: booking.select_slot legality is independent of model-call round.\n'''
+          round2_resolution = '''        // Freeze the resolved booking target before any later round-2 business guard.\n        const round2BookingApplyResolution: BookingApplyResolution | null =\n          pendingBookingApply && round2ExecutionSubjectId\n            ? { call_id: pendingBookingApply.call_id, subject_id: round2ExecutionSubjectId }\n            : null;\n\n'''
+          if text.count(round2_marker) != 1:
+              raise SystemExit(f'round2 marker count={text.count(round2_marker)}')
+          text = text.replace(round2_marker, round2_resolution + round2_marker, 1)
+
+          old_round2_late = '''          const round2BookingApplyResolution: BookingApplyResolution | null =\n            pendingBookingApply && round2ExecutionSubjectId\n              ? { call_id: pendingBookingApply.call_id, subject_id: round2ExecutionSubjectId }\n              : null;\n\n'''
+          if text.count(old_round2_late) != 1:
+              raise SystemExit(f'late round2 resolution count={text.count(old_round2_late)}')
+          text = text.replace(old_round2_late, '', 1)
+
+          # Blocked paths now propagate the one frozen resolution object.
+          if text.count('execution_subject_id: round1ExecutionSubjectId,') != 1:
+              raise SystemExit(f'round1 blocked param count={text.count("execution_subject_id: round1ExecutionSubjectId,")}')
+          text = text.replace('execution_subject_id: round1ExecutionSubjectId,', 'booking_apply_resolution: round1BookingApplyResolution,', 1)
+          if text.count('execution_subject_id: round2ExecutionSubjectId,') != 2:
+              raise SystemExit(f'round2 blocked param count={text.count("execution_subject_id: round2ExecutionSubjectId,")}')
+          text = text.replace('execution_subject_id: round2ExecutionSubjectId,', 'booking_apply_resolution: round2BookingApplyResolution,')
+
+          # RuntimeAgentTurnResult no longer transports a duplicate execution_subject_id field.
+          for line in [
+              '          ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),\n',
+              '              ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),\n',
+              '        ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),\n',
+              '              ...(round2ExecutionSubjectId != null ? { execution_subject_id: round2ExecutionSubjectId } : {}),\n',
+              '            ...(round2ExecutionSubjectId != null ? { execution_subject_id: round2ExecutionSubjectId } : {}),\n',
+          ]:
+              text = text.replace(line, '')
+          text = text.replace('        // Propagate frozen execution subject so orchestrator can apply booking result to correct subject\n', '')
+
+          # Helper accepts and returns only booking_apply_resolution, not the duplicate legacy field.
+          text = text.replace('  execution_subject_id?: SubjectId | null;\n', '')
+          text = text.replace('    execution_subject_id, booking_subjects_after_resolution, booking_apply_resolution,\n', '    booking_subjects_after_resolution, booking_apply_resolution,\n')
+          text = text.replace('      ...(execution_subject_id != null ? { execution_subject_id } : {}),\n', '')
+          text = text.replace('      ...(execution_subject_id != null ? { execution_subject_id } : {}),\n', '')
+          text = text.replace('    ...(execution_subject_id != null ? { execution_subject_id } : {}),\n', '')
+
+          if 'execution_subject_id:' in text:
+              # Resolver result property uses dot access, but no turn-result object/property should remain.
+              raise SystemExit('runtimeAgentLoopLegacy still contains execution_subject_id transport property')
+          loop.write_text(text)
+
+          # Public turn result: remove duplicate field and clarify resolution semantics.
+          path = 'src/runtime/openaiRuntimeAgent.ts'
+          p = Path(path)
+          text = p.read_text()
+          old = '''  /** Frozen execution subject resolved by Guard J before tool execution. Propagated for\n   * orchestrator to use in postUpdateBookingSubjects — never re-derived from tool arguments. */\n  execution_subject_id?: import("./bookingSubjectsState.ts").SubjectId | null;\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'openai execution field count={text.count(old)}')
+          text = text.replace(old, '', 1)
+          old = '''  /** Identifies which booking.apply request was eligible for execution this turn and which\n   * subject it targeted. Orchestrator must use this call_id to match request/result in\n   * postUpdateBookingSubjects — never re-derive from toolRequests.find(). */\n'''
+          new = '''  /** Frozen booking target resolved by Guard J for a specific booking.apply call.\n   * Propagated even when a later business guard blocks the write, so post-turn persistence\n   * can update the same patient without re-deriving identity from tool arguments. */\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'booking resolution comment count={text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+
+          # Orchestrator consumes the single resolution object.
+          path = 'src/runtime/runtimeTurnOrchestratorLegacy.ts'
+          p = Path(path)
+          text = p.read_text()
+          old = '''    // executionSubjectId: read directly from the loop result — the loop resolves\n    // subject_id via Guard J (bookingSubjectExecutionResolver) and passes it back.\n    // No fallback to active_subject_id: if missing, no booking executed this turn.\n    const executionSubjectId: SubjectId | null = result.execution_subject_id ?? null;\n\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'orchestrator execution block count={text.count(old)}')
+          text = text.replace(old, '', 1)
+          if text.count('          executionSubjectId,\n') != 1:
+              raise SystemExit(f'orchestrator postUpdate arg count={text.count("          executionSubjectId,\\n")}')
+          text = text.replace('          executionSubjectId,\n', '', 1)
+          p.write_text(text)
+
+          # Subject state removes the legacy fallback. bookingApplyResolution is the only proof.
+          path = 'src/runtime/bookingSubjectsState.ts'
+          p = Path(path)
+          text = p.read_text()
+          old = '''  /** Identifies the specific booking.apply request that was eligible for execution and its subject.\n   * When provided, used exclusively to match request/result — never falls back to find-first. */\n  bookingApplyResolution?: BookingApplyResolution | null;\n  /** Frozen execution subject (legacy). Ignored when bookingApplyResolution is present. */\n  executionSubjectId?: SubjectId | null;\n'''
+          new = '''  /** Frozen booking target for the specific booking.apply call.\n   * When provided, used exclusively to match request/result and patient state. */\n  bookingApplyResolution?: BookingApplyResolution | null;\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'postUpdate signature block count={text.count(old)}')
+          text = text.replace(old, new, 1)
+          old = '''  // Determine effective subject: prefer resolution, fall back to legacy executionSubjectId.\n  const effectiveSubjectId: SubjectId | null = resolution?.subject_id ?? params.executionSubjectId ?? null;\n'''
+          new = '''  // The frozen resolution is the only post-turn booking identity proof.\n  const effectiveSubjectId: SubjectId | null = resolution?.subject_id ?? null;\n'''
+          if text.count(old) != 1:
+              raise SystemExit(f'effective subject fallback count={text.count(old)}')
+          p.write_text(text.replace(old, new, 1))
+
+          Path('.github/workflows/r3i-unify-booking-target.yml').unlink()
+          trigger = Path('.r3i-trigger')
+          if trigger.exists(): trigger.unlink()
+          PY
+      - name: Commit migration
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m "refactor(R3i): unify frozen booking target metadata"
+          git push origin HEAD:refactor/r2f-unify-booking-target-resolution

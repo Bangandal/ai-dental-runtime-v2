@@ -14,7 +14,7 @@ import { prepareBookingApplyExecution } from "./bookingApplyExecutionPreparation
 import type { SubjectId, BookingSubjectsState } from "./bookingSubjectsState.ts";
 import type { ToolExecutorRegistry } from "./toolExecutor.ts";
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
-import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
+import { buildModelVisibleCallerContext, composeRuntimeModelContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
@@ -133,7 +133,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         conversation_id: conversationId,
         system_instruction: systemInstruction,
         message: input.user_message,
-        context: { ...callerContext, booking_process_state: firstCallVisibleState },
+        context: composeRuntimeModelContext(callerContext, { booking_process_state: firstCallVisibleState }),
         tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
       });
       if (!firstCall.ok) {
@@ -563,14 +563,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         timezone,
       });
 
-      const secondCallContext = {
-        ...callerContext,
-        ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
-        ...(availabilityActionTruth ? { availability_action_truth: availabilityActionTruth } : {}),
-        ...(availabilityPresentationTruth ? { availability_presentation_truth: availabilityPresentationTruth } : {}),
-        ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
+      const secondCallContext = composeRuntimeModelContext(callerContext, {
+        booking_apply_action_truth: bookingActionTruth,
+        availability_action_truth: availabilityActionTruth,
+        availability_presentation_truth: availabilityPresentationTruth,
+        appointment_display_truth: appointmentDisplayTruth,
         booking_process_state: secondCallVisibleState,
-      };
+      });
 
       const secondCall = await invokeRuntimeModelCall({
         caller: deps.caller,
@@ -897,12 +896,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             conversation_id: null,
             system_instruction: systemInstruction,
             message: input.user_message,
-            context: {
-              ...callerContext,
+            context: composeRuntimeModelContext(callerContext, {
               resolved_context: allResults,
-              ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
-              ...(bookingApplyDisplayTruth ? { appointment_display_truth: bookingApplyDisplayTruth } : {}),
-            },
+              booking_apply_action_truth: bookingApplyTruth,
+              appointment_display_truth: bookingApplyDisplayTruth,
+            }),
           });
           let bookingFinalOutput: RuntimeAgentCallerOutput | undefined;
           if (bookingFinalCall.ok) {
@@ -973,12 +971,11 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             conversation_id: null,
             system_instruction: systemInstruction,
             message: input.user_message,
-            context: {
-              ...callerContext,
+            context: composeRuntimeModelContext(callerContext, {
               resolved_context: toolResults,
-              ...(bookingActionTruth ? { booking_apply_action_truth: bookingActionTruth } : {}),
-              ...(appointmentDisplayTruth ? { appointment_display_truth: appointmentDisplayTruth } : {}),
-            },
+              booking_apply_action_truth: bookingActionTruth,
+              appointment_display_truth: appointmentDisplayTruth,
+            }),
             // No tool_definitions/tool_results: fresh caller must produce final_response.
           });
           let forcedOutput: RuntimeAgentCallerOutput | undefined;
@@ -1130,10 +1127,9 @@ export async function finalizeBlockedMultipleBookingApplies(params: {
     conversation_id: conversationId,
     system_instruction: systemInstruction,
     message: input.user_message,
-    context: {
-      ...callerContext,
-      ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
-    },
+    context: composeRuntimeModelContext(callerContext, {
+      booking_apply_action_truth: bookingApplyTruth,
+    }),
     tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
     tool_results: guardedResults,
   });
@@ -1259,10 +1255,9 @@ export async function finalizeBlockedBookingApplyWithToolOutput(params: {
     conversation_id: conversationId,
     system_instruction: systemInstruction,
     message: input.user_message,
-    context: {
-      ...callerContext,
-      ...(bookingApplyTruth ? { booking_apply_action_truth: bookingApplyTruth } : {}),
-    },
+    context: composeRuntimeModelContext(callerContext, {
+      booking_apply_action_truth: bookingApplyTruth,
+    }),
     tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
     tool_results: [guardedToolResult],
   });

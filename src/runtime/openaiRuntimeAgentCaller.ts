@@ -13,6 +13,7 @@ import {
 import { parseModelPersonIntents } from "./modelPersonIntentBridge.ts";
 import { projectModelFacingContext } from "./modelFacingContextProjection.ts";
 import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
+import { parseAgentQualification } from "./agentQualification.ts";
 
 export interface OpenAIResponsesClient {
   responses: {
@@ -169,17 +170,18 @@ export function normalizeOpenAIResponse(
     };
   }
 
-  // Valid person intent was parsed but the model omitted a reply field.
-  // Use a safe fallback reply but do NOT mark as malformed_openai_response because
-  // the runtime must still receive the already-validated intent from the bridge.
-  if (finalResponse.subject_intent != null) {
+  // Valid structured state was parsed but the model omitted a reply field.
+  // Use a safe fallback reply but preserve already-validated structured state.
+  if (finalResponse.subject_intent != null || finalResponse.qualification != null) {
     return {
       type: "final_response",
       conversation_id: conversationId,
       final_response: {
         final_patient_reply: SAFE_FALLBACK_REPLY,
-        subject_intent: finalResponse.subject_intent,
-        safety_notes: ["subject_intent_reply_missing"],
+        ...(finalResponse.subject_intent != null ? { subject_intent: finalResponse.subject_intent } : {}),
+        ...(finalResponse.phone_ownership_intent != null ? { phone_ownership_intent: finalResponse.phone_ownership_intent } : {}),
+        ...(finalResponse.qualification != null ? { qualification: finalResponse.qualification } : {}),
+        safety_notes: ["structured_state_reply_missing"],
       },
       usage: response?.usage,
     };
@@ -295,6 +297,9 @@ function readFinalResponse(
     : undefined;
 
   const personIntents = parseModelPersonIntents(final, envelope, modelContext);
+  const qualification = isAgentFirstRuntimeEnabled()
+    ? parseAgentQualification(final?.qualification ?? envelope?.qualification, modelContext)
+    : null;
 
   return {
     final_patient_reply: outputText,
@@ -303,6 +308,7 @@ function readFinalResponse(
     safety_notes: toStringArray(final?.safety_notes),
     ...(ui !== undefined ? { ui } : {}),
     ...personIntents,
+    ...(qualification !== null ? { qualification } : {}),
   };
 }
 

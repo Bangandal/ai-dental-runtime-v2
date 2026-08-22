@@ -34,6 +34,7 @@ import {
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
 import { executeBookingSelectSlotBatch } from "./bookingSelectSlot.ts";
+import { resolveBookingSelectApplyBatchConflict } from "./bookingSelectApplyBatchConflict.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
 import { executeRuntimeToolRequest, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
 import { invokeRuntimeModelCall, type RuntimeAgentCaller, type RuntimeAgentCallerInput, type RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
@@ -318,70 +319,27 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
       let bootstrappedRegistry: BookingSubjectsState | null =
         round1BookingPreparation?.bootstrapped_registry ?? null;
 
-      // Guard S (round 1) — same-round booking.select_slot + booking.apply:
-      // Process select_slot deterministically, revoke old proof, persist state, and
-      // close the booking.apply call ID with a blocked result.  ALL round-1 call IDs
-      // are populated in toolResults so the second model call receives a complete
-      // response.  The second call may issue booking.apply in round-2, which flows
-      // through the normal round-2 guards and may execute via the executor.
-      const round1SelectSlotRequests = toolRequests.filter((r) => r.tool === "booking.select_slot");
-      const round1HasSelectSlot = round1SelectSlotRequests.length > 0;
+      // Same-batch dependency guard — booking.apply cannot consume a booking.select_slot
+      // result emitted beside it in the same model tool batch. The shared helper closes every
+      // call id and selection state is persisted before the model sees the results.
+      const round1SelectApplyConflict = resolveBookingSelectApplyBatchConflict({
+        requests: toolRequests,
+        activeEvidence: priorProcessState?.active_availability_evidence ?? null,
+        subjects: effectiveBookingSubjects?.subjects ?? null,
+      });
       let guardSFired = false;
 
-      if (round1HasSelectSlot && bookingApplyRound1) {
-        const round1GuardSSelection = executeBookingSelectSlotBatch({
-          requests: round1SelectSlotRequests,
-          activeEvidence: priorProcessState?.active_availability_evidence ?? null,
-          subjects: effectiveBookingSubjects?.subjects ?? null,
-        });
-        toolResults.push(...round1GuardSSelection.tool_results);
-        const srSuccessData = round1GuardSSelection.success_data;
+      if (round1SelectApplyConflict) {
+        toolResults.push(...round1SelectApplyConflict.tool_results);
 
-        // Close the same-round booking.apply call ID with a blocked result.
-        toolResults.push({
-          tool: "booking.apply",
-          call_id: bookingApplyRound1.call_id,
-          status: "success",
-          data: {
-            booking_status: "slot_not_verified",
-            created_visit: false as const,
-            may_claim_booked: false as const,
-            required_next_action: "retry_booking_apply",
-            reason: "select_slot_and_booking_apply_same_round",
-          },
-        });
-
-        // Close any remaining round-1 call IDs (kb.search, availability.check, etc.) that
-        // were not handled above.  OpenAI requires every function call to have a matching
-        // tool result; skipping them via the normal tool loop would leave them open.
-        const srHandledCallIds = new Set([
-          ...round1SelectSlotRequests.map((r) => r.call_id),
-          bookingApplyRound1.call_id,
-        ]);
-        for (const req of toolRequests) {
-          if (!srHandledCallIds.has(req.call_id)) {
-            toolResults.push({
-              tool: req.tool,
-              call_id: req.call_id,
-              status: "denied",
-              error: {
-                code: "guard_s_same_round_protocol",
-                message: "Tool was not executed because booking.select_slot and booking.apply were returned in the same round",
-              },
-            });
-          }
-        }
-
-        // Revoke old proof (selectSlotAttemptedThisTurn=true); install new if selection succeeded.
         bookingProcessState = computeBookingProcessState({
           prior: priorProcessState,
           channelContact: input.channel_contact,
-          selectSlotData: srSuccessData,
-          selectSlotAttemptedThisTurn: true,
+          selectSlotData: round1SelectApplyConflict.selection.success_data,
+          selectSlotAttemptedThisTurn: round1SelectApplyConflict.selection.attempted,
           now: turnNow,
         });
 
-        // Persist updated state (best-effort — non-blocking).
         if (deps.bookingProcessStateRepository) {
           deps.bookingProcessStateRepository.saveState(
             { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
@@ -390,6 +348,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           ).catch(() => undefined);
         }
 
+        // Historical diagnostic label retained until the numbered model-call shell is removed.
         debug.reason = "booking_apply_preflight_select_slot_same_round";
         guardSFired = true;
       }
@@ -731,8 +690,10 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
 
         // 3. Prepare/freeze booking target through the same round-agnostic boundary used
-        // by the first tool batch. Multiple-write guards above intentionally retain priority.
+        // by the first tool batch. Same-batch select/apply conflict has priority over
+        // booking.apply subject-validation, matching the first-path protocol rule.
         let round2ExecutionSubjectId: SubjectId | null = null;
+        let round2SelectApplyConflict: ReturnType<typeof resolveBookingSelectApplyBatchConflict> = null;
         if (pendingBookingApply) {
           const round2BookingPreparation = prepareBookingApplyExecution({
             booking_apply: pendingBookingApply,
@@ -749,7 +710,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             bootstrappedRegistry = round2BookingPreparation.bootstrapped_registry;
           }
 
-          if (!round2BookingPreparation.ok) {
+          round2SelectApplyConflict = resolveBookingSelectApplyBatchConflict({
+            requests: secondOutput.tool_requests,
+            activeEvidence: bookingProcessState.active_availability_evidence,
+            subjects: effectiveBookingSubjects?.subjects ?? null,
+          });
+
+          if (!round2SelectApplyConflict && !round2BookingPreparation.ok) {
             debug.reason = round2BookingPreparation.stage === "subject_validation"
               ? "booking_apply_preflight_subject_id_invalid_round2"
               : "booking_apply_preflight_subject_resolution_conflict_round2";
@@ -774,19 +741,37 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             });
           }
 
-          round2ExecutionSubjectId = round2BookingPreparation.execution_subject_id;
+          if (!round2SelectApplyConflict && round2BookingPreparation.ok) {
+            round2ExecutionSubjectId = round2BookingPreparation.execution_subject_id;
+          }
         }
 
-        // PF-004b: booking.select_slot legality is independent of model-call round.
-        // Resolve selection against the current authoritative evidence after any subject_2+
-        // bootstrap, then update/revoke proof before booking guards inspect it.
-        const round2SlotSelection = executeBookingSelectSlotBatch({
+        const round2SlotSelection = round2SelectApplyConflict?.selection ?? executeBookingSelectSlotBatch({
           requests: secondOutput.tool_requests,
           activeEvidence: bookingProcessState.active_availability_evidence,
           subjects: effectiveBookingSubjects?.subjects ?? null,
         });
 
-        if (round2SlotSelection.attempted) {
+        if (round2SelectApplyConflict) {
+          toolResults.push(...round2SelectApplyConflict.tool_results);
+          bookingProcessState = computeBookingProcessState({
+            prior: bookingProcessState,
+            channelContact: input.channel_contact,
+            selectSlotData: round2SelectApplyConflict.selection.success_data,
+            selectSlotAttemptedThisTurn: round2SelectApplyConflict.selection.attempted,
+            now: turnNow,
+          });
+
+          if (deps.bookingProcessStateRepository) {
+            deps.bookingProcessStateRepository.saveState(
+              { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
+              bookingProcessState,
+              (info) => { if (!info.saved) debug.booking_process_state_save = info; },
+            ).catch(() => undefined);
+          }
+
+          debug.reason = "booking_apply_preflight_select_slot_same_round";
+        } else if (round2SlotSelection.attempted) {
           toolResults.push(...round2SlotSelection.tool_results);
           bookingProcessState = computeBookingProcessState({
             prior: bookingProcessState,
@@ -808,7 +793,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
         // 6. No-slots gate — fires AFTER Guard J, bootstrap, and execution subject freeze.
         //    availability.check returned 0 slots so there is nothing to confirm.
-        if (shouldInterceptNoSlotsBeforeBookingApply({
+        if (!round2SelectApplyConflict && shouldInterceptNoSlotsBeforeBookingApply({
           pendingToolRequests: secondOutput.tool_requests,
           completedToolResults: toolResults,
         })) {
@@ -838,7 +823,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
 
         // Shared booking business preflight (round 2). No-slots and subject resolution
         // have already run; this owns pending-phone → time/slot proof → phone → name/service.
-        if (pendingBookingApply) {
+        if (pendingBookingApply && !round2SelectApplyConflict) {
           const round2Preflight = evaluateBookingApplyPreflight({
             round: 2,
             pendingBookingApply,

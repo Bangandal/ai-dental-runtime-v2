@@ -3,8 +3,11 @@ import {
   type AvailabilityWeekdayCode,
   extractSlotDate,
   extractSlotHHMM,
-  getAvailabilityWeekdayCode,
 } from "./availabilityActionTruth.ts";
+import {
+  buildCalendarDisplayTruth,
+  type CalendarDisplayTruth,
+} from "./calendarDisplayTruth.ts";
 
 export interface AvailabilityPresentationSlotTruth {
   date: string;
@@ -21,6 +24,8 @@ export interface AvailabilityPresentationTruth {
   /** The authoritative date these presented slots belong to. */
   resolved_date: string;
   resolved_weekday: AvailabilityWeekdayCode;
+  /** Canonical localized date/weekday labels computed by Runtime, never by the model. */
+  resolved_calendar: CalendarDisplayTruth;
   timezone: string | null;
   /** Exact date+time facts safe for patient-facing presentation. */
   allowed_slots: AvailabilityPresentationSlotTruth[];
@@ -37,6 +42,7 @@ export interface AvailabilityPresentationTruth {
  *   - authoritative result is not a success
  *   - authoritative success result has zero valid slots
  *   - the returned date cannot be proven from nearest_available_date or slot starts_at
+ *   - Runtime cannot build strict calendar truth for the resolved date
  *
  * When auto-extension returns another day, only slots from that resolved day are exposed.
  * This prevents the model from combining the requested date with times that actually belong
@@ -67,8 +73,9 @@ export function buildAvailabilityPresentationTruth(
   }
 
   const resolvedDate = nearestAvailableDate ?? firstSlotDate;
-  const resolvedWeekday = getAvailabilityWeekdayCode(resolvedDate);
-  if (resolvedDate === null || resolvedWeekday === null) return null;
+  const resolvedCalendar = buildCalendarDisplayTruth(resolvedDate);
+  if (resolvedCalendar === null) return null;
+  const resolvedWeekday = resolvedCalendar.weekday_code as AvailabilityWeekdayCode;
 
   const seen = new Set<string>();
   const allowedSlots: AvailabilityPresentationSlotTruth[] = [];
@@ -103,6 +110,7 @@ export function buildAvailabilityPresentationTruth(
     max_slots_to_present: 5,
     resolved_date: resolvedDate,
     resolved_weekday: resolvedWeekday,
+    resolved_calendar: resolvedCalendar,
     timezone: typeof data.timezone === "string" ? data.timezone : null,
     allowed_slots: allowedSlots,
     allowed_slot_starts: allowedSlots.map((slot) => slot.time),

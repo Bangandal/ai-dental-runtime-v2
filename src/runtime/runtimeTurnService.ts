@@ -43,20 +43,38 @@ export interface RuntimeTurnService {
 
 export interface CreateRuntimeTurnServiceDeps {
   agent: OpenAIRuntimeAgent;
+  /**
+   * Opt in only when the model caller guarantees one HTTP attempt for the first
+   * stateful conversation mutation. Generic Runtime agents fail closed by default.
+   */
+  single_attempt_first_call_rate_limit_safe?: boolean;
+}
+
+export interface RuntimeTurnNormalizationPolicy {
+  single_attempt_first_call_rate_limit_safe?: boolean;
 }
 
 export function createRuntimeTurnService(deps: CreateRuntimeTurnServiceDeps): RuntimeTurnService {
   return {
     async runTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
       const result = await deps.agent.runTurn(input);
-      return normalizeRuntimeTurnResult(result);
+      return normalizeRuntimeTurnResult(result, {
+        single_attempt_first_call_rate_limit_safe:
+          deps.single_attempt_first_call_rate_limit_safe === true,
+      });
     },
   };
 }
 
 export function createDentalRuntimeTurnService(deps: CreateDentalRuntimeAgentDeps): RuntimeTurnService {
   const agent = createDentalRuntimeAgent(deps);
-  return createRuntimeTurnService({ agent });
+  // createDentalRuntimeAgent wires createStatefulAgentResponsesClient, which forces
+  // maxRetries=0 on the stateful Responses call. That concrete guarantee is what
+  // authorizes the narrow first-call 429 continuity exception below.
+  return createRuntimeTurnService({
+    agent,
+    single_attempt_first_call_rate_limit_safe: true,
+  });
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -73,15 +91,12 @@ function isRateLimitMarker(value: unknown): boolean {
 }
 
 /**
- * Stateful dental-agent Responses calls are deliberately sent with SDK maxRetries=0
- * (see createStatefulAgentResponsesClient). Therefore an explicit FIRST-call 429 came
- * from the only HTTP attempt for this logical model call: no successful earlier SDK
- * replay can have committed an unseen function_call into the conversation.
+ * Detects the narrow result shape that is eligible for first-call 429 continuity.
+ * This function intentionally does not decide whether the caller was single-attempt;
+ * that execution guarantee is supplied separately as RuntimeTurnNormalizationPolicy.
  *
- * Under that invariant, when no tool request/result was observed, the previously
- * existing conversation remains safe to resume. Later-call failures are excluded:
- * after a model-emitted tool request there may already be a pending function_call
- * without its output, so those conversations must stay dirty.
+ * Later-call failures are excluded: after a model-emitted tool request there may be
+ * a pending function_call without its output, so those conversations must stay dirty.
  */
 export function shouldPreserveConversationAfterFirstCallRateLimit(
   result: RuntimeAgentTurnResult,
@@ -97,19 +112,23 @@ export function shouldPreserveConversationAfterFirstCallRateLimit(
   if (callerException?.stage !== "first_call") return false;
 
   // Provider/API error codes and HTTP status are independent facts. For example,
-  // OpenAI can report code="insufficient_quota" with status=429. Either explicit
-  // rate-limit marker proves that the single first-call HTTP attempt was rejected.
+  // OpenAI can report code="insufficient_quota" with status=429.
   return isRateLimitMarker(callerException.error_code)
     || isRateLimitMarker(callerException.http_status);
 }
 
-export function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): RuntimeTurnResult {
+export function normalizeRuntimeTurnResult(
+  result: RuntimeAgentTurnResult,
+  policy: RuntimeTurnNormalizationPolicy = {},
+): RuntimeTurnResult {
   const finalPatientReply = result.final_patient_reply?.trim();
   if (!finalPatientReply) {
     throw new Error("runtime_turn_result_missing_final_patient_reply");
   }
 
-  const preserveAfterRateLimit = shouldPreserveConversationAfterFirstCallRateLimit(result);
+  const preserveAfterRateLimit =
+    policy.single_attempt_first_call_rate_limit_safe === true &&
+    shouldPreserveConversationAfterFirstCallRateLimit(result);
 
   return {
     final_patient_reply: finalPatientReply,

@@ -40,6 +40,31 @@ function minutesToHHMM(value: number): string {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+function addCalendarDays(date: string, days: number): string {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function countSlotsInWindow(input: {
+  start: string;
+  end: string;
+  interval_minutes: number;
+  appointment_duration_minutes: number;
+}): number {
+  const start = timeToMinutes(input.start);
+  const end = timeToMinutes(input.end);
+  let count = 0;
+  for (
+    let t = start;
+    t + input.appointment_duration_minutes <= end;
+    t += input.interval_minutes
+  ) {
+    count++;
+  }
+  return count;
+}
+
 function resolveEffectiveProviderWindow(input: {
   clinic_start: string;
   clinic_end: string;
@@ -221,67 +246,82 @@ export function createClinicCardAvailabilityExecutor(
     const adapter = adapterFactory(config);
     const debugEnabled = isAvailabilityDebugEnabled(deps.env);
 
+    /**
+     * Resolve the nearest later day with a single ClinicCard range read. The availability
+     * engine already supports date_to, so a seven-day search must never become seven
+     * sequential network requests. Runtime filters the generated range back down to dates
+     * authorized by both clinic and provider schedule policies.
+     */
     const scanForwardForNearestAvailable = async () => {
+      const rangeStart = addCalendarDays(requestedDate, 1);
+      const rangeEnd = addCalendarDays(requestedDate, 7);
+      const authorizedDates: string[] = [];
       for (let i = 1; i <= 7; i++) {
-        const nextD = new Date(requestedDate + "T12:00:00Z");
-        nextD.setUTCDate(nextD.getUTCDate() + i);
-        const nextDate = nextD.toISOString().slice(0, 10);
+        const candidate = addCalendarDays(requestedDate, i);
+        if (getIsoWeekday(candidate) === null) continue;
+        if (!isDateInsideAvailabilityPolicy(candidate, availabilityPolicy)) continue;
+        if (!isDateInsideClinicCardServiceSchedule(candidate, serviceSchedule.schedule)) continue;
+        authorizedDates.push(candidate);
+      }
 
-        if (getIsoWeekday(nextDate) === null) continue;
-        if (!isDateInsideAvailabilityPolicy(nextDate, availabilityPolicy)) continue;
-        if (!isDateInsideClinicCardServiceSchedule(nextDate, serviceSchedule.schedule)) continue;
+      if (authorizedDates.length === 0) return null;
 
-        const nextResult = await checkClinicCardAvailability(
-          {
-            date: nextDate,
-            working_hours_start: effectiveWindow.start,
-            working_hours_end: effectiveWindow.end,
-            slot_duration_minutes: availabilityPolicy.slot_duration_minutes,
-            slot_interval_minutes: availabilityPolicy.slot_duration_minutes,
-            appointment_duration_minutes: serviceResource.duration_minutes,
-            doctor_id: doctorId,
-            cabinet_id: cabinetId,
-            timezone,
-          },
-          adapter,
+      const rangeResult = await checkClinicCardAvailability(
+        {
+          date: rangeStart,
+          date_to: rangeEnd,
+          working_hours_start: effectiveWindow.start,
+          working_hours_end: effectiveWindow.end,
+          slot_duration_minutes: availabilityPolicy.slot_duration_minutes,
+          slot_interval_minutes: availabilityPolicy.slot_duration_minutes,
+          appointment_duration_minutes: serviceResource.duration_minutes,
+          doctor_id: doctorId,
+          cabinet_id: cabinetId,
+          timezone,
+        },
+        adapter,
+      );
+
+      if (!rangeResult.ok) {
+        const disposition = classifyClinicCardFailure(rangeResult.error, "read");
+        return makeFailedToolResult(
+          "availability.check",
+          rangeResult.error.code,
+          rangeResult.error.message,
+          disposition.safe_to_retry,
         );
+      }
 
-        if (!nextResult.ok) {
-          const disposition = classifyClinicCardFailure(nextResult.error, "read");
-          return makeFailedToolResult(
-            "availability.check",
-            nextResult.error.code,
-            nextResult.error.message,
-            disposition.safe_to_retry,
-          );
-        }
-
-        let nextSlots = nextResult.data.slots;
-        if (context.now && nextDate === getTodayInTimezone(context.now, timezone)) {
-          nextSlots = nextSlots.filter((s) => !isPastSlotTime(s.time_start, context.now!, timezone));
-        }
+      for (const nextDate of authorizedDates) {
+        const nextSlots = rangeResult.data.slots.filter((slot) => slot.date === nextDate);
         if (nextSlots.length === 0) continue;
 
-        const nextMapped = nextSlots.map((s) => ({
-          slot_id: `${s.date}T${s.time_start}`,
-          starts_at: `${s.date}T${s.time_start}:00`,
-          ends_at: `${s.date}T${s.time_end}:00`,
+        const mapped = nextSlots.map((slot) => ({
+          slot_id: `${slot.date}T${slot.time_start}`,
+          starts_at: `${slot.date}T${slot.time_start}:00`,
+          ends_at: `${slot.date}T${slot.time_end}:00`,
         }));
         const limit = context.limit;
-        const nextLimited = limit !== undefined && limit > 0 ? nextMapped.slice(0, limit) : nextMapped;
+        const limited = limit !== undefined && limit > 0 ? mapped.slice(0, limit) : mapped;
 
         return {
           tool: "availability.check" as const,
           status: "success" as const,
           data: {
-            slots: nextLimited,
+            slots: limited,
             timezone,
             nearest_available_date: nextDate,
-            total_slots: nextResult.data.total_slots,
-            free_slots_count: nextResult.data.free_slots_count,
+            total_slots: countSlotsInWindow({
+              start: effectiveWindow.start,
+              end: effectiveWindow.end,
+              interval_minutes: availabilityPolicy.slot_duration_minutes,
+              appointment_duration_minutes: serviceResource.duration_minutes,
+            }),
+            free_slots_count: nextSlots.length,
           },
         };
       }
+
       return null;
     };
 

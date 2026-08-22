@@ -105,7 +105,10 @@ test("R3h structure: OpenAI caller consumes canonical tool schemas directly whil
 
   assert.match(callerSource, /from\s+["']\.\/modelToolContractBridge\.ts["']/);
   assert.doesNotMatch(callerSource, /projectModelToolContract/);
-  assert.match(callerSource, /description:\s*def\.description/);
+  // Canonical definitions remain the source of truth. Mode-specific presentation may append
+  // narrow guidance, but it must extend def.description rather than replace it independently.
+  assert.match(callerSource, /`\$\{def\.description\}[^`]*`/);
+  assert.match(callerSource, /:\s*def\.description;/);
   assert.match(callerSource, /required:\s*def\.required_args/);
   assert.doesNotMatch(callerSource, /patient_target/);
   assert.doesNotMatch(callerSource, /active_subject_id/);

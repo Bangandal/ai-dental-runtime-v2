@@ -5,6 +5,7 @@ import {
   createDentalRuntimeAgent,
   createStatefulAgentResponsesClient,
 } from "../src/runtime/dentalRuntimeAgentFactory.ts";
+import { bindOpenAIPerCallTimeout } from "../src/runtime/openaiClientTimeout.ts";
 import type { OpenAIResponsesClient } from "../src/runtime/openaiRuntimeAgentCaller.ts";
 
 test("stateful dental agent forces maxRetries=0 on responses.create", async () => {
@@ -41,6 +42,26 @@ test("stateful retry wrapper preserves the original responses resource as this",
   await client.responses.create({});
 
   assert.equal(originalThis, responses);
+});
+
+test("stateful no-retry policy composes with the existing total-call AbortSignal", async () => {
+  const seenOptions: Array<Record<string, unknown> | undefined> = [];
+  const rawClient = {
+    responses: {
+      async create(_input: unknown, options?: Record<string, unknown>) {
+        seenOptions.push(options);
+        return { output_text: "ok" };
+      },
+    },
+  } as OpenAIResponsesClient;
+
+  const timeoutBoundClient = bindOpenAIPerCallTimeout(rawClient, 1_000);
+  const client = createStatefulAgentResponsesClient(timeoutBoundClient);
+  await client.responses.create({ model: "gpt-test", conversation: "conv_1" });
+
+  assert.equal(seenOptions.length, 1);
+  assert.equal(seenOptions[0]?.maxRetries, 0);
+  assert.ok(seenOptions[0]?.signal instanceof AbortSignal);
 });
 
 test("createDentalRuntimeAgent wires the no-retry client into the real model caller", async () => {

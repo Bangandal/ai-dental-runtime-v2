@@ -1,0 +1,31 @@
+name: R3u CI 274 fix
+
+on:
+  pull_request:
+    branches:
+      - ai-dental-frontdesk-core
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.event.pull_request.head.ref == 'refactor/r3u-runtime-tool-batch-turn-handler'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - name: Apply guarded CI 274 fixes
+        run: python .github/scripts/r3u_ci274_fix.py
+      - name: Commit fixes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/runtime/runtimeTurnToolBatch.ts tests/r3iBookingApplyExecutionPreparation.test.ts tests/r3lRuntimeToolRequestExecution.test.ts
+          git diff --cached --quiet && exit 0
+          git commit -m "fix(R3u): preserve batch abort contract and update ownership locks"
+          git push

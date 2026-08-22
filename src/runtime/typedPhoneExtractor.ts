@@ -1,9 +1,15 @@
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
+
 /**
- * Extracts a phone number typed by the patient in free-form text.
- * Returns a normalized string (digits only, with leading + if present), or null.
- * Only accepts sequences that look like real phone numbers: 9-15 digits.
+ * Legacy free-text phone extraction.
+ *
+ * Agent-first deliberately disables this parser: the model owns understanding and
+ * normalization and passes phone_number through booking.apply. Keeping this function only
+ * for legacy mode makes the architecture boundary explicit while preserving rollback.
  */
 export function extractTypedPhone(text: string): string | null {
+  if (isAgentFirstRuntimeEnabled()) return null;
+
   const pattern = /(\+?[\d][\d\s\-]{6,}[\d])/g;
   for (const match of text.matchAll(pattern)) {
     const raw = match[1];

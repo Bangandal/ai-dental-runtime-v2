@@ -471,6 +471,13 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         booking_process_state: secondCallVisibleState,
       });
 
+      // Ordinary first-batch booking guards are terminal decisions: after the runtime
+      // has deterministically asked for phone/name/service/slot or rejected past time,
+      // the next model step only needs to phrase the reply. Guard S is different: it
+      // leaves round1GuardedData null so the model may legitimately retry booking.apply
+      // after select_slot proof was persisted.
+      const secondCallAllowsTools = round1GuardedData === null;
+
       const secondCall = await invokeRuntimeModelCall({
         caller: deps.caller,
         model: deps.model,
@@ -478,7 +485,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         system_instruction: systemInstruction,
         message: input.user_message,
         context: secondCallContext,
-        tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS,
+        ...(secondCallAllowsTools ? { tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS } : {}),
         tool_results: toolResults,
       });
       if (!secondCall.ok) {
@@ -536,6 +543,31 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           tool_results: toolResults,
           debug,
           // Preserve execution metadata even on malformed response
+          ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
+          ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
+          ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
+        };
+      }
+
+      if (!secondCallAllowsTools && secondOutput.type === "tool_requests") {
+        // Fail closed if a terminal model step violates the no-tools contract. The
+        // deterministic booking guard remains the authoritative reason for the turn.
+        debug.terminal_tool_request_ignored = true;
+        markConversationDirty(debug);
+        await clearConversationMemory(deps.conversationMemoryRepository, input, conversationId, debug);
+        const channel = typeof input.business_context?.channel === "string"
+          ? input.business_context.channel
+          : undefined;
+        return {
+          final_patient_reply: buildBookingApplyEmergencyFallback(toolResults, input.locale),
+          conversation_id: null,
+          conversation_id_resumable: false,
+          tool_requests: processedToolRequests,
+          tool_results: toolResults,
+          debug,
+          ...(round1GuardedData?.required_next_action === "ask_for_phone"
+            ? { ui: buildPhoneCaptureUi(channel) }
+            : {}),
           ...(round1ExecutionSubjectId != null ? { execution_subject_id: round1ExecutionSubjectId } : {}),
           ...(effectiveBookingSubjects != null ? { booking_subjects_after_resolution: effectiveBookingSubjects } : {}),
           ...(round1BookingApplyResolution != null ? { booking_apply_resolution: round1BookingApplyResolution } : {}),
@@ -603,7 +635,7 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         // One external booking write per patient turn. This guard remains stronger than
         // ordinary batch execution. Close the entire current batch, rather than only the
         // booking call, so no sibling function_call is left dangling in OpenAI.
-        if (!guardSFired && pendingBookingApply && toolResults.some((r) => r.tool === "booking.apply")) {
+        if (pendingBookingApply && round1BookingApplyResolution !== null) {
           debug.reason = "booking_apply_preflight_multiple_booking_apply_round2";
           return await finalizeBlockedMultipleBookingApplies({
             pendingRequestsForRound: round2Requests,

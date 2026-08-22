@@ -8,23 +8,16 @@ import { RUNTIME_AGENT_TOOL_DEFINITIONS } from "../src/runtime/openaiRuntimeAgen
 import {
   bindModelToolRequestsToInternalContract,
   INVALID_SEMANTIC_SUBJECT_ID,
-  projectModelToolContract,
   resolveActiveInternalSubjectId,
 } from "../src/runtime/modelToolContractBridge.ts";
 
 test("R3f boundary: canonical booking tool contracts are already business-semantic", () => {
-  const select = projectModelToolContract(
-    "booking.select_slot",
-    RUNTIME_AGENT_TOOL_DEFINITIONS["booking.select_slot"] as never,
-  );
+  const select = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.select_slot"];
   assert.deepEqual(select.required_args, ["requested_date", "requested_time"]);
   assert.equal("subject_id" in (select.param_schemas ?? {}), false);
   assert.doesNotMatch(select.description, /subject_[1-4]|subject_id/i);
 
-  const apply = projectModelToolContract(
-    "booking.apply",
-    RUNTIME_AGENT_TOOL_DEFINITIONS["booking.apply"] as never,
-  );
+  const apply = RUNTIME_AGENT_TOOL_DEFINITIONS["booking.apply"];
   assert.deepEqual(apply.required_args, [
     "patient_target",
     "first_name",
@@ -36,10 +29,7 @@ test("R3f boundary: canonical booking tool contracts are already business-semant
   assert.deepEqual(apply.param_schemas?.patient_target?.enum, ["self", "other_person"]);
   assert.equal("subject_id" in (apply.param_schemas ?? {}), false);
 
-  const lookup = projectModelToolContract(
-    "appointment.lookup",
-    RUNTIME_AGENT_TOOL_DEFINITIONS["appointment.lookup"] as never,
-  );
+  const lookup = RUNTIME_AGENT_TOOL_DEFINITIONS["appointment.lookup"];
   assert.deepEqual(lookup.required_args, ["patient_target"]);
   assert.deepEqual(lookup.optional_args, ["date_from", "date_to"]);
   assert.deepEqual(lookup.param_schemas?.patient_target?.enum, ["self", "other_person"]);
@@ -108,17 +98,22 @@ test("R2b boundary: active subject is read from runtime context only when canoni
   assert.equal(resolveActiveInternalSubjectId({}), null);
 });
 
-test("R2b structure: OpenAI caller no longer owns booking-tool legacy translation", async () => {
+test("R3h structure: OpenAI caller consumes canonical tool schemas directly while bridge owns only response binding", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const callerSource = await readFile(resolve(thisDir, "../src/runtime/openaiRuntimeAgentCaller.ts"), "utf8");
   const bridgeSource = await readFile(resolve(thisDir, "../src/runtime/modelToolContractBridge.ts"), "utf8");
 
   assert.match(callerSource, /from\s+["']\.\/modelToolContractBridge\.ts["']/);
+  assert.doesNotMatch(callerSource, /projectModelToolContract/);
+  assert.match(callerSource, /description:\s*def\.description/);
+  assert.match(callerSource, /required:\s*def\.required_args/);
   assert.doesNotMatch(callerSource, /patient_target/);
   assert.doesNotMatch(callerSource, /active_subject_id/);
   assert.doesNotMatch(callerSource, /INVALID_SEMANTIC_SUBJECT_ID/);
   assert.doesNotMatch(callerSource, /batchApplySubjects|legacySelectSubjects|selectSlotSubjectId/);
 
+  assert.doesNotMatch(bridgeSource, /projectModelToolContract/);
+  assert.doesNotMatch(bridgeSource, /InternalToolContract|ModelToolContract|ActiveRuntimeToolName/);
   assert.doesNotMatch(bridgeSource, /SELECT_SLOT_MODEL_DESCRIPTION|BOOKING_APPLY_MODEL_DESCRIPTION|APPOINTMENT_LOOKUP_MODEL_DESCRIPTION/);
   assert.doesNotMatch(bridgeSource, /PATIENT_TARGET_SCHEMA/);
   assert.doesNotMatch(bridgeSource, /process\.env/);

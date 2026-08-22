@@ -28,3 +28,48 @@ export function buildModelVisibleCallerContext(input: RuntimeAgentTurnInput): Re
     recent_summary: input.recent_summary ?? null,
   };
 }
+
+export interface RuntimeModelContextFacts {
+  booking_process_state?: unknown;
+  booking_apply_action_truth?: unknown | null;
+  availability_action_truth?: unknown | null;
+  availability_presentation_truth?: unknown | null;
+  appointment_display_truth?: unknown | null;
+  resolved_context?: unknown;
+}
+
+/**
+ * Compose the model-visible context for any runtime model call.
+ *
+ * The base caller context owns stable turn/channel/people facts. This function owns the
+ * optional runtime facts added after deterministic work. Null action/presentation truths
+ * are deliberately omitted, matching the historical spread behavior in the legacy loop.
+ * `resolved_context` is included whenever the caller explicitly supplies it, including an
+ * empty array, because its presence is a protocol decision rather than a truthy-data test.
+ */
+export function composeRuntimeModelContext(
+  baseContext: Record<string, unknown>,
+  facts: RuntimeModelContextFacts = {},
+): Record<string, unknown> {
+  return {
+    ...baseContext,
+    ...(facts.booking_process_state !== undefined
+      ? { booking_process_state: facts.booking_process_state }
+      : {}),
+    ...(facts.booking_apply_action_truth != null
+      ? { booking_apply_action_truth: facts.booking_apply_action_truth }
+      : {}),
+    ...(facts.availability_action_truth != null
+      ? { availability_action_truth: facts.availability_action_truth }
+      : {}),
+    ...(facts.availability_presentation_truth != null
+      ? { availability_presentation_truth: facts.availability_presentation_truth }
+      : {}),
+    ...(facts.appointment_display_truth != null
+      ? { appointment_display_truth: facts.appointment_display_truth }
+      : {}),
+    ...(facts.resolved_context !== undefined
+      ? { resolved_context: facts.resolved_context }
+      : {}),
+  };
+}

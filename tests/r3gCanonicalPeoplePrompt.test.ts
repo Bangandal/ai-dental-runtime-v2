@@ -5,7 +5,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { buildRuntimeAgentSystemInstruction } from "../src/runtime/openaiRuntimeAgent.ts";
-import { projectModelPersonInstruction } from "../src/runtime/modelPersonIntentBridge.ts";
 
 test("R3g: canonical runtime prompt contains semantic BOOKING PEOPLE protocol", () => {
   const instruction = buildRuntimeAgentSystemInstruction({
@@ -31,20 +30,14 @@ test("R3g: canonical runtime prompt no longer contains legacy BOOKING SUBJECTS p
   assert.doesNotMatch(instruction, /target_subject_id:null\|subject_N/);
 });
 
-test("R3g: model-person prompt projection is identity for the canonical prompt", () => {
-  const instruction = buildRuntimeAgentSystemInstruction();
-  assert.equal(projectModelPersonInstruction(instruction), instruction);
-});
-
-test("R3g: model-person prompt projection never appends hidden protocol to arbitrary instructions", () => {
-  assert.equal(projectModelPersonInstruction("system"), "system");
-});
-
-test("R3g structure: person-intent bridge no longer owns a second prompt protocol", async () => {
+test("R3h structure: canonical people prompt reaches OpenAI without a projection layer", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const bridgeSource = await readFile(resolve(thisDir, "../src/runtime/modelPersonIntentBridge.ts"), "utf8");
+  const callerSource = await readFile(resolve(thisDir, "../src/runtime/openaiRuntimeAgentCaller.ts"), "utf8");
 
   assert.doesNotMatch(bridgeSource, /SEMANTIC_PERSON_PROTOCOL/);
-  assert.doesNotMatch(bridgeSource, /startMarker\s*=\s*["']## BOOKING SUBJECTS/);
+  assert.doesNotMatch(bridgeSource, /projectModelPersonInstruction/);
   assert.doesNotMatch(bridgeSource, /systemInstruction\.slice\(/);
+  assert.doesNotMatch(callerSource, /projectModelPersonInstruction/);
+  assert.match(callerSource, /instructions:\s*input\.system_instruction/);
 });

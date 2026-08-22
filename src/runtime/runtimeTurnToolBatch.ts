@@ -65,8 +65,8 @@ function buildProtocolCompleteBookingBlock(params: {
       call_id: request.call_id,
       status: "denied" as const,
       error: {
-        code: "booking_batch_aborted",
-        message: "Tool was not executed because the batch contained a conflicting booking write request",
+        code: "turn_aborted_due_to_multiple_booking_requests",
+        message: "turn_aborted_due_to_multiple_booking_requests",
       },
     };
   });

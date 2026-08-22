@@ -13,6 +13,11 @@ import {
   deriveAgentFirstBookingSelection,
 } from "./agentFirstBookingSlotBinding.ts";
 import {
+  attachAgentFirstPhoneToExecutionSubject,
+  bootstrapAgentFirstSelfSubjectForPhone,
+  deriveAgentFirstProvidedPhone,
+} from "./agentFirstProvidedPhone.ts";
+import {
   completeRuntimeToolBatchWithBookingResult,
   executeRuntimeToolBatchKernel,
 } from "./runtimeToolBatchKernel.ts";
@@ -91,13 +96,14 @@ function multipleBookingGuard(): BookingApplyGuardedData {
  *
  * Ordering is intentionally strict:
  * 1. enforce one booking write request / one write attempt per patient turn;
- * 2. prepare the deterministic booking subject (bootstrap/freeze identity);
- * 3. execute non-write tools + slot selection and reduce authoritative booking state;
- * 4. in agent-first mode only, derive the old slot-selection proof internally when the
+ * 2. accept already-normalized model phone data as unverified booking contact only;
+ * 3. prepare/freeze the deterministic booking subject, then bind that phone to the frozen subject;
+ * 4. execute non-write tools + legacy slot selection and reduce authoritative booking state;
+ * 5. in agent-first mode only, derive the old slot-selection proof internally when the
  *    direct booking.apply slot exactly belongs to fresh authoritative evidence that existed
  *    before this model tool batch;
- * 5. only then evaluate booking legality against that new state;
- * 6. execute booking.apply at most once and reassemble one result per call id in request order.
+ * 6. only then evaluate booking legality against that new state;
+ * 7. execute booking.apply at most once and reassemble one result per call id in request order.
  *
  * This is the phase-independent bridge between the model/tool transport loop and the
  * deterministic booking kernel. It never invokes the model and never decides conversation
@@ -151,19 +157,47 @@ export async function executeRuntimeTurnToolBatch(params: {
     };
   }
 
+  // Agent-first receives a structured phone from the model. Runtime only validates its
+  // canonical shape and records provenance; it never parses free-form patient language here.
+  const modelProvidedPhone = deriveAgentFirstProvidedPhone(pendingBookingApply, params.now);
+  const bookingSubjectsForPreparation = bootstrapAgentFirstSelfSubjectForPhone({
+    booking_apply: pendingBookingApply,
+    existing_state: params.booking_subjects,
+    phone: modelProvidedPhone,
+  });
+  const currentTurnPhoneForPreparation = modelProvidedPhone?.phone_number
+    ?? params.input.current_turn_typed_phone
+    ?? null;
+
   const preparation = pendingBookingApply
     ? prepareBookingApplyExecution({
         booking_apply: pendingBookingApply,
-        booking_subjects: params.booking_subjects,
+        booking_subjects: bookingSubjectsForPreparation,
         channel_contact: params.input.channel_contact ?? null,
-        current_turn_typed_phone: params.input.current_turn_typed_phone ?? null,
+        current_turn_typed_phone: currentTurnPhoneForPreparation,
       })
     : null;
 
-  const effectiveBookingSubjects = preparation?.effective_booking_subjects ?? params.booking_subjects;
-  const effectiveInput = effectiveBookingSubjects !== (params.input.booking_subjects ?? null)
-    ? { ...params.input, booking_subjects: effectiveBookingSubjects }
-    : params.input;
+  const executionSubjectId = preparation?.ok ? preparation.execution_subject_id : null;
+  let effectiveBookingSubjects = preparation?.effective_booking_subjects ?? bookingSubjectsForPreparation;
+
+  // Identity is frozen before contact attachment. A phone can therefore satisfy booking
+  // contact requirements but can never select/change the patient being written to ClinicCard.
+  effectiveBookingSubjects = attachAgentFirstPhoneToExecutionSubject({
+    state: effectiveBookingSubjects,
+    execution_subject_id: executionSubjectId,
+    phone: modelProvidedPhone,
+  });
+
+  const effectiveInput: RuntimeAgentTurnInput = {
+    ...params.input,
+    ...(effectiveBookingSubjects !== (params.input.booking_subjects ?? null)
+      ? { booking_subjects: effectiveBookingSubjects }
+      : {}),
+    ...(modelProvidedPhone
+      ? { current_turn_typed_phone: modelProvidedPhone.phone_number }
+      : {}),
+  };
 
   const kernel = await executeRuntimeToolBatchKernel({
     requests: params.requests,
@@ -175,7 +209,6 @@ export async function executeRuntimeTurnToolBatch(params: {
     now: params.now,
   });
 
-  const executionSubjectId = preparation?.ok ? preparation.execution_subject_id : null;
   let bookingProcessState = kernel.booking_process_state;
 
   // Agent-first removes model-facing booking.select_slot ceremony without weakening its

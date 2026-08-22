@@ -73,12 +73,15 @@ function isRateLimitMarker(value: unknown): boolean {
 }
 
 /**
- * The OpenAI SDK already owns bounded HTTP retries. If those retries are exhausted on
- * the FIRST model call with an explicit 429, no model response/function_call was accepted
- * in this turn and the previously existing conversation remains safe to resume.
+ * Stateful dental-agent Responses calls are deliberately sent with SDK maxRetries=0
+ * (see createStatefulAgentResponsesClient). Therefore an explicit FIRST-call 429 came
+ * from the only HTTP attempt for this logical model call: no successful earlier SDK
+ * replay can have committed an unseen function_call into the conversation.
  *
- * Later-call failures are intentionally excluded: after a model-emitted tool request there
- * may be a pending function_call without its output, so those conversations must stay dirty.
+ * Under that invariant, when no tool request/result was observed, the previously
+ * existing conversation remains safe to resume. Later-call failures are excluded:
+ * after a model-emitted tool request there may already be a pending function_call
+ * without its output, so those conversations must stay dirty.
  */
 export function shouldPreserveConversationAfterFirstCallRateLimit(
   result: RuntimeAgentTurnResult,
@@ -95,8 +98,7 @@ export function shouldPreserveConversationAfterFirstCallRateLimit(
 
   // Provider/API error codes and HTTP status are independent facts. For example,
   // OpenAI can report code="insufficient_quota" with status=429. Either explicit
-  // rate-limit marker is sufficient to prove the first call was rejected before a
-  // model response/function_call could be committed.
+  // rate-limit marker proves that the single first-call HTTP attempt was rejected.
   return isRateLimitMarker(callerException.error_code)
     || isRateLimitMarker(callerException.http_status);
 }

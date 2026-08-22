@@ -1,5 +1,9 @@
 import { RUNTIME_AGENT_TOOL_DEFINITIONS, type RuntimeAgentToolResult } from "./openaiRuntimeAgent.ts";
 import {
+  appendAgentFirstSystemInstruction,
+  resolveRuntimeModelCallBudget,
+} from "./agentFirstRuntimePolicy.ts";
+import {
   invokeRuntimeModelCall,
   type RuntimeAgentCaller,
   type RuntimeAgentCallerOutput,
@@ -15,7 +19,7 @@ export interface RuntimeModelIterationState {
 
 export function createRuntimeModelIterationState(
   conversationId: string | null,
-  maxCalls = DEFAULT_RUNTIME_MODEL_CALL_BUDGET,
+  maxCalls = resolveRuntimeModelCallBudget(),
 ): RuntimeModelIterationState {
   if (!Number.isInteger(maxCalls) || maxCalls < 1) {
     throw new Error("runtime model call budget must be a positive integer");
@@ -73,7 +77,7 @@ export async function invokeRuntimeModelIteration(params: {
     caller: params.caller,
     model: params.model,
     conversation_id: params.state.conversation_id,
-    system_instruction: params.system_instruction,
+    system_instruction: appendAgentFirstSystemInstruction(params.system_instruction),
     message: params.message,
     context: params.context,
     ...(params.tool_definitions !== undefined ? { tool_definitions: params.tool_definitions } : {}),

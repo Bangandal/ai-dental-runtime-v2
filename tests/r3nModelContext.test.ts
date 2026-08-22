@@ -66,15 +66,27 @@ test("R3n: composer emits only the declared model-visible fact keys", () => {
   ]);
 });
 
-test("R3n structure: legacy loop uses the shared model-context composer for every model call", async () => {
+test("R3v structure: roundless projection owns main model context composition", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const projectionSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnModelContext.ts"), "utf8");
+  const helperBoundary = loopSource.indexOf("// ── Multiple-blocked booking.apply helper");
+  assert.ok(helperBoundary > 0);
+  const mainRunTurn = loopSource.slice(0, helperBoundary);
+  const terminalHelpers = loopSource.slice(helperBoundary);
 
+  assert.equal(mainRunTurn.match(/composeRuntimeModelContext\(/g)?.length ?? 0, 0);
   assert.equal(
-    loopSource.match(/composeRuntimeModelContext\(/g)?.length,
-    5,
-    "all five remaining model-call paths must compose context through one owner",
+    projectionSource.match(/composeRuntimeModelContext\(/g)?.length,
+    1,
+    "all main iteration context must be projected through one round-agnostic owner",
   );
-  assert.doesNotMatch(loopSource, /const secondCallContext = \{\s*\.\.\.callerContext/);
-  assert.doesNotMatch(loopSource, /context: \{ \.\.\.callerContext, booking_process_state:/);
+  assert.equal(
+    terminalHelpers.match(/composeRuntimeModelContext\(/g)?.length,
+    2,
+    "two terminal compatibility helpers retain their existing one-call context composition",
+  );
+  assert.doesNotMatch(projectionSource, /firstCall|secondCall|round1|round2/);
+  assert.doesNotMatch(mainRunTurn, /const secondCallContext = \{\s*\.\.\.callerContext/);
+  assert.doesNotMatch(mainRunTurn, /context: \{ \.\.\.callerContext, booking_process_state:/);
 });

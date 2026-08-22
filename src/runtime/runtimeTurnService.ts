@@ -65,6 +65,13 @@ function asRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function isRateLimitMarker(value: unknown): boolean {
+  if (value === 429) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "429" || normalized === "rate_limit_exceeded";
+}
+
 /**
  * The OpenAI SDK already owns bounded HTTP retries. If those retries are exhausted on
  * the FIRST model call with an explicit 429, no model response/function_call was accepted
@@ -85,8 +92,13 @@ export function shouldPreserveConversationAfterFirstCallRateLimit(
 
   const callerException = asRecord(debug.caller_exception);
   if (callerException?.stage !== "first_call") return false;
-  const code = callerException.error_code;
-  return code === 429 || code === "429" || code === "rate_limit_exceeded";
+
+  // Provider/API error codes and HTTP status are independent facts. For example,
+  // OpenAI can report code="insufficient_quota" with status=429. Either explicit
+  // rate-limit marker is sufficient to prove the first call was rejected before a
+  // model response/function_call could be committed.
+  return isRateLimitMarker(callerException.error_code)
+    || isRateLimitMarker(callerException.http_status);
 }
 
 export function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): RuntimeTurnResult {

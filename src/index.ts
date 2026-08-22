@@ -8,7 +8,7 @@ export interface RuntimeServerEnv {
 
 export function readRuntimeServerEnv(env: NodeJS.ProcessEnv = process.env): RuntimeServerEnv {
   return {
-    runtimeModel: env.RUNTIME_OPENAI_MODEL?.trim() || "gpt-4.1-mini",
+    runtimeModel: env.RUNTIME_OPENAI_MODEL?.trim() || "gpt-5.4-mini",
     runtimeEmbeddingModel: env.RUNTIME_EMBEDDING_MODEL?.trim() || "text-embedding-3-small",
   };
 }

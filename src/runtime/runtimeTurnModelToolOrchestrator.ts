@@ -14,6 +14,7 @@ import { executeRuntimeTurnToolBatch } from "./runtimeTurnToolBatch.ts";
 import { getLegacyRuntimeTurnToolBatchDebugReason } from "./runtimeTurnToolBatchLegacyDebug.ts";
 import { findLastAvailabilityRequest } from "./availabilityActionTruth.ts";
 import { getTodayInTimezone, isPastBookingTime } from "./bookingPreflight.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 import {
   runRuntimeBoundedModelToolLoop,
   type RuntimeBoundedModelToolLoopOutcome,
@@ -155,14 +156,17 @@ export async function runRuntimeTurnModelToolOrchestration(params: {
       const processedToolRequests = [...domain_state.processed_tool_requests, ...requests];
       const toolCallArgs = [...domain_state.tool_call_args, ...projectToolCallArgs(requests)];
 
-      // Availability requests for an explicitly expired time never reach the external
-      // executor. Apply the same fail-closed rule to every executable batch rather than
-      // tying it to a historical "round 1" branch.
-      const pastTimeDetail = resolvePastAvailabilityDetail({
-        requests,
-        timezone: params.timezone,
-        now: params.now,
-      });
+      // Legacy keeps the historical hard abort for an explicitly expired time.
+      // Agent-first owns conversational recovery, so the request reaches the ordinary
+      // availability executor and its structured result is returned to the model. The
+      // executor/runtime still own truth and may never present an expired slot as available.
+      const pastTimeDetail = isAgentFirstRuntimeEnabled()
+        ? null
+        : resolvePastAvailabilityDetail({
+            requests,
+            timezone: params.timezone,
+            now: params.now,
+          });
       if (pastTimeDetail) {
         return {
           kind: "abort" as const,
@@ -244,9 +248,9 @@ export async function runRuntimeTurnModelToolOrchestration(params: {
           domain_state: nextDomainState,
           context: projection.context,
           tool_results: batch.tool_results,
-          // A deterministic booking guard is terminal: the next model call may phrase the
-          // result but may not initiate another action. select+apply conflict deliberately
-          // returns no guarded data, allowing a later batch to retry apply with persisted proof.
+          // A deterministic booking guard is terminal for legacy. Agent-first ignores this
+          // frame bit in the bounded iterator and may recover conversationally while the
+          // deterministic action boundary continues to prevent unsafe writes.
           allow_tools: batch.guarded_booking_apply_data === null,
         },
       };

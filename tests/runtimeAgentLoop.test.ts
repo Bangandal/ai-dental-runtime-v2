@@ -177,7 +177,7 @@ test("first and second caller failures return safe replies", async () => {
   assert.equal((secondResult.debug as any).reason, "agent_second_call_exception_generic_fallback");
 });
 
-test("multi-round tool loop is not implemented", async () => {
+test("bounded tool loop fails closed when the third model step still requests tools", async () => {
   let c = 0;
   const caller: RuntimeAgentCaller = async () => {
     c += 1;
@@ -190,7 +190,7 @@ test("multi-round tool loop is not implemented", async () => {
     executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [] } }) },
   }).runTurn({ ...makeInput(), locale: "ru" });
   assert.equal(result.final_patient_reply, "Уточню детали с командой клиники — один момент.");
-  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+  assert.equal((result.debug as any).reason, "bounded_tool_batch_budget_exhausted");
 });
 
 test("runtimeAgentLoop legacy implementation has no forbidden external imports and preserves ownership boundaries", async () => {
@@ -228,7 +228,7 @@ test("CBM/bug2: multi-round fallback reply is Russian, not English", async () =>
 
   assert.ok(!result.final_patient_reply.toLowerCase().includes("let me clarify"), "fallback must not contain English 'Let me clarify'");
   assert.ok(!result.final_patient_reply.match(/^[A-Z][a-z]+ me /), "fallback must not start with English phrase");
-  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+  assert.equal((result.debug as any).reason, "bounded_tool_batch_budget_exhausted");
 });
 
 test("CBM/bug2: runtimeAgentLoop legacy implementation does not contain English 'Let me clarify that with the clinic team'", async () => {
@@ -273,7 +273,7 @@ test("CBM/P2: runtimeAgentLoop multi-round fallback respects locale in runTurn �
   }).runTurn({ ...makeInput(), locale: "en" });
 
   assert.equal(result.final_patient_reply, "I'll clarify the details with the clinic team — one moment.");
-  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+  assert.equal((result.debug as any).reason, "bounded_tool_batch_budget_exhausted");
 });
 
 test("CBM/P2: runtimeAgentLoop legacy runTurn path uses locale-aware helper, not a hard-coded reply string", async () => {
@@ -327,7 +327,7 @@ test("hasUsefulToolResults: returns false for empty results array", () => {
 
 // M1 mixed FAQ+booking — forced finalization integration tests
 
-test("M1: kb.search with non-empty chunks triggers forced finalization, not generic fallback", async () => {
+test("M1: second kb.search batch executes before bounded final response", async () => {
   let c = 0;
   const caller: RuntimeAgentCaller = async (inp) => {
     c += 1;
@@ -343,7 +343,7 @@ test("M1: kb.search with non-empty chunks triggers forced finalization, not gene
   }).runTurn(makeInput());
 
   assert.equal(result.final_patient_reply, "Чистка стоит 2500 Kč. Хотите записаться?");
-  assert.equal((result.debug as any).reason, "forced_finalization_after_tool_results");
+  assert.equal((result.debug as any).reason, "bounded_tool_batch_final_response");
   assert.equal(c, 3, "exactly 3 caller invocations: round1, round2, forced finalization");
 });
 
@@ -367,7 +367,7 @@ test("M1: forced finalization reply does not contain generic Russian fallback te
   );
 });
 
-test("M1: forced finalization does not trigger a fourth tool call", async () => {
+test("M1: bounded loop executes two tool batches and never creates a fourth model call", async () => {
   let c = 0;
   const caller: RuntimeAgentCaller = async () => {
     c += 1;
@@ -383,8 +383,8 @@ test("M1: forced finalization does not trigger a fourth tool call", async () => 
   }).runTurn(makeInput());
 
   assert.equal(c, 3, "max 3 LLM calls");
-  assert.equal(toolCallCount, 1, "tool executor runs only once — forced finalization skips tool execution");
-  assert.equal((result.debug as any).reason, "forced_finalization_after_tool_results");
+  assert.equal(toolCallCount, 2, "both model-requested tool batches must execute before the bounded final step");
+  assert.equal((result.debug as any).reason, "bounded_tool_batch_final_response");
 });
 
 // Locale tests: forced finalization uses caller reply, fallback uses locale when chunks are empty
@@ -403,7 +403,7 @@ test("en locale + empty chunks: fallback is English, not Russian", async () => {
   }).runTurn({ ...makeInput(), locale: "en" });
 
   assert.equal(result.final_patient_reply, "I'll clarify the details with the clinic team — one moment.");
-  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+  assert.equal((result.debug as any).reason, "bounded_tool_batch_budget_exhausted");
 });
 
 test("cs locale + empty chunks: fallback is Czech, not Russian", async () => {
@@ -420,7 +420,7 @@ test("cs locale + empty chunks: fallback is Czech, not Russian", async () => {
   }).runTurn({ ...makeInput(), locale: "cs" });
 
   assert.equal(result.final_patient_reply, "Ověřím podrobnosti s týmem kliniky — chvilku prosím.");
-  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
+  assert.equal((result.debug as any).reason, "bounded_tool_batch_budget_exhausted");
 });
 
 test("failed tool result + multi-round: locale-aware fallback, no forced finalization", async () => {
@@ -437,11 +437,11 @@ test("failed tool result + multi-round: locale-aware fallback, no forced finaliz
   }).runTurn({ ...makeInput(), locale: "ru" });
 
   assert.equal(result.final_patient_reply, "Уточню детали с командой клиники — один момент.");
-  assert.equal((result.debug as any).reason, "multi_round_tool_loop_not_implemented");
-  assert.equal(c, 2, "only 2 caller invocations — no forced finalization when tool failed");
+  assert.equal((result.debug as any).reason, "bounded_tool_batch_budget_exhausted");
+  assert.equal(c, 3, "failed second-batch output is still returned to one bounded final model step");
 });
 
-test("M1: forced finalization call is protocol-safe — no tool_results, null conversation_id, resolved_context in context", async () => {
+test("M1: bounded third call is protocol-safe — second-batch tool_results in the active conversation", async () => {
   let c = 0;
   let round3Input: Parameters<RuntimeAgentCaller>[0] | undefined;
   const caller: RuntimeAgentCaller = async (inp) => {
@@ -458,29 +458,26 @@ test("M1: forced finalization call is protocol-safe — no tool_results, null co
   }).runTurn(makeInput());
 
   assert.ok(round3Input !== undefined, "round 3 must be called");
-  // No function_call_output: tool_results must be absent
-  assert.equal(round3Input!.input.tool_results, undefined, "round 3 must not pass tool_results (no function_call_output)");
-  // Fresh context: no conversation with pending round-2 tool calls
-  assert.equal(round3Input!.conversation_id, null, "round 3 must use null conversation_id (fresh context)");
-  // No tool definitions: model cannot request tools
-  assert.equal(round3Input!.input.tool_definitions, undefined, "round 3 must have no tool_definitions");
-  // Tool results embedded as plain JSON, not as protocol messages
-  assert.ok(
-    round3Input!.input.context != null && "resolved_context" in round3Input!.input.context,
-    "round 3 must embed tool results as resolved_context in plain JSON context",
+  assert.deepEqual(
+    round3Input!.input.tool_results?.map((item) => item.call_id),
+    ["c2"],
+    "round 3 must resolve exactly the pending second-batch call",
   );
-  const resolved = (round3Input!.input.context as Record<string, unknown>).resolved_context as unknown[];
-  assert.ok(Array.isArray(resolved) && resolved.length > 0, "resolved_context must contain round-1 tool results");
+  assert.equal(round3Input!.conversation_id, "conv_main", "round 3 must continue the active conversation");
+  assert.equal(round3Input!.input.tool_definitions, undefined, "round 3 must have no tool_definitions");
+  assert.ok(
+    round3Input!.input.context != null && !("resolved_context" in round3Input!.input.context),
+    "protocol-resolved second-batch outputs must not be duplicated as resolved_context",
+  );
 });
 
-test("M1: forced finalization does not update conversationId with fresh-call conversation", async () => {
+test("M1: bounded final response keeps the resolved active conversation resumable", async () => {
   let c = 0;
   const caller: RuntimeAgentCaller = async () => {
     c++;
     if (c === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "q" }, call_id: "c1" }], conversation_id: "conv_r1" };
     if (c === 2) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", arguments: { query: "q2" }, call_id: "c2" }], conversation_id: "conv_r2" };
-    // Forced finalization opens a fresh conversation — must not leak this ID into result
-    return { type: "final_response", final_response: { final_patient_reply: "Answer" }, conversation_id: "conv_finalization_fresh" };
+    return { type: "final_response", final_response: { final_patient_reply: "Answer" }, conversation_id: "conv_r2" };
   };
   const result = await createRuntimeAgentLoop({
     model: "m",
@@ -488,12 +485,8 @@ test("M1: forced finalization does not update conversationId with fresh-call con
     executors: { "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "c1", text: "info" }] } }) },
   }).runTurn(makeInput());
 
-  // PR #121: conv_r2 has a pending, never-resolved round-2 function_call — resuming it later
-  // 400s upstream ("No tool output found for function call ..."). It must not be returned as
-  // resumable, and the fresh finalization conversation must not leak into the result either.
-  assert.equal(result.conversation_id, null, "dirty rounds-1-2 conversation must not be returned as resumable");
-  assert.equal(result.conversation_id_resumable, false);
-  assert.notEqual(result.conversation_id, "conv_finalization_fresh", "forced finalization conversation_id must not leak into result");
+  assert.equal(result.conversation_id, "conv_r2", "resolved second-batch conversation remains active");
+  assert.notEqual(result.conversation_id_resumable, false);
 });
 
 test("safety: forced finalization does not call booking.confirm, hold.create, or notification RPCs", async () => {

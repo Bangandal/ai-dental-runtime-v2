@@ -278,7 +278,7 @@ test("D: second call malformed after booking.apply never claims booked/confirmed
 
 // ── E: forced finalization malformed ────────────────────────────────────────
 
-test("E: forced finalization malformed does not leak English fallback", async () => {
+test("E: malformed bounded final response does not leak English fallback", async () => {
   let round = 0;
   const caller: RuntimeAgentCaller = async () => {
     round += 1;
@@ -289,7 +289,7 @@ test("E: forced finalization malformed does not leak English fallback", async ()
       };
     }
     if (round === 2) {
-      // Round 2 requests more tools than we can execute -> triggers forced finalization (round 3).
+      // Round 2 requests another non-write tool; Runtime executes it before the bounded third model step.
       return { type: "tool_requests", tool_requests: [{ tool: "kb.search", call_id: "c2", arguments: { query: "more" } }] };
     }
     return malformedOutput();
@@ -301,7 +301,7 @@ test("E: forced finalization malformed does not leak English fallback", async ()
   const result = await agent.runTurn(makeInput("ru"));
 
   assert.doesNotMatch(result.final_patient_reply, /having trouble/i);
-  assert.equal((result.debug as any).reason, "malformed_forced_finalization_fallback");
+  assert.equal((result.debug as any).reason, "malformed_bounded_tool_batch_final_response");
 });
 
 // ── F/G: existing paths unchanged ───────────────────────────────────────────

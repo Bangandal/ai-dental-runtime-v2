@@ -285,8 +285,9 @@ test("E: visit_created → action truth can_say_booking_created=true; model repl
 
 // ── F: Forced finalization — booking_apply_action_truth in resolved_context ───
 
-test("F: forced finalization path receives booking_apply_action_truth in resolved_context", async () => {
-  let forcedCallContext: Record<string, unknown> | undefined;
+test("F: bounded continuation preserves booking_apply_action_truth while resolving the second batch by protocol", async () => {
+  let boundedCallContext: Record<string, unknown> | undefined;
+  let boundedCallToolResults: unknown[] | undefined;
 
   const { loop, pushCaller } = makeLoopWithBooking(DISABLED_ENV, {}, "2027-08-15T10:00:00", new Date("2027-08-15T07:00:00Z"));
 
@@ -302,9 +303,10 @@ test("F: forced finalization path receives booking_apply_action_truth in resolve
     tool_requests: [{ tool: "availability.check", call_id: "call_f2", arguments: { requested_date: "2027-08-15" } }],
   }));
 
-  // Forced finalization (round 3): capture context
+  // Bounded third model step: capture structured truth and the exact second-batch outputs.
   pushCaller(async (input) => {
-    forcedCallContext = input.input.context as Record<string, unknown>;
+    boundedCallContext = input.input.context as Record<string, unknown>;
+    boundedCallToolResults = input.input.tool_results as unknown[] | undefined;
     return { type: "final_response", final_response: { final_patient_reply: "Онлайн-запись недоступна. Обратитесь к администратору." } };
   });
 
@@ -314,13 +316,17 @@ test("F: forced finalization path receives booking_apply_action_truth in resolve
     channel_contact: { phone_number: "+420777333444", phone_source: "telegram_contact_button" },
   });
 
-  // Forced finalization context must contain resolved_context (tool results)
-  assert.ok(forcedCallContext, "forced finalization must be called");
-  assert.ok(Array.isArray(forcedCallContext?.resolved_context), "resolved_context must be an array of tool results");
+  assert.ok(boundedCallContext, "bounded continuation must be called");
+  assert.ok(!("resolved_context" in boundedCallContext!), "protocol-resolved second batch must not be duplicated as resolved_context");
+  assert.deepEqual(
+    (boundedCallToolResults ?? []).map((item) => (item as { call_id?: string }).call_id),
+    ["call_f2"],
+    "third model step receives exactly the pending second-batch output",
+  );
 
-  // booking_apply_action_truth must be present in forced finalization context
-  const actionTruth = forcedCallContext?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
-  assert.ok(actionTruth, "forced finalization context must contain booking_apply_action_truth");
+  // booking_apply_action_truth remains structured business truth from the cumulative results.
+  const actionTruth = boundedCallContext?.booking_apply_action_truth as BookingApplyActionTruth | undefined;
+  assert.ok(actionTruth, "bounded continuation context must contain booking_apply_action_truth");
   assert.equal(actionTruth!.tool, "booking.apply");
   assert.equal(actionTruth!.required_next_action, "admin_handoff");
   assert.equal(actionTruth!.allowed_claims.can_say_booking_created, false);

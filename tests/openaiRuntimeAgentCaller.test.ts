@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { createOpenAIRuntimeAgentCaller, buildOpenAIToolDefinitions, buildOpenAIInput } from "../src/runtime/openaiRuntimeAgentCaller.ts";
+import { createOpenAIRuntimeAgentCaller, buildOpenAIToolDefinitions, buildOpenAIInput, normalizeOpenAIResponse } from "../src/runtime/openaiRuntimeAgentCaller.ts";
 import { createRuntimeAgentLoop } from "../src/runtime/runtimeAgentLoop.ts";
 import { RUNTIME_AGENT_TOOL_DEFINITIONS } from "../src/runtime/openaiRuntimeAgent.ts";
 
@@ -422,7 +422,7 @@ test("real createOpenAIRuntimeAgentCaller does not throw when tool_definitions a
   assert.equal((capturedPayload!.tools as unknown[]).length, 0);
 });
 
-test("forced finalization path: real caller is protocol-safe — no function_call_output, null conversation, resolved_context present", async () => {
+test("bounded continuation path: real caller closes the pending function call in the same conversation", async () => {
   let callCount = 0;
   const caller = createOpenAIRuntimeAgentCaller({
     client: {
@@ -447,27 +447,24 @@ test("forced finalization path: real caller is protocol-safe — no function_cal
               tool_calls: [{ name: "kb_search", arguments: JSON.stringify({ query: "hours2" }), call_id: "c2" }],
             };
           }
-          // call 3: forced finalization — verify full OpenAI protocol safety
-          assert.equal(tools.length, 0, "forced finalization must send no tools");
+          // call 3: resolve the pending round-2 function call in the same conversation.
+          assert.equal(tools.length, 0, "bounded final model step must send no tools");
 
-          // No function_call_output: would violate protocol — round-2 call_ids differ from round-1
           const inputMessages = payload.input as Array<Record<string, unknown>>;
           const functionOutputs = inputMessages.filter((m) => m.type === "function_call_output");
-          assert.equal(functionOutputs.length, 0, "forced finalization must not send function_call_output (protocol violation)");
+          assert.equal(functionOutputs.length, 1, "pending round-2 function call must receive exactly one output");
+          assert.equal(functionOutputs[0]?.call_id, "c2");
+          assert.equal(payload.conversation, "conv_x", "bounded continuation must stay in the active conversation");
 
-          // Fresh conversation: null conversation_id → buildOpenAIInput sends conversation: undefined
-          assert.equal(payload.conversation, undefined, "forced finalization must not continue conversation with pending round-2 calls");
-
-          // Tool results must be in plain JSON context, not as protocol messages
           const userMsg = inputMessages[0];
           const contentText = ((userMsg?.content as Array<Record<string, unknown>>)?.[0] as Record<string, unknown>)?.text as string;
           const parsedPayload = JSON.parse(contentText ?? "{}");
           assert.ok(
-            "resolved_context" in (parsedPayload.context ?? {}),
-            "forced finalization must embed tool results as resolved_context in plain JSON context",
+            !("resolved_context" in (parsedPayload.context ?? {})),
+            "protocol outputs must not be duplicated into resolved_context",
           );
 
-          return { output_text: "Hours are 9–17.", conversation_id: "conv_finalization_new" };
+          return { output_text: "Hours are 9–17.", conversation: { id: "conv_x" } };
         },
       },
     },
@@ -492,12 +489,14 @@ test("forced finalization path: real caller is protocol-safe — no function_cal
 
   assert.equal(callCount, 3, "must be exactly 3 LLM calls");
   assert.equal(result.final_patient_reply, "Hours are 9–17.");
-  assert.equal(result.debug?.reason, "forced_finalization_after_tool_results");
-  // PR #121: the rounds-1-2 conversation has a pending, never-resolved round-2 function_call
-  // (that's *why* forced finalization ran) — resuming it later 400s upstream. It must not be
-  // returned as resumable, regardless of whether it came from rounds 1-2 or the fresh call.
-  assert.equal(result.conversation_id, null, "dirty rounds-1-2 conversation must not be returned as resumable");
-  assert.equal(result.conversation_id_resumable, false);
+  assert.equal(result.debug?.reason, "bounded_tool_batch_final_response");
+  assert.equal(result.conversation_id, "conv_x", "all pending function calls were resolved in the active conversation");
+  assert.notEqual(result.conversation_id_resumable, false);
+});
+
+test("normalizeOpenAIResponse reads current Responses API conversation object id", () => {
+  const result = normalizeOpenAIResponse({ output_text: "ok", conversation: { id: "conv_object" } }, null);
+  assert.equal(result.conversation_id, "conv_object");
 });
 
 // ── End forced-finalization contract ──────────────────────────────────────────

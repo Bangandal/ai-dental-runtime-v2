@@ -87,20 +87,20 @@ test("a-c: multi-round fallback (no forced finalization) marks conversation non-
     truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
   } as any);
 
-  assert.equal(result.debug?.reason, "multi_round_tool_loop_not_implemented");
+  assert.equal(result.debug?.reason, "bounded_tool_batch_budget_exhausted");
   assert.equal(result.final_patient_reply, buildMultiRoundFallbackReply("ru"));
   assert.equal(result.conversation_id, null);
   assert.equal(result.conversation_id_resumable, false);
   assert.equal((result.debug as any).openai_conversation_resumable, false);
 });
 
-test("forced finalization success path also marks conversation non-resumable", async () => {
+test("bounded continuation success keeps the fully resolved conversation resumable", async () => {
   let round = 0;
   const caller: RuntimeAgentCaller = async () => {
     round += 1;
     if (round === 1) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", call_id: "c1", arguments: { query: "q1" } }], conversation_id: "conv_r1" };
     if (round === 2) return { type: "tool_requests", tool_requests: [{ tool: "kb.search", call_id: "c2", arguments: { query: "q2" } }], conversation_id: "conv_r2" };
-    return { type: "final_response", final_response: { final_patient_reply: "Fresh answer." }, conversation_id: "conv_fresh_throwaway" };
+    return { type: "final_response", final_response: { final_patient_reply: "Fresh answer." }, conversation_id: "conv_r2" };
   };
   const executors: ToolExecutorRegistry = {
     "kb.search": async () => ({ tool: "kb.search", status: "success", data: { chunks: [{ chunk_id: "1", text: "info" }] } }),
@@ -110,10 +110,10 @@ test("forced finalization success path also marks conversation non-resumable", a
     truth_snapshot: { scheduling_intent_present: true, date_or_time_present: true },
   } as any);
 
-  assert.equal(result.debug?.reason, "forced_finalization_after_tool_results");
+  assert.equal(result.debug?.reason, "bounded_tool_batch_final_response");
   assert.equal(result.final_patient_reply, "Fresh answer.");
-  assert.equal(result.conversation_id, null);
-  assert.equal(result.conversation_id_resumable, false);
+  assert.equal(result.conversation_id, "conv_r2");
+  assert.notEqual(result.conversation_id_resumable, false);
 });
 
 test("multi-round fallback with a prior booking.apply result still uses the booking emergency fallback, not the generic one", async () => {

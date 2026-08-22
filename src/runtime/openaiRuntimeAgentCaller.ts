@@ -118,7 +118,12 @@ export function normalizeOpenAIResponse(
   modelContext: Record<string, unknown> | null = null,
 ): RuntimeAgentCallerOutput {
   const response = asObject(raw);
-  const conversationId = readString(response?.conversation_id) ?? readString(response?.conversation) ?? fallbackConversationId;
+  const conversationObject = asObject(response?.conversation);
+  const conversationId =
+    readString(response?.conversation_id) ??
+    readString(conversationObject?.id) ??
+    readString(response?.conversation) ??
+    fallbackConversationId;
 
   const toolRequests = readToolRequests(response, activeBookingSubjectId);
   if (toolRequests.length > 0) {

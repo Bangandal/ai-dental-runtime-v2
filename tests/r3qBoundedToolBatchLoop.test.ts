@@ -186,7 +186,7 @@ test("R3q structure: second non-write batch has one executor and one bounded con
     "later non-write batches must have one execution owner",
   );
   assert.equal(
-    loopSource.match(/bounded_tool_batch_final_response/g)?.length,
+    loopSource.match(/debug\.reason = "bounded_tool_batch_final_response"/g)?.length,
     1,
     "bounded continuation must have one successful terminal marker",
   );

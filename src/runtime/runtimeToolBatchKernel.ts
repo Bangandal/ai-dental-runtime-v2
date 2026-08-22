@@ -134,3 +134,30 @@ export async function executeRuntimeToolBatchKernel(
       : {}),
   };
 }
+
+/**
+ * Insert the one booking.apply result into the kernel-owned partial result list while
+ * preserving the model's original request order. The partial list must contain one
+ * result for every non-booking request and no booking.apply result.
+ */
+export function completeRuntimeToolBatchWithBookingResult(params: {
+  requests: RuntimeAgentToolRequest[];
+  partial_results: RuntimeAgentToolResult[];
+  booking_result: RuntimeAgentToolResult;
+}): RuntimeAgentToolResult[] {
+  let partialIndex = 0;
+  let bookingInserted = false;
+  const complete: RuntimeAgentToolResult[] = [];
+
+  for (const request of params.requests) {
+    if (request.tool === "booking.apply" && !bookingInserted) {
+      complete.push(params.booking_result);
+      bookingInserted = true;
+      continue;
+    }
+    const result = params.partial_results[partialIndex++];
+    if (result) complete.push(result);
+  }
+
+  return complete;
+}

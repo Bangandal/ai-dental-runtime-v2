@@ -9,7 +9,9 @@ const CONTACT = { phone_number: "+420700111222", phone_source: "telegram_contact
 
 function provenState(): BookingProcessState {
   return {
-    trusted_phone_available: true,
+    service_reason: "cleaning",
+    first_name: "Eva",
+    last_name: "Novak",
     selected_slot: { starts_at: "2099-08-22T10:00:00" },
     last_available_slots: [{ starts_at: "2099-08-22T10:00:00" }],
     active_availability_evidence: {
@@ -17,13 +19,23 @@ function provenState(): BookingProcessState {
       requested_date: "2099-08-22",
       requested_time: null,
       allowed_slot_keys: ["2099-08-22T10:00"],
+      checked_at: NOW.toISOString(),
     },
     selected_slot_proof: {
       subject_id: "subject_1",
       availability_call_id: "avail_old",
       slot_key: "2099-08-22T10:00",
     },
-    updated_at: NOW.toISOString(),
+    phone_trusted: true,
+    phone_source: "telegram_contact_button",
+    next_action: "ready_for_booking_apply",
+    proof: {
+      service_known: true,
+      name_known: true,
+      slot_known: true,
+      trusted_phone_known: true,
+      ready_for_booking_apply: true,
+    },
   };
 }
 

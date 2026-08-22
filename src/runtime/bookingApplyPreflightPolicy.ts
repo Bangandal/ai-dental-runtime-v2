@@ -55,12 +55,6 @@ export interface EvaluateBookingApplyPreflightPolicyParams {
   activeAvailabilityEvidence: AvailabilityEvidence | null | undefined;
   selectedSlot?: AvailableSlot | null;
   selectedSlotProof?: SelectedSlotProof | null;
-  /**
-   * Whether a proof-backed selected slot must also be a member of the active availability
-   * evidence. Kept explicit while historical paths differ; the business policy itself does
-   * not know why a caller selected this mode or which LLM call produced the request.
-   */
-  enforceSelectedSlotMembership: boolean;
   timezone: string;
   now: Date;
 }
@@ -69,8 +63,9 @@ export interface EvaluateBookingApplyPreflightPolicyParams {
  * Deterministic booking business preflight after the execution patient has been frozen.
  *
  * This layer deliberately has no concept of model-call rounds, OpenAI conversations, or
- * transport diagnostics. It returns a stable business guard code and guarded outcome;
- * legacy callers may translate that code into historical debug strings outside this file.
+ * transport diagnostics. A booking slot is legal only when its selected-slot proof remains
+ * a member of the active authoritative availability evidence. Callers cannot weaken that
+ * proof requirement based on transport phase or compatibility mode.
  */
 export function evaluateBookingApplyPreflightPolicy(
   params: EvaluateBookingApplyPreflightPolicyParams,
@@ -159,7 +154,7 @@ export function evaluateBookingApplyPreflightPolicy(
     };
   }
 
-  if (params.enforceSelectedSlotMembership && shouldInterceptInvalidSlotDateTime(slotEvidenceParams)) {
+  if (shouldInterceptInvalidSlotDateTime(slotEvidenceParams)) {
     return {
       outcome: "block",
       guard_code: "invalid_slot",

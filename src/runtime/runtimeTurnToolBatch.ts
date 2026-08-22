@@ -8,7 +8,10 @@ import type { ToolExecutorRegistry } from "./toolExecutor.ts";
 import type { BookingSubjectsState, SubjectId } from "./bookingSubjectsState.ts";
 import { computeBookingProcessState, type BookingProcessState } from "./bookingProcessState.ts";
 import { prepareBookingApplyExecution } from "./bookingApplyExecutionPreparation.ts";
-import { deriveAgentFirstBookingSelection } from "./agentFirstBookingSlotBinding.ts";
+import {
+  canDeriveAgentFirstBookingSelectionFromPriorEvidence,
+  deriveAgentFirstBookingSelection,
+} from "./agentFirstBookingSlotBinding.ts";
 import {
   completeRuntimeToolBatchWithBookingResult,
   executeRuntimeToolBatchKernel,
@@ -91,7 +94,8 @@ function multipleBookingGuard(): BookingApplyGuardedData {
  * 2. prepare the deterministic booking subject (bootstrap/freeze identity);
  * 3. execute non-write tools + slot selection and reduce authoritative booking state;
  * 4. in agent-first mode only, derive the old slot-selection proof internally when the
- *    direct booking.apply slot exactly belongs to fresh authoritative evidence;
+ *    direct booking.apply slot exactly belongs to fresh authoritative evidence that existed
+ *    before this model tool batch;
  * 5. only then evaluate booking legality against that new state;
  * 6. execute booking.apply at most once and reassemble one result per call id in request order.
  *
@@ -175,14 +179,15 @@ export async function executeRuntimeTurnToolBatch(params: {
   let bookingProcessState = kernel.booking_process_state;
 
   // Agent-first removes model-facing booking.select_slot ceremony without weakening its
-  // authorization invariant. After subject preparation has frozen the execution patient,
-  // reuse the existing selector against fresh authoritative evidence. If any condition
-  // fails, no proof is synthesized and the unchanged preflight blocks booking.apply.
+  // authorization invariant. The proof may only come from availability evidence that existed
+  // before this tool batch. A batch containing availability.check must return those slots to
+  // the model/patient first; it cannot immediately self-authorize booking.apply from them.
   if (
     pendingBookingApply &&
     preparation?.ok &&
     !kernel.select_apply_conflict &&
-    !bookingProcessState.selected_slot_proof
+    !bookingProcessState.selected_slot_proof &&
+    canDeriveAgentFirstBookingSelectionFromPriorEvidence(params.requests)
   ) {
     const internalSelection = deriveAgentFirstBookingSelection({
       booking_apply: pendingBookingApply,

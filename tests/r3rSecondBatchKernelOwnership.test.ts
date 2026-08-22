@@ -4,28 +4,39 @@ import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-test("R3r/R3s structure: both model tool phases delegate to the same deterministic kernel", async () => {
+test("R3u structure: both model tool phases delegate to one complete turn-batch handler", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
-  const source = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const handlerSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnToolBatch.ts"), "utf8");
 
   assert.equal(
-    source.match(/executeRuntimeToolBatchKernel\(\{/g)?.length,
+    loopSource.match(/executeRuntimeTurnToolBatch\(\{/g)?.length,
     2,
-    "first and second model tool batches must each enter the same deterministic batch kernel once",
+    "first and second model tool batches must each enter the same complete batch handler once",
   );
   assert.doesNotMatch(
-    source,
+    loopSource,
+    /executeRuntimeToolBatchKernel\(/,
+    "legacy loop must not bypass the complete handler into the lower state kernel",
+  );
+  assert.doesNotMatch(
+    loopSource,
     /executeRuntimeNonWriteToolBatch/,
     "legacy loop must not keep a parallel non-write batch executor",
   );
+  assert.equal(
+    handlerSource.match(/executeRuntimeToolBatchKernel\(\{/g)?.length,
+    1,
+    "the complete handler must have one deterministic state-kernel owner",
+  );
   assert.match(
-    source,
+    loopSource,
     /tool_results: resolvedRound2Results/,
     "terminal third model step must receive the complete outputs for the second batch",
   );
   assert.equal(
-    source.match(/prior_booking_process_state: bookingProcessState/g)?.length,
+    loopSource.match(/booking_process_state: bookingProcessState/g)?.length,
     2,
-    "both batch phases must reduce from the runtime-owned booking state",
+    "both batch phases must pass the runtime-owned booking state into the complete handler",
   );
 });

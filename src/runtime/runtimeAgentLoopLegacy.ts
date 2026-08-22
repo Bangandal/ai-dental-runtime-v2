@@ -9,7 +9,6 @@ import {
   type RuntimeAgentTurnInput,
   type RuntimeAgentTurnResult,
 } from "./openaiRuntimeAgent.ts";
-import { prepareBookingApplyExecution } from "./bookingApplyExecutionPreparation.ts";
 import type { SubjectId, BookingSubjectsState } from "./bookingSubjectsState.ts";
 import type { ToolExecutorRegistry } from "./toolExecutor.ts";
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
@@ -18,8 +17,6 @@ import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
 import { hasTrustedPhone, hasBookingApplyPending } from "./bookingContactGuard.ts";
-import { shouldInterceptNoSlotsBeforeBookingApply } from "./bookingApplyPreflight.ts";
-import { evaluateBookingApplyPreflight } from "./bookingApplyPreflightDecision.ts";
 import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
 import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
 import { buildAvailabilityActionTruth, resolveAuthoritativeAvailabilityAttempt, findLastAvailabilityRequest } from "./availabilityActionTruth.ts";
@@ -33,8 +30,8 @@ import {
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
-import { executeRuntimeToolRequest, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
-import { executeRuntimeToolBatchKernel, completeRuntimeToolBatchWithBookingResult } from "./runtimeToolBatchKernel.ts";
+import { executeRuntimeTurnToolBatch } from "./runtimeTurnToolBatch.ts";
+import { getLegacyRuntimeTurnToolBatchDebugReason } from "./runtimeTurnToolBatchLegacyDebug.ts";
 import { invokeRuntimeModelCall, type RuntimeAgentCaller, type RuntimeAgentCallerInput, type RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 import { createRuntimeModelIterationState, invokeRuntimeModelIteration } from "./runtimeModelIteration.ts";
 export type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
@@ -305,149 +302,40 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         }
       }
 
-      const bookingApplyRound1 = toolRequests.find((r) => r.tool === "booking.apply") ?? null;
-
-      // Prepare/freeze identity before the shared batch kernel. The kernel itself owns
-      // no booking write and no patient resolution; it receives the effective people view
-      // only so slot proof can bind to the same deterministic subject registry.
-      const round1BookingPreparation = bookingApplyRound1
-        ? prepareBookingApplyExecution({
-            booking_apply: bookingApplyRound1,
-            booking_subjects: input.booking_subjects ?? null,
-            channel_contact: input.channel_contact ?? null,
-            current_turn_typed_phone: input.current_turn_typed_phone ?? null,
-          })
-        : null;
-      let effectiveBookingSubjects: BookingSubjectsState | null =
-        round1BookingPreparation?.effective_booking_subjects ?? input.booking_subjects ?? null;
-      let effectiveInput: RuntimeAgentTurnInput = effectiveBookingSubjects !== (input.booking_subjects ?? null)
-        ? { ...input, booking_subjects: effectiveBookingSubjects }
-        : input;
-      let bootstrappedRegistry: BookingSubjectsState | null =
-        round1BookingPreparation?.bootstrapped_registry ?? null;
-
-      // Both model tool phases now share one deterministic non-write/state kernel.
-      // The first-batch availability past-time guard above intentionally remains outside:
-      // it distinguishes "requested time already passed" from an authoritative zero-slot result.
-      const round1Batch = await executeRuntimeToolBatchKernel({
+      const round1TurnBatch = await executeRuntimeTurnToolBatch({
         requests: toolRequests,
-        input: effectiveInput,
+        input,
         executors: deps.executors,
-        prior_booking_process_state: bookingProcessState,
-        subjects: effectiveBookingSubjects?.subjects ?? null,
-        channel_contact: input.channel_contact ?? null,
+        booking_process_state: bookingProcessState,
+        booking_subjects: input.booking_subjects ?? null,
+        previous_tool_results: [],
+        previous_booking_apply_resolution: null,
         now: turnNow,
+        timezone,
       });
-      if (round1Batch.availability_diagnostic !== undefined) {
-        debug.availability_diagnostic = round1Batch.availability_diagnostic;
-      }
 
-      bookingProcessState = round1Batch.booking_process_state;
+      bookingProcessState = round1TurnBatch.booking_process_state;
+      let effectiveBookingSubjects: BookingSubjectsState | null = round1TurnBatch.effective_booking_subjects;
+      let bootstrappedRegistry: BookingSubjectsState | null = round1TurnBatch.bootstrapped_registry;
+      const round1ExecutionSubjectId: SubjectId | null = round1TurnBatch.execution_subject_id;
+      let round1BookingApplyResolution: BookingApplyResolution | null = round1TurnBatch.booking_apply_resolution;
+      const round1GuardedData: GuardedBookingApplyData | null = round1TurnBatch.guarded_booking_apply_data;
+
+      if (round1TurnBatch.availability_diagnostic !== undefined) {
+        debug.availability_diagnostic = round1TurnBatch.availability_diagnostic;
+      }
+      const round1DebugReason = getLegacyRuntimeTurnToolBatchDebugReason(round1TurnBatch, 1);
+      if (round1DebugReason) debug.reason = round1DebugReason;
+      if (round1TurnBatch.past_time_detail) debug.past_time_detail = round1TurnBatch.past_time_detail;
+      if (round1TurnBatch.missing_fields) debug.missing_fields = round1TurnBatch.missing_fields;
+
+      toolResults.push(...round1TurnBatch.tool_results);
       if (deps.bookingProcessStateRepository) {
         deps.bookingProcessStateRepository.saveState(
           { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
           bookingProcessState,
           (info) => { if (!info.saved) debug.booking_process_state_save = info; },
         ).catch(() => undefined);
-      }
-
-      let guardSFired = round1Batch.select_apply_conflict !== null;
-      if (guardSFired) {
-        // Historical diagnostic retained while numbered model-call naming still exists.
-        debug.reason = "booking_apply_preflight_select_slot_same_round";
-      }
-
-      const round1ExecutionSubjectId: SubjectId | null =
-        round1BookingPreparation?.ok ? round1BookingPreparation.execution_subject_id : null;
-      let round1BookingApplyResolution: BookingApplyResolution | null = null;
-      let round1GuardedData: GuardedBookingApplyData | null = null;
-      let round1BookingResult: RuntimeAgentToolResult | null = null;
-
-      if (!guardSFired && bookingApplyRound1 && round1BookingPreparation && !round1BookingPreparation.ok) {
-        debug.reason = round1BookingPreparation.stage === "subject_validation"
-          ? "booking_apply_preflight_subject_id_invalid_round1"
-          : "booking_apply_preflight_subject_resolution_conflict_round1";
-        round1GuardedData = {
-          booking_status: "subject_resolution_conflict",
-          created_visit: false,
-          may_claim_booked: false,
-          required_next_action: "clarify_subject",
-          reason: round1BookingPreparation.reason,
-        };
-      } else if (!guardSFired && bookingApplyRound1) {
-        // Read/availability/select state is already authoritative for this batch. This closes
-        // the old stale-proof window where booking preflight ran before availability.check.
-        const completedBeforeBooking = round1Batch.tool_results;
-        if (shouldInterceptNoSlotsBeforeBookingApply({
-          pendingToolRequests: toolRequests,
-          completedToolResults: completedBeforeBooking,
-        })) {
-          debug.reason = "booking_apply_preflight_no_slots";
-          round1GuardedData = {
-            booking_status: "no_available_slots",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "ask_for_alternative_time",
-            reason: "availability_check_returned_no_slots",
-          };
-        } else {
-          const round1Preflight = evaluateBookingApplyPreflight({
-            round: 1,
-            pendingBookingApply: bookingApplyRound1,
-            pendingToolRequests: toolRequests,
-            pendingTypedPhone: Boolean(effectiveBookingSubjects?.pending_typed_phone),
-            hasBookingPhone: hasSubjectOrContactPhone(effectiveInput, round1ExecutionSubjectId),
-            activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
-            selectedSlot: bookingProcessState.selected_slot,
-            selectedSlotProof: bookingProcessState.selected_slot_proof,
-            timezone,
-            now: turnNow,
-          });
-
-          if (round1Preflight.outcome === "block") {
-            debug.reason = round1Preflight.debug_reason;
-            if (round1Preflight.past_time_detail) debug.past_time_detail = round1Preflight.past_time_detail;
-            if (round1Preflight.missing_fields) debug.missing_fields = round1Preflight.missing_fields;
-            round1GuardedData = round1Preflight.guarded_data;
-          } else {
-            const bookingExecution = await executeRuntimeToolRequest({
-              input: effectiveInput,
-              request: bookingApplyRound1,
-              executors: deps.executors,
-              now: turnNow,
-              execution_subject_id: round1ExecutionSubjectId,
-            });
-            round1BookingResult = bookingExecution.tool_result;
-            if (round1ExecutionSubjectId) {
-              round1BookingApplyResolution = {
-                call_id: bookingApplyRound1.call_id,
-                subject_id: round1ExecutionSubjectId,
-              };
-            }
-          }
-        }
-      }
-
-      if (round1GuardedData && bookingApplyRound1) {
-        round1BookingResult = {
-          tool: "booking.apply",
-          call_id: bookingApplyRound1.call_id,
-          status: "success",
-          data: round1GuardedData,
-        };
-      }
-
-      if (round1Batch.select_apply_conflict) {
-        // Conflict helper already owns every call id in the batch.
-        toolResults.push(...round1Batch.tool_results);
-      } else if (bookingApplyRound1 && round1BookingResult) {
-        toolResults.push(...completeRuntimeToolBatchWithBookingResult({
-          requests: toolRequests,
-          partial_results: round1Batch.tool_results,
-          booking_result: round1BookingResult,
-        }));
-      } else {
-        toolResults.push(...round1Batch.tool_results);
       }
 
       const bookingActionTruth = buildBookingApplyActionTruth(toolResults);
@@ -637,102 +525,40 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
         const round2Requests = secondOutput.tool_requests;
         processedToolRequests.push(...round2Requests);
 
-        const allRound2BookingRequests = round2Requests.filter((r) => r.tool === "booking.apply");
-        const pendingBookingApply = allRound2BookingRequests[0] ?? null;
-
-        // Stronger invariant: more than one booking write request aborts this whole batch.
-        // The existing helper is protocol-complete: every current call id receives a result.
-        if (allRound2BookingRequests.length > 1) {
-          debug.reason = "booking_apply_preflight_multiple_booking_apply_round2_multi";
-          return await finalizeBlockedMultipleBookingApplies({
-            pendingRequestsForRound: round2Requests,
-            guardedData: {
-              booking_status: "subject_resolution_conflict",
-              created_visit: false,
-              may_claim_booked: false,
-              required_next_action: "clarify_subject",
-              reason: "multiple_booking_apply_requests",
-            },
-            previousToolResults: toolResults,
-            toolRequests: processedToolRequests,
-            conversationId,
-            systemInstruction,
-            callerContext,
-            input,
-            debug,
-            deps,
-            booking_apply_resolution: round1BookingApplyResolution,
-            booking_subjects_after_resolution: bootstrappedRegistry,
-          });
-        }
-
-        // One external booking write per patient turn. This guard remains stronger than
-        // ordinary batch execution. Close the entire current batch, rather than only the
-        // booking call, so no sibling function_call is left dangling in OpenAI.
-        if (pendingBookingApply && round1BookingApplyResolution !== null) {
-          debug.reason = "booking_apply_preflight_multiple_booking_apply_round2";
-          return await finalizeBlockedMultipleBookingApplies({
-            pendingRequestsForRound: round2Requests,
-            guardedData: {
-              booking_status: "subject_resolution_conflict",
-              created_visit: false,
-              may_claim_booked: false,
-              required_next_action: "clarify_subject",
-              reason: "multiple_booking_apply_requests",
-            },
-            previousToolResults: toolResults,
-            toolRequests: processedToolRequests,
-            conversationId,
-            systemInstruction,
-            callerContext,
-            input,
-            debug,
-            deps,
-            booking_apply_resolution: round1BookingApplyResolution,
-            booking_subjects_after_resolution: bootstrappedRegistry,
-          });
-        }
-
-        // Prepare/freeze the booking target before the batch kernel so a missing registry
-        // can still be bootstrapped for subject_2+ and selection can bind to the same people
-        // view. A same-batch select+apply dependency conflict still has priority over a
-        // preparation failure, preserving the R3p protocol invariant.
-        const round2BookingPreparation = pendingBookingApply
-          ? prepareBookingApplyExecution({
-              booking_apply: pendingBookingApply,
-              booking_subjects: effectiveBookingSubjects,
-              channel_contact: input.channel_contact ?? null,
-              current_turn_typed_phone: input.current_turn_typed_phone ?? null,
-            })
-          : null;
-
-        if (round2BookingPreparation) {
-          effectiveBookingSubjects = round2BookingPreparation.effective_booking_subjects;
-          effectiveInput = effectiveBookingSubjects !== (input.booking_subjects ?? null)
-            ? { ...input, booking_subjects: effectiveBookingSubjects }
-            : input;
-          if (round2BookingPreparation.bootstrapped_registry) {
-            bootstrappedRegistry = round2BookingPreparation.bootstrapped_registry;
-          }
-        }
-
-        const round2Batch = await executeRuntimeToolBatchKernel({
+        const round2TurnBatch = await executeRuntimeTurnToolBatch({
           requests: round2Requests,
-          input: effectiveInput,
+          input: effectiveBookingSubjects !== (input.booking_subjects ?? null)
+            ? { ...input, booking_subjects: effectiveBookingSubjects }
+            : input,
           executors: deps.executors,
-          prior_booking_process_state: bookingProcessState,
-          subjects: effectiveBookingSubjects?.subjects ?? null,
-          channel_contact: input.channel_contact ?? null,
+          booking_process_state: bookingProcessState,
+          booking_subjects: effectiveBookingSubjects,
+          previous_tool_results: toolResults,
+          previous_booking_apply_resolution: round1BookingApplyResolution,
           now: turnNow,
+          timezone,
         });
-        if (round2Batch.availability_diagnostic !== undefined) {
-          debug.availability_diagnostic = round2Batch.availability_diagnostic;
-        }
 
-        // The kernel owns the non-write phase and reduces availability + selection as one
-        // atomic state transition. This is the critical ordering guarantee: a fresh
-        // availability.check revokes old slot proof before booking preflight can run.
-        bookingProcessState = round2Batch.booking_process_state;
+        bookingProcessState = round2TurnBatch.booking_process_state;
+        effectiveBookingSubjects = round2TurnBatch.effective_booking_subjects;
+        if (round2TurnBatch.bootstrapped_registry) {
+          bootstrappedRegistry = round2TurnBatch.bootstrapped_registry;
+        }
+        if (round2TurnBatch.availability_diagnostic !== undefined) {
+          debug.availability_diagnostic = round2TurnBatch.availability_diagnostic;
+        }
+        if (round2TurnBatch.past_time_detail) debug.past_time_detail = round2TurnBatch.past_time_detail;
+        if (round2TurnBatch.missing_fields) debug.missing_fields = round2TurnBatch.missing_fields;
+
+        const round2ExecutionSubjectId: SubjectId | null = round2TurnBatch.execution_subject_id;
+        let round2BookingApplyResolution: BookingApplyResolution | null =
+          round2TurnBatch.booking_apply_resolution ?? round1BookingApplyResolution;
+        const guardedData: GuardedBookingApplyData | null = round2TurnBatch.guarded_booking_apply_data;
+        const terminalReason = getLegacyRuntimeTurnToolBatchDebugReason(round2TurnBatch, 2)
+          ?? "bounded_tool_batch_final_response";
+        const resolvedRound2Results = round2TurnBatch.tool_results;
+        toolResults.push(...resolvedRound2Results);
+
         if (deps.bookingProcessStateRepository) {
           deps.bookingProcessStateRepository.saveState(
             { clinic_id: input.clinic_id, contact_id: input.contact_id, case_id: input.case_id },
@@ -740,121 +566,6 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             (info) => { if (!info.saved) debug.booking_process_state_save = info; },
           ).catch(() => undefined);
         }
-
-        const round2ExecutionSubjectId: SubjectId | null =
-          round2BookingPreparation?.ok ? round2BookingPreparation.execution_subject_id : null;
-        let round2BookingApplyResolution: BookingApplyResolution | null = round1BookingApplyResolution;
-        let round2BookingResult: RuntimeAgentToolResult | null = null;
-        let guardedData: GuardedBookingApplyData | null = null;
-        let terminalReason = "bounded_tool_batch_final_response";
-
-        if (round2Batch.select_apply_conflict) {
-          // The conflict result set is already protocol-complete for the whole batch.
-          // No booking write may consume proof produced beside it in this same batch.
-          terminalReason = "booking_apply_preflight_select_slot_same_round";
-        } else if (pendingBookingApply && round2BookingPreparation && !round2BookingPreparation.ok) {
-          terminalReason = round2BookingPreparation.stage === "subject_validation"
-            ? "booking_apply_preflight_subject_id_invalid_round2"
-            : "booking_apply_preflight_subject_resolution_conflict_round2";
-          guardedData = {
-            booking_status: "subject_resolution_conflict",
-            created_visit: false,
-            may_claim_booked: false,
-            required_next_action: "clarify_subject",
-            reason: round2BookingPreparation.reason,
-          };
-        } else if (pendingBookingApply) {
-          const completedBeforeBooking = [...toolResults, ...round2Batch.tool_results];
-
-          if (shouldInterceptNoSlotsBeforeBookingApply({
-            pendingToolRequests: round2Requests,
-            completedToolResults: completedBeforeBooking,
-          })) {
-            terminalReason = "booking_apply_preflight_no_slots";
-            guardedData = {
-              booking_status: "no_available_slots",
-              created_visit: false,
-              may_claim_booked: false,
-              required_next_action: "ask_for_alternative_time",
-              reason: "availability_check_returned_no_slots",
-            };
-          } else {
-            const round2Preflight = evaluateBookingApplyPreflight({
-              round: 2,
-              pendingBookingApply,
-              pendingToolRequests: round2Requests,
-              pendingTypedPhone: Boolean(effectiveBookingSubjects?.pending_typed_phone),
-              hasBookingPhone: hasSubjectOrContactPhone(effectiveInput, round2ExecutionSubjectId),
-              activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
-              selectedSlot: bookingProcessState.selected_slot,
-              selectedSlotProof: bookingProcessState.selected_slot_proof,
-              timezone,
-              now: turnNow,
-            });
-
-            if (round2Preflight.outcome === "block") {
-              terminalReason = round2Preflight.debug_reason;
-              if (round2Preflight.past_time_detail) debug.past_time_detail = round2Preflight.past_time_detail;
-              if (round2Preflight.missing_fields) debug.missing_fields = round2Preflight.missing_fields;
-              guardedData = round2Preflight.guarded_data;
-            } else {
-              terminalReason = "booking_apply_executed_after_round2_request";
-              const bookingExecution = await executeRuntimeToolRequest({
-                input: effectiveInput,
-                request: pendingBookingApply,
-                executors: deps.executors,
-                now: turnNow,
-                execution_subject_id: round2ExecutionSubjectId,
-              });
-              round2BookingResult = bookingExecution.tool_result;
-              if (round2ExecutionSubjectId) {
-                round2BookingApplyResolution = {
-                  call_id: pendingBookingApply.call_id,
-                  subject_id: round2ExecutionSubjectId,
-                };
-              }
-            }
-          }
-        }
-
-        if (guardedData && pendingBookingApply) {
-          round2BookingResult = {
-            tool: "booking.apply",
-            call_id: pendingBookingApply.call_id,
-            status: "success",
-            data: guardedData,
-          };
-        }
-
-        // Assemble exactly one output per current call id in model request order. The
-        // kernel owns read/select results; booking result is appended only after updated
-        // state has passed deterministic write guards. Missing ownership fails closed.
-        const remainingRound2Results: RuntimeAgentToolResult[] = [
-          ...round2Batch.tool_results,
-          ...(round2BookingResult ? [round2BookingResult] : []),
-        ];
-        const resolvedRound2Results: RuntimeAgentToolResult[] = [];
-        for (const request of round2Requests) {
-          const resultIndex = remainingRound2Results.findIndex((result) =>
-            result.tool === request.tool &&
-            (request.call_id !== undefined ? result.call_id === request.call_id : true)
-          );
-          if (resultIndex >= 0) {
-            resolvedRound2Results.push(remainingRound2Results.splice(resultIndex, 1)[0]!);
-            continue;
-          }
-          resolvedRound2Results.push({
-            tool: request.tool,
-            call_id: request.call_id,
-            status: "denied",
-            error: {
-              code: "batch_result_missing",
-              message: "Runtime failed closed because this tool request had no deterministic batch result",
-            },
-          });
-        }
-
-        toolResults.push(...resolvedRound2Results);
 
         const boundedBookingTruth = buildBookingApplyActionTruth(toolResults);
         const boundedAvailabilityAttempt = resolveAuthoritativeAvailabilityAttempt(

@@ -51,7 +51,6 @@ function decide(params: Partial<Parameters<typeof evaluateBookingApplyPreflight>
     activeAvailabilityEvidence: EVIDENCE,
     selectedSlot: SELECTED_SLOT,
     selectedSlotProof: PROOF,
-    includeInvalidSlotGuard: true,
     timezone: "Europe/Prague",
     now: NOW,
     ...params,
@@ -100,7 +99,7 @@ test("R2e: absent selected-slot proof blocks before phone", () => {
   assert.equal(result.guarded_data.reason, "slot_proof_required");
 });
 
-test("R2e: round-2 invalid-slot guard stays after proof-absence guard", () => {
+test("R3o: invalid-slot guard stays after proof-absence guard", () => {
   const pendingBookingApply = request({ requested_time: "15:00" });
   const result = decide({
     pendingBookingApply,
@@ -114,7 +113,7 @@ test("R2e: round-2 invalid-slot guard stays after proof-absence guard", () => {
   assert.equal(result.debug_reason, "booking_apply_preflight_invalid_slot_round2");
 });
 
-test("R2e: round-1 preserves historical behavior without the round-2 invalid-slot guard", () => {
+test("R3o: round-1 also rejects proof-backed slot outside authoritative evidence", () => {
   const pendingBookingApply = request({ requested_time: "15:00" });
   const result = decide({
     round: 1,
@@ -122,9 +121,11 @@ test("R2e: round-1 preserves historical behavior without the round-2 invalid-slo
     pendingToolRequests: [pendingBookingApply],
     selectedSlot: { starts_at: `${DATE}T15:00:00+02:00` },
     selectedSlotProof: { ...PROOF, slot_key: `${DATE}T15:00` },
-    includeInvalidSlotGuard: false,
   });
-  assert.deepEqual(result, { outcome: "allow" });
+  assert.equal(result.outcome, "block");
+  if (result.outcome !== "block") return;
+  assert.equal(result.guarded_data.booking_status, "invalid_slot");
+  assert.equal(result.debug_reason, "booking_apply_preflight_invalid_slot_round1");
 });
 
 test("R2e: phone guard runs before missing-name and missing-service guards", () => {

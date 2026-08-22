@@ -54,7 +54,6 @@ function decide(params: Partial<Parameters<typeof evaluateBookingApplyPreflightP
     activeAvailabilityEvidence: EVIDENCE,
     selectedSlot: SELECTED_SLOT,
     selectedSlotProof: PROOF,
-    enforceSelectedSlotMembership: true,
     timezone: "Europe/Prague",
     now: NOW,
     ...params,
@@ -94,24 +93,20 @@ test("R3j: past-time guard preserves business diagnostics without transport phas
   assert.equal(result.past_time_detail?.todayInTimezone, "2026-08-21");
 });
 
-test("R3j: selected-slot membership is an explicit policy option rather than a round rule", () => {
+test("R3o: proof-backed slot outside active authoritative evidence always fails closed", () => {
   const pendingBookingApply = request({ requested_time: "15:00" });
-  const common = {
+  const result = decide({
     pendingBookingApply,
     pendingToolRequests: [pendingBookingApply],
     selectedSlot: { starts_at: `${DATE}T15:00:00+02:00` },
     selectedSlotProof: { ...PROOF, slot_key: `${DATE}T15:00` },
-  };
+  });
 
-  const enforced = decide({ ...common, enforceSelectedSlotMembership: true });
-  assert.equal(enforced.outcome, "block");
-  if (enforced.outcome === "block") {
-    assert.equal(enforced.guard_code, "invalid_slot");
-    assert.equal(enforced.guarded_data.booking_status, "invalid_slot");
-  }
-
-  const compatibilityMode = decide({ ...common, enforceSelectedSlotMembership: false });
-  assert.deepEqual(compatibilityMode, { outcome: "allow" });
+  assert.equal(result.outcome, "block");
+  if (result.outcome !== "block") return;
+  assert.equal(result.guard_code, "invalid_slot");
+  assert.equal(result.guarded_data.booking_status, "invalid_slot");
+  assert.equal(result.guarded_data.reason, "requested_time_not_in_available_slots");
 });
 
 test("R3j: phone, name, and service ordering remains business-owned", () => {
@@ -161,7 +156,6 @@ test("R3j: legacy adapter preserves old round-shaped diagnostics without changin
     activeAvailabilityEvidence: EVIDENCE,
     selectedSlot: SELECTED_SLOT,
     selectedSlotProof: PROOF,
-    includeInvalidSlotGuard: true,
     timezone: "Europe/Prague",
     now: NOW,
   });
@@ -175,14 +169,42 @@ test("R3j: legacy adapter preserves old round-shaped diagnostics without changin
   assert.equal(legacy.debug_reason, "booking_apply_preflight_missing_service_round2");
 });
 
-test("R3j structure: business preflight policy contains no model-call round dependency", async () => {
+test("R3o: adapter round changes diagnostics only, never invalid-slot legality", () => {
+  const pendingBookingApply = request({ requested_time: "15:00" });
+  const common = {
+    pendingBookingApply,
+    pendingToolRequests: [pendingBookingApply],
+    pendingTypedPhone: false,
+    hasBookingPhone: true,
+    activeAvailabilityEvidence: EVIDENCE,
+    selectedSlot: { starts_at: `${DATE}T15:00:00+02:00` },
+    selectedSlotProof: { ...PROOF, slot_key: `${DATE}T15:00` },
+    timezone: "Europe/Prague",
+    now: NOW,
+  };
+
+  const first = evaluateBookingApplyPreflight({ round: 1, ...common });
+  const second = evaluateBookingApplyPreflight({ round: 2, ...common });
+
+  assert.equal(first.outcome, "block");
+  assert.equal(second.outcome, "block");
+  if (first.outcome !== "block" || second.outcome !== "block") return;
+  assert.deepEqual(first.guarded_data, second.guarded_data);
+  assert.equal(first.debug_reason, "booking_apply_preflight_invalid_slot_round1");
+  assert.equal(second.debug_reason, "booking_apply_preflight_invalid_slot_round2");
+});
+
+test("R3o structure: business preflight has no model-call or membership-compatibility knob", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const policySource = await readFile(resolve(thisDir, "../src/runtime/bookingApplyPreflightPolicy.ts"), "utf8");
+  const adapterSource = await readFile(resolve(thisDir, "../src/runtime/bookingApplyPreflightDecision.ts"), "utf8");
 
   assert.doesNotMatch(policySource, /params\.round/);
   assert.doesNotMatch(policySource, /round:\s*1\s*\|\s*2/);
   assert.doesNotMatch(policySource, /_round[12]/);
   assert.doesNotMatch(policySource, /booking_apply_intercepted_missing_trusted_phone/);
+  assert.doesNotMatch(policySource, /enforceSelectedSlotMembership/);
+  assert.doesNotMatch(adapterSource, /includeInvalidSlotGuard/);
+  assert.match(policySource, /shouldInterceptInvalidSlotDateTime\(slotEvidenceParams\)/);
   assert.match(policySource, /guard_code/);
-  assert.match(policySource, /enforceSelectedSlotMembership/);
 });

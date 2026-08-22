@@ -8,13 +8,9 @@ import type { RuntimeAgentCaller, RuntimeAgentCallerInput, RuntimeAgentCallerOut
 import { readResponseOutputTextDeduped } from "./openaiResponsesOutputText.ts";
 import {
   bindModelToolRequestsToInternalContract,
-  projectModelToolContract,
   resolveActiveInternalSubjectId,
 } from "./modelToolContractBridge.ts";
-import {
-  parseModelPersonIntents,
-  projectModelPersonInstruction,
-} from "./modelPersonIntentBridge.ts";
+import { parseModelPersonIntents } from "./modelPersonIntentBridge.ts";
 import { projectModelFacingContext } from "./modelFacingContextProjection.ts";
 
 export interface OpenAIResponsesClient {
@@ -59,25 +55,18 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
     const def = defs[toolName];
     if (!def) return [];
 
-    const projected = projectModelToolContract(toolName, {
-      description: def.description,
-      required_args: def.required_args,
-      optional_args: def.optional_args,
-      param_schemas: (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas,
-    });
-
     return [{
       type: "function",
       name: INTERNAL_TO_OPENAI_TOOL_NAME[toolName],
-      description: projected.description,
+      description: def.description,
       parameters: {
         type: "object",
         properties: buildParameterProperties(
-          projected.required_args,
-          projected.optional_args,
-          projected.param_schemas,
+          def.required_args,
+          def.optional_args,
+          (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas,
         ),
-        required: projected.required_args,
+        required: def.required_args,
         additionalProperties: true,
       },
     }];
@@ -115,7 +104,7 @@ export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string,
 
   return {
     model: input.model,
-    instructions: projectModelPersonInstruction(input.system_instruction),
+    instructions: input.system_instruction,
     conversation: input.conversation_id ?? undefined,
     input: responseInput,
     tools: buildOpenAIToolDefinitions(input),

@@ -180,7 +180,7 @@ test("R3q structure: bounded continuation is now fed by the shared second-batch 
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
   const kernelSource = await readFile(resolve(thisDir, "../src/runtime/runtimeToolBatchKernel.ts"), "utf8");
 
-  assert.match(loopSource, /import \{ executeRuntimeToolBatchKernel \} from ["']\.\/runtimeToolBatchKernel\.ts["']/);
+  assert.match(loopSource, /import \{ executeRuntimeToolBatchKernel, completeRuntimeToolBatchWithBookingResult \} from ["']\.\/runtimeToolBatchKernel\.ts["']/);
   assert.doesNotMatch(loopSource, /executeRuntimeNonWriteToolBatch/);
   assert.match(kernelSource, /import \{ executeRuntimeNonWriteToolBatch \} from ["']\.\/runtimeNonWriteToolBatch\.ts["']/);
   assert.equal(kernelSource.match(/executeRuntimeNonWriteToolBatch\(\{/g)?.length, 1);

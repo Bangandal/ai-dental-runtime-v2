@@ -127,14 +127,6 @@ function failClosedSubjectIntent(
 }
 
 /**
- * The runtime prompt is already canonical and business-semantic. Keep this boundary as
- * an identity function so the OpenAI caller remains decoupled from prompt ownership.
- */
-export function projectModelPersonInstruction(systemInstruction: string): string {
-  return systemInstruction;
-}
-
-/**
  * Normalize both new semantic person intents and historical subject-id intents into the
  * strict internal SubjectIntent contract. Semantic references are resolved deterministically
  * from the model-visible registry. Ambiguity is fail-closed via low confidence.

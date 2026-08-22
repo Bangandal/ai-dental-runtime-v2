@@ -32,6 +32,7 @@ export type BookingReconciliationMutation =
 export interface BookingReconciliationGuard {
   getPending(key: BookingReconciliationKey): Promise<BookingReconciliationRead>;
   arm(key: BookingReconciliationKey, lock: BookingReconciliationLock): Promise<BookingReconciliationMutation>;
+  attachPatientId(key: BookingReconciliationKey, patientId: number): Promise<BookingReconciliationMutation>;
   clear(key: BookingReconciliationKey): Promise<BookingReconciliationMutation>;
 }
 
@@ -269,6 +270,39 @@ export function createBookingReconciliationCoordinator(
       if (!confirmed.ok) return confirmed;
       if (!locksEqual(confirmed.snapshot.lock, lock)) {
         return { ok: false, reason: "booking reconciliation lock was not durably persisted as written" };
+      }
+      cache.set(keyString(key), confirmed.snapshot);
+      return { ok: true };
+    },
+
+    async attachPatientId(key, patientId) {
+      if (!isPositiveFiniteNumber(patientId)) {
+        return { ok: false, reason: "patient_id must be a positive number for booking reconciliation" };
+      }
+
+      const current = await getSnapshot(key);
+      if (!current.ok) return current;
+      const existingLock = current.snapshot.lock;
+      if (!existingLock) {
+        return { ok: false, reason: "booking reconciliation is not pending" };
+      }
+      if (existingLock.patient_id !== undefined) {
+        return existingLock.patient_id === patientId
+          ? { ok: true }
+          : { ok: false, reason: "booking reconciliation patient_id conflicts with the pending lock" };
+      }
+
+      const updatedLock: BookingReconciliationLock = { ...existingLock, patient_id: patientId };
+      const saved = await saveRaw(key, current.snapshot.visible, updatedLock);
+      if (!saved.ok) return saved;
+
+      // Like arm/clear, patient binding is safety-relevant. Prove it durably before
+      // a later turn is allowed to use that id as reconciliation evidence.
+      cache.delete(keyString(key));
+      const confirmed = await loadSnapshot(key);
+      if (!confirmed.ok) return confirmed;
+      if (!locksEqual(confirmed.snapshot.lock, updatedLock)) {
+        return { ok: false, reason: "booking reconciliation patient_id was not durably persisted" };
       }
       cache.set(keyString(key), confirmed.snapshot);
       return { ok: true };

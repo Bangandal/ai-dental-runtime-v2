@@ -11,6 +11,17 @@ import type { RuntimeAgentToolRequest } from "./openaiRuntimeAgent.ts";
 import type { BookingSubject, SubjectId } from "./bookingSubjectsState.ts";
 
 /**
+ * Internal slot binding must only consume evidence that existed before the current model
+ * tool batch. If availability.check and booking.apply arrive together, the patient has not
+ * had a chance to see and choose from those newly-returned slots yet.
+ */
+export function canDeriveAgentFirstBookingSelectionFromPriorEvidence(
+  requests: RuntimeAgentToolRequest[],
+): boolean {
+  return !requests.some((request) => request.tool === "availability.check");
+}
+
+/**
  * Agent-first compatibility seam for the old model-facing booking.select_slot ceremony.
  *
  * The model may call booking.apply directly after the patient chose an exact slot. Runtime

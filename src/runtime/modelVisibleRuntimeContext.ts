@@ -1,3 +1,5 @@
+import { parseStoredAgentQualification } from "./agentQualification.ts";
+
 const MAX_RECENT_HISTORY_MESSAGES = 8;
 const MAX_RECENT_HISTORY_CHARS = 2000;
 
@@ -52,6 +54,7 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
   const knownContact = asRecord(context.known_contact);
   const conversationState = asRecord(context.conversation_state);
   const collected = asRecord(conversationState.collected);
+  const qualificationState = parseStoredAgentQualification(collected.agent_qualification);
 
   const firstName = asNullableString(knownContact.first_name);
   const lastName = asNullableString(knownContact.last_name);
@@ -103,6 +106,7 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
       last_known_intent: asNullableString(conversationState.intent),
       intake_status: asNullableString(conversationState.qualification_stage) ?? asNullableString(conversationState.conversation_stage),
     },
+    ...(qualificationState ? { qualification_state: qualificationState } : {}),
     runtime_policy: {
       phone_required: false,
       patient_reachable_in_current_channel: patientReachableInCurrentChannel,

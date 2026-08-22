@@ -6,8 +6,9 @@ import type {
 } from "./openaiRuntimeAgent.ts";
 import type { ToolExecutorRegistry } from "./toolExecutor.ts";
 import type { BookingSubjectsState, SubjectId } from "./bookingSubjectsState.ts";
-import type { BookingProcessState } from "./bookingProcessState.ts";
+import { computeBookingProcessState, type BookingProcessState } from "./bookingProcessState.ts";
 import { prepareBookingApplyExecution } from "./bookingApplyExecutionPreparation.ts";
+import { deriveAgentFirstBookingSelection } from "./agentFirstBookingSlotBinding.ts";
 import {
   completeRuntimeToolBatchWithBookingResult,
   executeRuntimeToolBatchKernel,
@@ -89,8 +90,10 @@ function multipleBookingGuard(): BookingApplyGuardedData {
  * 1. enforce one booking write request / one write attempt per patient turn;
  * 2. prepare the deterministic booking subject (bootstrap/freeze identity);
  * 3. execute non-write tools + slot selection and reduce authoritative booking state;
- * 4. only then evaluate booking legality against that new state;
- * 5. execute booking.apply at most once and reassemble one result per call id in request order.
+ * 4. in agent-first mode only, derive the old slot-selection proof internally when the
+ *    direct booking.apply slot exactly belongs to fresh authoritative evidence;
+ * 5. only then evaluate booking legality against that new state;
+ * 6. execute booking.apply at most once and reassemble one result per call id in request order.
  *
  * This is the phase-independent bridge between the model/tool transport loop and the
  * deterministic booking kernel. It never invokes the model and never decides conversation
@@ -168,8 +171,52 @@ export async function executeRuntimeTurnToolBatch(params: {
     now: params.now,
   });
 
+  const executionSubjectId = preparation?.ok ? preparation.execution_subject_id : null;
+  let bookingProcessState = kernel.booking_process_state;
+
+  // Agent-first removes model-facing booking.select_slot ceremony without weakening its
+  // authorization invariant. After subject preparation has frozen the execution patient,
+  // reuse the existing selector against fresh authoritative evidence. If any condition
+  // fails, no proof is synthesized and the unchanged preflight blocks booking.apply.
+  if (
+    pendingBookingApply &&
+    preparation?.ok &&
+    !kernel.select_apply_conflict &&
+    !bookingProcessState.selected_slot_proof
+  ) {
+    const internalSelection = deriveAgentFirstBookingSelection({
+      booking_apply: pendingBookingApply,
+      execution_subject_id: executionSubjectId,
+      booking_process_state: bookingProcessState,
+      subjects: effectiveBookingSubjects?.subjects ?? null,
+      now: params.now,
+    });
+
+    if (internalSelection) {
+      bookingProcessState = computeBookingProcessState({
+        prior: bookingProcessState,
+        channelContact: params.input.channel_contact,
+        selectSlotData: internalSelection,
+        selectSlotAttemptedThisTurn: true,
+        bookingApplyService:
+          typeof pendingBookingApply.arguments.service === "string"
+            ? pendingBookingApply.arguments.service
+            : null,
+        bookingApplyFirstName:
+          typeof pendingBookingApply.arguments.first_name === "string"
+            ? pendingBookingApply.arguments.first_name
+            : null,
+        bookingApplyLastName:
+          typeof pendingBookingApply.arguments.last_name === "string"
+            ? pendingBookingApply.arguments.last_name
+            : null,
+        now: params.now,
+      });
+    }
+  }
+
   const common = {
-    booking_process_state: kernel.booking_process_state,
+    booking_process_state: bookingProcessState,
     effective_booking_subjects: effectiveBookingSubjects,
     bootstrapped_registry: preparation?.bootstrapped_registry ?? null,
     availability_diagnostic: kernel.availability_diagnostic,
@@ -207,7 +254,6 @@ export async function executeRuntimeTurnToolBatch(params: {
   let guardCode: BookingApplyPreflightGuardCode | null = null;
   let pastTimeDetail: BookingApplyPastTimeDetail | null = null;
   let missingFields: string[] | null = null;
-  const executionSubjectId = preparation?.ok ? preparation.execution_subject_id : null;
   let decision: RuntimeTurnToolBatchDecision;
 
   if (preparation && !preparation.ok) {
@@ -245,9 +291,9 @@ export async function executeRuntimeTurnToolBatch(params: {
         pendingToolRequests: params.requests,
         pendingTypedPhone: Boolean(effectiveBookingSubjects?.pending_typed_phone),
         hasBookingPhone: hasSubjectOrContactPhone(effectiveInput, executionSubjectId),
-        activeAvailabilityEvidence: kernel.booking_process_state.active_availability_evidence,
-        selectedSlot: kernel.booking_process_state.selected_slot,
-        selectedSlotProof: kernel.booking_process_state.selected_slot_proof,
+        activeAvailabilityEvidence: bookingProcessState.active_availability_evidence,
+        selectedSlot: bookingProcessState.selected_slot,
+        selectedSlotProof: bookingProcessState.selected_slot_proof,
         timezone: params.timezone,
         now: params.now,
       });

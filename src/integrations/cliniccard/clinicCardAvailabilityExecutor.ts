@@ -3,7 +3,11 @@ import { loadClinicCardConfig } from "./clinicCardConfig.ts";
 import { createClinicCardAdapter } from "./clinicCardAdapter.ts";
 import { checkClinicCardAvailability, type AvailabilityAdapter } from "./clinicCardAvailability.ts";
 import { getIsoWeekday, isDateInsideAvailabilityPolicy, loadClinicCardAvailabilityPolicy } from "./clinicCardAvailabilityPolicy.ts";
-import { resolveClinicCardServiceResource } from "./clinicCardServiceResourcePolicy.ts";
+import {
+  isDateInsideClinicCardServiceSchedule,
+  resolveClinicCardServiceResource,
+  resolveClinicCardServiceSchedule,
+} from "./clinicCardServiceResourcePolicy.ts";
 import { classifyClinicCardFailure } from "./clinicCardFailurePolicy.ts";
 import type { ToolExecutionContext, ToolExecutor } from "../../runtime/toolExecutor.ts";
 import { makeFailedToolResult } from "../../runtime/toolResults.ts";
@@ -23,6 +27,61 @@ function parseHHMM(val: string | null | undefined): string | null {
   const min = Number(m[2]);
   if (h < 0 || h > 23 || min < 0 || min > 59) return null;
   return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
+
+function timeToMinutes(value: string): number {
+  const [hours, minutes] = value.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function minutesToHHMM(value: number): string {
+  const hours = Math.floor(value / 60);
+  const minutes = value % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function resolveEffectiveProviderWindow(input: {
+  clinic_start: string;
+  clinic_end: string;
+  provider_start: string;
+  provider_end: string;
+  slot_interval_minutes: number;
+}): { start: string; end: string } | null {
+  const clinicStart = timeToMinutes(input.clinic_start);
+  const clinicEnd = timeToMinutes(input.clinic_end);
+  const providerStart = timeToMinutes(input.provider_start);
+  const providerEnd = timeToMinutes(input.provider_end);
+  const start = Math.max(clinicStart, providerStart);
+  const end = Math.min(clinicEnd, providerEnd);
+  if (end <= start) return null;
+
+  // Preserve the clinic-confirmed start grid even when the provider begins later.
+  const offset = Math.max(0, start - clinicStart);
+  const alignedStart = clinicStart
+    + Math.ceil(offset / input.slot_interval_minutes) * input.slot_interval_minutes;
+  if (alignedStart >= end) return null;
+  return { start: minutesToHHMM(alignedStart), end: minutesToHHMM(end) };
+}
+
+function emptyAvailabilityResult(
+  timezone: string,
+  requestedTime: string | null,
+) {
+  return {
+    tool: "availability.check" as const,
+    status: "success" as const,
+    data: {
+      slots: [],
+      timezone,
+      total_slots: 0,
+      free_slots_count: 0,
+      ...(requestedTime !== null ? {
+        requested_time: requestedTime,
+        requested_time_available: false,
+        requested_time_status: "unavailable" as const,
+      } : {}),
+    },
+  };
 }
 
 export interface ClinicCardAvailabilityExecutorDeps {
@@ -102,21 +161,7 @@ export function createClinicCardAvailabilityExecutor(
     // No service mapping or ClinicCard visit read is needed because the schedule policy
     // proves the clinic cannot offer any service slot on that date.
     if (!isDateInsideAvailabilityPolicy(requestedDate, availabilityPolicy)) {
-      return {
-        tool: "availability.check",
-        status: "success",
-        data: {
-          slots: [],
-          timezone,
-          total_slots: 0,
-          free_slots_count: 0,
-          ...(requestedTime !== null ? {
-            requested_time: requestedTime,
-            requested_time_available: false,
-            requested_time_status: "unavailable",
-          } : {}),
-        },
-      };
+      return emptyAvailabilityResult(timezone, requestedTime);
     }
 
     // PF-011: positive/open-day availability must be tied to the authoritative
@@ -136,6 +181,33 @@ export function createClinicCardAvailabilityExecutor(
     const doctorId = serviceResource.doctor_id;
     const cabinetId = serviceResource.cabinet_id;
 
+    // PF-013: "no visit" proves only that a resource is not already occupied. It does
+    // not prove the concrete provider is working. Positive availability therefore also
+    // requires an operator-confirmed schedule on the resolved service/provider rule.
+    const serviceSchedule = resolveClinicCardServiceSchedule(deps.env, context.service_interest);
+    if (!serviceSchedule.ok) {
+      return makeFailedToolResult(
+        "availability.check",
+        "cliniccard_service_schedule_unavailable",
+        serviceSchedule.reason,
+        false,
+      );
+    }
+    if (!isDateInsideClinicCardServiceSchedule(requestedDate, serviceSchedule.schedule)) {
+      return emptyAvailabilityResult(timezone, requestedTime);
+    }
+
+    const effectiveWindow = resolveEffectiveProviderWindow({
+      clinic_start: availabilityPolicy.working_hours_start,
+      clinic_end: availabilityPolicy.working_hours_end,
+      provider_start: serviceSchedule.schedule.working_hours_start,
+      provider_end: serviceSchedule.schedule.working_hours_end,
+      slot_interval_minutes: availabilityPolicy.slot_duration_minutes,
+    });
+    if (!effectiveWindow) {
+      return emptyAvailabilityResult(timezone, requestedTime);
+    }
+
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
 
@@ -144,8 +216,8 @@ export function createClinicCardAvailabilityExecutor(
     const result = await checkClinicCardAvailability(
       {
         date: requestedDate,
-        working_hours_start: availabilityPolicy.working_hours_start,
-        working_hours_end: availabilityPolicy.working_hours_end,
+        working_hours_start: effectiveWindow.start,
+        working_hours_end: effectiveWindow.end,
         // PF-011 separates when a visit may start from how long this service occupies
         // the doctor/cabinet. The static policy owns the start cadence; the service rule
         // owns visit duration.
@@ -170,7 +242,8 @@ export function createClinicCardAvailabilityExecutor(
       );
     }
 
-    // total_slots and free_slots_count always reflect the full day — before any filtering.
+    // total_slots and free_slots_count always reflect the full provider-authorized
+    // working window — before any requested-time filtering.
     const total_slots = result.data.total_slots;
     const free_slots_count = result.data.free_slots_count;
 

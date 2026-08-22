@@ -28,6 +28,12 @@ const ENV: Record<string, string> = {
       doctor_id: 11,
       cabinet_id: 21,
       duration_minutes: 30,
+      availability: {
+        working_days: [1, 2, 3, 4, 5, 6, 7],
+        working_hours_start: "09:00",
+        working_hours_end: "18:00",
+        closed_dates: [],
+      },
     },
     {
       service_key: "orthodontics",
@@ -35,6 +41,12 @@ const ENV: Record<string, string> = {
       doctor_id: 12,
       cabinet_id: 22,
       duration_minutes: 60,
+      availability: {
+        working_days: [1, 2, 3, 4, 5, 6, 7],
+        working_hours_start: "09:00",
+        working_hours_end: "18:00",
+        closed_dates: [],
+      },
     },
   ]),
 };

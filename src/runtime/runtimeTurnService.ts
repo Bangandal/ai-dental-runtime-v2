@@ -17,6 +17,7 @@ import type {
   SubjectIntent,
   PhoneOwnershipIntent,
 } from "./bookingSubjectsState.ts";
+import type { AgentQualificationState } from "./agentQualification.ts";
 
 export type RuntimeTurnInput = RuntimeAgentTurnInput;
 
@@ -33,6 +34,7 @@ export interface RuntimeTurnResult {
   execution_subject_id?: SubjectId | null;
   booking_subjects_after_resolution?: BookingSubjectsState | null;
   booking_apply_resolution?: BookingApplyResolution | null;
+  qualification?: AgentQualificationState | null;
 }
 
 export interface RuntimeTurnService {
@@ -76,5 +78,6 @@ export function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): Runt
     ...(result.execution_subject_id !== undefined ? { execution_subject_id: result.execution_subject_id } : {}),
     ...(result.booking_subjects_after_resolution !== undefined ? { booking_subjects_after_resolution: result.booking_subjects_after_resolution } : {}),
     ...(result.booking_apply_resolution !== undefined ? { booking_apply_resolution: result.booking_apply_resolution } : {}),
+    ...(result.qualification !== undefined ? { qualification: result.qualification } : {}),
   };
 }

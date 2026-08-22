@@ -13,16 +13,13 @@ import {
 } from "./openaiRuntimeAgent.ts";
 import { prepareBookingApplyExecution } from "./bookingApplyExecutionPreparation.ts";
 import type { SubjectId, BookingSubjectsState } from "./bookingSubjectsState.ts";
-import { applyToolPolicy, type PlannerOutput, type ToolName, type TruthSnapshot } from "./toolPolicy.ts";
-import { executeAllowedTools, type ToolExecutorRegistry, type ToolExecutionContext } from "./toolExecutor.ts";
-import { buildTruthSnapshot } from "./truthSnapshot.ts";
+import type { ToolExecutorRegistry } from "./toolExecutor.ts";
 import type { ConversationMemoryRepository } from "./runtimeRepositories.ts";
-import type { ToolExecutionResult } from "./toolResults.ts";
 import { buildModelVisibleCallerContext } from "./modelVisibleCallerContext.ts";
 import { buildRuntimeLlmCallDebug } from "./llmCallDebug.ts";
 import { buildBookingApplyActionTruth, buildBookingApplyEmergencyFallback } from "./bookingApplyGuard.ts";
 import { buildCallerExceptionDiagnostics, sanitizeErrorMessage } from "./callerExceptionDiagnostics.ts";
-import { hasTrustedPhone, hasBookingContactPhone, hasBookingApplyPending } from "./bookingContactGuard.ts";
+import { hasTrustedPhone, hasBookingApplyPending } from "./bookingContactGuard.ts";
 import { shouldInterceptNoSlotsBeforeBookingApply } from "./bookingApplyPreflight.ts";
 import { evaluateBookingApplyPreflight } from "./bookingApplyPreflightDecision.ts";
 import { isPastBookingTime, buildPastTimeReply, getTodayInTimezone } from "./bookingPreflight.ts";
@@ -39,6 +36,8 @@ import {
 } from "./bookingProcessState.ts";
 import { executeBookingSelectSlotBatch } from "./bookingSelectSlot.ts";
 import { buildPhoneCaptureUi, sanitizePhoneCaptureUiForChannel } from "./channelCapabilityPolicy.ts";
+import { executeRuntimeToolRequest, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
+export { buildSubjectAwarePhoneFields, hasSubjectOrContactPhone } from "./runtimeToolRequestExecution.ts";
 
 export interface RuntimeAgentCallerInput {
   model: string;
@@ -532,41 +531,17 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
             continue;
           }
 
-          const planner = buildPlannerFromAgentToolRequest(request);
-          const truth = resolveTruthSnapshot(input, request, planner, turnNow);
-          const policy = applyToolPolicy(planner, truth);
-          if (policy.tools_denied.length > 0 || policy.tools_allowed.length === 0) {
-            const denial = policy.tools_denied[0];
-            toolResults.push({
-              tool: request.tool,
-              call_id: request.call_id,
-              status: "denied",
-              error: {
-                code: denial?.reason ?? "policy_denied",
-                message: `Tool denied by policy: ${denial?.reason ?? "unknown"}`,
-              },
-            });
-            continue;
-          }
-
-          const executionContext = buildExecutionContext(
-            request.tool === "booking.apply" ? effectiveInput : input,
+          const execution = await executeRuntimeToolRequest({
+            input: request.tool === "booking.apply" ? effectiveInput : input,
             request,
-            planner,
-            truth,
-            turnNow,
-            request.tool === "booking.apply" ? round1ExecutionSubjectId : null,
-          );
-          const executionResults = await executeAllowedTools({
-            tools_allowed: policy.tools_allowed,
-            registry: deps.executors,
-            context: executionContext,
+            executors: deps.executors,
+            now: turnNow,
+            execution_subject_id: request.tool === "booking.apply" ? round1ExecutionSubjectId : null,
           });
-          const execResult = executionResults[0];
-          if (execResult?.tool === "availability.check" && execResult.status === "success" && execResult._diagnostic !== undefined) {
-            debug.availability_diagnostic = execResult._diagnostic;
+          if (execution.availability_diagnostic !== undefined) {
+            debug.availability_diagnostic = execution.availability_diagnostic;
           }
-          toolResults.push(convertToolExecutionResult(request, execResult));
+          toolResults.push(execution.tool_result);
         }
 
         // Update booking process state with tool results from this round.
@@ -933,32 +908,14 @@ export function createRuntimeAgentLoop(deps: CreateRuntimeAgentLoopDeps): OpenAI
           }
 
           debug.reason = "booking_apply_executed_after_round2_request";
-          const bPlanner = buildPlannerFromAgentToolRequest(pendingBookingApply);
-          const bTruth = resolveTruthSnapshot(effectiveInput, pendingBookingApply, bPlanner, turnNow);
-          const bPolicy = applyToolPolicy(bPlanner, bTruth);
-
-          let bookingToolResult: RuntimeAgentToolResult;
-          if (bPolicy.tools_denied.length > 0 || bPolicy.tools_allowed.length === 0) {
-            const denial = bPolicy.tools_denied[0];
-            bookingToolResult = {
-              tool: "booking.apply",
-              call_id: pendingBookingApply.call_id,
-              status: "denied",
-              error: {
-                code: denial?.reason ?? "policy_denied",
-                message: `Tool denied by policy: ${denial?.reason ?? "unknown"}`,
-              },
-            };
-          } else {
-            // Pass resolved execution subject so phone is drawn from the correct subject
-            const bExecCtx = buildExecutionContext(effectiveInput, pendingBookingApply, bPlanner, bTruth, turnNow, round2ExecutionSubjectId);
-            const bExecResults = await executeAllowedTools({
-              tools_allowed: bPolicy.tools_allowed,
-              registry: deps.executors,
-              context: bExecCtx,
-            });
-            bookingToolResult = convertToolExecutionResult(pendingBookingApply, bExecResults[0]);
-          }
+          const bookingExecution = await executeRuntimeToolRequest({
+            input: effectiveInput,
+            request: pendingBookingApply,
+            executors: deps.executors,
+            now: turnNow,
+            execution_subject_id: round2ExecutionSubjectId,
+          });
+          const bookingToolResult = bookingExecution.tool_result;
 
           const allResults = [...toolResults, bookingToolResult];
           const bookingApplyTruth = buildBookingApplyActionTruth(allResults);
@@ -1524,311 +1481,6 @@ export function maybeAttachPhoneRequestUI(
     };
   }
   return sanitized;
-}
-
-function buildPlannerFromAgentToolRequest(request: RuntimeAgentToolRequest): PlannerOutput {
-  if (request.tool === "availability.check") {
-    return {
-      confidence: "high",
-      tools_requested: ["availability.check"],
-      reply_strategy: "answer_only",
-      turn_type: "availability_request",
-      booking_action: "check_availability",
-    };
-  }
-
-  if (request.tool === "booking.apply") {
-    return {
-      confidence: "high",
-      tools_requested: ["booking.apply"],
-      reply_strategy: "answer_only",
-      turn_type: "booking",
-      booking_action: "confirm",
-      explicit_patient_confirmation: true,
-      booking_request: {
-        service: typeof request.arguments.service === "string" ? request.arguments.service : null,
-        preferred_date_text: typeof request.arguments.requested_date === "string" ? request.arguments.requested_date : null,
-        preferred_time_text: typeof request.arguments.requested_time === "string" ? request.arguments.requested_time : null,
-      },
-    };
-  }
-
-  if (request.tool === "appointment.lookup") {
-    return {
-      confidence: "high",
-      tools_requested: ["appointment.lookup"],
-      reply_strategy: "answer_only",
-      turn_type: "faq",
-      booking_action: null,
-    };
-  }
-
-  return {
-    confidence: "high",
-    tools_requested: ["kb.search"],
-    reply_strategy: "answer_only",
-    turn_type: "faq",
-    booking_action: null,
-  };
-}
-
-function resolveTruthSnapshot(
-  input: RuntimeAgentTurnInput,
-  request: RuntimeAgentToolRequest,
-  planner: PlannerOutput,
-  now?: Date,
-): TruthSnapshot {
-  const provided = input.truth_snapshot;
-  if (provided && typeof provided === "object") {
-    const typed = provided as Partial<TruthSnapshot>;
-    if (typeof typed.scheduling_intent_present === "boolean" && typeof typed.date_or_time_present === "boolean") {
-      return typed as TruthSnapshot;
-    }
-  }
-
-  return buildTruthSnapshot({
-    planner,
-    now,
-    current_turn_flags: {
-      scheduling_intent_present: request.tool === "availability.check" || request.tool === "booking.apply",
-      date_or_time_present: typeof request.arguments.requested_date === "string"
-        || typeof request.arguments.requested_time === "string",
-    },
-  });
-}
-
-function buildExecutionContext(
-  input: RuntimeAgentTurnInput,
-  request: RuntimeAgentToolRequest,
-  planner: PlannerOutput,
-  truth_snapshot: TruthSnapshot,
-  now?: Date,
-  executionSubjectId?: SubjectId | null,
-): ToolExecutionContext {
-  // service_interest: availability.check uses "service_interest"; booking.apply uses "service".
-  const serviceInterest =
-    typeof request.arguments.service_interest === "string"
-      ? request.arguments.service_interest
-      : typeof request.arguments.service === "string"
-        ? request.arguments.service
-        : null;
-
-  return {
-    trace_id: input.trace_id,
-    clinic_id: input.clinic_id,
-    contact_id: input.contact_id ?? undefined,
-    case_id: input.case_id ?? undefined,
-    locale: input.locale,
-    query_text: typeof request.arguments.query === "string" ? request.arguments.query : undefined,
-    requested_date: typeof request.arguments.requested_date === "string" ? request.arguments.requested_date : undefined,
-    requested_time: typeof request.arguments.requested_time === "string" ? request.arguments.requested_time : null,
-    service_interest: serviceInterest,
-    limit: typeof request.arguments.limit === "number" ? request.arguments.limit : undefined,
-    timezone: typeof request.arguments.timezone === "string" ? request.arguments.timezone : undefined,
-    planner,
-    truth_snapshot,
-    now,
-    // booking.apply phone: subject-aware when booking_subjects present, fallback to global contacts.
-    // Uses frozen executionSubjectId when provided (from booking.apply.subject_id resolution).
-    first_name: typeof request.arguments.first_name === "string" ? request.arguments.first_name : undefined,
-    last_name: typeof request.arguments.last_name === "string" ? request.arguments.last_name : undefined,
-    // appointment.lookup: pass subject_id, booking_subjects, and date args to context.
-    // Phone for subject_1 (or no registry) comes from channel_contact.
-    // For subject_2+, the executor resolves the subject's phone from lookup_booking_subjects.
-    // Typed and shared_from_subject are rejected by the executor's identity gate.
-    ...(request.tool === "appointment.lookup"
-      ? {
-          phone_number: input.channel_contact?.phone_number,
-          phone_source: input.channel_contact?.phone_source,
-          phone_trust: undefined,
-          lookup_subject_id: typeof request.arguments.subject_id === "string" ? request.arguments.subject_id : undefined,
-          lookup_date_from: typeof request.arguments.date_from === "string" ? request.arguments.date_from : undefined,
-          lookup_date_to: typeof request.arguments.date_to === "string" ? request.arguments.date_to : undefined,
-          lookup_booking_subjects: input.booking_subjects
-            ? {
-                subjects: (input.booking_subjects.subjects as Array<{ id: string; booking_contact: { phone_number: string; source: string; owner_subject_id?: string | null } | null }>).map((s) => ({
-                  id: s.id,
-                  booking_contact: s.booking_contact
-                    ? { phone_number: s.booking_contact.phone_number, source: s.booking_contact.source, owner_subject_id: (s.booking_contact as Record<string, unknown>).owner_subject_id as string | null ?? null }
-                    : null,
-                })),
-              }
-            : null,
-        }
-      : buildSubjectAwarePhoneFields(input, executionSubjectId)),
-  } as ToolExecutionContext;
-}
-
-/** Returns the active subject's phone fields for booking.apply, or falls back to global contacts. */
-type SubjectLike = { id: string; booking_contact?: unknown };
-
-/** Resolves booking phone fields from a booking_contact, handling shared_from_subject by
- *  looking up the owner subject's actual contact source. Never passes "shared_from_subject"
- *  to the executor — always resolves to the underlying original source. */
-function resolveBookingContactFields(
-  bc: Record<string, unknown>,
-  allSubjects: SubjectLike[],
-): { phone_number: string | undefined; phone_source: string | undefined; phone_trust: string | undefined } {
-  if (bc.source === "shared_from_subject") {
-    const ownerId = bc.owner_subject_id as string | null | undefined;
-    if (!ownerId) return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
-    const owner = allSubjects.find((s) => s.id === ownerId);
-    const ownerBc = (owner?.booking_contact ?? null) as Record<string, unknown> | null;
-    if (!ownerBc?.phone_number) return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
-    return {
-      phone_number: ownerBc.phone_number as string,
-      phone_source: ownerBc.source as string | undefined,
-      // Inherit owner trust — never upgrade typed/unverified to trusted
-      phone_trust: ownerBc.trust === "trusted" ? "trusted" : "unverified",
-    };
-  }
-  return {
-    phone_number: bc.phone_number as string,
-    phone_source: bc.source as string | undefined,
-    phone_trust: (bc.trust === "trusted" || bc.trust === "trusted_contact_owner") ? "trusted" : "unverified",
-  };
-}
-
-/**
- * Returns phone fields for booking.apply execution, using the resolved execution subject
- * when booking_subjects registry is active. Falls back to global phone contacts otherwise.
- * @param executionSubjectId - frozen subject id from booking.apply preparation; overrides active_subject_id
- */
-export function buildSubjectAwarePhoneFields(
-  input: RuntimeAgentTurnInput,
-  executionSubjectId?: SubjectId | null,
-): {
-  phone_number: string | undefined;
-  phone_source: string | undefined;
-  phone_trust: string | undefined;
-  contact_phone_owner_subject_id?: string | null;
-} {
-  if (input.booking_subjects) {
-    // Registry active: execution subject must be explicit — no fallback to active_subject_id.
-    if (!executionSubjectId) return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
-    const subjects = input.booking_subjects.subjects as SubjectLike[];
-    const target = subjects.find((s) => s.id === executionSubjectId);
-    const bc = (target?.booking_contact ?? null) as Record<string, unknown> | null;
-    if (bc?.phone_number) return resolveBookingContactFields(bc, subjects);
-    // Fallback: sender (subject_1) is responsible party when target has no explicit phone.
-    // Covers the common case: sender books for another person and their trusted contact
-    // (e.g. Telegram button press) serves as the booking contact phone.
-    if (executionSubjectId !== ("subject_1" as SubjectId)) {
-      const s1 = subjects.find((s) => s.id === "subject_1");
-      const s1Bc = (s1?.booking_contact ?? null) as Record<string, unknown> | null;
-      if (s1Bc?.phone_number && s1Bc.trust === "trusted") {
-        return {
-          ...resolveBookingContactFields(s1Bc, subjects),
-          contact_phone_owner_subject_id: "subject_1",
-        };
-      }
-      if (input.channel_contact?.phone_number) {
-        return {
-          phone_number: input.channel_contact.phone_number,
-          phone_source: input.channel_contact.phone_source,
-          phone_trust: undefined,
-        };
-      }
-    }
-    return { phone_number: undefined, phone_source: undefined, phone_trust: undefined };
-  }
-  // Single-subject (no registry): suppress legacy typed provided_phone if this conversation
-  // ever had a multi-subject registry — old ownerless typed phone must not leak into self-booking.
-  // Exception: a typed phone that was entered THIS turn is fresh and must be used.
-  const isCurrentTurnTypedPhone =
-    input.current_turn_typed_phone != null &&
-    input.provided_phone?.phone_source === "typed" &&
-    input.provided_phone.phone_number === input.current_turn_typed_phone;
-  const suppressTypedPhone =
-    input.had_booking_subjects &&
-    input.provided_phone?.phone_source === "typed" &&
-    !isCurrentTurnTypedPhone;
-  const effectiveProvided = suppressTypedPhone ? null : (input.provided_phone ?? null);
-  return {
-    phone_number: effectiveProvided?.phone_number ?? input.channel_contact?.phone_number,
-    phone_source: effectiveProvided?.phone_source ?? input.channel_contact?.phone_source,
-    phone_trust: effectiveProvided ? effectiveProvided.phone_trust : undefined,
-  };
-}
-
-/**
- * True when the resolved execution subject has a phone suitable for booking.
- * With an active registry, executionSubjectId must be explicit — no fallback to active_subject_id.
- * When subject has no explicit phone, falls back to subject_1 (sender) as responsible party,
- * or global channel_contact. Without a registry, falls back to global channel_contact / provided_phone.
- */
-export function hasSubjectOrContactPhone(input: RuntimeAgentTurnInput, executionSubjectId: SubjectId | null): boolean {
-  if (input.booking_subjects) {
-    // Registry active but no resolved execution subject → no phone (prevents active-subject bypass)
-    if (!executionSubjectId) return false;
-    const subjects = input.booking_subjects.subjects as SubjectLike[];
-    const target = subjects.find((s) => s.id === executionSubjectId);
-    const bc = (target?.booking_contact ?? null) as Record<string, unknown> | null;
-    if (!bc?.phone_number) {
-      // Fallback: sender (subject_1) as responsible party when target has no phone.
-      if (executionSubjectId !== ("subject_1" as SubjectId)) {
-        const s1 = subjects.find((s) => s.id === "subject_1");
-        const s1Bc = (s1?.booking_contact ?? null) as Record<string, unknown> | null;
-        if (s1Bc?.phone_number && s1Bc.trust === "trusted") return true;
-        return hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: null });
-      }
-      return false;
-    }
-    if (bc.source === "shared_from_subject") {
-      const ownerId = bc.owner_subject_id as string | null | undefined;
-      if (!ownerId) return false;
-      const owner = subjects.find((s) => s.id === ownerId);
-      const ownerBc = (owner?.booking_contact ?? null) as Record<string, unknown> | null;
-      return ownerBc?.phone_number != null;
-    }
-    return true;
-  }
-  // Suppress legacy typed provided_phone when conversation had multi-subject registry,
-  // unless the phone was entered this turn (fresh).
-  const isCurrentTurnTypedPhoneForHas =
-    input.current_turn_typed_phone != null &&
-    input.provided_phone?.phone_source === "typed" &&
-    input.provided_phone.phone_number === input.current_turn_typed_phone;
-  const suppressTypedPhone =
-    input.had_booking_subjects &&
-    input.provided_phone?.phone_source === "typed" &&
-    !isCurrentTurnTypedPhoneForHas;
-  const effectiveProvided = suppressTypedPhone ? null : (input.provided_phone ?? null);
-  return hasBookingContactPhone({ channelContact: input.channel_contact, providedPhone: effectiveProvided });
-}
-
-function convertToolExecutionResult(
-  request: RuntimeAgentToolRequest,
-  result: ToolExecutionResult | undefined,
-): RuntimeAgentToolResult {
-  if (!result) {
-    return {
-      tool: request.tool,
-      call_id: request.call_id,
-      status: "failed",
-      error: { code: "missing_execution_result", message: "Tool execution produced no result" },
-    };
-  }
-
-  if (result.status === "success") {
-    return { tool: request.tool, call_id: request.call_id, status: "success", data: result.data };
-  }
-
-  if (result.status === "not_implemented") {
-    return {
-      tool: request.tool,
-      call_id: request.call_id,
-      status: "failed",
-      error: result.error ?? { code: "tool_not_implemented", message: "Tool not implemented", retryable: false },
-    };
-  }
-
-  return {
-    tool: request.tool,
-    call_id: request.call_id,
-    status: "failed",
-    error: result.error,
-  };
 }
 
 /** Marks debug so callers/logs can see the OpenAI conversation_id for this turn

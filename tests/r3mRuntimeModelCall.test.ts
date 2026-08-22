@@ -115,21 +115,30 @@ test("R3m: caller exceptions become typed failure outcomes without changing conv
   assert.equal(outcome.conversation_id, "conv_safe");
 });
 
-test("R3m structure: main loop uses bounded iteration state while terminal helpers retain canonical transport boundary", async () => {
+test("R3v structure: bounded iterator owns main model transport while terminal helpers retain canonical boundary", async () => {
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const loopSource = await readFile(resolve(thisDir, "../src/runtime/runtimeAgentLoopLegacy.ts"), "utf8");
+  const iteratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeBoundedModelToolLoop.ts"), "utf8");
+  const orchestratorSource = await readFile(resolve(thisDir, "../src/runtime/runtimeTurnModelToolOrchestrator.ts"), "utf8");
   const helperBoundary = loopSource.indexOf("// ── Multiple-blocked booking.apply helper");
   assert.ok(helperBoundary > 0);
 
   const mainRunTurn = loopSource.slice(0, helperBoundary);
   const terminalHelpers = loopSource.slice(helperBoundary);
 
+  assert.equal(mainRunTurn.match(/invokeRuntimeModelIteration\(\{/g)?.length ?? 0, 0);
+  assert.equal(mainRunTurn.match(/invokeRuntimeModelCall\(\{/g)?.length ?? 0, 0);
   assert.equal(
-    mainRunTurn.match(/invokeRuntimeModelIteration\(\{/g)?.length,
-    3,
-    "the three main model steps must share the bounded iteration owner",
+    mainRunTurn.match(/runRuntimeTurnModelToolOrchestration\(\{/g)?.length,
+    1,
+    "legacy shell must delegate the whole main model/tool sequence to one orchestrator",
   );
-  assert.doesNotMatch(mainRunTurn, /invokeRuntimeModelCall\(\{/);
+  assert.equal(
+    iteratorSource.match(/invokeRuntimeModelIteration\(\{/g)?.length,
+    1,
+    "generic bounded iterator must be the single main iteration transport owner",
+  );
+  assert.match(orchestratorSource, /runRuntimeBoundedModelToolLoop\(\{/);
   assert.equal(
     terminalHelpers.match(/invokeRuntimeModelCall\(\{/g)?.length,
     2,

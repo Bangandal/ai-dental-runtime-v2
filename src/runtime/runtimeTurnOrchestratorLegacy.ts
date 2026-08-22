@@ -536,11 +536,6 @@ export async function runRuntimeTurnOrchestrated(
       caseLiteCurrent = applyBookingStatusToCase(caseLiteCurrent, result.tool_results);
     }
 
-    // executionSubjectId: read directly from the loop result — the loop resolves
-    // subject_id via Guard J (bookingSubjectExecutionResolver) and passes it back.
-    // No fallback to active_subject_id: if missing, no booking executed this turn.
-    const executionSubjectId: SubjectId | null = result.execution_subject_id ?? null;
-
     // Pre-subjects: prefer loop-bootstrapped registry (result.booking_subjects_after_resolution)
     // which may be a new registry created this turn when model targeted subject_2+.
     // Fall back to DB-loaded registry, then to intent-based bootstrap (subject_intent path).
@@ -563,7 +558,6 @@ export async function runRuntimeTurnOrchestrated(
           subjectIntent: bookingSubjectsForTurn ? (result.subject_intent ?? null) : null,
           phoneOwnershipIntent: result.phone_ownership_intent ?? null,
           bookingApplyResolution: result.booking_apply_resolution ?? null,
-          executionSubjectId,
         })
       : null;
 

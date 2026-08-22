@@ -890,11 +890,9 @@ export function postUpdateBookingSubjects(params: {
   toolResults: RuntimeAgentToolResult[];
   subjectIntent?: SubjectIntent | null;
   phoneOwnershipIntent?: PhoneOwnershipIntent | null;
-  /** Identifies the specific booking.apply request that was eligible for execution and its subject.
-   * When provided, used exclusively to match request/result — never falls back to find-first. */
+  /** Frozen booking target for the specific booking.apply call.
+   * When provided, used exclusively to match request/result and patient state. */
   bookingApplyResolution?: BookingApplyResolution | null;
-  /** Frozen execution subject (legacy). Ignored when bookingApplyResolution is present. */
-  executionSubjectId?: SubjectId | null;
 }): BookingSubjectsState {
   const { current, toolRequests, toolResults, subjectIntent, phoneOwnershipIntent } = params;
   const resolution = params.bookingApplyResolution ?? null;
@@ -919,8 +917,8 @@ export function postUpdateBookingSubjects(params: {
     ? toolResults.find((r) => r.tool === "booking.apply" && r.call_id === applyReq.call_id)
     : undefined;
 
-  // Determine effective subject: prefer resolution, fall back to legacy executionSubjectId.
-  const effectiveSubjectId: SubjectId | null = resolution?.subject_id ?? params.executionSubjectId ?? null;
+  // The frozen resolution is the only post-turn booking identity proof.
+  const effectiveSubjectId: SubjectId | null = resolution?.subject_id ?? null;
 
   // If booking.apply was present but no subject resolved, leave state unchanged.
   if (applyReq && !effectiveSubjectId) {

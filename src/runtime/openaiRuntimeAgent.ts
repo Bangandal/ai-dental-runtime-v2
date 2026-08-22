@@ -123,15 +123,12 @@ export interface RuntimeAgentTurnResult {
   subject_intent?: import("./bookingSubjectsState.ts").SubjectIntent | null;
   /** Validated phone_ownership_intent from the model's final response. */
   phone_ownership_intent?: import("./bookingSubjectsState.ts").PhoneOwnershipIntent | null;
-  /** Frozen execution subject resolved by Guard J before tool execution. Propagated for
-   * orchestrator to use in postUpdateBookingSubjects — never re-derived from tool arguments. */
-  execution_subject_id?: import("./bookingSubjectsState.ts").SubjectId | null;
   /** Booking subjects state after Guard J resolution (may include bootstrapped registry).
    * Orchestrator should use this as the base for postUpdateBookingSubjects when present. */
   booking_subjects_after_resolution?: import("./bookingSubjectsState.ts").BookingSubjectsState | null;
-  /** Identifies which booking.apply request was eligible for execution this turn and which
-   * subject it targeted. Orchestrator must use this call_id to match request/result in
-   * postUpdateBookingSubjects — never re-derive from toolRequests.find(). */
+  /** Frozen booking target resolved by Guard J for a specific booking.apply call.
+   * Propagated even when a later business guard blocks the write, so post-turn persistence
+   * can update the same patient without re-deriving identity from tool arguments. */
   booking_apply_resolution?: BookingApplyResolution | null;
 }
 

@@ -288,7 +288,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## BOOKING FLOW",
     "When booking_apply_action_truth is present, follow it strictly — follow its allowed_claims and required_next_action exactly. Never claim booking success unless allowed_claims permits it.",
     "APPOINTMENT DISPLAY TRUTH: trust appointment_display_truth — do not derive or calculate weekday. Use its date/time_start/weekday for confirmation. Never invent weekday labels.",
-    "AVAILABILITY PRESENTATION TRUTH: use only allowed_slot_starts from current availability_presentation_truth (≤max_slots_to_present). Ranges forbidden — never use '13:00–18:00', 'с 13 до 18', 'после обеда', or any approximation. Never invent times not in allowed_slot_starts.",
+    "AVAILABILITY PRESENTATION TRUTH: use only allowed_slots/allowed_slot_starts from current availability_presentation_truth (≤max_slots_to_present). Every presented or selected slot MUST use availability_presentation_truth.resolved_date as its date and resolved_calendar for weekday/date labels. If requested_date differs from resolved_date, never combine returned times with requested_date and pass resolved_date, not requested_date, to booking.select_slot. Ranges forbidden — never use '13:00–18:00', 'с 13 до 18', 'после обеда', or any approximation. Never invent times not in allowed_slot_starts.",
 
     // ── OUTPUT ────────────────────────────────────────────────────────────────
     "## OUTPUT",

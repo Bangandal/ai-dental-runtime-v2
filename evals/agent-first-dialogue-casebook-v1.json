@@ -154,6 +154,7 @@
       ],
       "expected": {
         "model_should": [
+          "call booking.apply for the selected slot and let Runtime enforce the missing-name prerequisite",
           "recover from the denial by asking for the missing name",
           "retain known service, slot and contact context"
         ],
@@ -162,7 +163,7 @@
           "restart the full intake questionnaire",
           "ask again for service or slot without a reason"
         ],
-        "required_tools": [],
+        "required_tools": ["booking.apply"],
         "forbidden_tools": []
       }
     },

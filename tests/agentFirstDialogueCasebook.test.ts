@@ -100,15 +100,8 @@ test("casebook covers every model-facing clinic action at least once", async () 
 
   assert.equal(required.has("kb.search"), true);
   assert.equal(required.has("availability.check"), true);
+  assert.equal(required.has("booking.apply"), true);
   assert.equal(required.has("appointment.lookup"), true);
-
-  // booking.apply is intentionally conditional in the casebook because Runtime write
-  // prerequisites determine whether the model may successfully complete the action.
-  assert.match(
-    JSON.stringify(casebook.cases),
-    /booking\.apply/,
-    "casebook must still exercise the semantic booking action and its write boundary",
-  );
 });
 
 test("Prompt 2.0 exposes the architecture needed by the casebook without scripting the cases", () => {

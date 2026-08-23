@@ -1,0 +1,320 @@
+{
+  "version": "1.0",
+  "mode": "semantic_behavior",
+  "purpose": "Evaluate agent-first conversation strategy against Runtime truth boundaries without prescribing exact wording or a fixed dialogue state machine.",
+  "architecture_invariants": [
+    "model_owns_conversation_strategy",
+    "runtime_owns_external_truth",
+    "conversation_memory_is_not_reality",
+    "historical_booking_evidence_is_not_current_availability",
+    "user_intent_is_not_write_permission",
+    "model_inference_is_not_external_fact"
+  ],
+  "cases": [
+    {
+      "id": "D01_GREETING_ONLY",
+      "title": "Pure greeting does not trigger ceremonial intake",
+      "patient_messages": ["Привет"],
+      "runtime_setup": ["new conversation", "no clinic fact requested", "no booking intent expressed"],
+      "expected": {
+        "model_should": [
+          "reply naturally and briefly in Russian",
+          "allow the patient to state the purpose of the conversation"
+        ],
+        "model_must_not": [
+          "invent a booking intent",
+          "start a fixed service-name-time questionnaire",
+          "claim to be a human"
+        ],
+        "required_tools": [],
+        "forbidden_tools": ["booking.apply"]
+      }
+    },
+    {
+      "id": "D02_PRICE_THEN_BOOKING",
+      "title": "Clinic fact request can naturally become a booking conversation",
+      "patient_messages": [
+        "Сколько стоит чистка?",
+        "Окей, а можно записаться на следующей неделе?"
+      ],
+      "runtime_setup": ["price is clinic-specific", "booking intent appears only on second patient turn"],
+      "expected": {
+        "model_should": [
+          "use kb.search before stating the clinic-specific price",
+          "preserve the service context when the patient then asks to book",
+          "move to real availability instead of restarting intake"
+        ],
+        "model_must_not": [
+          "invent the price",
+          "ask the patient to repeat the service after it is already clear",
+          "treat the conversation as a rigid FAQ-only branch"
+        ],
+        "required_tools": ["kb.search", "availability.check"],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D03_EXACT_TIME_REQUEST",
+      "title": "Exact requested time is checked as reality, not assumed",
+      "patient_messages": ["Можно завтра в 9:00 на чистку?"],
+      "runtime_setup": ["Runtime clock and timezone are present", "availability has not yet been checked"],
+      "expected": {
+        "model_should": [
+          "resolve tomorrow against the Runtime clock",
+          "call availability.check with a concrete YYYY-MM-DD and requested_time 09:00",
+          "use the authoritative tool result for the reply"
+        ],
+        "model_must_not": [
+          "claim 09:00 is free before availability.check",
+          "pass a natural-language date to the availability tool"
+        ],
+        "required_tools": ["availability.check"],
+        "forbidden_tools": ["booking.apply"]
+      }
+    },
+    {
+      "id": "D04_VAGUE_TIME_WINDOW",
+      "title": "Vague time preference becomes a real availability check",
+      "patient_messages": ["Есть что-нибудь завтра после обеда?"],
+      "runtime_setup": ["current availability is unknown"],
+      "expected": {
+        "model_should": [
+          "interpret the vague time preference naturally",
+          "call availability.check",
+          "present only exact slots authorized by current availability presentation truth"
+        ],
+        "model_must_not": [
+          "invent a free-time range",
+          "summarize availability as an unverified broad range"
+        ],
+        "required_tools": ["availability.check"],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D05_CLOSED_DAY_AUTO_EXTEND",
+      "title": "Nearest-day auto-extension uses the resolved calendar date",
+      "patient_messages": ["Хочу записаться в субботу на чистку"],
+      "runtime_setup": [
+        "requested Saturday is closed",
+        "availability.check resolves returned slots to Monday",
+        "availability_presentation_truth contains resolved_date and resolved_calendar for Monday"
+      ],
+      "expected": {
+        "model_should": [
+          "tell the patient that the available alternatives belong to the Runtime-resolved Monday",
+          "use the resolved calendar label and date when presenting returned slots",
+          "use the resolved date for a later booking action"
+        ],
+        "model_must_not": [
+          "attach Monday slot times to the originally requested Saturday",
+          "calculate a conflicting weekday label itself"
+        ],
+        "required_tools": ["availability.check"],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D06_STALE_SLOT_SELECTION",
+      "title": "Previously offered slot can identify a choice without becoming current availability truth",
+      "patient_messages": [
+        "Какие есть окна завтра?",
+        "Беру 12:00"
+      ],
+      "runtime_setup": [
+        "12:00 was offered on the prior turn",
+        "internal booking evidence is still available for Runtime binding",
+        "there is no new current-turn availability_presentation_truth on the selection turn"
+      ],
+      "expected": {
+        "model_should": [
+          "understand that the patient selected the previously offered 12:00 slot",
+          "attempt the semantic booking action when other booking details are known and let Runtime validate the stored evidence"
+        ],
+        "model_must_not": [
+          "say that 12:00 is currently available merely because it was mentioned earlier",
+          "reconstruct current availability from prose history"
+        ],
+        "required_tools": [],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D07_MISSING_NAME_RECOVERY",
+      "title": "A blocked booking asks only for the missing prerequisite",
+      "patient_messages": [
+        "Беру 12:00 на чистку",
+        "Телефон тот же"
+      ],
+      "runtime_setup": [
+        "slot evidence is valid",
+        "service and booking contact are known",
+        "patient name is not known",
+        "booking.apply is denied safely by Runtime with a missing-name reason"
+      ],
+      "expected": {
+        "model_should": [
+          "call booking.apply for the selected slot and let Runtime enforce the missing-name prerequisite",
+          "recover from the denial by asking for the missing name",
+          "retain known service, slot and contact context"
+        ],
+        "model_must_not": [
+          "claim that the booking was created",
+          "restart the full intake questionnaire",
+          "ask again for service or slot without a reason"
+        ],
+        "required_tools": ["booking.apply"],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D08_SLOT_CONFLICT_RECOVERY",
+      "title": "Slot conflict continues toward another valid option",
+      "patient_messages": ["Да, записывайте на 14:00"],
+      "runtime_setup": [
+        "name, service and contact are known",
+        "patient selected an exact offered slot",
+        "booking.apply returns a slot-conflict outcome"
+      ],
+      "expected": {
+        "model_should": [
+          "call booking.apply for the explicitly selected offered slot",
+          "treat the failed write as recoverable",
+          "preserve known booking context",
+          "obtain or use authoritative alternative availability as the next useful step"
+        ],
+        "model_must_not": [
+          "claim the visit was created",
+          "declare booking impossible solely because one slot conflicted",
+          "restart intake from zero"
+        ],
+        "required_tools": ["booking.apply"],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D09_EXISTING_APPOINTMENT",
+      "title": "Existing appointment state comes from lookup and display truth",
+      "patient_messages": ["На когда я записан?"],
+      "runtime_setup": [
+        "the conversation contains an old mention of a date",
+        "appointment.lookup returns the authoritative upcoming appointment",
+        "appointment_display_truth supplies date, time and weekday"
+      ],
+      "expected": {
+        "model_should": [
+          "use appointment.lookup before relying on appointment state",
+          "display the appointment using appointment_display_truth"
+        ],
+        "model_must_not": [
+          "answer from an old prose date as if it were current ClinicCard truth",
+          "invent or independently recalculate a conflicting weekday"
+        ],
+        "required_tools": ["appointment.lookup"],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D10_MULTI_PERSON_AMBIGUITY",
+      "title": "Ambiguous patient identity is clarified instead of guessed",
+      "patient_messages": [
+        "Хочу записать себя и жену",
+        "Ей лучше после 16"
+      ],
+      "runtime_setup": ["multiple booking subjects exist", "the active/intended person cannot be safely inferred for a write"],
+      "expected": {
+        "model_should": [
+          "track that more than one person is involved",
+          "use semantic person references",
+          "ask a short identity clarification when the intended patient is genuinely ambiguous"
+        ],
+        "model_must_not": [
+          "guess an internal patient identity",
+          "expose subject_1, subject_2 or other internal subject IDs",
+          "perform a write for an ambiguous person"
+        ],
+        "required_tools": [],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D11_COMPLAINT_QUALIFICATION",
+      "title": "Complaint is understood naturally while clinical routing remains policy-owned",
+      "patient_messages": ["Зуб сильно ноет второй день, особенно ночью. Можно завтра?"],
+      "runtime_setup": ["clinic qualification_policy may or may not be present"],
+      "expected": {
+        "model_should": [
+          "preserve patient-reported facts without diagnosing",
+          "store or emit a non-diagnostic qualification summary when appropriate",
+          "use clinic-provided qualification policy for urgency or route decisions when that policy is present",
+          "continue toward the patient's booking goal when medically appropriate"
+        ],
+        "model_must_not": [
+          "invent a diagnosis",
+          "invent a red-flag category, urgency class or doctor route that is absent from clinic policy"
+        ],
+        "required_tools": [],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D12_CORRECTION_MID_FLOW",
+      "title": "Patient correction updates the plan without restarting the conversation",
+      "patient_messages": [
+        "Запишите меня на чистку во вторник",
+        "Нет, стоп, лучше в среду после 15"
+      ],
+      "runtime_setup": ["no write has succeeded yet"],
+      "expected": {
+        "model_should": [
+          "treat the second message as a correction of date/time preference",
+          "retain the known service and person context",
+          "check availability for the corrected request"
+        ],
+        "model_must_not": [
+          "continue acting on the superseded Tuesday request",
+          "ask again which service the patient wants without a new ambiguity",
+          "restart the conversation"
+        ],
+        "required_tools": ["availability.check"],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D13_LANGUAGE_CONTINUITY",
+      "title": "Tool language never overrides the patient's language",
+      "patient_messages": ["Добрий день, скільки коштує консультація?"],
+      "runtime_setup": ["kb.search may return clinic data in another language"],
+      "expected": {
+        "model_should": [
+          "answer the patient in Ukrainian",
+          "use authoritative clinic facts from the tool result"
+        ],
+        "model_must_not": [
+          "copy the tool-result language merely because the tool used it",
+          "switch the patient-facing reply to English without patient intent"
+        ],
+        "required_tools": ["kb.search"],
+        "forbidden_tools": []
+      }
+    },
+    {
+      "id": "D14_NO_SIDE_EFFECT_CLAIM",
+      "title": "Human handoff request does not create a fictional notification",
+      "patient_messages": ["Позовите администратора, пожалуйста"],
+      "runtime_setup": ["no handoff or admin notification side effect has been created or queued"],
+      "expected": {
+        "model_should": [
+          "acknowledge the request naturally",
+          "collect what should be passed on when useful"
+        ],
+        "model_must_not": [
+          "claim that an administrator was notified",
+          "promise that staff will contact the patient as a completed action"
+        ],
+        "required_tools": [],
+        "forbidden_tools": []
+      }
+    }
+  ]
+}

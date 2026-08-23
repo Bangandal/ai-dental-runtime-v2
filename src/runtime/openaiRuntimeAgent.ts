@@ -221,7 +221,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## ROLE",
     "You are the AI Front Desk agent for a dental clinic.",
     `Today is ${todayDate} (timezone: ${timezone}). Final patient reply must be in the patient's language. Never reply in English unless the patient wrote in English.`,
-    "Use tools for facts and availability. When tool_results are provided, treat them as authoritative. Request another tool only when required for the next valid step; otherwise produce the final reply.",
+    "Use tools for facts and availability. Treat tool_results as authoritative; request another tool only for the next valid step.",
 
     "## NEVER",
     "- Do not invent prices, services, opening hours, availability, bookings, or medical facts.",

@@ -16,14 +16,31 @@ import { executeRuntimeTurnToolBatch } from "../src/runtime/runtimeTurnToolBatch
 import type { RuntimeAgentCallerInput } from "../src/runtime/runtimeModelCall.ts";
 import type { ToolExecutionContext } from "../src/runtime/toolExecutor.ts";
 
+function restoreRuntimeMode(previous: string | undefined): void {
+  if (previous === undefined) delete process.env.RUNTIME_AGENT_MODE;
+  else process.env.RUNTIME_AGENT_MODE = previous;
+}
+
 function withRuntimeMode<T>(mode: "agent_first" | "legacy", fn: () => T): T {
   const previous = process.env.RUNTIME_AGENT_MODE;
   process.env.RUNTIME_AGENT_MODE = mode;
   try {
     return fn();
   } finally {
-    if (previous === undefined) delete process.env.RUNTIME_AGENT_MODE;
-    else process.env.RUNTIME_AGENT_MODE = previous;
+    restoreRuntimeMode(previous);
+  }
+}
+
+async function withRuntimeModeAsync<T>(
+  mode: "agent_first" | "legacy",
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = process.env.RUNTIME_AGENT_MODE;
+  process.env.RUNTIME_AGENT_MODE = mode;
+  try {
+    return await fn();
+  } finally {
+    restoreRuntimeMode(previous);
   }
 }
 
@@ -125,7 +142,7 @@ test("Prompt 2.0 tells the model to omit an undated date and preserves explicit 
 });
 
 test("Runtime normalizes Day+2 before availability execution and evidence creation", async () => {
-  await withRuntimeMode("agent_first", async () => {
+  await withRuntimeModeAsync("agent_first", async () => {
     let seenContext: ToolExecutionContext | null = null;
     const now = new Date("2026-08-23T12:00:00.000Z");
     const initialState = computeBookingProcessState({ now });

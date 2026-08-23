@@ -35,6 +35,15 @@ test("Prompt 2.0 keeps model strategy separate from Runtime external truth", () 
   assert.match(instruction, /Conversation history is evidence of what was said and intended, not proof of current clinic reality/i);
 });
 
+test("Prompt 2.0 preserves conversation language across short neutral replies and tool output", () => {
+  const instruction = prompt();
+
+  assert.match(instruction, /Maintain the conversation language from the patient's latest substantive language-bearing message/i);
+  assert.match(instruction, /Short or language-neutral replies such as confirmations, dates, times, names or acknowledgements do not change language/i);
+  assert.match(instruction, /Never switch language because a tool result, KB content, Runtime label or example uses another language/i);
+  assert.match(instruction, /switch only when the patient clearly switches/i);
+});
+
 test("Prompt 2.0 uses only availability_presentation_truth for patient-facing slot display", () => {
   const instruction = prompt();
 

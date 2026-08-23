@@ -85,9 +85,13 @@ export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): Ru
     process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim() ||
     process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() ||
     deps.model;
-  // These two classifiers are observability-only and their shadow outputs have
-  // should_apply=false. In agent-first they must not add serial model round-trips
-  // to the patient-facing critical path. Legacy keeps the historical wiring.
+  // These two classifiers are shadow-only and should_apply=false. In agent-first
+  // they must not add serial model round-trips to the patient-facing critical path.
+  // This intentionally also retires classifier-derived topic_memory writes in
+  // agent-first: buildModelVisibleRuntimeContext never projects topic_memory to the
+  // patient-facing model, and these same classifiers are disabled there, so keeping
+  // the write would preserve two synchronous LLM calls for legacy shadow telemetry.
+  // Legacy keeps the historical classifier + topic-memory behavior unchanged.
   const wireSynchronousShadowClassifiers = !isAgentFirstRuntimeEnabled();
 
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });

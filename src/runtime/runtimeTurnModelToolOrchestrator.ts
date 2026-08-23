@@ -15,6 +15,7 @@ import { getLegacyRuntimeTurnToolBatchDebugReason } from "./runtimeTurnToolBatch
 import { findLastAvailabilityRequest } from "./availabilityActionTruth.ts";
 import { getTodayInTimezone, isPastBookingTime } from "./bookingPreflight.ts";
 import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
+import { applyAgentFirstUndatedAvailabilityDefault } from "./agentFirstAvailabilityDefaults.ts";
 import {
   runRuntimeBoundedModelToolLoop,
   type RuntimeBoundedModelToolLoopOutcome,
@@ -153,8 +154,17 @@ export async function runRuntimeTurnModelToolOrchestration(params: {
     message: params.input.user_message,
     initial_context: initialProjection.context,
     async execute_batch({ requests, domain_state, batch_number }) {
-      const processedToolRequests = [...domain_state.processed_tool_requests, ...requests];
-      const toolCallArgs = [...domain_state.tool_call_args, ...projectToolCallArgs(requests)];
+      // Resolve the agent-first undated availability default before the request becomes
+      // cumulative Runtime history. This guarantees executor input, booking evidence,
+      // availability truth, model projection and debug/tool-call surfaces all describe the
+      // same authoritative requested date. Explicit patient dates are never rewritten.
+      const effectiveRequests = applyAgentFirstUndatedAvailabilityDefault({
+        requests,
+        now: params.now,
+        timezone: params.timezone,
+      });
+      const processedToolRequests = [...domain_state.processed_tool_requests, ...effectiveRequests];
+      const toolCallArgs = [...domain_state.tool_call_args, ...projectToolCallArgs(effectiveRequests)];
 
       // Legacy keeps the historical hard abort for an explicitly expired time.
       // Agent-first owns conversational recovery, so the request reaches the ordinary
@@ -163,7 +173,7 @@ export async function runRuntimeTurnModelToolOrchestration(params: {
       const pastTimeDetail = isAgentFirstRuntimeEnabled()
         ? null
         : resolvePastAvailabilityDetail({
-            requests,
+            requests: effectiveRequests,
             timezone: params.timezone,
             now: params.now,
           });
@@ -186,7 +196,7 @@ export async function runRuntimeTurnModelToolOrchestration(params: {
         : params.input;
 
       const batch = await executeRuntimeTurnToolBatch({
-        requests,
+        requests: effectiveRequests,
         input: effectiveInput,
         executors: params.executors,
         booking_process_state: domain_state.booking_process_state,

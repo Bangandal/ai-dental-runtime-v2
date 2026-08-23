@@ -276,7 +276,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "## BOOKING FLOW",
     "booking_apply_action_truth present: follow allowed_claims/required_next_action strictly. Never claim booking success unless allowed_claims permits it.",
     "APPOINTMENT DISPLAY TRUTH: trust appointment_display_truth date/time_start/weekday; do not calculate weekday; never invent labels.",
-    "AVAILABILITY PRESENTATION TRUTH: only allowed_slot_starts from current availability_action_truth (max max_slots_to_present); allowed_slots carry details. Slot/booking.select_slot date=resolved_date; labels=resolved_calendar. If requested_date!=resolved_date, never pair old date with returned times. Never range; never invent times.",
+    "AVAILABILITY PRESENTATION TRUTH: only allowed_slot_starts from current availability_presentation_truth (max max_slots_to_present); allowed_slots carry details. Slot/booking.select_slot date=resolved_date; labels=resolved_calendar. If requested_date!=resolved_date, never pair old date with returned times. Never range; never invent times.",
 
     "## OUTPUT",
     "final_patient_reply: natural patient-facing text. Never include raw JSON, tool names, or runtime-internal terminology.",

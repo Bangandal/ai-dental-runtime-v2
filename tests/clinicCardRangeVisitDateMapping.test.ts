@@ -68,27 +68,100 @@ test("listVisits range derives each visit date from full visit_start when date f
   );
 });
 
-test("listVisits range fails closed when a time-only visit has no date field", async () => {
-  const fetch: ClinicCardFetch = async () => okResponse({
-    result: "ok",
-    error: null,
-    data: [
-      {
-        visit_id: "789",
-        visit_start: "11:15",
-        visit_end: "11:45",
-        doctor_id: "111431",
-        cabinet_id: "43393",
-        status: "PLANNED",
-      },
-    ],
-  });
+test("listVisits range falls back to bounded single-day reads for time-only visits", async () => {
+  const reads: Array<{ from: string; to: string }> = [];
+  const fetch: ClinicCardFetch = async (url) => {
+    const parsed = new URL(url);
+    const from = parsed.searchParams.get("from") ?? "";
+    const to = parsed.searchParams.get("to") ?? "";
+    reads.push({ from, to });
+
+    if (from !== to) {
+      return okResponse({
+        result: "ok",
+        error: null,
+        data: [
+          {
+            visit_id: "789",
+            visit_start: "11:15",
+            visit_end: "11:45",
+            doctor_id: "111431",
+            cabinet_id: "43393",
+            status: "PLANNED",
+          },
+        ],
+      });
+    }
+
+    return okResponse({
+      result: "ok",
+      error: null,
+      data: from === "2026-07-08"
+        ? [
+            {
+              visit_id: "789",
+              visit_start: "11:15",
+              visit_end: "11:45",
+              doctor_id: "111431",
+              cabinet_id: "43393",
+              status: "PLANNED",
+            },
+          ]
+        : [],
+    });
+  };
 
   const adapter = createClinicCardAdapter(CONFIG, fetch);
   const result = await adapter.listVisits("2026-07-06", "2026-07-12");
+
+  assert.equal(result.ok, true);
+  if (!result.ok) throw new Error("unexpected failure");
+  assert.deepEqual(
+    result.data.map((visit) => ({ id: visit.id, date: visit.date, time_start: visit.time_start })),
+    [{ id: 789, date: "2026-07-08", time_start: "11:15" }],
+  );
+  assert.equal(reads.length, 8, "one range read plus seven bounded day reads");
+  assert.deepEqual(reads[0], { from: "2026-07-06", to: "2026-07-12" });
+  assert.deepEqual(
+    reads.slice(1).map((read) => read.from),
+    [
+      "2026-07-06",
+      "2026-07-07",
+      "2026-07-08",
+      "2026-07-09",
+      "2026-07-10",
+      "2026-07-11",
+      "2026-07-12",
+    ],
+  );
+});
+
+test("listVisits does not expand a wider ambiguous range into unbounded fallback reads", async () => {
+  let reads = 0;
+  const fetch: ClinicCardFetch = async () => {
+    reads += 1;
+    return okResponse({
+      result: "ok",
+      error: null,
+      data: [
+        {
+          visit_id: "789",
+          visit_start: "11:15",
+          visit_end: "11:45",
+          doctor_id: "111431",
+          cabinet_id: "43393",
+          status: "PLANNED",
+        },
+      ],
+    });
+  };
+
+  const adapter = createClinicCardAdapter(CONFIG, fetch);
+  const result = await adapter.listVisits("2026-07-01", "2026-07-12");
 
   assert.equal(result.ok, false);
   if (result.ok) throw new Error("expected validation failure");
   assert.equal(result.error.code, "cliniccard_validation_error");
   assert.match(result.error.message, /missing date\/visit_date/);
+  assert.equal(reads, 1, "wider ambiguous range must stay fail-closed");
 });

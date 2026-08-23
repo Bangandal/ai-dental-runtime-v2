@@ -4,7 +4,10 @@ import {
   buildAvailabilityActionTruth,
   resolveAuthoritativeAvailabilityAttempt,
 } from "./availabilityActionTruth.ts";
-import { buildAvailabilityPresentationTruth } from "./availabilityPresentationTruth.ts";
+import {
+  buildAvailabilityPresentationTruth,
+  type AvailabilityPresentationTruth,
+} from "./availabilityPresentationTruth.ts";
 import { buildAppointmentDisplayTruth } from "./appointmentDisplayTruth.ts";
 import {
   buildModelVisibleBookingProcessState,
@@ -13,6 +16,7 @@ import {
   type ModelVisibleBookingProcessState,
 } from "./bookingProcessState.ts";
 import { composeRuntimeModelContext } from "./modelVisibleCallerContext.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 
 export interface RuntimeTurnModelProjection {
   context: Record<string, unknown>;
@@ -21,6 +25,33 @@ export interface RuntimeTurnModelProjection {
   availability_action_truth: ReturnType<typeof buildAvailabilityActionTruth>;
   availability_presentation_truth: ReturnType<typeof buildAvailabilityPresentationTruth>;
   appointment_display_truth: ReturnType<typeof buildAppointmentDisplayTruth>;
+}
+
+/**
+ * Agent-first keeps persisted availability evidence for deterministic booking proof, but that
+ * evidence is not presentation authority on a later patient turn. Only an authoritative
+ * availability.check from the current turn may expose a list of slots as currently available.
+ *
+ * Keep selected_slot/proof untouched: a patient may choose a previously offered exact slot and
+ * Runtime still needs to validate that choice against persisted evidence before booking.apply.
+ */
+export function enforceCurrentTurnAvailabilityPresentationBoundary(params: {
+  state: ModelVisibleBookingProcessState;
+  current_turn_truth: AvailabilityPresentationTruth | null;
+  require_current_turn_truth: boolean;
+}): ModelVisibleBookingProcessState {
+  if (!params.require_current_turn_truth || params.current_turn_truth !== null) {
+    return params.state;
+  }
+
+  return {
+    ...params.state,
+    last_available_slots: [],
+    next_action:
+      params.state.next_action === "choose_from_available_slots"
+        ? undefined
+        : params.state.next_action,
+  };
 }
 
 /**
@@ -57,12 +88,17 @@ export function buildRuntimeTurnModelProjection(params: {
     hasBookingToolResult ||
     params.booking_process_state.selected_slot != null;
 
-  const visibleBookingState = buildModelVisibleBookingProcessState({
+  const baseVisibleBookingState = buildModelVisibleBookingProcessState({
     state: params.booking_process_state,
     priorProcessState: params.prior_booking_process_state,
     bookingStateGrounded,
     now: params.now,
     timezone: params.timezone,
+  });
+  const visibleBookingState = enforceCurrentTurnAvailabilityPresentationBoundary({
+    state: baseVisibleBookingState,
+    current_turn_truth: availabilityPresentationTruth,
+    require_current_turn_truth: isAgentFirstRuntimeEnabled(),
   });
 
   return {

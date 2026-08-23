@@ -20,6 +20,7 @@ import { loadAdminNotifyConfig } from "../integrations/adminNotify/adminNotifyCo
 import { createAdminNotifier } from "../integrations/adminNotify/telegramAdminNotifier.ts";
 import { createOpenAIRuntimeCaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
 import type { RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 
 export interface TelegramBootstrapConfig {
   botToken: string;
@@ -84,6 +85,10 @@ export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): Ru
     process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim() ||
     process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() ||
     deps.model;
+  // These two classifiers are observability-only and their shadow outputs have
+  // should_apply=false. In agent-first they must not add serial model round-trips
+  // to the patient-facing critical path. Legacy keeps the historical wiring.
+  const wireSynchronousShadowClassifiers = !isAgentFirstRuntimeEnabled();
 
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
   const bookingProcessStateRepository = createSupabaseBookingProcessStateRepository({ rpc: deps.rpc });
@@ -130,8 +135,12 @@ export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): Ru
     clinicIdentityResolver,
     runtimeContextRepository,
     caseContextRepository,
-    runtimeGateClassifier: createOpenAIRuntimeGateClassifier({ client: deps.openaiClient, model: runtimeGateModel }),
-    turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({ client: deps.openaiClient, model: turnUnderstandingModel }),
+    ...(wireSynchronousShadowClassifiers
+      ? {
+          runtimeGateClassifier: createOpenAIRuntimeGateClassifier({ client: deps.openaiClient, model: runtimeGateModel }),
+          turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({ client: deps.openaiClient, model: turnUnderstandingModel }),
+        }
+      : {}),
     caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: caseRouterModel }),
     debugEnabled: deps.debugEnabled,
     adminNotifier,

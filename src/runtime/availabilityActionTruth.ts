@@ -15,14 +15,36 @@ export type AvailabilityRequiredNextAction =
   | "ask_for_future_date"
   | "retry_or_contact_clinic";
 
+export type AvailabilityWeekdayCode =
+  | "monday"
+  | "tuesday"
+  | "wednesday"
+  | "thursday"
+  | "friday"
+  | "saturday"
+  | "sunday";
+
 export interface AvailabilityActionTruth {
   outcome: AvailabilityOutcome;
   requested_date: string | null;
+  requested_weekday: AvailabilityWeekdayCode | null;
   requested_time: string | null;
+  /** Date the successful slot payload actually belongs to. May differ after auto-extension. */
+  resolved_date: string | null;
+  resolved_weekday: AvailabilityWeekdayCode | null;
+  /** Set only when Runtime searched forward from the requested date. */
+  nearest_available_date: string | null;
   can_present_slots: boolean;
   required_next_action: AvailabilityRequiredNextAction;
   /** HH:MM values only — same format as availability_presentation_truth.allowed_slot_starts. */
   allowed_slot_starts: string[];
+}
+
+/** Strict YYYY-MM-DD date extraction from starts_at. */
+export function extractSlotDate(startsAt: unknown): string | null {
+  if (typeof startsAt !== "string") return null;
+  const match = startsAt.match(/^(\d{4}-\d{2}-\d{2})T/);
+  return match ? match[1] : null;
 }
 
 /** Extracts HH:MM from an ISO starts_at string or a bare "HH:MM" string. */
@@ -32,6 +54,27 @@ export function extractSlotHHMM(startsAt: unknown): string | null {
   if (iso) return iso[1];
   const bare = startsAt.match(/^(\d{2}:\d{2})$/);
   return bare ? bare[1] : null;
+}
+
+/**
+ * Language-neutral calendar truth for an ISO date. Returns null for malformed or
+ * impossible dates so Runtime never gives the model an invented weekday.
+ */
+export function getAvailabilityWeekdayCode(date: string | null): AvailabilityWeekdayCode | null {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const parsed = new Date(`${date}T12:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== date) return null;
+  const day = parsed.getUTCDay();
+  const codes: AvailabilityWeekdayCode[] = [
+    "sunday",
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+  ];
+  return codes[day] ?? null;
 }
 
 export interface AuthoritativeAvailabilityPair {
@@ -131,6 +174,56 @@ export function extractUniqueAllowedSlotStarts(result: RuntimeAgentToolResult): 
   return starts;
 }
 
+function resolveSuccessfulAvailabilityDate(
+  result: RuntimeAgentToolResult,
+  requestedDate: string | null,
+): { resolved_date: string | null; nearest_available_date: string | null } {
+  const data = result.data as { slots?: unknown[]; nearest_available_date?: unknown } | null | undefined;
+  const nearest = typeof data?.nearest_available_date === "string" ? data.nearest_available_date : null;
+  if (nearest !== null) {
+    return { resolved_date: nearest, nearest_available_date: nearest };
+  }
+
+  if (Array.isArray(data?.slots)) {
+    for (const slot of data.slots) {
+      if (!slot || typeof slot !== "object") continue;
+      const startsAt = (slot as { starts_at?: unknown }).starts_at;
+      const slotDate = extractSlotDate(startsAt);
+      if (slotDate !== null) {
+        return { resolved_date: slotDate, nearest_available_date: null };
+      }
+    }
+  }
+
+  // Successful empty result is still authoritative negative truth for the requested date.
+  return { resolved_date: requestedDate, nearest_available_date: null };
+}
+
+function baseTruth(params: {
+  outcome: AvailabilityOutcome;
+  requested_date: string | null;
+  requested_time: string | null;
+  resolved_date?: string | null;
+  nearest_available_date?: string | null;
+  can_present_slots: boolean;
+  required_next_action: AvailabilityRequiredNextAction;
+  allowed_slot_starts?: string[];
+}): AvailabilityActionTruth {
+  const resolvedDate = params.resolved_date ?? null;
+  return {
+    outcome: params.outcome,
+    requested_date: params.requested_date,
+    requested_weekday: getAvailabilityWeekdayCode(params.requested_date),
+    requested_time: params.requested_time,
+    resolved_date: resolvedDate,
+    resolved_weekday: getAvailabilityWeekdayCode(resolvedDate),
+    nearest_available_date: params.nearest_available_date ?? null,
+    can_present_slots: params.can_present_slots,
+    required_next_action: params.required_next_action,
+    allowed_slot_starts: params.allowed_slot_starts ?? [],
+  };
+}
+
 /**
  * Builds availability action truth from a pre-resolved authoritative attempt.
  *
@@ -151,27 +244,25 @@ export function buildAvailabilityActionTruth(
     typeof request.arguments.requested_time === "string" ? request.arguments.requested_time : null;
 
   if (pair === null) {
-    return {
+    return baseTruth({
       outcome: "technical_failure",
       requested_date,
       requested_time,
       can_present_slots: false,
       required_next_action: "retry_or_contact_clinic",
-      allowed_slot_starts: [],
-    };
+    });
   }
 
   const { result } = pair;
 
   if (result.status === "denied") {
-    return {
+    return baseTruth({
       outcome: "denied",
       requested_date,
       requested_time,
       can_present_slots: false,
       required_next_action: "retry_or_contact_clinic",
-      allowed_slot_starts: [],
-    };
+    });
   }
 
   if (result.status === "failed") {
@@ -179,53 +270,54 @@ export function buildAvailabilityActionTruth(
       result.error?.code === "availability_missing_requested_date" ||
       result.error?.code === "availability_invalid_requested_date"
     ) {
-      return {
+      return baseTruth({
         outcome: "needs_date",
         requested_date,
         requested_time,
         can_present_slots: false,
         required_next_action: "ask_for_date",
-        allowed_slot_starts: [],
-      };
+      });
     }
     if (result.error?.code === "availability_past_date") {
-      return {
+      return baseTruth({
         outcome: "past_date",
         requested_date,
         requested_time,
         can_present_slots: false,
         required_next_action: "ask_for_future_date",
-        allowed_slot_starts: [],
-      };
+      });
     }
-    return {
+    return baseTruth({
       outcome: "technical_failure",
       requested_date,
       requested_time,
       can_present_slots: false,
       required_next_action: "retry_or_contact_clinic",
-      allowed_slot_starts: [],
-    };
+    });
   }
 
   // success
   const allowed_slot_starts = extractUniqueAllowedSlotStarts(result);
+  const dates = resolveSuccessfulAvailabilityDate(result, requested_date);
   if (allowed_slot_starts.length > 0) {
-    return {
+    return baseTruth({
       outcome: "slots_available",
       requested_date,
       requested_time,
+      resolved_date: dates.resolved_date,
+      nearest_available_date: dates.nearest_available_date,
       can_present_slots: true,
       required_next_action: "choose_slot",
       allowed_slot_starts,
-    };
+    });
   }
-  return {
+  return baseTruth({
     outcome: "no_slots",
     requested_date,
     requested_time,
+    resolved_date: dates.resolved_date,
+    nearest_available_date: dates.nearest_available_date,
     can_present_slots: false,
     required_next_action: "ask_for_alternative_time",
-    allowed_slot_starts: [],
-  };
+  });
 }

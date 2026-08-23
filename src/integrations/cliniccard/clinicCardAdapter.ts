@@ -48,6 +48,8 @@ const VALID_NORMALIZED_VISIT_STATUSES: ReadonlySet<string> = new Set<ClinicCardN
   "UNKNOWN",
 ]);
 
+const MAX_VISIT_RANGE_FALLBACK_DAYS = 7;
+
 function isBlank(value: unknown): boolean {
   return typeof value !== "string" || value.trim().length === 0;
 }
@@ -112,6 +114,18 @@ function asTimeHHMM(value: unknown): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * ClinicCard may omit date/visit_date and instead return a full local datetime in
+ * visit_start (for example "2026-07-08 11:15:00" or ISO "2026-07-08T11:15:00").
+ * Preserve that per-visit date for multi-day reads. Time-only values deliberately do
+ * not produce a date because there is no safe day to infer inside a range response.
+ */
+function asDateYYYYMMDDFromDateTime(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(\d{4}-\d{2}-\d{2})(?:[ T]|$)/);
+  return match ? match[1] : null;
+}
+
 function asVisitStatus(value: unknown): ClinicCardNormalizedVisitStatus {
   return typeof value === "string" && VALID_NORMALIZED_VISIT_STATUSES.has(value)
     ? value as ClinicCardNormalizedVisitStatus
@@ -172,9 +186,14 @@ function normalizeVisit(raw: unknown, fallbackDate?: string): ClinicCardResult<C
   const patientId = asPositiveNumber(row.patient_id);
   const doctorId = asPositiveNumber(row.doctor_id);
   const cabinetId = asPositiveNumber(row.cabinet_id);
-  const date = asOptionalString(row.date ?? row.visit_date) ?? fallbackDate;
-  const timeStart = asTimeHHMM(row.time_start ?? row.visit_start ?? row.start_time);
-  const timeEnd = asTimeHHMM(row.time_end ?? row.visit_end ?? row.end_time);
+  const startValue = row.time_start ?? row.visit_start ?? row.start_time;
+  const endValue = row.time_end ?? row.visit_end ?? row.end_time;
+  const date =
+    asOptionalString(row.date ?? row.visit_date) ??
+    asDateYYYYMMDDFromDateTime(startValue) ??
+    fallbackDate;
+  const timeStart = asTimeHHMM(startValue);
+  const timeEnd = asTimeHHMM(endValue);
 
   if (doctorId === null) return validationError("ClinicCard visit response missing positive doctor_id");
   if (cabinetId === null) return validationError("ClinicCard visit response missing positive cabinet_id");
@@ -207,6 +226,29 @@ function normalizeVisits(raw: unknown, fallbackDate?: string): ClinicCardResult<
     visits.push(normalized.data);
   }
   return { ok: true, data: visits };
+}
+
+function enumerateBoundedIsoDates(from: string, to: string): string[] | null {
+  const isoDate = /^\d{4}-\d{2}-\d{2}$/;
+  if (!isoDate.test(from) || !isoDate.test(to) || from > to) return null;
+
+  const start = new Date(`${from}T12:00:00Z`);
+  const end = new Date(`${to}T12:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+  if (start.toISOString().slice(0, 10) !== from || end.toISOString().slice(0, 10) !== to) return null;
+
+  const dates: string[] = [];
+  for (let current = start; current <= end; current = new Date(current.getTime() + 86_400_000)) {
+    dates.push(current.toISOString().slice(0, 10));
+    if (dates.length > MAX_VISIT_RANGE_FALLBACK_DAYS) return null;
+  }
+  return dates;
+}
+
+function isMissingVisitDateValidation(result: ClinicCardResult<ClinicCardVisit[]>): boolean {
+  return !result.ok
+    && result.error.code === "cliniccard_validation_error"
+    && /missing date\/visit_date/i.test(result.error.message);
 }
 
 function toClinicCardCreatePatientPayload(input: ClinicCardCreatePatientInput): Record<string, unknown> {
@@ -347,7 +389,35 @@ export function createClinicCardAdapter(
         `/api/visits?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`,
       );
       if (!result.ok) return result;
-      return normalizeVisits(result.data, from === to ? from : undefined);
+
+      const normalized = normalizeVisits(result.data, from === to ? from : undefined);
+      if (normalized.ok || from === to || !isMissingVisitDateValidation(normalized)) {
+        return normalized;
+      }
+
+      // Some ClinicCard installations return time-only visit_start/visit_end values even for
+      // a multi-day query. A range response then contains no trustworthy per-visit date. For
+      // the short availability window only, retry each day concurrently so the request date is
+      // an authoritative fallback. This preserves correctness without a seven-request serial
+      // latency chain. Wider callers remain fail-closed instead of exploding into many reads.
+      const fallbackDates = enumerateBoundedIsoDates(from, to);
+      if (!fallbackDates) return normalized;
+
+      const dayResults = await Promise.all(fallbackDates.map(async (date) => {
+        const dayResult = await request<unknown>(
+          "GET",
+          `/api/visits?from=${encodeURIComponent(date)}&to=${encodeURIComponent(date)}`,
+        );
+        if (!dayResult.ok) return dayResult as ClinicCardResult<ClinicCardVisit[]>;
+        return normalizeVisits(dayResult.data, date);
+      }));
+
+      const visits: ClinicCardVisit[] = [];
+      for (const dayResult of dayResults) {
+        if (!dayResult.ok) return dayResult;
+        visits.push(...dayResult.data);
+      }
+      return { ok: true, data: visits };
     },
 
     async createVisit(input) {

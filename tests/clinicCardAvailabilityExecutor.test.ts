@@ -137,26 +137,40 @@ test("API error from adapter returns failed result", async () => {
 // ── 8. All slots booked → success with empty slots ────────────────────────────
 
 test("all slots booked returns success with empty slots array and zero free_slots_count", async () => {
-  const visits: ClinicCardVisit[] = [];
-  for (let m = 9 * 60; m < 18 * 60; m += 30) {
-    const hh = String(Math.floor(m / 60)).padStart(2, "0");
-    const mm = String(m % 60).padStart(2, "0");
-    const hh2 = String(Math.floor((m + 30) / 60)).padStart(2, "0");
-    const mm2 = String((m + 30) % 60).padStart(2, "0");
-    visits.push({
-      id: m,
-      patient_id: 1,
-      doctor_id: 111431,
-      cabinet_id: 43393,
-      date: "2026-07-01",
-      time_start: `${hh}:${mm}`,
-      time_end: `${hh2}:${mm2}`,
-      status: "PLANNED",
-    });
-  }
+  // The adapter mirrors ClinicCard range semantics: every date in [from,to] is fully
+  // booked, so the one-read forward scan cannot accidentally treat later dates as free.
+  const fullyBookedAdapter: AvailabilityAdapter = {
+    listVisits: async (from: string, to: string) => {
+      const booked: ClinicCardVisit[] = [];
+      let visitId = 1;
+      let date = from;
+      while (date <= to) {
+        for (let m = 9 * 60; m < 18 * 60; m += 30) {
+          const hh = String(Math.floor(m / 60)).padStart(2, "0");
+          const mm = String(m % 60).padStart(2, "0");
+          const hh2 = String(Math.floor((m + 30) / 60)).padStart(2, "0");
+          const mm2 = String((m + 30) % 60).padStart(2, "0");
+          booked.push({
+            id: visitId++,
+            patient_id: 1,
+            doctor_id: 111431,
+            cabinet_id: 43393,
+            date,
+            time_start: `${hh}:${mm}`,
+            time_end: `${hh2}:${mm2}`,
+            status: "PLANNED",
+          });
+        }
+        const next = new Date(`${date}T12:00:00Z`);
+        next.setUTCDate(next.getUTCDate() + 1);
+        date = next.toISOString().slice(0, 10);
+      }
+      return { ok: true, data: booked };
+    },
+  };
   const executor = createClinicCardAvailabilityExecutor({
     env: VALID_ENV,
-    adapterFactory: () => makeAdapter(visits),
+    adapterFactory: () => fullyBookedAdapter,
   });
   const result = await executor({ service_interest: "availability", requested_date: "2026-07-01" });
   assert.equal(result.status, "success");

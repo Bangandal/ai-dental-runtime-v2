@@ -40,6 +40,31 @@ function minutesToHHMM(value: number): string {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+function addCalendarDays(date: string, days: number): string {
+  const value = new Date(`${date}T12:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+function countSlotsInWindow(input: {
+  start: string;
+  end: string;
+  interval_minutes: number;
+  appointment_duration_minutes: number;
+}): number {
+  const start = timeToMinutes(input.start);
+  const end = timeToMinutes(input.end);
+  let count = 0;
+  for (
+    let t = start;
+    t + input.appointment_duration_minutes <= end;
+    t += input.interval_minutes
+  ) {
+    count++;
+  }
+  return count;
+}
+
 function resolveEffectiveProviderWindow(input: {
   clinic_start: string;
   clinic_end: string;
@@ -122,7 +147,8 @@ export function createClinicCardAvailabilityExecutor(
 
     // Calendar truth is global and must be resolved before service routing. A malformed
     // date is a date error, and a globally closed/non-working day is authoritative
-    // negative availability without requiring a service mapping.
+    // negative availability without requiring a service mapping unless the caller asks
+    // us to auto-extend to another working day.
     if (getIsoWeekday(requestedDate) === null) {
       return makeFailedToolResult(
         "availability.check",
@@ -156,11 +182,15 @@ export function createClinicCardAvailabilityExecutor(
       );
     }
     const availabilityPolicy = availabilityPolicyResult.data;
+    const requestedDateInsideClinicSchedule = isDateInsideAvailabilityPolicy(
+      requestedDate,
+      availabilityPolicy,
+    );
 
-    // A configured non-working/closed date is authoritative negative evidence.
-    // No service mapping or ClinicCard visit read is needed because the schedule policy
-    // proves the clinic cannot offer any service slot on that date.
-    if (!isDateInsideAvailabilityPolicy(requestedDate, availabilityPolicy)) {
+    // A specific requested time on a clinic-closed day is authoritatively unavailable.
+    // When no specific time was requested we keep going so Runtime can search the next
+    // provider-authorized working day rather than asking the model to iterate dates.
+    if (!requestedDateInsideClinicSchedule && requestedTime !== null) {
       return emptyAvailabilityResult(timezone, requestedTime);
     }
 
@@ -193,7 +223,11 @@ export function createClinicCardAvailabilityExecutor(
         false,
       );
     }
-    if (!isDateInsideClinicCardServiceSchedule(requestedDate, serviceSchedule.schedule)) {
+    const requestedDateInsideProviderSchedule = isDateInsideClinicCardServiceSchedule(
+      requestedDate,
+      serviceSchedule.schedule,
+    );
+    if (!requestedDateInsideProviderSchedule && requestedTime !== null) {
       return emptyAvailabilityResult(timezone, requestedTime);
     }
 
@@ -210,8 +244,94 @@ export function createClinicCardAvailabilityExecutor(
 
     const adapterFactory = deps.adapterFactory ?? ((cfg: ClinicCardConfig) => createClinicCardAdapter(cfg));
     const adapter = adapterFactory(config);
-
     const debugEnabled = isAvailabilityDebugEnabled(deps.env);
+
+    /**
+     * Resolve the nearest later day with a single ClinicCard range read. The availability
+     * engine already supports date_to, so a seven-day search must never become seven
+     * sequential network requests. Runtime filters the generated range back down to dates
+     * authorized by both clinic and provider schedule policies.
+     */
+    const scanForwardForNearestAvailable = async () => {
+      const rangeStart = addCalendarDays(requestedDate, 1);
+      const rangeEnd = addCalendarDays(requestedDate, 7);
+      const authorizedDates: string[] = [];
+      for (let i = 1; i <= 7; i++) {
+        const candidate = addCalendarDays(requestedDate, i);
+        if (getIsoWeekday(candidate) === null) continue;
+        if (!isDateInsideAvailabilityPolicy(candidate, availabilityPolicy)) continue;
+        if (!isDateInsideClinicCardServiceSchedule(candidate, serviceSchedule.schedule)) continue;
+        authorizedDates.push(candidate);
+      }
+
+      if (authorizedDates.length === 0) return null;
+
+      const rangeResult = await checkClinicCardAvailability(
+        {
+          date: rangeStart,
+          date_to: rangeEnd,
+          working_hours_start: effectiveWindow.start,
+          working_hours_end: effectiveWindow.end,
+          slot_duration_minutes: availabilityPolicy.slot_duration_minutes,
+          slot_interval_minutes: availabilityPolicy.slot_duration_minutes,
+          appointment_duration_minutes: serviceResource.duration_minutes,
+          doctor_id: doctorId,
+          cabinet_id: cabinetId,
+          timezone,
+        },
+        adapter,
+      );
+
+      if (!rangeResult.ok) {
+        const disposition = classifyClinicCardFailure(rangeResult.error, "read");
+        return makeFailedToolResult(
+          "availability.check",
+          rangeResult.error.code,
+          rangeResult.error.message,
+          disposition.safe_to_retry,
+        );
+      }
+
+      for (const nextDate of authorizedDates) {
+        const nextSlots = rangeResult.data.slots.filter((slot) => slot.date === nextDate);
+        if (nextSlots.length === 0) continue;
+
+        const mapped = nextSlots.map((slot) => ({
+          slot_id: `${slot.date}T${slot.time_start}`,
+          starts_at: `${slot.date}T${slot.time_start}:00`,
+          ends_at: `${slot.date}T${slot.time_end}:00`,
+        }));
+        const limit = context.limit;
+        const limited = limit !== undefined && limit > 0 ? mapped.slice(0, limit) : mapped;
+
+        return {
+          tool: "availability.check" as const,
+          status: "success" as const,
+          data: {
+            slots: limited,
+            timezone,
+            nearest_available_date: nextDate,
+            total_slots: countSlotsInWindow({
+              start: effectiveWindow.start,
+              end: effectiveWindow.end,
+              interval_minutes: availabilityPolicy.slot_duration_minutes,
+              appointment_duration_minutes: serviceResource.duration_minutes,
+            }),
+            free_slots_count: nextSlots.length,
+          },
+        };
+      }
+
+      return null;
+    };
+
+    // Closed clinic/provider days are authoritative negatives for the requested date,
+    // but when the patient asked for a date (not a specific hour) Runtime owns the
+    // deterministic search for the next working day.
+    if (!requestedDateInsideClinicSchedule || !requestedDateInsideProviderSchedule) {
+      const nearest = await scanForwardForNearestAvailable();
+      return nearest ?? emptyAvailabilityResult(timezone, requestedTime);
+    }
 
     const result = await checkClinicCardAvailability(
       {
@@ -276,6 +396,11 @@ export function createClinicCardAvailabilityExecutor(
     // Cap to limit if provided.
     const limit = context.limit;
     const limitedSlots = limit !== undefined && limit > 0 ? mappedSlots.slice(0, limit) : mappedSlots;
+
+    if (limitedSlots.length === 0 && requestedTime === null) {
+      const nearest = await scanForwardForNearestAvailable();
+      if (nearest !== null) return nearest;
+    }
 
     // Patch post-filter counts into diagnostic if it was collected.
     const diagnostic = result.data.diagnostic

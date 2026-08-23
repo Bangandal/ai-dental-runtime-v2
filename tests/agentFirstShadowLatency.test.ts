@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { createRuntimeOrchestrationDeps } from "../src/runtime/runtimeServerBootstrap.ts";
+import { buildModelVisibleRuntimeContext } from "../src/runtime/modelVisibleRuntimeContext.ts";
 import type { OpenAIResponsesClient } from "../src/runtime/openaiRuntimeAgentCaller.ts";
 import type { RpcCaller } from "../src/runtime/runtimeRepositories.ts";
 import type { EmbeddingClient } from "../src/runtime/supabaseKnowledgeRepository.ts";
@@ -31,7 +32,7 @@ function buildDeps() {
   });
 }
 
-test("agent-first production bootstrap removes observability-only shadow LLM classifiers from the patient critical path while legacy keeps them", () => {
+test("agent-first production bootstrap removes shadow LLM classifiers from the patient critical path while legacy keeps them", () => {
   const previousMode = process.env.RUNTIME_AGENT_MODE;
   try {
     process.env.RUNTIME_AGENT_MODE = "agent_first";
@@ -47,4 +48,21 @@ test("agent-first production bootstrap removes observability-only shadow LLM cla
     if (previousMode === undefined) delete process.env.RUNTIME_AGENT_MODE;
     else process.env.RUNTIME_AGENT_MODE = previousMode;
   }
+});
+
+test("classifier-derived topic_memory is not patient-facing model context", () => {
+  const projected = buildModelVisibleRuntimeContext({
+    known_contact: {},
+    conversation_state: {},
+    recent_history: [],
+    topic_memory: {
+      last_service_interest: "implant",
+      updated_at: "2026-08-23T00:00:00.000Z",
+      source: "turn_understanding",
+      confidence: "high",
+    },
+  });
+
+  assert.equal("topic_memory" in projected, false);
+  assert.deepEqual((projected.task_state as Record<string, unknown>).collected, {});
 });

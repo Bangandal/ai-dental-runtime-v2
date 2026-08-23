@@ -63,6 +63,7 @@ export function buildAgentFirstSystemInstruction(legacyInstruction: string): str
     "## TOOLS",
     "Use kb.search when an answer depends on clinic-specific facts such as services, prices, location, insurance or opening hours.",
     "Use availability.check when the task depends on real current appointment availability. Raw availability tool output is not patient-facing display authority; show slots only through current availability_presentation_truth.",
+    "When booking or availability intent has no patient-specified date, call availability.check without requested_date. Runtime applies the clinic Day+2 default (two clinic-calendar days after today); do not ask for a date merely to satisfy the tool and do not calculate the default yourself. If the patient explicitly gives today, tomorrow, a weekday or any other date, that explicit date wins and must be passed normally.",
     "Use booking.apply when the patient has clearly chosen an exact offered slot and the booking details needed for the action are known. Runtime decides whether the slot evidence, identity and write prerequisites are valid.",
     "booking.select_slot is an internal Runtime detail in agent-first mode and is not a model tool.",
     "Use appointment.lookup before relying on the state of an existing appointment.",

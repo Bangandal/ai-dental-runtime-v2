@@ -69,16 +69,26 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
     const def = defs[toolName];
     if (!def) return [];
 
-    const optionalArgs = agentFirst && toolName === "booking.apply"
-      ? [...def.optional_args, "phone_number"]
-      : [...def.optional_args];
+    const runtimeDefaultsUndatedAvailability = agentFirst && toolName === "availability.check";
+    const requiredArgs = runtimeDefaultsUndatedAvailability
+      ? def.required_args.filter((arg) => arg !== "requested_date")
+      : [...def.required_args];
+    const optionalArgs = [
+      ...def.optional_args,
+      ...(runtimeDefaultsUndatedAvailability ? ["requested_date"] : []),
+      ...(agentFirst && toolName === "booking.apply" ? ["phone_number"] : []),
+    ];
     const baseSchemas = (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas;
     const paramSchemas = agentFirst && toolName === "booking.apply"
       ? { ...(baseSchemas ?? {}), phone_number: AGENT_FIRST_PHONE_SCHEMA }
       : baseSchemas;
-    const description = agentFirst && toolName === "booking.apply"
-      ? `${def.description} If the patient supplied a booking phone, understand and normalize it yourself and pass it as phone_number.`
-      : def.description;
+    let description = def.description;
+    if (runtimeDefaultsUndatedAvailability) {
+      description = `${description} If the patient did not specify any date, omit requested_date; Runtime applies the clinic Day+2 default. Never invent a date just to satisfy the tool schema.`;
+    }
+    if (agentFirst && toolName === "booking.apply") {
+      description = `${description} If the patient supplied a booking phone, understand and normalize it yourself and pass it as phone_number.`;
+    }
 
     return [{
       type: "function",
@@ -87,11 +97,11 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
       parameters: {
         type: "object",
         properties: buildParameterProperties(
-          def.required_args,
+          requiredArgs,
           optionalArgs,
           paramSchemas,
         ),
-        required: def.required_args,
+        required: requiredArgs,
         additionalProperties: true,
       },
     }];

@@ -12,6 +12,7 @@ import {
   canDeriveAgentFirstBookingSelectionFromPriorEvidence,
   deriveAgentFirstBookingSelection,
 } from "./agentFirstBookingSlotBinding.ts";
+import { applyAgentFirstUndatedAvailabilityDefault } from "./agentFirstAvailabilityDefaults.ts";
 import {
   attachAgentFirstPhoneToExecutionSubject,
   bootstrapAgentFirstSelfSubjectForPhone,
@@ -120,6 +121,15 @@ export async function executeRuntimeTurnToolBatch(params: {
   now: Date;
   timezone: string;
 }): Promise<RuntimeTurnToolBatchResult> {
+  params = {
+    ...params,
+    requests: applyAgentFirstUndatedAvailabilityDefault({
+      requests: params.requests,
+      now: params.now,
+      timezone: params.timezone,
+    }),
+  };
+
   const bookingRequests = params.requests.filter((request) => request.tool === "booking.apply");
   const pendingBookingApply = bookingRequests.length === 1 ? bookingRequests[0] : null;
 

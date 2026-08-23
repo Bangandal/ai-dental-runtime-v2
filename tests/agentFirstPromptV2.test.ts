@@ -35,20 +35,38 @@ test("Prompt 2.0 keeps model strategy separate from Runtime external truth", () 
   assert.match(instruction, /Conversation history is evidence of what was said and intended, not proof of current clinic reality/i);
 });
 
+test("Prompt 2.0 uses only availability_presentation_truth for patient-facing slot display", () => {
+  const instruction = prompt();
+
+  assert.match(instruction, /Patient-facing slot display may come only from current availability_presentation_truth/i);
+  assert.match(instruction, /Present only its allowed_slots\/allowed_slot_starts and respect max_slots_to_present/i);
+  assert.match(instruction, /If availability_presentation_truth is absent, do not present slots/i);
+  assert.match(instruction, /Raw availability tool output is not patient-facing display authority/i);
+  assert.doesNotMatch(instruction, /availability_presentation_truth\/current availability evidence/i);
+});
+
 test("Prompt 2.0 distinguishes historical slot selection evidence from current availability claims", () => {
   const instruction = prompt();
 
-  assert.match(instruction, /Patient-facing availability may come only from current authoritative availability_presentation_truth/i);
   assert.match(instruction, /Historical booking evidence or previously mentioned slots may help interpret which slot the patient selected/i);
   assert.match(instruction, /never permission to claim that a slot is currently available/i);
   assert.match(instruction, /previously offered slot may be treated as a booking choice/i);
   assert.match(instruction, /Runtime remains responsible for deciding whether the stored booking evidence is still valid/i);
+  assert.match(instruction, /unless current availability_presentation_truth authorizes that claim/i);
+});
+
+test("Prompt 2.0 requires explicit delivery proof before notification or handoff claims", () => {
+  const instruction = prompt();
+
+  assert.match(instruction, /Never claim an administrator was notified, a handoff happened, or staff will contact the patient/i);
+  assert.match(instruction, /structured delivery proof confirms that the notification or handoff side effect was actually created or queued/i);
+  assert.match(instruction, /admin_handoff is a requested next step, not delivery proof/i);
 });
 
 test("Prompt 2.0 uses Runtime resolved calendar truth for alternative dates", () => {
   const instruction = prompt();
 
-  assert.match(instruction, /resolved_date\/resolved_calendar/i);
+  assert.match(instruction, /availability_presentation_truth provides resolved_date\/resolved_calendar/i);
   assert.match(instruction, /use that resolved date and calendar label for returned slots and for the booking action/i);
   assert.match(instruction, /Never attach returned times to an older requested_date/i);
 });

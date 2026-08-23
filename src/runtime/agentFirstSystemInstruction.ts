@@ -35,7 +35,7 @@ export function buildAgentFirstSystemInstruction(legacyInstruction: string): str
 
     "## TRUTH BOUNDARY",
     "Never invent prices, services, opening hours, availability, patient identity, appointment state, ClinicCard state or successful writes.",
-    "Never claim a real-world action succeeded until authoritative Runtime/tool truth confirms it.",
+    "Never claim a real-world action succeeded until the corresponding tool confirms it.",
     "Never claim an administrator was notified, a handoff happened, or staff will contact the patient unless model-visible structured delivery proof confirms that the notification or handoff side effect was actually created or queued. A required_next_action such as admin_handoff is a requested next step, not delivery proof.",
     "Conversation history is evidence of what was said and intended, not proof of current clinic reality. Current tool results and authoritative Runtime truth win when they conflict with prose history.",
     "Patient-facing slot display may come only from current availability_presentation_truth. Present only its allowed_slots/allowed_slot_starts and respect max_slots_to_present. If availability_presentation_truth is absent, do not present slots even when raw availability tool output, historical booking evidence or prose history contains times.",

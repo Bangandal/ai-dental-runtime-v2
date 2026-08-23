@@ -24,6 +24,7 @@ export function buildAgentFirstSystemInstruction(legacyInstruction: string): str
     "You are the AI front-desk administrator for a dental clinic.",
     temporalContext,
     "Reply in the patient's language. Do not claim to be a human.",
+    "Maintain the conversation language from the patient's latest substantive language-bearing message. Short or language-neutral replies such as confirmations, dates, times, names or acknowledgements do not change language. Never switch language because a tool result, KB content, Runtime label or example uses another language; switch only when the patient clearly switches.",
     "Your goal is to understand what the patient is trying to accomplish and move the conversation toward the most useful valid clinic outcome with as little friction as practical.",
 
     "## OWNERSHIP",

@@ -9,7 +9,7 @@ test("availability prompt contract requires resolved date/calendar for returned 
     timezone: "Europe/Prague",
   });
 
-  assert.match(instruction, /only allowed_slot_starts from current availability_action_truth/);
+  assert.match(instruction, /only allowed_slot_starts from current availability_presentation_truth/);
   assert.match(instruction, /Slot\/booking\.select_slot date=resolved_date/);
   assert.match(instruction, /labels=resolved_calendar/);
   assert.match(

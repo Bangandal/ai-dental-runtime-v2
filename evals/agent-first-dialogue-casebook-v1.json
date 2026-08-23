@@ -177,6 +177,7 @@
       ],
       "expected": {
         "model_should": [
+          "call booking.apply for the explicitly selected offered slot",
           "treat the failed write as recoverable",
           "preserve known booking context",
           "obtain or use authoritative alternative availability as the next useful step"
@@ -186,7 +187,7 @@
           "declare booking impossible solely because one slot conflicted",
           "restart intake from zero"
         ],
-        "required_tools": [],
+        "required_tools": ["booking.apply"],
         "forbidden_tools": []
       }
     },

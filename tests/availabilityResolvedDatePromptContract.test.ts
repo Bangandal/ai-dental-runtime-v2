@@ -9,14 +9,11 @@ test("availability prompt contract requires resolved date/calendar for returned 
     timezone: "Europe/Prague",
   });
 
+  assert.match(instruction, /present\/select only allowed_slots\/allowed_slot_starts/);
+  assert.match(instruction, /Slot date and booking\.select_slot date = resolved_date/);
+  assert.match(instruction, /labels = resolved_calendar/);
   assert.match(
     instruction,
-    /Every presented or selected slot MUST use availability_presentation_truth\.resolved_date as its date/,
+    /If requested_date != resolved_date, never pair its date with returned times/,
   );
-  assert.match(instruction, /resolved_calendar for weekday\/date labels/);
-  assert.match(
-    instruction,
-    /If requested_date differs from resolved_date, never combine returned times with requested_date/,
-  );
-  assert.match(instruction, /pass resolved_date, not requested_date, to booking\.select_slot/);
 });

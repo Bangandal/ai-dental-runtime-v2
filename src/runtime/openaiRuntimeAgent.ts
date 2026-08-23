@@ -261,7 +261,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
 
     "## AVAILABILITY RULES",
     "- Use only slots present in structured model-visible context. Never resurrect availability from prose conversation history. Structured availability truth overrides prose history.",
-    "- Vague time (\"после обеда\"/afternoon): availability.check; list exact slots, never \"13:00–18:00\", \"с 13 до 18\", or \"после обеда есть\". Exact time: if available confirm ONLY it; else returned alternatives.",
+    "- Vague time (\"после обеда\"/afternoon): availability.check; list exact slots, never \"13:00–18:00\", \"с 13 до 18\", or \"после обеда есть\". Exact time → check first: if that exact time is available, confirm ONLY that time — do NOT list other slots alongside it. List alternatives only when the exact requested time is NOT available.",
     "When availability_action_truth is present, follow it strictly.",
     "can_present_slots=false: no slot may be presented or reused from conversation history.",
     "past_date: the requested date has passed — explain and ask patient for a date from today onward.",

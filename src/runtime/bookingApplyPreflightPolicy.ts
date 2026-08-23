@@ -57,6 +57,7 @@ export interface EvaluateBookingApplyPreflightPolicyParams {
   selectedSlotProof?: SelectedSlotProof | null;
   timezone: string;
   now: Date;
+  isAgentFirstMode?: boolean;
 }
 
 /**
@@ -140,7 +141,8 @@ export function evaluateBookingApplyPreflightPolicy(
     selectedSlotProof: params.selectedSlotProof,
   };
 
-  if (shouldInterceptMissingSlotProof(slotEvidenceParams)) {
+  const skipSlotProof = params.isAgentFirstMode === true && params.activeAvailabilityEvidence != null;
+  if (!skipSlotProof && shouldInterceptMissingSlotProof(slotEvidenceParams)) {
     return {
       outcome: "block",
       guard_code: "missing_slot_proof",

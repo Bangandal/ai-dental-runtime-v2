@@ -334,6 +334,7 @@ export async function executeRuntimeTurnToolBatch(params: {
         selectedSlotProof: bookingProcessState.selected_slot_proof,
         timezone: params.timezone,
         now: params.now,
+        isAgentFirstMode: isAgentFirstRuntimeEnabled(),
       });
 
       if (preflight.outcome === "block") {

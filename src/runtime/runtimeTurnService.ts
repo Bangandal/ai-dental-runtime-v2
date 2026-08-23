@@ -43,32 +43,99 @@ export interface RuntimeTurnService {
 
 export interface CreateRuntimeTurnServiceDeps {
   agent: OpenAIRuntimeAgent;
+  /**
+   * Opt in only when the model caller guarantees one HTTP attempt for the first
+   * stateful conversation mutation. Generic Runtime agents fail closed by default.
+   */
+  single_attempt_first_call_rate_limit_safe?: boolean;
+}
+
+export interface RuntimeTurnNormalizationPolicy {
+  single_attempt_first_call_rate_limit_safe?: boolean;
 }
 
 export function createRuntimeTurnService(deps: CreateRuntimeTurnServiceDeps): RuntimeTurnService {
   return {
     async runTurn(input: RuntimeTurnInput): Promise<RuntimeTurnResult> {
       const result = await deps.agent.runTurn(input);
-      return normalizeRuntimeTurnResult(result);
+      return normalizeRuntimeTurnResult(result, {
+        single_attempt_first_call_rate_limit_safe:
+          deps.single_attempt_first_call_rate_limit_safe === true,
+      });
     },
   };
 }
 
 export function createDentalRuntimeTurnService(deps: CreateDentalRuntimeAgentDeps): RuntimeTurnService {
   const agent = createDentalRuntimeAgent(deps);
-  return createRuntimeTurnService({ agent });
+  // createDentalRuntimeAgent wires createStatefulAgentResponsesClient, which forces
+  // maxRetries=0 on the stateful Responses call. That concrete guarantee is what
+  // authorizes the narrow first-call 429 continuity exception below.
+  return createRuntimeTurnService({
+    agent,
+    single_attempt_first_call_rate_limit_safe: true,
+  });
 }
 
-export function normalizeRuntimeTurnResult(result: RuntimeAgentTurnResult): RuntimeTurnResult {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function isRateLimitMarker(value: unknown): boolean {
+  if (value === 429) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "429" || normalized === "rate_limit_exceeded";
+}
+
+/**
+ * Detects the narrow result shape that is eligible for first-call 429 continuity.
+ * This function intentionally does not decide whether the caller was single-attempt;
+ * that execution guarantee is supplied separately as RuntimeTurnNormalizationPolicy.
+ *
+ * Later-call failures are excluded: after a model-emitted tool request there may be
+ * a pending function_call without its output, so those conversations must stay dirty.
+ */
+export function shouldPreserveConversationAfterFirstCallRateLimit(
+  result: RuntimeAgentTurnResult,
+): boolean {
+  if (result.conversation_id_resumable !== false) return false;
+  if (typeof result.conversation_id !== "string" || result.conversation_id.length === 0) return false;
+  if (result.tool_requests.length > 0 || result.tool_results.length > 0) return false;
+
+  const debug = asRecord(result.debug);
+  if (debug?.reason !== "agent_first_call_exception") return false;
+
+  const callerException = asRecord(debug.caller_exception);
+  if (callerException?.stage !== "first_call") return false;
+
+  // Provider/API error codes and HTTP status are independent facts. For example,
+  // OpenAI can report code="insufficient_quota" with status=429.
+  return isRateLimitMarker(callerException.error_code)
+    || isRateLimitMarker(callerException.http_status);
+}
+
+export function normalizeRuntimeTurnResult(
+  result: RuntimeAgentTurnResult,
+  policy: RuntimeTurnNormalizationPolicy = {},
+): RuntimeTurnResult {
   const finalPatientReply = result.final_patient_reply?.trim();
   if (!finalPatientReply) {
     throw new Error("runtime_turn_result_missing_final_patient_reply");
   }
 
+  const preserveAfterRateLimit =
+    policy.single_attempt_first_call_rate_limit_safe === true &&
+    shouldPreserveConversationAfterFirstCallRateLimit(result);
+
   return {
     final_patient_reply: finalPatientReply,
     conversation_id: result.conversation_id,
-    conversation_id_resumable: result.conversation_id_resumable,
+    conversation_id_resumable: preserveAfterRateLimit
+      ? true
+      : result.conversation_id_resumable,
     tool_requests: result.tool_requests,
     tool_results: result.tool_results,
     debug: result.debug,

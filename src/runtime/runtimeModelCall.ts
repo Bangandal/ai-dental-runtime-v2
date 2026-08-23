@@ -49,9 +49,11 @@ export type RuntimeModelCallOutcome =
  * Transport-only boundary for one runtime model call.
  *
  * This function deliberately owns no business fallback, booking guard, dirty-memory,
- * or model-output policy. It only constructs the caller payload, invokes the caller,
- * and resolves the next conversation id. The orchestrator decides what an exception,
- * malformed output, or further tool request means.
+ * retry loop, or model-output policy. OpenAI transport retries are configured once on
+ * the SDK client (`OPENAI_CLIENT_MAX_RETRIES`) and bounded by the per-call abort signal.
+ * Stacking another retry loop here would multiply actual HTTP attempts and reset outer
+ * logical-call timing. The orchestrator decides what a terminal exception, malformed
+ * output, or further tool request means.
  */
 export async function invokeRuntimeModelCall(params: {
   caller: RuntimeAgentCaller;

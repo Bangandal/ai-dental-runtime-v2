@@ -6,6 +6,7 @@ export interface CallerExceptionDiagnostics {
   stage: CallerExceptionStage;
   error_name: string | null;
   error_code: string | number | null;
+  http_status: number | null;
   request_id: string | null;
   message: string;
   locale: string | null;
@@ -45,6 +46,15 @@ function readErrorField(err: Record<string, unknown> | null, keys: string[]): st
   return null;
 }
 
+function readHttpStatus(err: Record<string, unknown> | null): number | null {
+  const value = readErrorField(err, ["status", "status_code", "statusCode"]);
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && /^\d{3}$/.test(value.trim())) {
+    return Number(value.trim());
+  }
+  return null;
+}
+
 export interface CallerExceptionContext {
   stage: CallerExceptionStage;
   locale?: string | null;
@@ -65,7 +75,11 @@ export function buildCallerExceptionDiagnostics(
   return {
     stage: ctx.stage,
     error_name: error instanceof Error ? error.name : null,
+    // Keep the API/provider semantic code for compatibility, while preserving the
+    // transport status independently. OpenAI errors can legitimately carry both,
+    // e.g. code="insufficient_quota" together with status=429.
     error_code: readErrorField(errRecord, ["code", "status", "type", "status_code", "statusCode"]),
+    http_status: readHttpStatus(errRecord),
     request_id: (readErrorField(errRecord, ["request_id", "requestId", "requestID"]) as string | null) ?? null,
     message: sanitizeErrorMessage(rawMessage),
     locale: ctx.locale ?? null,

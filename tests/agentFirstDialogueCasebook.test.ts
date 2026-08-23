@@ -33,6 +33,12 @@ async function loadCasebook(): Promise<DialogueCasebook> {
   return JSON.parse(raw) as DialogueCasebook;
 }
 
+function requireCase(casebook: DialogueCasebook, id: string): DialogueCase {
+  const entry = casebook.cases.find((candidate) => candidate.id === id);
+  assert.ok(entry, `missing dialogue case ${id}`);
+  return entry;
+}
+
 const MODEL_FACING_TOOLS = new Set([
   "kb.search",
   "availability.check",
@@ -84,12 +90,16 @@ test("agent-first dialogue casebook is semantic, complete and non-scripted", asy
     assert.ok(entry.expected.model_should.length > 0, `${entry.id} must define positive semantic behavior`);
     assert.ok(entry.expected.model_must_not.length > 0, `${entry.id} must define negative semantic behavior`);
 
-    for (const tool of entry.expected.required_tools) {
-      assert.ok(MODEL_FACING_TOOLS.has(tool), `${entry.id} requires non-model-facing tool ${tool}`);
+    for (const tool of [...entry.expected.required_tools, ...entry.expected.forbidden_tools]) {
+      assert.ok(MODEL_FACING_TOOLS.has(tool), `${entry.id} references non-model-facing tool ${tool}`);
     }
     assert.ok(
       !entry.expected.required_tools.includes("booking.select_slot"),
       `${entry.id} must not make hidden booking.select_slot part of the model contract`,
+    );
+    assert.ok(
+      !entry.expected.required_tools.some((tool) => entry.expected.forbidden_tools.includes(tool)),
+      `${entry.id} cannot both require and forbid the same tool`,
     );
   }
 });
@@ -102,6 +112,22 @@ test("casebook covers every model-facing clinic action at least once", async () 
   assert.equal(required.has("availability.check"), true);
   assert.equal(required.has("booking.apply"), true);
   assert.equal(required.has("appointment.lookup"), true);
+});
+
+test("casebook locks typed write and recovery boundaries for D07, D08 and D10", async () => {
+  const casebook = await loadCasebook();
+
+  const missingName = requireCase(casebook, "D07_MISSING_NAME_RECOVERY");
+  assert.equal(missingName.expected.required_tools.includes("booking.apply"), false);
+  assert.equal(missingName.expected.forbidden_tools.includes("booking.apply"), true);
+
+  const slotConflict = requireCase(casebook, "D08_SLOT_CONFLICT_RECOVERY");
+  assert.equal(slotConflict.expected.required_tools.includes("booking.apply"), true);
+  assert.equal(slotConflict.expected.required_tools.includes("availability.check"), true);
+
+  const ambiguousIdentity = requireCase(casebook, "D10_MULTI_PERSON_AMBIGUITY");
+  assert.equal(ambiguousIdentity.expected.required_tools.includes("booking.apply"), false);
+  assert.equal(ambiguousIdentity.expected.forbidden_tools.includes("booking.apply"), true);
 });
 
 test("Prompt 2.0 exposes the architecture needed by the casebook without scripting the cases", () => {

@@ -105,12 +105,15 @@ test("R3h structure: OpenAI caller consumes canonical tool schemas directly whil
 
   assert.match(callerSource, /from\s+["']\.\/modelToolContractBridge\.ts["']/);
   assert.doesNotMatch(callerSource, /projectModelToolContract/);
-  // Canonical definitions remain the source of truth. Mode-specific presentation may append
-  // narrow guidance, but it must extend def.description rather than replace it independently.
-  assert.match(callerSource, /`\$\{def\.description\}[^`]*`/);
-  assert.match(callerSource, /:\s*def\.description;/);
-  assert.match(callerSource, /required:\s*def\.required_args/);
-  assert.doesNotMatch(callerSource, /patient_target/);
+  // Canonical definitions remain the source of truth. Agent-first may project narrow
+  // presentation-only schema differences (for example Runtime-owned Day+2), but those
+  // differences must derive from the canonical description/required args rather than
+  // replacing the canonical contract with an independently maintained duplicate.
+  assert.match(callerSource, /let\s+description\s*=\s*def\.description;/);
+  assert.match(callerSource, /def\.required_args\.filter\(/);
+  assert.match(callerSource, /:\s*\[\.\.\.def\.required_args\]/);
+  assert.match(callerSource, /description,/);
+  assert.match(callerSource, /required:\s*requiredArgs/);
   assert.doesNotMatch(callerSource, /active_subject_id/);
   assert.doesNotMatch(callerSource, /INVALID_SEMANTIC_SUBJECT_ID/);
   assert.doesNotMatch(callerSource, /batchApplySubjects|legacySelectSubjects|selectSlotSubjectId/);

@@ -18,6 +18,8 @@ import type {
   PhoneOwnershipIntent,
 } from "./bookingSubjectsState.ts";
 import type { AgentQualificationState } from "./agentQualification.ts";
+import type { StaffRequest, StaffRequestProof } from "./staffRequest.ts";
+import type { AdminNotificationResult } from "../integrations/adminNotify/adminNotifyTypes.ts";
 
 export type RuntimeTurnInput = RuntimeAgentTurnInput;
 
@@ -35,6 +37,9 @@ export interface RuntimeTurnResult {
   booking_subjects_after_resolution?: BookingSubjectsState | null;
   booking_apply_resolution?: BookingApplyResolution | null;
   qualification?: AgentQualificationState | null;
+  staff_request?: StaffRequest | null;
+  staff_request_state?: { request: StaffRequest; proof: StaffRequestProof };
+  side_effects?: Array<StaffRequestProof | AdminNotificationResult>;
 }
 
 export interface RuntimeTurnService {
@@ -146,5 +151,6 @@ export function normalizeRuntimeTurnResult(
     ...(result.booking_subjects_after_resolution !== undefined ? { booking_subjects_after_resolution: result.booking_subjects_after_resolution } : {}),
     ...(result.booking_apply_resolution !== undefined ? { booking_apply_resolution: result.booking_apply_resolution } : {}),
     ...(result.qualification !== undefined ? { qualification: result.qualification } : {}),
+    ...(result.staff_request !== undefined ? { staff_request: result.staff_request } : {}),
   };
 }

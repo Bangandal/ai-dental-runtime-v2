@@ -14,6 +14,7 @@ import { parseModelPersonIntents } from "./modelPersonIntentBridge.ts";
 import { projectModelFacingContext } from "./modelFacingContextProjection.ts";
 import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 import { parseAgentQualification } from "./agentQualification.ts";
+import { parseStaffRequest } from "./staffRequest.ts";
 
 export interface OpenAIResponsesClient {
   responses: {
@@ -182,10 +183,10 @@ export function normalizeOpenAIResponse(
 
   // Valid structured state was parsed but the model omitted a reply field.
   // Use a safe fallback reply but preserve already-validated structured state.
-  if (finalResponse.subject_intent != null || finalResponse.qualification != null) {
+  if (finalResponse.subject_intent != null || finalResponse.qualification != null || finalResponse.staff_request != null) {
     const missingReplyDiagnostic = finalResponse.subject_intent != null
       ? "subject_intent_reply_missing"
-      : "qualification_reply_missing";
+      : finalResponse.staff_request != null ? "staff_request_reply_missing" : "qualification_reply_missing";
     return {
       type: "final_response",
       conversation_id: conversationId,
@@ -194,6 +195,7 @@ export function normalizeOpenAIResponse(
         ...(finalResponse.subject_intent != null ? { subject_intent: finalResponse.subject_intent } : {}),
         ...(finalResponse.phone_ownership_intent != null ? { phone_ownership_intent: finalResponse.phone_ownership_intent } : {}),
         ...(finalResponse.qualification != null ? { qualification: finalResponse.qualification } : {}),
+        ...(finalResponse.staff_request != null ? { staff_request: finalResponse.staff_request } : {}),
         safety_notes: [missingReplyDiagnostic],
       },
       usage: response?.usage,
@@ -313,6 +315,9 @@ function readFinalResponse(
   const qualification = isAgentFirstRuntimeEnabled()
     ? parseAgentQualification(final?.qualification ?? envelope?.qualification, modelContext)
     : null;
+  const staffRequest = isAgentFirstRuntimeEnabled()
+    ? parseStaffRequest(final?.staff_request ?? envelope?.staff_request)
+    : null;
 
   return {
     final_patient_reply: outputText,
@@ -322,6 +327,7 @@ function readFinalResponse(
     ...(ui !== undefined ? { ui } : {}),
     ...personIntents,
     ...(qualification !== null ? { qualification } : {}),
+    ...(staffRequest !== null ? { staff_request: staffRequest } : {}),
   };
 }
 

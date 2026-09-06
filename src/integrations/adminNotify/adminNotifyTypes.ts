@@ -20,6 +20,7 @@ export interface AdminNotificationPayload {
   required_next_action: string;
   reason: string;
   timestamp: string;
+  staff_request?: import("../../runtime/staffRequest.ts").StaffRequest & { request_id: string };
 }
 
 export interface AdminNotificationResult {

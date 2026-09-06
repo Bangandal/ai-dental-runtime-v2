@@ -65,7 +65,11 @@ export function createAdminNotifier(deps: TelegramAdminNotifierDeps): AdminNotif
 
 function buildAdminNotificationText(payload: AdminNotificationPayload): string {
   const lines = [
-    `Booking needs attention (${payload.reason})`,
+    payload.staff_request ? `Staff request (${payload.staff_request.kind})` : `Booking needs attention (${payload.reason})`,
+    payload.staff_request ? `Request ID: ${payload.staff_request.request_id}` : null,
+    payload.staff_request ? `Patient-reported summary: ${payload.staff_request.summary}` : null,
+    payload.staff_request?.preferred_contact_window
+      ? `Preferred CALLBACK window (not an appointment): ${payload.staff_request.preferred_contact_window}` : null,
     `Clinic: ${payload.clinic_code ?? payload.clinic_id}`,
     `Channel: ${payload.channel} / ${payload.chat_id ?? payload.external_user_id ?? "unknown"}`,
     payload.patient_display_name ? `Patient: ${payload.patient_display_name}` : null,

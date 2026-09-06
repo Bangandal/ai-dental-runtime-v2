@@ -44,6 +44,17 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     .filter(Boolean);
 
   const allowedNonDocTestFiles = new Set([
+    // Patient context corrections and durable non-booking staff requests.
+    "src/runtime/agentFirstSystemInstruction.ts",
+    "src/runtime/runtimeBookingContactAgent.ts",
+    "src/runtime/runtimeTurnOrchestratorLegacy.ts",
+    "src/runtime/staffRequest.ts",
+    "src/runtime/staffRequestHandling.ts",
+    "src/runtime/supabaseStaffRequestRepository.ts",
+    "src/integrations/adminNotify/adminNotifyTypes.ts",
+    "src/integrations/adminNotify/telegramAdminNotifier.ts",
+    "sql/rpc/core.staff_requests.sql",
+    "evals/dental-dialogue-regressions-v1.json",
     "src/runtime/toolPolicy.ts",
     "src/runtime/toolExecutor.ts",
     "src/runtime/runtimeRepositories.ts",

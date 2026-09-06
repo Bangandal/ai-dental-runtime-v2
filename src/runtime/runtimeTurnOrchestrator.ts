@@ -3,6 +3,8 @@ import {
   runRuntimeTurnSerialized,
 } from "./runtimeTurnSerialQueue.ts";
 import { withDurableConversationContinuity } from "./runtimeConversationContinuity.ts";
+import { withStaffRequestHandling } from "./staffRequestHandling.ts";
+import type { RuntimeTurnResult } from "./runtimeTurnService.ts";
 import {
   runRuntimeTurnOrchestrated as runRuntimeTurnOrchestratedLegacy,
 } from "./runtimeTurnOrchestratorLegacy.ts";
@@ -42,11 +44,13 @@ export function withAgentQualificationPersistence(
   deps: Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1],
 ): Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1] {
   let capturedQualification: AgentQualificationState | null = null;
+  let capturedStaffRequest: RuntimeTurnResult["staff_request_state"];
 
   const runtimeTurnService = {
     async runTurn(input: Parameters<typeof deps.runtimeTurnService.runTurn>[0]) {
       const result = await deps.runtimeTurnService.runTurn(input);
       capturedQualification = result.qualification ?? null;
+      capturedStaffRequest = result.staff_request_state;
       return result;
     },
   };
@@ -61,6 +65,16 @@ export function withAgentQualificationPersistence(
     async mergeConversationState(
       input: Parameters<typeof originalPersistence.mergeConversationState>[0],
     ) {
+      if (capturedStaffRequest?.proof.request_saved) {
+        const flags = asRecord(input.control_flags);
+        input = {
+          ...input,
+          control_flags: { ...flags, collected: {
+            ...asRecord(flags.collected),
+            agent_staff_request: capturedStaffRequest,
+          } },
+        };
+      }
       if (!capturedQualification || !deps.runtimeContextRepository) {
         return originalPersistence.mergeConversationState(input);
       }
@@ -123,7 +137,7 @@ export function runRuntimeTurnOrchestrated(
     queue: runtimeTurnSerialQueue,
     task: () => runRuntimeTurnOrchestratedLegacy(
       body,
-      withAgentQualificationPersistence(withDurableConversationContinuity(deps)),
+      withAgentQualificationPersistence(withStaffRequestHandling(withDurableConversationContinuity(deps))),
       opts,
     ),
   });

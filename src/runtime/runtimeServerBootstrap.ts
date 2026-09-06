@@ -21,6 +21,7 @@ import { createAdminNotifier } from "../integrations/adminNotify/telegramAdminNo
 import { createOpenAIRuntimeCaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
 import type { RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
+import { createSupabaseStaffRequestRepository } from "./supabaseStaffRequestRepository.ts";
 
 export interface TelegramBootstrapConfig {
   botToken: string;
@@ -148,6 +149,7 @@ export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): Ru
     caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: caseRouterModel }),
     debugEnabled: deps.debugEnabled,
     adminNotifier,
+    staffRequestRepository: createSupabaseStaffRequestRepository({ rpc: deps.rpc }),
     caseLiteExtractor,
   };
 }

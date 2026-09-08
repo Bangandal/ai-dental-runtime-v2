@@ -47,7 +47,7 @@ function makeProviderMemorySpy(initial = "conv_durable_old") {
   };
 }
 
-test("agent-first model projection exposes one weak language hint and removes stale intake steering", async () => {
+test("agent-first model projection suppresses weak language hint once dialogue language is established and removes stale intake steering", async () => {
   await withAgentMode("agent_first", () => {
     const projected = projectModelFacingContext({
       locale: "ru",
@@ -84,7 +84,7 @@ test("agent-first model projection exposes one weak language hint and removes st
     assert.equal(projected.truth_snapshot, undefined);
     assert.equal(projected.recent_summary, undefined);
     const channel = projected.channel_context as Record<string, unknown>;
-    assert.equal(channel.language_hint, "ru");
+    assert.equal(channel.language_hint, undefined);
     assert.equal(channel.patient_reachable_in_current_channel, undefined);
 
     const runtime = projected.runtime_context as Record<string, unknown>;

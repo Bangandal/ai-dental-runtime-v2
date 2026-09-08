@@ -1,10 +1,34 @@
 import type { RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestratorLegacy.ts";
 import type { AdminNotificationResult } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
-import { parseStaffRequest, staffRequestReceipt, type StaffRequestProof } from "./staffRequest.ts";
+import {
+  parseStaffRequest,
+  sanitizeStaffAdditionalReply,
+  staffRequestFailureReceipt,
+  staffRequestReceipt,
+  type StaffRequestProof,
+} from "./staffRequest.ts";
 
 function value(raw: unknown): string | null {
   return typeof raw === "string" && raw.trim() ? raw.trim() : null;
+}
+
+function hasStableInboundIdentifier(context: Record<string, unknown> | undefined): boolean {
+  const rawMeta = context?.meta;
+  if (!rawMeta || typeof rawMeta !== "object" || Array.isArray(rawMeta)) return false;
+  const meta = rawMeta as Record<string, unknown>;
+  return value(meta.message_id) !== null || value(meta.update_id) !== null;
+}
+
+function failedProof(): StaffRequestProof {
+  return {
+    type: "staff_request",
+    request_id: null,
+    request_saved: false,
+    delivery_status: "failed",
+    delivery_recorded: false,
+    may_claim_notified: false,
+  };
 }
 
 /**
@@ -19,20 +43,34 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
       async runTurn(input) {
         const result = await deps.runtimeTurnService.runTurn(input);
         if (!isAgentFirstRuntimeEnabled()) return result;
+
+        // A malformed side-effect proposal is not an ordinary reply. Never let the
+        // model's success prose escape when Runtime could not validate an executable request.
+        if (result.staff_request_invalid === true) {
+          const proof = failedProof();
+          return {
+            ...result,
+            final_patient_reply: staffRequestFailureReceipt(input.locale),
+            side_effects: [...(result.side_effects ?? []), proof],
+            debug: {
+              ...result.debug,
+              staff_request: { ...proof, reason: "invalid_proposal" },
+            },
+          };
+        }
+
         const request = parseStaffRequest(result.staff_request);
         if (!request) return result;
 
-        const proof: StaffRequestProof = {
-          type: "staff_request",
-          request_id: null,
-          request_saved: false,
-          delivery_status: "failed",
-          delivery_recorded: false,
-          may_claim_notified: false,
-        };
+        const proof = failedProof();
         let delivery: AdminNotificationResult | null = null;
         const repository = deps.staffRequestRepository;
-        if (repository && input.contact_id && input.trace_id) {
+        const stableInboundIdentifier = hasStableInboundIdentifier(input.business_context);
+
+        // Staff notification is an externally visible side effect. A random Runtime trace
+        // is not an idempotency key, so do not execute it unless the channel supplied a
+        // stable provider message/update identifier that the inbound dedupe boundary can use.
+        if (repository && input.contact_id && input.trace_id && stableInboundIdentifier) {
           const saved = await repository.create({
             clinic_id: input.clinic_id,
             contact_id: input.contact_id,
@@ -95,12 +133,21 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
 
         // Queueing is not delivery; a doctor's call/review is never promised here.
         proof.may_claim_notified = proof.request_saved && proof.delivery_status === "sent";
+        const additionalReply = sanitizeStaffAdditionalReply(request.additional_reply);
+        const additionalReplySuppressed = Boolean(request.additional_reply && !additionalReply);
         return {
           ...result,
-          final_patient_reply: [staffRequestReceipt(request, proof), request.additional_reply].filter(Boolean).join("\n\n"),
+          final_patient_reply: [staffRequestReceipt(request, proof), additionalReply].filter(Boolean).join("\n\n"),
           staff_request_state: { request, proof },
           side_effects: [...(result.side_effects ?? []), proof, ...(delivery ? [delivery] : [])],
-          debug: { ...result.debug, staff_request: proof },
+          debug: {
+            ...result.debug,
+            staff_request: {
+              ...proof,
+              stable_inbound_identifier: stableInboundIdentifier,
+              ...(additionalReplySuppressed ? { additional_reply_suppressed: true } : {}),
+            },
+          },
         };
       },
     },

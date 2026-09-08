@@ -80,27 +80,12 @@ export interface OrchestrationDepsInput {
 // Exported for use by non-Telegram transports (e.g. WhatsApp) that need the
 // same shared orchestration deps without going through registerRuntimeRoutes.
 export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): RuntimeTurnOrchestratorDeps {
-  const caseRouterModel = process.env.OPENAI_CASE_ROUTER_MODEL?.trim() || deps.model;
-  const runtimeGateModel = process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model;
-  const turnUnderstandingModel =
-    process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim() ||
-    process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() ||
-    deps.model;
-  // These two classifiers are shadow-only and should_apply=false. In agent-first
-  // they must not add serial model round-trips to the patient-facing critical path.
-  // This intentionally also retires classifier-derived topic_memory writes in
-  // agent-first: buildModelVisibleRuntimeContext never projects topic_memory to the
-  // patient-facing model, and these same classifiers are disabled there, so keeping
-  // the write would preserve two synchronous LLM calls for legacy shadow telemetry.
-  // Legacy keeps the historical classifier + topic-memory behavior unchanged.
-  const wireSynchronousShadowClassifiers = !isAgentFirstRuntimeEnabled();
-
+  const agentFirst = isAgentFirstRuntimeEnabled();
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
   const bookingProcessStateRepository = createSupabaseBookingProcessStateRepository({ rpc: deps.rpc });
   const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const clinicIdentityResolver = createSupabaseClinicIdentityResolver({ rpc: deps.rpc });
   const runtimeContextRepository = createSupabaseRuntimeContextRepository({ rpc: deps.rpc });
-  const caseContextRepository = createSupabaseCaseContextRepository({ rpc: deps.rpc });
 
   const createOpenAIConversation = async (): Promise<string | null> => {
     const conversations = (deps.openaiClient as unknown as {
@@ -117,12 +102,31 @@ export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): Ru
     botToken: deps.telegram?.botToken ?? null,
   });
 
-  const caseLiteExtractor = createOpenAIRuntimeCaseLiteExtractor({
-    client: deps.openaiClient,
-    model: deps.model,
-  });
-
   const logger = deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger();
+  const legacyOnlyDeps = !agentFirst
+    ? {
+        caseContextRepository: createSupabaseCaseContextRepository({ rpc: deps.rpc }),
+        runtimeGateClassifier: createOpenAIRuntimeGateClassifier({
+          client: deps.openaiClient,
+          model: process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model,
+        }),
+        turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({
+          client: deps.openaiClient,
+          model:
+            process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim()
+            || process.env.OPENAI_RUNTIME_GATE_MODEL?.trim()
+            || deps.model,
+        }),
+        caseRouterClassifier: createOpenAICaseRouterClassifier({
+          client: deps.openaiClient,
+          model: process.env.OPENAI_CASE_ROUTER_MODEL?.trim() || deps.model,
+        }),
+        caseLiteExtractor: createOpenAIRuntimeCaseLiteExtractor({
+          client: deps.openaiClient,
+          model: deps.model,
+        }),
+      }
+    : {};
 
   return {
     runtimeTurnService: createDentalRuntimeTurnService({
@@ -139,18 +143,10 @@ export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): Ru
     turnPersistenceRepository,
     clinicIdentityResolver,
     runtimeContextRepository,
-    caseContextRepository,
-    ...(wireSynchronousShadowClassifiers
-      ? {
-          runtimeGateClassifier: createOpenAIRuntimeGateClassifier({ client: deps.openaiClient, model: runtimeGateModel }),
-          turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({ client: deps.openaiClient, model: turnUnderstandingModel }),
-        }
-      : {}),
-    caseRouterClassifier: createOpenAICaseRouterClassifier({ client: deps.openaiClient, model: caseRouterModel }),
+    ...legacyOnlyDeps,
     debugEnabled: deps.debugEnabled,
     adminNotifier,
     staffRequestRepository: createSupabaseStaffRequestRepository({ rpc: deps.rpc }),
-    caseLiteExtractor,
   };
 }
 

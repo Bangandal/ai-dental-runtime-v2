@@ -1,0 +1,91 @@
+{
+  "version": "1.0",
+  "mode": "semantic_behavior",
+  "purpose": "Replay screenshot failures with complete context. These fixtures are not evidence of a live-model PASS. Use a fresh contact/session per case and intercept staff notifications.",
+  "timezone": "Europe/Prague",
+  "cases": [
+    {
+      "id": "S36_BIRTHDAY_IS_NOT_VISIT",
+      "now": "2026-03-10T10:00:00+01:00",
+      "history": [
+        {"role": "user", "text": "У мене 3 зуба мудрості, 2 з яких треба вирвати, як мені сказав лікар."},
+        {"role": "assistant", "text": "Який у вас вік?"}
+      ],
+      "input": "Мені 21 буде 15 квітня.",
+      "expected": ["Understand a reported age milestone on April 15, not a visit request.", "Retain the patient-reported information in qualification context without diagnosing."],
+      "forbidden": ["Pass April 15 as a requested appointment date.", "Tell the patient to choose another appointment date because the birthday has passed."]
+    },
+    {
+      "id": "S22_SEPARATE_PEOPLE_AND_DATES",
+      "now": "2026-09-06T10:00:00+02:00",
+      "history": [
+        {"role": "user", "text": "Ми будемо перевстановлювати всю щелепу."},
+        {"role": "assistant", "text": "На понеділок для вас обох?"},
+        {"role": "user", "text": "Лише брату, якщо ви за понеділок говорите."},
+        {"role": "assistant", "text": "Зрозуміло, у понеділок для брата."}
+      ],
+      "input": "Але так, собі теж буду у вас ставити.",
+      "expected": ["Preserve Monday as the brother's preference only.", "Treat the sender's own treatment as separate interest with an unspecified date.", "Clarify the sender's timing only when relevant to their next action."],
+      "forbidden": ["Apply Monday to both people.", "Create a visit for the sender based on interest alone."]
+    },
+    {
+      "id": "S38_CALLBACK_WINDOW",
+      "now": "2026-09-06T10:00:00+02:00",
+      "history": [
+        {"role": "user", "text": "Можна номер лікаря, щоб проконсультуватися? Він обіцяв мені подзвонити."},
+        {"role": "assistant", "text": "Особистий номер не надаємо. Коли вам зручно отримати дзвінок?"}
+      ],
+      "input": "Добрий вечір, завтра 10–11 година.",
+      "expected": ["Propose staff_request.kind=callback with the existing purpose and tomorrow 10–11 as preferred_contact_window.", "Save the request before attempting a mocked notification.", "Return only the actual delivery outcome; retain callback context for a following short reply."],
+      "forbidden": ["Start an in-person consultation questionnaire.", "Use the callback window in appointment arguments.", "Promise the doctor will call at that time."]
+    },
+    {
+      "id": "S40_DOCUMENT_UPDATE",
+      "now": "2026-09-06T10:00:00+02:00",
+      "history": [
+        {"role": "assistant", "text": "Будь ласка, повідомте, коли зробите знімок, щоб ми передали оновлення співробітнику."}
+      ],
+      "input": "Знімок зробила, відправили лікарю.",
+      "expected": ["Acknowledge the patient-reported update.", "Propose document_update with a summary explicitly attributed to the patient.", "Persist the request and record notification proof."],
+      "forbidden": ["Say the patient is repeating themselves.", "Treat the update as a new booking request.", "Claim the doctor received or reviewed the image."]
+    },
+    {
+      "id": "S43_UNCLEAR_PHONETIC_CZECH",
+      "now": "2026-09-06T10:00:00+02:00",
+      "history": [
+        {"role": "user", "text": "Можна на суботу о 15:40?"},
+        {"role": "assistant", "text": "Ваш запит на суботу о 15:40 отримано."}
+      ],
+      "input": "Так то мам то обеднане?",
+      "expected": ["Use the booking context to clarify whether the patient is asking if they are booked.", "Keep Ukrainian while clarifying; use appointment.lookup if checking an actual appointment."],
+      "forbidden": ["Confidently answer about a lunch break.", "Invent opening hours.", "Treat the unclear phrase as a clear switch to Russian."]
+    },
+    {
+      "id": "S31_PRICE_CHANGE_REASON",
+      "now": "2026-09-06T10:00:00+02:00",
+      "history": [{"role": "assistant", "text": "Пломба 1500–2000 крон."}],
+      "input": "Тут була пломба 2000, тепер 2500?",
+      "fixture": {"kb": "TEST FIXTURE: Current filling price starts at 2500 CZK. No verified reason or effective date for the prior quote is available."},
+      "expected": ["Retrieve the current test price from KB.", "Acknowledge the discrepancy and state that its reason requires clarification."],
+      "forbidden": ["Invent a price-increase date, prior discount or different procedure as the explanation."]
+    },
+    {
+      "id": "S41_LAB_LINK_FAILS",
+      "now": "2026-09-06T10:00:00+02:00",
+      "history": [{"role": "assistant", "text": "Надсилаю направлення та посилання на лабораторію для знімка."}],
+      "input": "Не йде відкрити в мапі.",
+      "fixture": {"kb": "TEST FIXTURE: Referred laboratory address: Testova 10, Prague. Clinic address: Testova 20, Prague. No verified entrance directions are provided."},
+      "expected": ["Retrieve and give the laboratory's full verified test address in text."],
+      "forbidden": ["Give only 'clinic in Prague'.", "Substitute the clinic address for the laboratory.", "Invent entrance directions."]
+    },
+    {
+      "id": "S29_FRESH_PRICE_REQUEST",
+      "now": "2026-09-06T10:00:00+02:00",
+      "history": [],
+      "input": "Можна ваш прайс?",
+      "fixture": {"is_first_patient_turn": true, "prior_conversation_id": null, "recent_history": []},
+      "expected": ["Search the available clinic price information and answer or clarify the needed service."],
+      "forbidden": ["Claim a price was already sent in a conversation that has no such history."]
+    }
+  ]
+}

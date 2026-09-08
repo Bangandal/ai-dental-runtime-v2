@@ -46,10 +46,9 @@ test("agent-first replaces legacy scripted intake instead of appending an overri
 
   assert.notEqual(resolved, LEGACY_PROMPT);
   assert.match(resolved, /Today is 2026-08-22 \(timezone: Europe\/Prague\)/);
-  assert.match(resolved, /You own the conversation, planning, clarification and recovery/);
-  assert.match(resolved, /language understanding and natural-language normalization/);
-  assert.match(resolved, /call booking\.apply directly/);
-  assert.match(resolved, /booking\.select_slot is an internal Runtime detail/);
+  assert.match(resolved, /Interpret the entire message in conversation context/);
+  assert.match(resolved, /If material ambiguity prevents action, ask one precise clarification/);
+  assert.match(resolved, /call booking\.apply/);
 
   assert.doesNotMatch(resolved, /## INTAKE FLOW/);
   assert.doesNotMatch(resolved, /BOOKING SEQUENCE:/);
@@ -60,8 +59,8 @@ test("agent-first replaces legacy scripted intake instead of appending an overri
 test("clean agent-first prompt does not invent clinic qualification routes", () => {
   const resolved = resolveRuntimeSystemInstruction(LEGACY_PROMPT, { RUNTIME_AGENT_MODE: "agent_first" });
 
-  assert.match(resolved, /use only clinic-provided qualification\/routing policy/);
-  assert.match(resolved, /Do not invent a clinical route/);
+  assert.match(resolved, /clinical routing must come only from the clinic's qualification_policy/);
+  assert.match(resolved, /Do not diagnose or prescribe treatment/);
   assert.doesNotMatch(resolved, /acute_exam|emergency_exam|orthodontic_consultation/);
 });
 
@@ -87,7 +86,12 @@ test("model iteration sends only the clean prompt in agent-first mode", async ()
     });
 
     assert.equal(result.kind, "model_output");
-    assert.match(capturedInstruction, /## OWNERSHIP/);
+    assert.equal(
+      capturedInstruction,
+      resolveRuntimeSystemInstruction(LEGACY_PROMPT, { RUNTIME_AGENT_MODE: "agent_first" }),
+    );
+    assert.match(capturedInstruction, /2\. INTENT/);
+    assert.doesNotMatch(capturedInstruction, /Final patient reply/);
     assert.doesNotMatch(capturedInstruction, /## INTAKE FLOW/);
     assert.doesNotMatch(capturedInstruction, /booking\.select_slot is mandatory/);
   });

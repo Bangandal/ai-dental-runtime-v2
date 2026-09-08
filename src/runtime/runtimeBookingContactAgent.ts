@@ -17,6 +17,7 @@ import {
   buildRuntimeBookingContactFields,
 } from "./runtimeBookingContactBridge.ts";
 import type { AgentQualificationState } from "./agentQualification.ts";
+import type { StaffRequest } from "./staffRequest.ts";
 
 export type RuntimeAgentLoopFactory = (
   deps: CreateRuntimeAgentLoopDeps,
@@ -142,6 +143,7 @@ export function createRuntimeAgentWithBookingContactBridge(
       };
       let stagedBooking: SameBatchBookingStage | null = null;
       let capturedQualification: AgentQualificationState | null = null;
+      let capturedStaffRequest: StaffRequest | null = null;
 
       const caller: RuntimeAgentCaller = async (callerInput) => {
         if (
@@ -181,8 +183,9 @@ export function createRuntimeAgentWithBookingContactBridge(
               tool_requests: nextStage.forwarded_requests,
             };
           }
-        } else if (output.final_response.qualification != null) {
-          capturedQualification = output.final_response.qualification;
+        } else {
+          capturedQualification = output.final_response.qualification ?? null;
+          capturedStaffRequest = output.final_response.staff_request ?? null;
         }
         return output;
       };
@@ -226,9 +229,11 @@ export function createRuntimeAgentWithBookingContactBridge(
         executors,
       });
       const result = await loop.runTurn(loopInput);
-      return capturedQualification
-        ? { ...result, qualification: capturedQualification }
-        : result;
+      return {
+        ...result,
+        ...(capturedQualification ? { qualification: capturedQualification } : {}),
+        ...(capturedStaffRequest ? { staff_request: capturedStaffRequest } : {}),
+      };
     },
   };
 }

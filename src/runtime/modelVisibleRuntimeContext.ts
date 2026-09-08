@@ -1,4 +1,5 @@
 import { parseStoredAgentQualification } from "./agentQualification.ts";
+import { parseStaffRequest } from "./staffRequest.ts";
 
 const MAX_RECENT_HISTORY_MESSAGES = 8;
 const MAX_RECENT_HISTORY_CHARS = 2000;
@@ -55,6 +56,7 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
   const conversationState = asRecord(context.conversation_state);
   const collected = asRecord(conversationState.collected);
   const qualificationState = parseStoredAgentQualification(collected.agent_qualification);
+  const staffRequest = parseStaffRequest(asRecord(collected.agent_staff_request).request);
 
   const firstName = asNullableString(knownContact.first_name);
   const lastName = asNullableString(knownContact.last_name);
@@ -107,6 +109,16 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
       intake_status: asNullableString(conversationState.qualification_stage) ?? asNullableString(conversationState.conversation_stage),
     },
     ...(qualificationState ? { qualification_state: qualificationState } : {}),
+    ...(staffRequest ? { staff_request_context: {
+      kind: staffRequest.kind,
+      patient_target: staffRequest.patient_target,
+      person_ref: staffRequest.person_ref,
+      summary: staffRequest.summary,
+      preferred_contact_window: staffRequest.preferred_contact_window,
+      source: "patient_report",
+      // Remember the purpose/window without treating a historical notification as a
+      // promise that the doctor has called or reviewed anything.
+    } } : {}),
     runtime_policy: {
       phone_required: false,
       patient_reachable_in_current_channel: patientReachableInCurrentChannel,

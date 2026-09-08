@@ -32,6 +32,7 @@ import {
 import type { BookingSubjectsState, S1Seed, SubjectId } from "./bookingSubjectsState.ts";
 import { resolveAdminNotifyReason } from "../integrations/adminNotify/adminNotifyTrigger.ts";
 import type { AdminNotifier, AdminNotificationPayload } from "../integrations/adminNotify/adminNotifyTypes.ts";
+import type { StaffRequestRepository } from "./staffRequest.ts";
 import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
 import { mergeRuntimeCaseLite, applyBookingStatusToCase, buildDefaultRuntimeCaseLite } from "./runtimeCaseLite.ts";
 import type { RuntimeCaseLite } from "./runtimeCaseLite.ts";
@@ -63,6 +64,7 @@ export interface RuntimeTurnOrchestratorDeps {
   turnUnderstandingClassifier?: TurnUnderstandingClassifier;
   debugEnabled?: boolean;
   adminNotifier?: AdminNotifier;
+  staffRequestRepository?: StaffRequestRepository;
   caseLiteExtractor?: CaseLiteExtractor;
 }
 
@@ -640,7 +642,7 @@ export async function runRuntimeTurnOrchestrated(
       ? { ...(result.debug ?? {}), ...memoryDebug, llm_calls: llmCalls, persistence_debug: persistenceDebug, runtime_context: runtimeContextDebug, case_context: caseContextDebug, case_lite_shadow: caseLiteShadowDebug, runtime_gate: runtimeGateDebug, turn_understanding: turnUnderstandingDebug, topic_memory_candidate: topicMemoryCandidateDebug, reply_context_builder: replyContextBuilderDebug, legacy_case_router: caseRouterDebug, booking_subjects_mismatch: bookingSubjectsMismatch }
       : undefined;
 
-    const sideEffects: unknown[] = [];
+    const sideEffects: unknown[] = [...(result.side_effects ?? [])];
     const actionTruth = buildBookingApplyActionTruth(result.tool_results);
 
     // Deterministic: inject contact-request UI for Telegram when phone is required.

@@ -135,14 +135,14 @@ test("Prompt 2.0 exposes the architecture needed by the casebook without scripti
     "Today is 2026-08-23 (timezone: Europe/Prague). Final patient reply must be in the patient's language.",
   );
 
-  assert.match(instruction, /You own the conversation, planning, clarification and recovery/i);
-  assert.match(instruction, /Runtime\/tool results own external truth and boundaries/i);
-  assert.match(instruction, /Conversation history is evidence of what was said and intended, not proof of current clinic reality/i);
-  assert.match(instruction, /Historical booking evidence or previously mentioned slots/i);
+  assert.match(instruction, /Interpret the entire message in conversation context/i);
+  assert.match(instruction, /Associate each fact with its person, event and action/i);
+  assert.match(instruction, /History establishes what was said; current tool results establish the clinic's current state/i);
+  assert.match(instruction, /previously offered slot may be submitted for validation/i);
   assert.match(instruction, /availability_presentation_truth/i);
   assert.match(instruction, /resolved_date\/resolved_calendar/i);
   assert.match(instruction, /appointment_display_truth/i);
   assert.match(instruction, /qualification_policy/i);
-  assert.match(instruction, /pending typed phone/i);
+  assert.match(instruction, /phone_ownership_intent/i);
   assert.doesNotMatch(instruction, /PATH A|PATH B|D01_|D02_|D03_|D04_/);
 });

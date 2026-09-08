@@ -181,12 +181,23 @@ export function normalizeOpenAIResponse(
     };
   }
 
+  const invalidStaffRequest = finalResponse.safety_notes?.includes("staff_request_invalid") === true;
+
   // Valid structured state was parsed but the model omitted a reply field.
-  // Use a safe fallback reply but preserve already-validated structured state.
-  if (finalResponse.subject_intent != null || finalResponse.qualification != null || finalResponse.staff_request != null) {
-    const missingReplyDiagnostic = finalResponse.subject_intent != null
-      ? "subject_intent_reply_missing"
-      : finalResponse.staff_request != null ? "staff_request_reply_missing" : "qualification_reply_missing";
+  // Use a safe fallback reply but preserve already-validated structured state and
+  // malformed staff-side-effect diagnostics so Runtime can still fail closed.
+  if (
+    finalResponse.subject_intent != null
+    || finalResponse.qualification != null
+    || finalResponse.staff_request != null
+    || invalidStaffRequest
+  ) {
+    const missingReplyDiagnostic = invalidStaffRequest
+      ? "staff_request_invalid"
+      : finalResponse.subject_intent != null
+        ? "subject_intent_reply_missing"
+        : finalResponse.staff_request != null ? "staff_request_reply_missing" : "qualification_reply_missing";
+    const safetyNotes = [...new Set([...(finalResponse.safety_notes ?? []), missingReplyDiagnostic])];
     return {
       type: "final_response",
       conversation_id: conversationId,
@@ -196,7 +207,7 @@ export function normalizeOpenAIResponse(
         ...(finalResponse.phone_ownership_intent != null ? { phone_ownership_intent: finalResponse.phone_ownership_intent } : {}),
         ...(finalResponse.qualification != null ? { qualification: finalResponse.qualification } : {}),
         ...(finalResponse.staff_request != null ? { staff_request: finalResponse.staff_request } : {}),
-        safety_notes: [missingReplyDiagnostic],
+        safety_notes: safetyNotes,
       },
       usage: response?.usage,
     };
@@ -315,15 +326,21 @@ function readFinalResponse(
   const qualification = isAgentFirstRuntimeEnabled()
     ? parseAgentQualification(final?.qualification ?? envelope?.qualification, modelContext)
     : null;
-  const staffRequest = isAgentFirstRuntimeEnabled()
-    ? parseStaffRequest(final?.staff_request ?? envelope?.staff_request)
-    : null;
+  const rawStaffRequest = final?.staff_request ?? envelope?.staff_request;
+  const staffRequestProposalPresent = rawStaffRequest !== undefined && rawStaffRequest !== null;
+  const agentFirst = isAgentFirstRuntimeEnabled();
+  const staffRequest = agentFirst ? parseStaffRequest(rawStaffRequest) : null;
+  const invalidStaffRequest = agentFirst && staffRequestProposalPresent && staffRequest === null;
+  const safetyNotes = [...new Set([
+    ...(toStringArray(final?.safety_notes) ?? []),
+    ...(invalidStaffRequest ? ["staff_request_invalid"] : []),
+  ])];
 
   return {
     final_patient_reply: outputText,
     language: readString(final?.language) ?? null,
     reply_reason: readString(final?.reply_reason) ?? null,
-    safety_notes: toStringArray(final?.safety_notes),
+    safety_notes: safetyNotes.length > 0 ? safetyNotes : undefined,
     ...(ui !== undefined ? { ui } : {}),
     ...personIntents,
     ...(qualification !== null ? { qualification } : {}),

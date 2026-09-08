@@ -24,7 +24,10 @@ const request: StaffRequest = {
 const input = {
   clinic_id: CLINIC, contact_id: CONTACT, trace_id: "trace-callback",
   user_message: "Добрий вечір, 10–11 година.", locale: "ru",
-  business_context: { channel: "telegram", chat_id: "test-chat", clinic_code: "test-clinic" },
+  business_context: {
+    channel: "telegram", chat_id: "test-chat", clinic_code: "test-clinic",
+    meta: { message_id: "provider-message-1" },
+  },
 };
 
 function setup(opts: { status?: AdminNotificationResult["status"]; failSave?: boolean; failAudit?: boolean; duplicate?: boolean; throwNotify?: boolean } = {}) {
@@ -122,6 +125,18 @@ test("no canonical contact, repository or trace means no side effect", async () 
   assert.deepEqual(h.events, []);
 });
 
+test("staff side effect requires a stable provider message/update identifier", async () => {
+  const h = setup();
+  const result = await withStaffRequestHandling(h.deps).runtimeTurnService.runTurn({
+    ...input,
+    business_context: { channel: "runtime", chat_id: "direct", clinic_code: "test-clinic" },
+  });
+  assert.deepEqual(h.events, []);
+  assert.equal(result.staff_request_state?.proof.request_saved, false);
+  assert.match(result.final_patient_reply, /Не вдалося зберегти/);
+  assert.equal((result.debug?.staff_request as Record<string, unknown>).stable_inbound_identifier, false);
+});
+
 test("proposal validation rejects unsupported actions and strips model-supplied success/identity authority", () => {
   assert.equal(parseStaffRequest({ ...request, kind: "send_medical_records" }), null);
   assert.equal(parseStaffRequest({ ...request, patient_target: "everyone" }), null);
@@ -144,6 +159,30 @@ test("staff proposal survives real caller/service normalization with qualificati
   const malformed = normalizeOpenAIResponse({ output_text: JSON.stringify({ staff_request: request }) });
   assert.equal(malformed.type, "final_response");
   if (malformed.type === "final_response") assert.deepEqual(malformed.final_response.staff_request, request);
+});
+
+test("malformed staff proposal is preserved as a fail-closed diagnostic and cannot expose model success prose", async () => {
+  const malformedEnvelope = {
+    reply: "Администратора уже уведомили.",
+    staff_request: { ...request, kind: "unsupported_kind" },
+  };
+  const normalized = normalizeOpenAIResponse({ output_text: JSON.stringify(malformedEnvelope) });
+  assert.equal(normalized.type, "final_response");
+  if (normalized.type === "final_response") {
+    assert.equal(normalized.final_response.staff_request, undefined);
+    assert.ok(normalized.final_response.safety_notes?.includes("staff_request_invalid"));
+  }
+
+  const service = createDentalRuntimeTurnService({
+    openaiClient: { responses: { async create() { return { output_text: JSON.stringify(malformedEnvelope) }; } } },
+    model: "test", rpc: async () => ({ data: null, error: null }),
+    embeddingClient: { async createEmbedding() { return []; } }, embeddingModel: "test",
+  });
+  const deps: RuntimeTurnOrchestratorDeps = { runtimeTurnService: service };
+  const result = await withStaffRequestHandling(deps).runtimeTurnService.runTurn(input);
+  assert.equal(result.debug?.staff_request_invalid, true);
+  assert.match(result.final_patient_reply, /Не удалось обработать запрос/);
+  assert.doesNotMatch(result.final_patient_reply, /уже уведомили/);
 });
 
 test("S40: shared orchestration saves request, audits result and persists the actual receipt for later turns", async () => {
@@ -195,6 +234,18 @@ test("a staff request preserves a separately supplied answer to another question
   const result = await withStaffRequestHandling(h.deps).runtimeTurnService.runTurn(input);
   assert.match(result.final_patient_reply, /зворотний дзвінок передано/);
   assert.match(result.final_patient_reply, /Testova 20, Prague/);
+});
+
+test("additional_reply cannot bypass staff or doctor execution proof", async () => {
+  const h = setup({ status: "failed" });
+  h.deps.runtimeTurnService = { async runTurn() { return {
+    final_patient_reply: "Передам.", tool_requests: [], tool_results: [],
+    staff_request: { ...request, additional_reply: "Администратора уже уведомили, врач получил сообщение." },
+  }; } };
+  const result = await withStaffRequestHandling(h.deps).runtimeTurnService.runTurn(input);
+  assert.match(result.final_patient_reply, /доставку.*не підтверджено/);
+  assert.doesNotMatch(result.final_patient_reply, /Администратора уже уведомили|врач получил/);
+  assert.equal((result.debug?.staff_request as Record<string, unknown>).additional_reply_suppressed, true);
 });
 
 test("repository requires explicit durable task proof and scopes delivery writes by clinic/contact/request", async () => {

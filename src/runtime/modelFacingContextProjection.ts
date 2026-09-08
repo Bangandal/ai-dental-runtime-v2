@@ -83,11 +83,10 @@ function projectAgentFirstBaseContext(
 function projectAgentFirstRuntimeContext(
   runtimeContext: Record<string, unknown>,
 ): Record<string, unknown> {
-  const semanticMemoryFresh = runtimeContext._semantic_memory_fresh !== false;
   const {
     case_context: _caseContext,
     booking_context: _bookingContext,
-    _semantic_memory_fresh: _semanticMemoryFresh,
+    _booking_subjects_fresh: _bookingSubjectsFresh,
     ...runtimeRest
   } = runtimeContext;
   const projected: Record<string, unknown> = { ...runtimeRest };
@@ -121,11 +120,11 @@ function projectAgentFirstRuntimeContext(
         contact_channel_available: _duplicateReachability,
         ...collectedFacts
       } = collected;
-      const compactTask = { ...taskRest, collected: collectedFacts };
-      if (Object.keys(collectedFacts).length === 0 && Object.keys(taskRest).every((key) => key === "collected")) {
+      const remainingTaskKeys = Object.keys(taskRest).filter((key) => key !== "collected");
+      if (Object.keys(collectedFacts).length === 0 && remainingTaskKeys.length === 0) {
         delete projected.task_state;
       } else {
-        projected.task_state = compactTask;
+        projected.task_state = { ...taskRest, collected: collectedFacts };
       }
     } else if (Object.keys(taskRest).length > 0) {
       projected.task_state = taskRest;
@@ -145,7 +144,7 @@ function projectAgentFirstRuntimeContext(
   }
 
   const qualificationState = asObject(runtimeContext.qualification_state);
-  if (qualificationState && semanticMemoryFresh) {
+  if (qualificationState) {
     const {
       route: _route,
       urgency: _urgency,
@@ -159,17 +158,6 @@ function projectAgentFirstRuntimeContext(
     } else {
       delete projected.qualification_state;
     }
-  } else {
-    delete projected.qualification_state;
-  }
-
-  if (!semanticMemoryFresh) {
-    // A new session must not inherit an old task/person/callback narrative. Runtime keeps
-    // durable operational state privately, while the model starts from the new patient turn.
-    delete projected.task_state;
-    delete projected.staff_request_context;
-    delete projected.booking_subjects;
-    projected.recent_history = [];
   }
 
   delete projected.case_context;
@@ -185,9 +173,9 @@ function projectAgentFirstRuntimeContext(
  * the original caller context, but they are removed from the JSON payload sent to OpenAI.
  * The returned object is a detached projection and never mutates runtime state.
  *
- * Agent-first exposes conversational evidence and known facts, not Runtime's hidden state
- * machines. Full booking_process_state, historical case summaries, missing-field lists,
- * readiness statuses, transport phone metadata and old clinical-routing decisions stay
+ * Agent-first exposes conversational evidence and session-scoped known facts, not Runtime's
+ * hidden state machines. Full booking_process_state, historical case summaries, missing-field
+ * lists, readiness statuses, transport phone metadata and old clinical-routing decisions stay
  * Runtime-private. A verified selected slot is projected separately as booking_selection
  * because it is a concrete continuity fact rather than a next-step order.
  */
@@ -207,15 +195,16 @@ export function projectModelFacingContext(
   const rawRuntimeContext = asObject(baseContext.runtime_context);
   if (!rawRuntimeContext) return baseContext;
 
-  const semanticMemoryFresh = rawRuntimeContext._semantic_memory_fresh !== false;
+  const bookingSubjectsFresh = rawRuntimeContext._booking_subjects_fresh !== false;
   const runtimeContext = agentFirst
     ? projectAgentFirstRuntimeContext(rawRuntimeContext)
     : rawRuntimeContext;
 
-  const bookingSubjects = semanticMemoryFresh || !agentFirst
+  const bookingSubjects = !agentFirst || bookingSubjectsFresh
     ? asObject(runtimeContext.booking_subjects)
     : null;
   if (!bookingSubjects) {
+    if (agentFirst) delete runtimeContext.booking_subjects;
     return {
       ...baseContext,
       runtime_context: { ...runtimeContext },

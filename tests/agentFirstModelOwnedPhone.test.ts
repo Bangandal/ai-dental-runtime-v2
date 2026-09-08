@@ -67,7 +67,7 @@ function callerInput(): RuntimeAgentCallerInput {
         },
       },
     },
-  };
+  } as any;
 }
 
 function twoSubjectState(): BookingSubjectsState {
@@ -145,7 +145,7 @@ test("free-text phone regex remains legacy-only", () => {
   });
 });
 
-test("agent-first hides booking.select_slot and exposes optional phone_number on booking.apply", () => {
+test("agent-first hides booking.select_slot and requires nullable phone_number on booking.apply", () => {
   withMode("agent_first", () => {
     const defs = buildOpenAIToolDefinitions(callerInput());
     const names = defs.map((def) => def.name);
@@ -153,12 +153,15 @@ test("agent-first hides booking.select_slot and exposes optional phone_number on
 
     const booking = defs.find((def) => def.name === "booking_apply");
     assert.ok(booking);
-    const parameters = booking.parameters as Record<string, unknown>;
+    const parameters = booking.parameters as Record<string, any>;
     const properties = parameters.properties as Record<string, Record<string, unknown>>;
+    assert.equal((parameters.required as string[]).includes("phone_number"), true);
     assert.deepEqual(properties.phone_number, {
-      type: "string",
-      pattern: "^\\+?\\d{9,15}$",
-      description: "Booking contact explicitly provided by the patient. Normalize it yourself to 9-15 digits with an optional leading +. Do not invent a number and omit this field when no booking contact is known.",
+      anyOf: [
+        { type: "string", pattern: "^\\+?\\d{9,15}$" },
+        { type: "null" },
+      ],
+      description: "Always provide this field. If the patient explicitly supplied a booking phone in the current message, normalize it to 9-15 digits with an optional leading + and pass it here. Otherwise pass null. Never invent a number.",
     });
   });
 });
@@ -171,9 +174,10 @@ test("legacy keeps booking.select_slot and does not expose model-owned phone_num
 
     const booking = defs.find((def) => def.name === "booking_apply");
     assert.ok(booking);
-    const parameters = booking.parameters as Record<string, unknown>;
+    const parameters = booking.parameters as Record<string, any>;
     const properties = parameters.properties as Record<string, Record<string, unknown>>;
     assert.equal(Object.hasOwn(properties, "phone_number"), false);
+    assert.equal((parameters.required as string[]).includes("phone_number"), false);
   });
 });
 

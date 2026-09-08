@@ -27,6 +27,24 @@ function semanticContactOwner(
   return readString(subject.label) ?? readString(subject.patient_name) ?? "other_person";
 }
 
+function projectVerifiedBookingSelection(raw: unknown): Record<string, unknown> | null {
+  const state = asObject(raw);
+  if (!state || state.slot_evidence_status !== "verified") return null;
+
+  const slot = asObject(state.selected_slot);
+  const startsAt = readString(slot?.starts_at);
+  if (!slot || !startsAt) return null;
+
+  const endsAt = readString(slot.ends_at);
+  const slotId = readString(slot.slot_id);
+  return {
+    status: "verified",
+    starts_at: startsAt,
+    ...(endsAt ? { ends_at: endsAt } : {}),
+    ...(slotId ? { slot_id: slotId } : {}),
+  };
+}
+
 function projectAgentFirstBaseContext(
   context: Record<string, unknown>,
   profileLanguageHint: string | null,
@@ -35,6 +53,7 @@ function projectAgentFirstBaseContext(
     locale,
     truth_snapshot: truthSnapshot,
     recent_summary: recentSummary,
+    booking_process_state: bookingProcessState,
     ...rest
   } = context;
   const languageHint = readString(locale) ?? profileLanguageHint;
@@ -43,11 +62,13 @@ function projectAgentFirstBaseContext(
     patient_reachable_in_current_channel: _duplicateReachability,
     ...channelRest
   } = channelContext ?? {};
+  const bookingSelection = projectVerifiedBookingSelection(bookingProcessState);
 
   return {
     ...rest,
     ...(truthSnapshot != null ? { truth_snapshot: truthSnapshot } : {}),
     ...(recentSummary != null ? { recent_summary: recentSummary } : {}),
+    ...(bookingSelection ? { booking_selection: bookingSelection } : {}),
     channel_context: {
       ...channelRest,
       ...(languageHint
@@ -64,7 +85,12 @@ function projectAgentFirstBaseContext(
 function projectAgentFirstRuntimeContext(
   runtimeContext: Record<string, unknown>,
 ): Record<string, unknown> {
-  const projected = { ...runtimeContext };
+  const {
+    case_context: _caseContext,
+    booking_context: _bookingContext,
+    ...runtimeRest
+  } = runtimeContext;
+  const projected: Record<string, unknown> = { ...runtimeRest };
 
   const patientContext = asObject(runtimeContext.patient_context);
   if (patientContext) {
@@ -85,12 +111,33 @@ function projectAgentFirstRuntimeContext(
       intake_status: _intakeStatus,
       ...taskRest
     } = taskState;
-
-    // These legacy process hints are useful to deterministic Runtime, but exposing
-    // them to the agent-first model biases a fresh patient message toward stale
-    // booking/intake work. Durable collected facts remain visible.
-    projected.task_state = taskRest;
+    const collected = asObject(taskRest.collected);
+    if (collected) {
+      const {
+        contact_channel_available: _duplicateReachability,
+        ...collectedFacts
+      } = collected;
+      projected.task_state = { ...taskRest, collected: collectedFacts };
+    } else {
+      projected.task_state = taskRest;
+    }
   }
+
+  const runtimePolicy = asObject(runtimeContext.runtime_policy);
+  if (runtimePolicy) {
+    const {
+      phone_required: _constantPhoneRequired,
+      ...policyRest
+    } = runtimePolicy;
+    if (Object.keys(policyRest).length > 0) projected.runtime_policy = policyRest;
+    else delete projected.runtime_policy;
+  }
+
+  // Historical case/appointment summaries remain available to deterministic Runtime and
+  // shadow classifiers, but are intentionally absent from the patient-facing agent surface.
+  // The model must use recent dialogue for continuity and tools for current clinic state.
+  delete projected.case_context;
+  delete projected.booking_context;
 
   return projected;
 }
@@ -102,9 +149,10 @@ function projectAgentFirstRuntimeContext(
  * the original caller context, but they are removed from the JSON payload sent to OpenAI.
  * The returned object is a detached projection and never mutates runtime state.
  *
- * Agent-first additionally removes provider/profile language claims and legacy intake
- * steering from the reasoning surface. Language/reachability metadata is exposed once,
- * under an explicitly weak/authoritative location, rather than repeated across the payload.
+ * Agent-first exposes conversational evidence and known facts, not Runtime's hidden state
+ * machines. Full booking_process_state, historical case summaries, missing-field lists and
+ * readiness statuses stay Runtime-private. A verified selected slot is projected separately
+ * as booking_selection because it is a concrete continuity fact rather than a next-step order.
  */
 export function projectModelFacingContext(
   context: Record<string, unknown>,
@@ -149,16 +197,31 @@ export function projectModelFacingContext(
     const subject = asObject(rawSubject);
     if (!subject) return rawSubject;
 
-    const { id: _internalId, ...visibleSubject } = subject;
+    const {
+      id: _internalId,
+      missing: _missing,
+      status,
+      booking_contact: _bookingContact,
+      role: _role,
+      ...visibleSubject
+    } = subject;
     return {
       ...visibleSubject,
+      ...(status === "booked" ? { is_booked: true } : {}),
       ...(Object.prototype.hasOwnProperty.call(visibleSubject, "contact_owner")
         ? { contact_owner: semanticContactOwner(visibleSubject.contact_owner, subjectsById) }
         : {}),
     };
   });
 
-  const { active_subject_id: _internalActiveSubjectId, ...visibleBookingSubjects } = bookingSubjects;
+  const {
+    version: _version,
+    status: _registryStatus,
+    active_subject_id: _internalActiveSubjectId,
+    pending_typed_phone: pendingTypedPhone,
+    max_subjects: _maxSubjects,
+    ...visibleBookingSubjects
+  } = bookingSubjects;
 
   return {
     ...baseContext,
@@ -166,6 +229,9 @@ export function projectModelFacingContext(
       ...runtimeContext,
       booking_subjects: {
         ...visibleBookingSubjects,
+        ...(typeof pendingTypedPhone === "string" && pendingTypedPhone.trim().length > 0
+          ? { has_pending_typed_phone: true }
+          : {}),
         subjects: projectedSubjects,
       },
     },

@@ -82,7 +82,11 @@ test("agent-first persistence timestamps new qualification/staff/PEOPLE and does
     };
 
     const wrapped = withAgentQualificationPersistence(deps);
-    await wrapped.runtimeContextRepository!.loadRuntimeContext({ clinic_id: "clinic", contact_id: "contact" });
+    const loaded = await wrapped.runtimeContextRepository!.loadRuntimeContext({ clinic_id: "clinic", contact_id: "contact" });
+    assert.equal(loaded.ok, true);
+    if (loaded.ok) {
+      assert.equal(loaded.data.booking_subjects, null, "stale PEOPLE registry must be hidden from execution");
+    }
     await wrapped.runtimeTurnService.runTurn({} as any);
     await wrapped.turnPersistenceRepository!.mergeConversationState({
       clinic_id: "clinic",
@@ -167,7 +171,11 @@ test("unchanged PEOPLE registry does not refresh its session timestamp", async (
     };
 
     const wrapped = withAgentQualificationPersistence(deps);
-    await wrapped.runtimeContextRepository!.loadRuntimeContext({ clinic_id: "clinic", contact_id: "contact" });
+    const loaded = await wrapped.runtimeContextRepository!.loadRuntimeContext({ clinic_id: "clinic", contact_id: "contact" });
+    assert.equal(loaded.ok, true);
+    if (loaded.ok) {
+      assert.equal(loaded.data.booking_subjects, null, "unversioned PEOPLE registry stays stale for execution");
+    }
     await wrapped.runtimeTurnService.runTurn({} as any);
     await wrapped.turnPersistenceRepository!.mergeConversationState({
       clinic_id: "clinic",

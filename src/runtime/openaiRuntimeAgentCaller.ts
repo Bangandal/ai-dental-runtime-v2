@@ -39,9 +39,14 @@ const OPENAI_TO_INTERNAL_TOOL_NAME = Object.fromEntries(
 ) as Record<string, (typeof ACTIVE_RUNTIME_AGENT_TOOLS)[number]>;
 
 const AGENT_FIRST_PHONE_SCHEMA = {
-  type: "string",
-  pattern: "^\\+?\\d{9,15}$",
-  description: "Booking contact explicitly provided by the patient. Normalize it yourself to 9-15 digits with an optional leading +. Do not invent a number and omit this field when no booking contact is known.",
+  anyOf: [
+    {
+      type: "string",
+      pattern: "^\\+?\\d{9,15}$",
+    },
+    { type: "null" },
+  ],
+  description: "Always provide this field. If the patient explicitly supplied a booking phone in the current message, normalize it to 9-15 digits with an optional leading + and pass it here. Otherwise pass null. Never invent a number.",
 } as const;
 
 const AGENT_FIRST_RUNTIME_TRUTH_KEYS = [
@@ -80,24 +85,27 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
     if (!def) return [];
 
     const runtimeDefaultsUndatedAvailability = agentFirst && toolName === "availability.check";
-    const requiredArgs = runtimeDefaultsUndatedAvailability
+    const agentFirstBookingApply = agentFirst && toolName === "booking.apply";
+    const baseRequiredArgs = runtimeDefaultsUndatedAvailability
       ? def.required_args.filter((arg) => arg !== "requested_date")
       : [...def.required_args];
+    const requiredArgs = agentFirstBookingApply && !baseRequiredArgs.includes("phone_number")
+      ? [...baseRequiredArgs, "phone_number"]
+      : baseRequiredArgs;
     const optionalArgs = [
-      ...def.optional_args,
+      ...def.optional_args.filter((arg) => !(agentFirstBookingApply && arg === "phone_number")),
       ...(runtimeDefaultsUndatedAvailability ? ["requested_date"] : []),
-      ...(agentFirst && toolName === "booking.apply" ? ["phone_number"] : []),
     ];
     const baseSchemas = (def as { param_schemas?: Record<string, Record<string, unknown>> }).param_schemas;
-    const paramSchemas = agentFirst && toolName === "booking.apply"
+    const paramSchemas = agentFirstBookingApply
       ? { ...(baseSchemas ?? {}), phone_number: AGENT_FIRST_PHONE_SCHEMA }
       : baseSchemas;
     let description = def.description;
     if (runtimeDefaultsUndatedAvailability) {
       description = `${description} If the patient did not specify any date, omit requested_date; Runtime applies the clinic Day+2 default. Never invent a date just to satisfy the tool schema.`;
     }
-    if (agentFirst && toolName === "booking.apply") {
-      description = `${description} If the patient supplied a booking phone, understand and normalize it yourself and pass it as phone_number.`;
+    if (agentFirstBookingApply) {
+      description = `${description} Always include phone_number. If the current patient message explicitly contains a booking phone, normalize and pass it; otherwise pass null. Runtime may still use an already trusted channel contact when this field is null.`;
     }
 
     return [{

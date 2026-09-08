@@ -13,11 +13,18 @@ function value(raw: unknown): string | null {
   return typeof raw === "string" && raw.trim() ? raw.trim() : null;
 }
 
-function hasStableInboundIdentifier(context: Record<string, unknown> | undefined): boolean {
+function stableStaffRequestKey(context: Record<string, unknown> | undefined): string | null {
   const rawMeta = context?.meta;
-  if (!rawMeta || typeof rawMeta !== "object" || Array.isArray(rawMeta)) return false;
+  if (!rawMeta || typeof rawMeta !== "object" || Array.isArray(rawMeta)) return null;
   const meta = rawMeta as Record<string, unknown>;
-  return value(meta.message_id) !== null || value(meta.update_id) !== null;
+  const messageId = value(meta.message_id);
+  const updateId = value(meta.update_id);
+  if (!messageId && !updateId) return null;
+  const channel = value(context?.channel) ?? "unknown";
+  const sender = value(context?.external_user_id) ?? value(context?.chat_id) ?? "unknown";
+  return updateId
+    ? `${channel}:${sender}:upd:${updateId}`
+    : `${channel}:${sender}:msg:${messageId}`;
 }
 
 function failedProof(): StaffRequestProof {
@@ -65,16 +72,16 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
         const proof = failedProof();
         let delivery: AdminNotificationResult | null = null;
         const repository = deps.staffRequestRepository;
-        const stableInboundIdentifier = hasStableInboundIdentifier(input.business_context);
+        const idempotencyKey = stableStaffRequestKey(input.business_context);
 
         // Staff notification is an externally visible side effect. A random Runtime trace
-        // is not an idempotency key, so do not execute it unless the channel supplied a
-        // stable provider message/update identifier that the inbound dedupe boundary can use.
-        if (repository && input.contact_id && input.trace_id && stableInboundIdentifier) {
+        // is not an idempotency key. The durable request uses the stable provider event key;
+        // the ordinary Runtime trace remains attached to notification/audit delivery data.
+        if (repository && input.contact_id && input.trace_id && idempotencyKey) {
           const saved = await repository.create({
             clinic_id: input.clinic_id,
             contact_id: input.contact_id,
-            trace_id: input.trace_id,
+            trace_id: idempotencyKey,
             request,
             source_message: input.user_message,
           }).catch(() => null);
@@ -144,7 +151,7 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
             ...result.debug,
             staff_request: {
               ...proof,
-              stable_inbound_identifier: stableInboundIdentifier,
+              stable_inbound_identifier: idempotencyKey !== null,
               ...(additionalReplySuppressed ? { additional_reply_suppressed: true } : {}),
             },
           },

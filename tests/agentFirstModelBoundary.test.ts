@@ -47,15 +47,20 @@ function makeProviderMemorySpy(initial = "conv_durable_old") {
   };
 }
 
-test("agent-first model projection treats locale as a weak hint and removes stale intake steering", async () => {
+test("agent-first model projection exposes one weak language hint and removes stale intake steering", async () => {
   await withAgentMode("agent_first", () => {
     const projected = projectModelFacingContext({
       locale: "ru",
-      channel_context: { channel: "telegram" },
+      truth_snapshot: null,
+      recent_summary: null,
+      channel_context: {
+        channel: "telegram",
+        patient_reachable_in_current_channel: true,
+      },
       runtime_context: {
         patient_context: {
           display_name: "Олена",
-          preferred_language: "ru",
+          preferred_language: "uk",
           reachable_in_current_channel: true,
         },
         task_state: {
@@ -63,6 +68,10 @@ test("agent-first model projection treats locale as a weak hint and removes stal
           missing_fields: ["preferred_time"],
           last_known_intent: "booking",
           intake_status: "collecting_time",
+        },
+        runtime_policy: {
+          phone_required: false,
+          patient_reachable_in_current_channel: true,
         },
         recent_history: [
           { role: "user", text: "Мені потрібні брекети" },
@@ -72,13 +81,21 @@ test("agent-first model projection treats locale as a weak hint and removes stal
     });
 
     assert.equal(projected.locale, undefined);
+    assert.equal(projected.truth_snapshot, undefined);
+    assert.equal(projected.recent_summary, undefined);
     const channel = projected.channel_context as Record<string, unknown>;
     assert.equal(channel.language_hint, "ru");
+    assert.equal(channel.patient_reachable_in_current_channel, undefined);
 
     const runtime = projected.runtime_context as Record<string, unknown>;
     const patient = runtime.patient_context as Record<string, unknown>;
     assert.equal(patient.preferred_language, undefined);
-    assert.equal(patient.profile_language_hint, "ru");
+    assert.equal(patient.profile_language_hint, undefined);
+    assert.equal(patient.reachable_in_current_channel, undefined);
+    assert.equal(patient.display_name, "Олена");
+
+    const runtimePolicy = runtime.runtime_policy as Record<string, unknown>;
+    assert.equal(runtimePolicy.patient_reachable_in_current_channel, true);
 
     const task = runtime.task_state as Record<string, unknown>;
     assert.deepEqual(task.collected, { service_interest: "брекети" });
@@ -86,6 +103,22 @@ test("agent-first model projection treats locale as a weak hint and removes stal
     assert.equal(task.last_known_intent, undefined);
     assert.equal(task.intake_status, undefined);
     assert.equal((runtime.recent_history as unknown[]).length, 2);
+  });
+});
+
+test("agent-first falls back to stored profile language only when channel locale is absent", async () => {
+  await withAgentMode("agent_first", () => {
+    const projected = projectModelFacingContext({
+      locale: null,
+      channel_context: { channel: "telegram" },
+      runtime_context: {
+        patient_context: { preferred_language: "uk" },
+      },
+    });
+    const channel = projected.channel_context as Record<string, unknown>;
+    assert.equal(channel.language_hint, "uk");
+    const runtime = projected.runtime_context as Record<string, any>;
+    assert.equal(runtime.patient_context.preferred_language, undefined);
   });
 });
 

@@ -129,9 +129,10 @@ export function withAgentQualificationPersistence(
             collected.booking_subjects_updated_at,
             sessionStartedAt,
           );
-          previousBookingSubjectsSignature = stableJson(
-            bookingSubjectsAreCurrent ? result.data.booking_subjects : null,
-          );
+          // Compare future persistence against what is actually stored, even when that registry
+          // is stale for execution. Otherwise an unchanged stale registry would receive a fresh
+          // timestamp merely because we intentionally hid it from the current turn.
+          previousBookingSubjectsSignature = stableJson(result.data.booking_subjects);
 
           if (!agentFirst) return result;
 

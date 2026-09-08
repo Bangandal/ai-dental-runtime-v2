@@ -2,9 +2,10 @@
 
 The September screenshot replay exposed two kinds of failure: the model lost the
 meaning of dates/people, and a promise to pass a request to staff had no associated
-operation. Agent-first instructions now distinguish birthdays, callback windows,
-visit preferences and durations; preserve each person's plan; acknowledge patient
-reports; and require verified price/location/insurance facts.
+operation. The compact English agent-first instruction uses nine general rules:
+interpret the full message, associate facts with their person/event/action, preserve
+unaffected agreements, and verify clinic facts and execution outcomes through
+Runtime. It retains the structured output contracts consumed by the existing code.
 
 ## Runtime request path
 

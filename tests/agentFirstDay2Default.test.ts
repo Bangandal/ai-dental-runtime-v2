@@ -135,10 +135,10 @@ test("Prompt 2.0 tells the model to omit an undated date and preserves explicit 
     "Today is 2026-08-23 (timezone: Europe/Prague). Final patient reply must be in the patient's language.",
   );
 
-  assert.match(instruction, /no patient-specified date, call availability\.check without requested_date/i);
+  assert.match(instruction, /without a patient-specified date, omit requested_date/i);
   assert.match(instruction, /Runtime applies the clinic Day\+2 default/i);
-  assert.match(instruction, /do not calculate the default yourself/i);
-  assert.match(instruction, /explicit date wins/i);
+  assert.match(instruction, /Pass a date only when the patient links it to a desired appointment/i);
+  assert.match(instruction, /Resolve relative dates against Runtime's clock/i);
 });
 
 test("Runtime normalizes Day+2 before availability execution and evidence creation", async () => {

@@ -58,9 +58,9 @@ test("agent-first policy defaults to six model calls and supports bounded overri
 test("agent-first instruction explicitly gives recovery ownership to the model", () => {
   return withAgentMode("agent_first", () => {
     const instruction = appendAgentFirstSystemInstruction("BASE");
-    assert.match(instruction, /You own the conversation, planning, clarification and recovery/);
-    assert.match(instruction, /blocked or failed tool action is not automatically the end of the turn/);
-    assert.match(instruction, /Never claim a real-world action succeeded until the corresponding tool confirms it/);
+    assert.match(instruction, /If a useful action is possible, take it/);
+    assert.match(instruction, /On failure, use an available recovery or ask the necessary clarification/);
+    assert.match(instruction, /Confirm an action only from its execution result/);
   });
 });
 

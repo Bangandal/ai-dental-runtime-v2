@@ -14,6 +14,10 @@ import {
   type AgentQualificationState,
 } from "./agentQualification.ts";
 import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
+import {
+  getSemanticSessionStartedAt,
+  isStoredSemanticItemInCurrentSession,
+} from "./modelVisibleRuntimeContext.ts";
 
 export {
   applyMessengerPhonePolicy,
@@ -29,6 +33,10 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value ?? null);
 }
 
 /**
@@ -63,12 +71,13 @@ export function withAgentFirstTurnLocalConversationMemory(
 }
 
 /**
- * Agent-first qualification persistence adapter around the frozen legacy orchestrator.
+ * Agent-first semantic persistence adapter around the frozen legacy orchestrator.
  *
- * The main agent produces a validated qualification update. The adapter captures the
- * qualification already present in the RuntimeContext snapshot loaded at turn start and
- * deterministically merges the model update into the legacy orchestrator's existing
- * rpc_merge_conversation_state write. It never performs a second RuntimeContext read.
+ * It reuses the RuntimeContext snapshot already loaded at turn start, so qualification
+ * persistence does not perform a second Supabase read. Durable semantic objects receive
+ * their own timestamps and are merged only inside the current message session. This keeps
+ * an old complaint/callback/PEOPLE registry from becoming fresh merely because some other
+ * field in convo_state was updated on a later visit.
  */
 export function withAgentQualificationPersistence(
   deps: Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1],
@@ -76,6 +85,7 @@ export function withAgentQualificationPersistence(
   let capturedQualification: AgentQualificationState | null = null;
   let capturedStaffRequest: RuntimeTurnResult["staff_request_state"];
   let previousQualification: AgentQualificationState | null = null;
+  let previousBookingSubjectsSignature = stableJson(null);
   let runtimeContextLoaded = deps.runtimeContextRepository == null;
 
   const runtimeContextRepository = deps.runtimeContextRepository
@@ -88,7 +98,15 @@ export function withAgentQualificationPersistence(
           if (result.ok) {
             const conversationState = asRecord(result.data.conversation_state);
             const collected = asRecord(conversationState.collected);
-            previousQualification = parseStoredAgentQualification(collected.agent_qualification);
+            const sessionStartedAt = getSemanticSessionStartedAt(result.data.recent_history);
+            const previousQualificationIsCurrent = isStoredSemanticItemInCurrentSession(
+              collected.agent_qualification_updated_at,
+              sessionStartedAt,
+            );
+            previousQualification = previousQualificationIsCurrent
+              ? parseStoredAgentQualification(collected.agent_qualification)
+              : null;
+            previousBookingSubjectsSignature = stableJson(result.data.booking_subjects);
           }
           return result;
         },
@@ -118,39 +136,46 @@ export function withAgentQualificationPersistence(
     async mergeConversationState(
       input: Parameters<typeof originalPersistence.mergeConversationState>[0],
     ) {
-      if (capturedStaffRequest?.proof.request_saved) {
-        const flags = asRecord(input.control_flags);
-        input = {
-          ...input,
-          control_flags: { ...flags, collected: {
-            ...asRecord(flags.collected),
-            agent_staff_request: capturedStaffRequest,
-          } },
-        };
-      }
-      if (!capturedQualification || !runtimeContextLoaded) {
-        return originalPersistence.mergeConversationState(input);
-      }
-
-      const mergedQualification = mergeAgentQualification(
-        previousQualification,
-        capturedQualification,
-      );
-      if (!mergedQualification) {
-        return originalPersistence.mergeConversationState(input);
-      }
-
+      const nowIso = new Date().toISOString();
       const controlFlags = asRecord(input.control_flags);
-      const collectedPatch = asRecord(controlFlags.collected);
+      const collectedPatch = { ...asRecord(controlFlags.collected) };
+      let collectedChanged = false;
+
+      if (capturedStaffRequest?.proof.request_saved) {
+        collectedPatch.agent_staff_request = capturedStaffRequest;
+        collectedPatch.agent_staff_request_updated_at = nowIso;
+        collectedChanged = true;
+      }
+
+      if (capturedQualification && runtimeContextLoaded) {
+        const mergedQualification = mergeAgentQualification(
+          previousQualification,
+          capturedQualification,
+        );
+        if (mergedQualification) {
+          collectedPatch.agent_qualification = mergedQualification;
+          collectedPatch.agent_qualification_updated_at = nowIso;
+          collectedChanged = true;
+        }
+      }
+
+      if (Object.prototype.hasOwnProperty.call(controlFlags, "booking_subjects")) {
+        const incomingBookingSubjectsSignature = stableJson(controlFlags.booking_subjects);
+        if (incomingBookingSubjectsSignature !== previousBookingSubjectsSignature) {
+          collectedPatch.booking_subjects_updated_at = nowIso;
+          collectedChanged = true;
+        }
+      }
+
+      if (!collectedChanged) {
+        return originalPersistence.mergeConversationState(input);
+      }
 
       return originalPersistence.mergeConversationState({
         ...input,
         control_flags: {
           ...controlFlags,
-          collected: {
-            ...collectedPatch,
-            agent_qualification: mergedQualification,
-          },
+          collected: collectedPatch,
         },
       });
     },

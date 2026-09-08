@@ -1,8 +1,10 @@
 import { parseStoredAgentQualification } from "./agentQualification.ts";
 import { parseStaffRequest } from "./staffRequest.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 
 const MAX_RECENT_HISTORY_MESSAGES = 8;
 const MAX_RECENT_HISTORY_CHARS = 2000;
+const DEFAULT_SEMANTIC_CONTEXT_TTL_HOURS = 24;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -16,6 +18,31 @@ function asNullableString(value: unknown): string | null {
 
 function asBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
+}
+
+export function resolveSemanticContextTtlMs(
+  env: Record<string, string | undefined> = process.env as Record<string, string | undefined>,
+): number {
+  const configured = Number(env.RUNTIME_SEMANTIC_CONTEXT_TTL_HOURS);
+  const hours = Number.isFinite(configured) && configured >= 1 && configured <= 168
+    ? configured
+    : DEFAULT_SEMANTIC_CONTEXT_TTL_HOURS;
+  return hours * 60 * 60 * 1000;
+}
+
+export function isSemanticContextFresh(
+  updatedAt: string | null,
+  now = new Date(),
+  ttlMs = resolveSemanticContextTtlMs(),
+): boolean {
+  // Missing timestamps are treated as compatible/fresh so old fixtures and partially
+  // migrated rows do not lose context unexpectedly. Production convo_state writes carry
+  // updated_at, so normal patient sessions still get a real inactivity boundary.
+  if (!updatedAt) return true;
+  const parsed = new Date(updatedAt).getTime();
+  if (!Number.isFinite(parsed)) return true;
+  const age = now.getTime() - parsed;
+  return age >= 0 && age <= ttlMs;
 }
 
 // Assembles recent_history from raw DB messages with message-count and char-budget caps.
@@ -36,10 +63,7 @@ export function assembleRecentHistory(raw: unknown[]): Array<{ role: string; tex
     normalized.push({ role, text });
   }
 
-  // Cap by message count (most recent N)
   const sliced = normalized.slice(-MAX_RECENT_HISTORY_MESSAGES);
-
-  // Cap by total char budget: drop oldest messages until within limit
   let totalChars = sliced.reduce((sum, m) => sum + m.text.length, 0);
   let start = 0;
   while (totalChars > MAX_RECENT_HISTORY_CHARS && start < sliced.length) {
@@ -54,7 +78,12 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
   const context = asRecord(runtimeContext);
   const knownContact = asRecord(context.known_contact);
   const conversationState = asRecord(context.conversation_state);
-  const collected = asRecord(conversationState.collected);
+  const persistedCollected = asRecord(conversationState.collected);
+  const agentFirst = isAgentFirstRuntimeEnabled();
+  const semanticMemoryFresh = !agentFirst || isSemanticContextFresh(
+    asNullableString(conversationState.updated_at),
+  );
+  const collected = semanticMemoryFresh ? persistedCollected : {};
   const qualificationState = parseStoredAgentQualification(collected.agent_qualification);
   const staffRequest = parseStaffRequest(asRecord(collected.agent_staff_request).request);
 
@@ -68,26 +97,25 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
     ?? asNullableString(knownContact.username)
     ?? null;
 
-  const contactChannelAvailable = asBoolean(collected.contact_channel_available);
+  // Channel reachability is transport state, not semantic memory, so it survives an
+  // inactivity reset even when old service/problem/people context is hidden from the LLM.
+  const contactChannelAvailable = asBoolean(persistedCollected.contact_channel_available);
   const patientReachableInCurrentChannel =
     contactChannelAvailable
     ?? asBoolean(conversationState.patient_reachable_in_current_channel)
     ?? false;
 
   const rawHistory = Array.isArray(context.recent_history) ? context.recent_history : [];
-  const recentHistory = assembleRecentHistory(rawHistory);
+  const recentHistory = semanticMemoryFresh ? assembleRecentHistory(rawHistory) : [];
 
   return {
+    ...(agentFirst ? { _semantic_memory_fresh: semanticMemoryFresh } : {}),
     patient_context: {
       display_name: displayName,
       preferred_language: asNullableString(knownContact.language_code),
       reachable_in_current_channel: patientReachableInCurrentChannel,
     },
     task_state: {
-      // Only include non-null collected fields. A null value means the field has not been
-      // persisted to the booking system via booking.apply — it does NOT mean the patient
-      // hasn't provided it. Omitting nulls prevents the model from treating absent persistence
-      // as authoritative evidence that the field is unknown (it may be in conversation history).
       collected: Object.fromEntries(
         [
           ["name", asNullableString(collected.name)],
@@ -98,15 +126,17 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
           ...(contactChannelAvailable !== null ? [["contact_channel_available", contactChannelAvailable]] : []),
         ].filter(([, v]) => v !== null && v !== undefined),
       ),
-      missing_fields: Array.isArray(conversationState.missing_fields)
+      missing_fields: semanticMemoryFresh && Array.isArray(conversationState.missing_fields)
         ? conversationState.missing_fields.filter(
             (field): field is string =>
               typeof field === "string" &&
               !["phone", "first_name", "last_name", "name"].includes(field),
           )
         : [],
-      last_known_intent: asNullableString(conversationState.intent),
-      intake_status: asNullableString(conversationState.qualification_stage) ?? asNullableString(conversationState.conversation_stage),
+      last_known_intent: semanticMemoryFresh ? asNullableString(conversationState.intent) : null,
+      intake_status: semanticMemoryFresh
+        ? asNullableString(conversationState.qualification_stage) ?? asNullableString(conversationState.conversation_stage)
+        : null,
     },
     ...(qualificationState ? { qualification_state: qualificationState } : {}),
     ...(staffRequest ? { staff_request_context: {
@@ -116,8 +146,6 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
       summary: staffRequest.summary,
       preferred_contact_window: staffRequest.preferred_contact_window,
       source: "patient_report",
-      // Remember the purpose/window without treating a historical notification as a
-      // promise that the doctor has called or reviewed anything.
     } } : {}),
     runtime_policy: {
       phone_required: false,

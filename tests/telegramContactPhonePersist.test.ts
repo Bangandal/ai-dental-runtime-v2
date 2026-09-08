@@ -287,22 +287,18 @@ test("fallback contact confirmation text does not claim booked or confirmed", as
   }
 });
 
-// ── CCE-1: contact event routes through runtime (regression for stale OpenAI thread) ──
-// Root cause (PR #165): contact button bypass the runtime → OpenAI thread stale →
-// next user turn sees "waiting for phone" and model repeats phone request instead of
-// asking for name/last_name.
-// Fix: after persistChannelContactPhone, call runRuntimeTurnOrchestrated with
-// user_message="[contact_shared]" so OpenAI thread is updated.
+// ── CCE-1: contact event persists trusted phone without a synthetic LLM turn ──
+// Agent-first provider conversation memory is turn-local. The contact button is a transport
+// event, not a patient utterance, so it updates Runtime/Supabase state and acknowledges
+// deterministically. The next real patient message loads channel_contact from durable state.
 
-test("CCE-1: contact event routes through runtimeTurnService after persist — reply comes from runtime not hardcoded", async () => {
+test("CCE-1: contact event persists without synthetic runtime turn and removes keyboard", async () => {
   const runTurnCalls: Array<{ user_message: string }> = [];
-  const RUNTIME_REPLY = "Номер получен! Напишите, пожалуйста, ваше имя и фамилию для записи.";
-
   const stubServiceForContact: RuntimeTurnService = {
     async runTurn(input) {
       runTurnCalls.push({ user_message: input.user_message });
       return {
-        final_patient_reply: RUNTIME_REPLY,
+        final_patient_reply: "this must not be used",
         conversation_id: "conv_cce1_test",
         conversation_id_resumable: true,
         tool_requests: [],
@@ -318,7 +314,6 @@ test("CCE-1: contact event routes through runtimeTurnService after persist — r
       return { ok: true, data: { contact_id: CONTACT_UUID, clinic_id: CLINIC_UUID } };
     },
     async registerInboundEvent() {
-      // Return non-null inbound_event_id so the orchestrator does not short-circuit as duplicate
       return { ok: true, data: { inbound_event_id: "evt_cce1" } };
     },
     async saveMessage() {
@@ -356,23 +351,10 @@ test("CCE-1: contact event routes through runtimeTurnService after persist — r
   await (handler as Function)({ body: OWN_CONTACT_UPDATE, headers: {}, ip: "127.0.0.1" }, fakeReply);
   await new Promise((r) => setTimeout(r, 50));
 
-  // Runtime must be called once with [contact_shared]
-  assert.equal(runTurnCalls.length, 1, "runtimeTurnService.runTurn must be called exactly once for contact event");
-  assert.equal(
-    runTurnCalls[0]!.user_message,
-    "[contact_shared]",
-    "synthetic turn must use [contact_shared] as user_message so OpenAI thread is updated",
-  );
+  assert.equal(runTurnCalls.length, 0, "contact transport events must not create a synthetic patient LLM turn");
+  assert.equal(sendCalls.length, 1, "exactly one Telegram acknowledgement must be sent");
+  assert.equal(sendCalls[0]!.text, "Спасибо, номер получен. Можем продолжить запись.");
 
-  // Telegram reply must come from runtime (not hardcoded fallback)
-  assert.equal(sendCalls.length, 1, "exactly one Telegram message must be sent");
-  assert.equal(
-    sendCalls[0]!.text,
-    RUNTIME_REPLY,
-    "reply text must come from runtimeTurnService, not hardcoded 'Спасибо, номер получен'",
-  );
-
-  // Contact keyboard must be dismissed after phone capture regardless of runtime UI
   const markup = sendCalls[0]!.replyMarkup as Record<string, unknown> | undefined;
   assert.equal(
     markup?.remove_keyboard,

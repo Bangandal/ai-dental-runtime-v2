@@ -56,6 +56,23 @@ test("agent-first suppresses hint for short confirmation after established dialo
   });
 });
 
+test("agent-first suppresses conflicting hint when substantive first turn establishes its own language", async () => {
+  await withAgentMode("agent_first", () => {
+    const projected = projectModelFacingContext({
+      locale: "cs",
+      channel_context: { channel: "telegram" },
+      runtime_context: {
+        recent_history: [
+          { role: "user", text: "Там жива черга чи по запису? Не підкажете" },
+        ],
+      },
+    });
+
+    const channel = projected.channel_context as Record<string, unknown>;
+    assert.equal(channel.language_hint, undefined);
+  });
+});
+
 test("agent-first keeps channel hint when no prior substantive patient language exists", async () => {
   await withAgentMode("agent_first", () => {
     const projected = projectModelFacingContext({

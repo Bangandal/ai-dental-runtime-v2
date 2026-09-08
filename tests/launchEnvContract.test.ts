@@ -32,8 +32,8 @@ test("launch env example exposes every fail-closed ClinicCard authority prerequi
   }
 });
 
-test("dangerous launch authority switches remain fail-closed in the example", () => {
-  assert.match(envExample, /^RUNTIME_AGENT_MODE=legacy$/m);
+test("launch uses agent-first while dangerous ClinicCard authority switches remain fail-closed", () => {
+  assert.match(envExample, /^RUNTIME_AGENT_MODE=agent_first$/m);
   assert.match(envExample, /^CLINICCARD_BOOKING_MODE=disabled$/m);
   assert.match(envExample, /^CLINICCARD_LIVE_CLINIC_ALLOWLIST=$/m);
   assert.match(envExample, /^CLINICCARD_AVAILABILITY_POLICY_CONFIRMED=false$/m);

@@ -176,6 +176,9 @@ test("orchestration adapter merges qualification into the existing single conver
                 },
               },
             },
+            booking_subjects: null,
+            provided_phone: null,
+            recent_history: [],
           },
         };
       },
@@ -193,6 +196,7 @@ test("orchestration adapter merges qualification into the existing single conver
   } as any;
 
   const wrapped = withAgentQualificationPersistence(deps);
+  await wrapped.runtimeContextRepository!.loadRuntimeContext({ clinic_id: "clinic", contact_id: "contact" });
   await wrapped.runtimeTurnService.runTurn({ clinic_id: "clinic", user_message: "test" } as any);
   await wrapped.turnPersistenceRepository!.mergeConversationState({
     clinic_id: "clinic",
@@ -210,12 +214,11 @@ test("orchestration adapter merges qualification into the existing single conver
   });
 
   assert.equal(mergeCalls, 1);
-  assert.deepEqual(persistedInput?.control_flags.collected, {
-    existing_field: "keep_me",
-    agent_qualification: {
-      complaint: "болит зуб",
-      reported_facts: ["болит ночью", "есть чувствительность при накусывании"],
-      summary: "Боль ночью и чувствительность при накусывании.",
-    },
+  assert.equal(persistedInput?.control_flags.collected.existing_field, "keep_me");
+  assert.deepEqual(persistedInput?.control_flags.collected.agent_qualification, {
+    complaint: "болит зуб",
+    reported_facts: ["болит ночью", "есть чувствительность при накусывании"],
+    summary: "Боль ночью и чувствительность при накусывании.",
   });
+  assert.equal(typeof persistedInput?.control_flags.collected.agent_qualification_updated_at, "string");
 });

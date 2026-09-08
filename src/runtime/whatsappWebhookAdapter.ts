@@ -36,6 +36,17 @@ export interface WhatsAppAudio {
   mime_type?: string;
 }
 
+export interface WhatsAppImage {
+  id?: string;
+  mime_type?: string;
+}
+
+export interface WhatsAppDocument {
+  id?: string;
+  mime_type?: string;
+  filename?: string;
+}
+
 export interface WhatsAppMessage {
   from?: string;
   id?: string;
@@ -43,6 +54,8 @@ export interface WhatsAppMessage {
   type?: string;
   text?: { body?: string };
   audio?: WhatsAppAudio;
+  image?: WhatsAppImage;
+  document?: WhatsAppDocument;
 }
 
 // ── Normalized result types ───────────────────────────────────────────────────
@@ -55,6 +68,13 @@ export interface WhatsAppAudioTurn {
   timestamp: string | null;
 }
 
+export interface WhatsAppMediaNoticeTurn {
+  waId: string;
+  media_kind: "photo" | "document";
+  messageId: string;
+  timestamp: string | null;
+}
+
 export interface WhatsAppTurn {
   runtimeBody: RuntimeTurnHttpRequestBody;
   waId: string;
@@ -63,12 +83,13 @@ export interface WhatsAppTurn {
 // Unified ordered turn — preserves original message ordering across modalities.
 export type WhatsAppNormalizedTurn =
   | { type: "text"; turn: WhatsAppTurn }
-  | { type: "audio"; turn: WhatsAppAudioTurn };
+  | { type: "audio"; turn: WhatsAppAudioTurn }
+  | { type: "media_notice"; turn: WhatsAppMediaNoticeTurn };
 
 export type WhatsAppNormalizeResult =
   | {
       ok: true;
-      /** Preserves original per-message ordering across text and audio. Route should iterate this. */
+      /** Preserves original per-message ordering across text/audio/media notices. */
       normalizedTurns: WhatsAppNormalizedTurn[];
       /** Kept for backward compatibility with adapter unit tests. */
       turns: WhatsAppTurn[];
@@ -171,7 +192,21 @@ export function normalizeWhatsAppPayload(
           continue;
         }
 
-        // Only process text messages — skip all other types silently
+        // Image/document content is not downloaded or forwarded by Runtime. Only the fact
+        // that media arrived is normalized for deterministic staff notification.
+        if (message.type === "image" || message.type === "document") {
+          normalizedTurns.push({
+            type: "media_notice",
+            turn: {
+              waId,
+              media_kind: message.type === "image" ? "photo" : "document",
+              messageId,
+              timestamp: message.timestamp ?? null,
+            },
+          });
+          continue;
+        }
+
         if (message.type !== "text") continue;
 
         const body = message.text?.body?.trim();

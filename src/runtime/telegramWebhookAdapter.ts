@@ -20,13 +20,26 @@ export interface TelegramVoice {
   mime_type?: string;
 }
 
+export interface TelegramPhotoSize {
+  file_id?: string;
+}
+
+export interface TelegramDocument {
+  file_id?: string;
+  file_name?: string;
+  mime_type?: string;
+}
+
 export interface TelegramMessage {
   message_id: number;
   chat: { id: number; type: string };
   from?: TelegramFrom;
   text?: string;
+  caption?: string;
   contact?: TelegramContact;
   voice?: TelegramVoice;
+  photo?: TelegramPhotoSize[];
+  document?: TelegramDocument;
 }
 
 export interface TelegramFrom {
@@ -99,11 +112,22 @@ export interface TelegramVoiceMeta {
   telegram_chat_type: string;
 }
 
+export interface TelegramMediaNotice {
+  media_kind: "photo" | "document";
+  message_id: string;
+  update_id: string;
+  chat_id: string;
+  external_user_id: string;
+  clinic_code: string;
+  patient_display_name: string | null;
+}
+
 export type TelegramNormalizeResult =
   | { ok: true; type: "text"; body: TelegramTurnBody }
   | { ok: true; type: "contact"; capture: TelegramContactCapture; chat_id: string; external_user_id: string; update_id: string; message_id: string; clinic_code: string }
   | { ok: true; type: "contact_foreign"; chat_id: string; external_user_id: string; message_id: string; clinic_code: string }
   | { ok: true; type: "voice"; file_id: string; mime_type?: string; duration_seconds: number; message_id: string; chat_id: string; external_user_id: string; clinic_code: string; meta: TelegramVoiceMeta }
+  | { ok: true; type: "media_notice"; notice: TelegramMediaNotice }
   | { ok: false; reason: "no_message" | "no_text" | "no_contact_phone" | "edited_message" | "no_from" };
 
 export function normalizeTelegramUpdate(
@@ -121,6 +145,30 @@ export function normalizeTelegramUpdate(
   const from = message.from;
   if (!from) {
     return { ok: false, reason: "no_from" };
+  }
+
+  // Photo/document messages are metadata-only operational events. Do not surface
+  // provider media identifiers: Runtime only needs the fact that media arrived.
+  const mediaKind = Array.isArray(message.photo) && message.photo.length > 0
+    ? "photo" as const
+    : message.document !== undefined
+      ? "document" as const
+      : null;
+  if (mediaKind) {
+    const displayName = [from.first_name, from.last_name].filter(Boolean).join(" ").trim() || from.username || null;
+    return {
+      ok: true,
+      type: "media_notice",
+      notice: {
+        media_kind: mediaKind,
+        message_id: String(message.message_id),
+        update_id: String(update.update_id),
+        chat_id: String(message.chat.id),
+        external_user_id: String(from.id),
+        clinic_code: clinicCode,
+        patient_display_name: displayName,
+      },
+    };
   }
 
   // Voice message (native Telegram voice note only; message.audio falls through to no_text)

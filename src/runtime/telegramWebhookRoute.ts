@@ -8,6 +8,7 @@ import { sendTelegramMessage, sendTelegramMessageWithRetry, buildContactRequestR
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 import { resolveTelegramMedia } from "./telegramMediaResolver.ts";
 import { transcribeAudio } from "./audioTranscription.ts";
+import { handleInboundMediaStaffRequest } from "./inboundMediaStaffRequest.ts";
 
 export interface TelegramWebhookRouteDeps extends RuntimeTurnOrchestratorDeps {
   botToken: string;
@@ -64,6 +65,31 @@ export function registerTelegramWebhookRoute(
       return;
     }
 
+    // Photo/document: metadata-only deterministic staff notification. The adapter never
+    // exposes file_id, and this path never calls getFile/download or the patient-facing LLM.
+    if (normalized.type === "media_notice") {
+      const result = await handleInboundMediaStaffRequest({
+        clinic_code: normalized.notice.clinic_code,
+        channel: "telegram",
+        external_user_id: normalized.notice.external_user_id,
+        chat_id: normalized.notice.chat_id,
+        message_id: normalized.notice.message_id,
+        update_id: normalized.notice.update_id,
+        media_kind: normalized.notice.media_kind,
+        patient_display_name: normalized.notice.patient_display_name,
+      }, deps).catch(() => ({ outcome: "failed" as const, reason: "media_staff_request_exception" }));
+      if (result.outcome === "failed") {
+        console.error(JSON.stringify({
+          event: "telegram_media_staff_request_failure",
+          channel: "telegram",
+          reason: result.reason,
+          message_type: normalized.notice.media_kind,
+        }));
+      }
+      reply.code(200).send({ ok: true });
+      return;
+    }
+
     // Contact update: patient shared someone else's contact — ownership mismatch.
     if (normalized.type === "contact_foreign") {
       void sendTelegramMessage({
@@ -76,7 +102,9 @@ export function registerTelegramWebhookRoute(
       return;
     }
 
-    // Contact update: patient shared their own phone via Telegram contact button.
+    // Contact update: persist trusted channel contact directly. In agent-first provider
+    // conversation memory is turn-local, so there is no reason to create a synthetic
+    // patient turn merely to update an OpenAI thread.
     if (normalized.type === "contact") {
       const persistResult = await persistChannelContactPhone(normalized, deps).catch(() => "state_persist_failed" as const);
       if (persistResult !== "persisted") {
@@ -90,61 +118,17 @@ export function registerTelegramWebhookRoute(
         return;
       }
 
-      // Phone persisted — run through the runtime so the OpenAI conversation thread is
-      // updated. Without this, the next user turn would see stale thread history ("waiting
-      // for phone") and the model would incorrectly repeat the phone request instead of
-      // asking for the missing name.
-      const contactTurnResult = await runRuntimeTurnOrchestrated(
-        {
-          clinic_code: normalized.clinic_code,
-          channel: "telegram",
-          external_user_id: normalized.external_user_id,
-          chat_id: normalized.chat_id,
-          text: "[contact_shared]",
-          meta: {
-            update_id: normalized.update_id,
-            message_id: normalized.message_id,
-            username: null,
-            first_name: null,
-            last_name: null,
-            telegram_chat_type: "private",
-          },
-        },
-        deps,
-        {
-          trustedChannelContact: {
-            phone_number: normalized.capture.phone_number,
-            phone_source: normalized.capture.phone_source,
-            phone_consent: normalized.capture.phone_consent,
-            phone_collected_at: normalized.capture.phone_collected_at,
-          },
-        },
-      );
-
-      let contactReplyText: string;
-      let contactTraceId: string | undefined;
-      if (contactTurnResult.outcome === "success") {
-        contactReplyText = contactTurnResult.payload.final_patient_reply;
-        contactTraceId = contactTurnResult.payload.trace_id ?? undefined;
-      } else if (contactTurnResult.outcome === "error") {
-        contactReplyText = contactTurnResult.fallbackPayload.final_patient_reply;
-        contactTraceId = contactTurnResult.fallbackPayload.trace_id ?? undefined;
-      } else {
-        // duplicate / invalid_request / clinic_not_found — safe fallback
-        contactReplyText = "Спасибо, номер получен. Можем продолжить запись.";
-      }
-
-      // Always dismiss the contact keyboard after phone capture, regardless of runtime UI.
+      const contactTraceId = `telegram:${normalized.external_user_id}:contact:${normalized.update_id}`;
       const contactDelivery = await sendTelegramMessageWithRetry({
         botToken: deps.botToken,
         chatId: normalized.chat_id,
-        text: contactReplyText,
+        text: "Спасибо, номер получен. Можем продолжить запись.",
         replyMarkup: buildRemoveKeyboardMarkup(),
         fetch: deps.fetch,
         retryBackoffMs: deps.telegramRetryBackoffMs,
       });
       try {
-        if (contactTraceId) deps.onTelegramDelivery?.({ ...contactDelivery, trace_id: contactTraceId });
+        deps.onTelegramDelivery?.({ ...contactDelivery, trace_id: contactTraceId });
       } catch {
         // swallow observability failure
       }
@@ -183,7 +167,6 @@ export function registerTelegramWebhookRoute(
       }
 
       // Prefer MIME declared by Telegram in the webhook over file_path-derived MIME.
-      // Telegram getFile may return .oga paths; "audio/ogg" from the webhook is authoritative.
       const effectiveMimeType = normalized.mime_type || mediaResult.mime_type || "audio/ogg";
 
       const transcription = await transcribeAudio(
@@ -274,7 +257,6 @@ export function registerTelegramWebhookRoute(
     const result = await runRuntimeTurnOrchestrated(normalized.body, deps);
 
     if (result.outcome === "duplicate") {
-      // Already processed this update_id — return 200 without sending another message.
       reply.code(200).send({ ok: true });
       return;
     }
@@ -289,7 +271,6 @@ export function registerTelegramWebhookRoute(
           ? result.payload.trace_id
           : result.fallbackPayload.trace_id;
 
-      // If the runtime response requests a Telegram contact button, send reply_markup.
       const uiTelegram = result.outcome === "success" ? result.payload.ui?.telegram : undefined;
       const replyMarkup = uiTelegram?.request_contact === true
         ? buildContactRequestReplyMarkup(uiTelegram.button_text)
@@ -311,7 +292,6 @@ export function registerTelegramWebhookRoute(
       }
     }
 
-    // Always return 200 to Telegram to prevent retry loops.
     reply.code(200).send({ ok: true });
   });
 }
@@ -357,9 +337,6 @@ export async function persistChannelContactPhone(
     conversation_intent: "booking",
     handoff_recommended: false,
     confidence: "high",
-    // Stored in control_flags JSONB merged into conversation state by rpc_merge_conversation_state.
-    // rpc_get_runtime_context returns the merged blob as out_state_json, so channel_contact
-    // survives the round trip as stateJson.channel_contact — same contract as topic_memory.
     control_flags: {
       channel_contact: {
         phone_number: normalized.capture.phone_number,

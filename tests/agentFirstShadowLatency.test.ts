@@ -32,18 +32,24 @@ function buildDeps() {
   });
 }
 
-test("agent-first production bootstrap removes shadow LLM classifiers from the patient critical path while legacy keeps them", () => {
+test("agent-first production bootstrap removes every legacy shadow/model contour while legacy keeps rollback wiring", () => {
   const previousMode = process.env.RUNTIME_AGENT_MODE;
   try {
     process.env.RUNTIME_AGENT_MODE = "agent_first";
     const agentFirst = buildDeps();
     assert.equal(agentFirst.runtimeGateClassifier, undefined);
     assert.equal(agentFirst.turnUnderstandingClassifier, undefined);
+    assert.equal(agentFirst.caseRouterClassifier, undefined);
+    assert.equal(agentFirst.caseLiteExtractor, undefined);
+    assert.equal(agentFirst.caseContextRepository, undefined);
 
     process.env.RUNTIME_AGENT_MODE = "legacy";
     const legacy = buildDeps();
     assert.ok(legacy.runtimeGateClassifier, "legacy keeps Runtime Gate shadow classifier wired");
     assert.ok(legacy.turnUnderstandingClassifier, "legacy keeps Turn Understanding shadow classifier wired");
+    assert.ok(legacy.caseRouterClassifier, "legacy keeps case router rollback wiring");
+    assert.ok(legacy.caseLiteExtractor, "legacy keeps case-lite rollback wiring");
+    assert.ok(legacy.caseContextRepository, "legacy keeps case context rollback wiring");
   } finally {
     if (previousMode === undefined) delete process.env.RUNTIME_AGENT_MODE;
     else process.env.RUNTIME_AGENT_MODE = previousMode;

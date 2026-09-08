@@ -73,8 +73,6 @@ function projectAgentFirstBaseContext(
       ...channelRest,
       ...(languageHint
         ? {
-            // This is the only language metadata exposed in agent-first. It is a weak
-            // fallback hint and must never override language established by dialogue.
             language_hint: languageHint,
           }
         : {}),
@@ -88,6 +86,7 @@ function projectAgentFirstRuntimeContext(
   const {
     case_context: _caseContext,
     booking_context: _bookingContext,
+    _booking_subjects_fresh: _bookingSubjectsFresh,
     ...runtimeRest
   } = runtimeContext;
   const projected: Record<string, unknown> = { ...runtimeRest };
@@ -121,9 +120,16 @@ function projectAgentFirstRuntimeContext(
         contact_channel_available: _duplicateReachability,
         ...collectedFacts
       } = collected;
-      projected.task_state = { ...taskRest, collected: collectedFacts };
-    } else {
+      const remainingTaskKeys = Object.keys(taskRest).filter((key) => key !== "collected");
+      if (Object.keys(collectedFacts).length === 0 && remainingTaskKeys.length === 0) {
+        delete projected.task_state;
+      } else {
+        projected.task_state = { ...taskRest, collected: collectedFacts };
+      }
+    } else if (Object.keys(taskRest).length > 0) {
       projected.task_state = taskRest;
+    } else {
+      delete projected.task_state;
     }
   }
 
@@ -154,9 +160,6 @@ function projectAgentFirstRuntimeContext(
     }
   }
 
-  // Historical case/appointment summaries remain available to deterministic Runtime and
-  // shadow classifiers, but are intentionally absent from the patient-facing agent surface.
-  // The model must use recent dialogue for continuity and tools for current clinic state.
   delete projected.case_context;
   delete projected.booking_context;
 
@@ -170,9 +173,9 @@ function projectAgentFirstRuntimeContext(
  * the original caller context, but they are removed from the JSON payload sent to OpenAI.
  * The returned object is a detached projection and never mutates runtime state.
  *
- * Agent-first exposes conversational evidence and known facts, not Runtime's hidden state
- * machines. Full booking_process_state, historical case summaries, missing-field lists,
- * readiness statuses, transport phone metadata and old clinical-routing decisions stay
+ * Agent-first exposes conversational evidence and session-scoped known facts, not Runtime's
+ * hidden state machines. Full booking_process_state, historical case summaries, missing-field
+ * lists, readiness statuses, transport phone metadata and old clinical-routing decisions stay
  * Runtime-private. A verified selected slot is projected separately as booking_selection
  * because it is a concrete continuity fact rather than a next-step order.
  */
@@ -192,12 +195,16 @@ export function projectModelFacingContext(
   const rawRuntimeContext = asObject(baseContext.runtime_context);
   if (!rawRuntimeContext) return baseContext;
 
+  const bookingSubjectsFresh = rawRuntimeContext._booking_subjects_fresh !== false;
   const runtimeContext = agentFirst
     ? projectAgentFirstRuntimeContext(rawRuntimeContext)
     : rawRuntimeContext;
 
-  const bookingSubjects = asObject(runtimeContext.booking_subjects);
+  const bookingSubjects = !agentFirst || bookingSubjectsFresh
+    ? asObject(runtimeContext.booking_subjects)
+    : null;
   if (!bookingSubjects) {
+    if (agentFirst) delete runtimeContext.booking_subjects;
     return {
       ...baseContext,
       runtime_context: { ...runtimeContext },

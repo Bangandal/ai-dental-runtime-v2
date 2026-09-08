@@ -7,6 +7,7 @@ const MAX_RECENT_HISTORY_CHARS = 2000;
 const DEFAULT_SEMANTIC_CONTEXT_TTL_HOURS = 24;
 
 type UnknownRecord = Record<string, unknown>;
+type NormalizedHistoryItem = { role: string; text: string; created_at: string | null };
 
 function asRecord(value: unknown): UnknownRecord {
   return value && typeof value === "object" ? (value as UnknownRecord) : {};
@@ -35,9 +36,6 @@ export function isSemanticContextFresh(
   now = new Date(),
   ttlMs = resolveSemanticContextTtlMs(),
 ): boolean {
-  // Missing timestamps are treated as compatible/fresh so old fixtures and partially
-  // migrated rows do not lose context unexpectedly. Production convo_state writes carry
-  // updated_at, so normal patient sessions still get a real inactivity boundary.
   if (!updatedAt) return true;
   const parsed = new Date(updatedAt).getTime();
   if (!Number.isFinite(parsed)) return true;
@@ -45,10 +43,8 @@ export function isSemanticContextFresh(
   return age >= 0 && age <= ttlMs;
 }
 
-// Assembles recent_history from raw DB messages with message-count and char-budget caps.
-// Returns dialogue evidence only — callers must not treat this as business proof.
-export function assembleRecentHistory(raw: unknown[]): Array<{ role: string; text: string }> {
-  const normalized: Array<{ role: string; text: string }> = [];
+function normalizeHistory(raw: unknown[]): NormalizedHistoryItem[] {
+  const normalized: NormalizedHistoryItem[] = [];
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const msg = item as Record<string, unknown>;
@@ -60,18 +56,77 @@ export function assembleRecentHistory(raw: unknown[]): Array<{ role: string; tex
         ? msg.content.trim()
         : null;
     if (!role || !text) continue;
-    normalized.push({ role, text });
+    normalized.push({
+      role,
+      text,
+      created_at: asNullableString(msg.created_at),
+    });
   }
+  return normalized;
+}
 
-  const sliced = normalized.slice(-MAX_RECENT_HISTORY_MESSAGES);
+function capHistory(items: NormalizedHistoryItem[]): Array<{ role: string; text: string }> {
+  const sliced = items.slice(-MAX_RECENT_HISTORY_MESSAGES);
   let totalChars = sliced.reduce((sum, m) => sum + m.text.length, 0);
   let start = 0;
   while (totalChars > MAX_RECENT_HISTORY_CHARS && start < sliced.length) {
     totalChars -= sliced[start].text.length;
     start++;
   }
+  return sliced.slice(start).map(({ role, text }) => ({ role, text }));
+}
 
-  return sliced.slice(start);
+function findSessionStartIndex(items: NormalizedHistoryItem[], ttlMs: number): number {
+  if (items.length <= 1) return 0;
+  let sessionStart = 0;
+  for (let index = 1; index < items.length; index += 1) {
+    const previousAt = items[index - 1].created_at;
+    const currentAt = items[index].created_at;
+    if (!previousAt || !currentAt) continue;
+    const previousMs = new Date(previousAt).getTime();
+    const currentMs = new Date(currentAt).getTime();
+    if (!Number.isFinite(previousMs) || !Number.isFinite(currentMs)) continue;
+    const gap = currentMs - previousMs;
+    if (gap > ttlMs) sessionStart = index;
+  }
+  return sessionStart;
+}
+
+export function getSemanticSessionStartedAt(
+  raw: unknown[],
+  ttlMs = resolveSemanticContextTtlMs(),
+): string | null {
+  const normalized = normalizeHistory(raw);
+  if (normalized.length === 0) return null;
+  const session = normalized.slice(findSessionStartIndex(normalized, ttlMs));
+  return session[0]?.created_at ?? null;
+}
+
+export function isStoredSemanticItemInCurrentSession(
+  itemUpdatedAt: unknown,
+  sessionStartedAt: string | null,
+): boolean {
+  if (!sessionStartedAt) return true;
+  const itemAt = asNullableString(itemUpdatedAt);
+  if (!itemAt) return false;
+  const itemMs = new Date(itemAt).getTime();
+  const sessionMs = new Date(sessionStartedAt).getTime();
+  return Number.isFinite(itemMs) && Number.isFinite(sessionMs) && itemMs >= sessionMs;
+}
+
+// Legacy receives the historical capped recent history. Agent-first uses the same cap but
+// first cuts everything before the most recent inactivity gap, creating a natural session.
+export function assembleRecentHistory(raw: unknown[]): Array<{ role: string; text: string }> {
+  return capHistory(normalizeHistory(raw));
+}
+
+export function assembleAgentFirstSessionHistory(
+  raw: unknown[],
+  ttlMs = resolveSemanticContextTtlMs(),
+): Array<{ role: string; text: string }> {
+  const normalized = normalizeHistory(raw);
+  const session = normalized.slice(findSessionStartIndex(normalized, ttlMs));
+  return capHistory(session);
 }
 
 export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record<string, unknown> {
@@ -80,12 +135,31 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
   const conversationState = asRecord(context.conversation_state);
   const persistedCollected = asRecord(conversationState.collected);
   const agentFirst = isAgentFirstRuntimeEnabled();
-  const semanticMemoryFresh = !agentFirst || isSemanticContextFresh(
-    asNullableString(conversationState.updated_at),
+  const rawHistory = Array.isArray(context.recent_history) ? context.recent_history : [];
+  const sessionStartedAt = agentFirst ? getSemanticSessionStartedAt(rawHistory) : null;
+
+  // Agent-first no longer trusts unversioned legacy collected service/problem/time fields.
+  // Durable semantic items are visible only when their own update timestamp belongs to the
+  // current message session. Legacy keeps the historical collected-state behavior unchanged.
+  const semanticCollected = agentFirst ? {} : persistedCollected;
+  const qualificationFresh = !agentFirst || isStoredSemanticItemInCurrentSession(
+    persistedCollected.agent_qualification_updated_at,
+    sessionStartedAt,
   );
-  const collected = semanticMemoryFresh ? persistedCollected : {};
-  const qualificationState = parseStoredAgentQualification(collected.agent_qualification);
-  const staffRequest = parseStaffRequest(asRecord(collected.agent_staff_request).request);
+  const staffRequestFresh = !agentFirst || isStoredSemanticItemInCurrentSession(
+    persistedCollected.agent_staff_request_updated_at,
+    sessionStartedAt,
+  );
+  const bookingSubjectsFresh = !agentFirst || isStoredSemanticItemInCurrentSession(
+    persistedCollected.booking_subjects_updated_at,
+    sessionStartedAt,
+  );
+  const qualificationState = qualificationFresh
+    ? parseStoredAgentQualification(persistedCollected.agent_qualification)
+    : null;
+  const staffRequest = staffRequestFresh
+    ? parseStaffRequest(asRecord(persistedCollected.agent_staff_request).request)
+    : null;
 
   const firstName = asNullableString(knownContact.first_name);
   const lastName = asNullableString(knownContact.last_name);
@@ -97,19 +171,18 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
     ?? asNullableString(knownContact.username)
     ?? null;
 
-  // Channel reachability is transport state, not semantic memory, so it survives an
-  // inactivity reset even when old service/problem/people context is hidden from the LLM.
   const contactChannelAvailable = asBoolean(persistedCollected.contact_channel_available);
   const patientReachableInCurrentChannel =
     contactChannelAvailable
     ?? asBoolean(conversationState.patient_reachable_in_current_channel)
     ?? false;
 
-  const rawHistory = Array.isArray(context.recent_history) ? context.recent_history : [];
-  const recentHistory = semanticMemoryFresh ? assembleRecentHistory(rawHistory) : [];
+  const recentHistory = agentFirst
+    ? assembleAgentFirstSessionHistory(rawHistory)
+    : assembleRecentHistory(rawHistory);
 
   return {
-    ...(agentFirst ? { _semantic_memory_fresh: semanticMemoryFresh } : {}),
+    ...(agentFirst ? { _booking_subjects_fresh: bookingSubjectsFresh } : {}),
     patient_context: {
       display_name: displayName,
       preferred_language: asNullableString(knownContact.language_code),
@@ -118,23 +191,23 @@ export function buildModelVisibleRuntimeContext(runtimeContext: unknown): Record
     task_state: {
       collected: Object.fromEntries(
         [
-          ["name", asNullableString(collected.name)],
-          ["service_interest", asNullableString(collected.service_interest)],
-          ["problem", asNullableString(collected.problem)],
-          ["preferred_time", asNullableString(collected.preferred_time)],
-          ["preferred_contact", asNullableString(collected.preferred_contact)],
+          ["name", asNullableString(semanticCollected.name)],
+          ["service_interest", asNullableString(semanticCollected.service_interest)],
+          ["problem", asNullableString(semanticCollected.problem)],
+          ["preferred_time", asNullableString(semanticCollected.preferred_time)],
+          ["preferred_contact", asNullableString(semanticCollected.preferred_contact)],
           ...(contactChannelAvailable !== null ? [["contact_channel_available", contactChannelAvailable]] : []),
         ].filter(([, v]) => v !== null && v !== undefined),
       ),
-      missing_fields: semanticMemoryFresh && Array.isArray(conversationState.missing_fields)
+      missing_fields: !agentFirst && Array.isArray(conversationState.missing_fields)
         ? conversationState.missing_fields.filter(
             (field): field is string =>
               typeof field === "string" &&
               !["phone", "first_name", "last_name", "name"].includes(field),
           )
         : [],
-      last_known_intent: semanticMemoryFresh ? asNullableString(conversationState.intent) : null,
-      intake_status: semanticMemoryFresh
+      last_known_intent: !agentFirst ? asNullableString(conversationState.intent) : null,
+      intake_status: !agentFirst
         ? asNullableString(conversationState.qualification_stage) ?? asNullableString(conversationState.conversation_stage)
         : null,
     },

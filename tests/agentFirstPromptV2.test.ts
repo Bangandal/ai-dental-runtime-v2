@@ -80,10 +80,11 @@ test("Prompt 2.0 uses Runtime resolved calendar truth for alternative dates", ()
   assert.match(instruction, /Use Runtime's calendar values/i);
 });
 
-test("Prompt 2.0 uses appointment display truth instead of model weekday arithmetic", () => {
+test("Prompt 2.0 scopes appointment display truth to confirmed booking actions", () => {
   const instruction = prompt();
 
-  assert.match(instruction, /Use Runtime's calendar values, including appointment_display_truth for existing appointments/i);
+  assert.match(instruction, /appointment_display_truth is authoritative only when Runtime provides it after a confirmed booking action/i);
+  assert.match(instruction, /existing appointments come from appointment\.lookup/i);
 });
 
 test("Prompt 2.0 keeps hidden booking ceremony out of the agent-first model", () => {
@@ -98,6 +99,7 @@ test("Prompt 2.0 preserves policy-owned clinical routing", () => {
   const instruction = prompt();
 
   assert.match(instruction, /Urgency, red flags and clinical routing must come only from the clinic's qualification_policy/i);
+  assert.match(instruction, /if no qualification_policy is present in context, omit route, urgency and red_flags/i);
   assert.match(instruction, /Do not diagnose or prescribe treatment/i);
   assert.doesNotMatch(instruction, /acute_exam|emergency_exam|orthodontic_consultation/i);
 });

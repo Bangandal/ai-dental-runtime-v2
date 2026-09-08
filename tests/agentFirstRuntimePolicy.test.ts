@@ -59,7 +59,7 @@ test("agent-first instruction explicitly gives recovery ownership to the model",
   return withAgentMode("agent_first", () => {
     const instruction = appendAgentFirstSystemInstruction("BASE");
     assert.match(instruction, /If a useful action is possible, take it/);
-    assert.match(instruction, /On failure, use an available recovery or ask the necessary clarification/);
+    assert.match(instruction, /On failure, use the structured recovery truth or ask the necessary clarification/);
     assert.match(instruction, /Confirm an action only from its execution result/);
   });
 });

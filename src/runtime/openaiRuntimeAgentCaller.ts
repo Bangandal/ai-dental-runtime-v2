@@ -45,7 +45,7 @@ const AGENT_FIRST_PHONE_SCHEMA = {
 } as const;
 
 const AGENT_FIRST_RUNTIME_TRUTH_KEYS = [
-  "booking_process_state",
+  "booking_selection",
   "booking_apply_action_truth",
   "availability_action_truth",
   "availability_presentation_truth",

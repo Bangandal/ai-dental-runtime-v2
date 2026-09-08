@@ -1,38 +1,47 @@
-# OpenAI conversation memory wiring for live `/runtime/turn`
+# Provider conversation memory wiring for live `/runtime/turn`
 
 ## Purpose
 
-`conversation_id` in Runtime V2 is **model continuity only**. It helps the OpenAI model continue the same conversational thread, but it is **not business truth**.
+Runtime V2 separates **dialogue memory** from **provider transport continuity**.
 
-## What is persisted
+- Durable cross-turn dialogue continuity belongs to Runtime/Supabase messages and structured state.
+- A provider conversation/thread id is transport state only. It is never business truth.
 
-We persist only a key-to-`conversation_id` mapping in `core.openai_conversation_memory`:
+This distinction is mode-specific so legacy rollback stays intact while `agent_first` remains portable to other model providers.
 
-- `clinic_id`
-- `channel`
-- `external_user_id` or `chat_id`
-- `conversation_id`
-- timestamps
+## Legacy mode
 
-No raw message history is stored in this table.
-
-## Live route behavior
+Legacy keeps the historical OpenAI conversation-object behavior unchanged.
 
 For `/runtime/turn`:
 
-1. Before `runTurn`, runtime loads memory by key:
-   - `clinic_id + channel + external_user_id` when external user id is available.
+1. Before `runTurn`, Runtime loads the stored provider conversation mapping by:
+   - `clinic_id + channel + external_user_id` when external user id is available;
    - otherwise `clinic_id + channel + chat_id`.
-2. If memory exists, route passes `conversation_id` to runtime service.
-3. If memory does not exist, route creates a new OpenAI conversation object and passes that `conversation_id` to runtime service.
-4. After `runTurn`, route upserts memory using:
-   - `result.conversation_id` when present, otherwise
-   - the pre-created `conversation_id` used for the turn.
+2. If memory exists, the stored `conversation_id` is passed to the runtime service.
+3. If memory does not exist, the route may create a new OpenAI conversation object.
+4. After `runTurn`, the route persists the resumable `conversation_id` mapping.
 
-Load/save failures and conversation creation failures are non-fatal and should not break runtime replies.
+The mapping lives in `core.openai_conversation_memory` and stores identifiers only, not raw message history.
+
+## Agent-first mode
+
+`agent_first` does **not** use provider conversation ids as cross-turn memory.
+
+For every new patient message:
+
+1. Runtime starts with no previously stored provider conversation id.
+2. Runtime/Supabase `recent_history` and durable structured state provide cross-turn dialogue continuity.
+3. The OpenAI adapter may create a fresh conversation object for this patient turn.
+4. That fresh id may be reused only inside the same `model -> tool -> model` iteration so function-call continuity remains valid.
+5. The provider conversation id is not loaded from or persisted to `core.openai_conversation_memory` for the next patient turn.
+
+This makes the conversational memory contract provider-neutral: another model adapter can implement its own turn-local tool-call continuity without becoming a second durable memory system.
 
 ## Boundary reminders
 
-- Database mapping stores identifiers only, not conversation contents.
-- Business truth remains in Supabase core state/cases/messages and domain RPC data.
-- OpenAI memory must not be treated as source of truth for bookings, holds, appointments, pricing, or identity.
+- Runtime/Supabase messages and structured state are the single cross-turn memory source in `agent_first`.
+- Provider thread ids are transport details, not dialogue truth or business truth.
+- Business truth remains in Supabase core state/cases/messages and domain RPC/tool data.
+- Booking, holds, appointments, pricing, identity, staff-delivery proof and other actions must never be inferred from provider memory.
+- The legacy provider-memory table/RPC remains available for rollback and is intentionally not removed by the agent-first boundary.

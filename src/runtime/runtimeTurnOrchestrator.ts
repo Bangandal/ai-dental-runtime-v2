@@ -13,6 +13,7 @@ import {
   parseStoredAgentQualification,
   type AgentQualificationState,
 } from "./agentQualification.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 
 export {
   applyMessengerPhonePolicy,
@@ -28,6 +29,37 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+/**
+ * Agent-first owns cross-turn dialogue continuity through Runtime/Supabase history.
+ * Provider conversation ids are deliberately scoped to one patient turn only.
+ *
+ * The frozen legacy orchestrator still expects a conversation-memory repository to
+ * determine first-turn routing and to persist provider ids. In agent-first we replace
+ * that durable provider repository with an in-memory null boundary: every new patient
+ * turn starts without an old provider thread, while createOpenAIConversation may still
+ * create a fresh conversation that is reused by model -> tool -> model calls inside
+ * the same turn. Saves are acknowledged but never leave the turn.
+ *
+ * Legacy mode is returned byte-for-byte unchanged for rollback compatibility.
+ */
+export function withAgentFirstTurnLocalConversationMemory(
+  deps: Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1],
+): Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1] {
+  if (!isAgentFirstRuntimeEnabled()) return deps;
+
+  return {
+    ...deps,
+    openAIConversationMemoryRepository: {
+      async getConversationMemory() {
+        return { ok: true, data: { conversation_id: null } };
+      },
+      async saveConversationMemory(input) {
+        return { ok: true, data: { conversation_id: input.conversation_id } };
+      },
+    },
+  };
 }
 
 /**
@@ -137,7 +169,13 @@ export function runRuntimeTurnOrchestrated(
     queue: runtimeTurnSerialQueue,
     task: () => runRuntimeTurnOrchestratedLegacy(
       body,
-      withAgentQualificationPersistence(withStaffRequestHandling(withDurableConversationContinuity(deps))),
+      withAgentQualificationPersistence(
+        withStaffRequestHandling(
+          withDurableConversationContinuity(
+            withAgentFirstTurnLocalConversationMemory(deps),
+          ),
+        ),
+      ),
       opts,
     ),
   });

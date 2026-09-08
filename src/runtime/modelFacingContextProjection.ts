@@ -144,6 +144,7 @@ function projectAgentFirstRuntimeContext(
       urgency: _urgency,
       red_flags: _redFlags,
       policy_applied: _policyApplied,
+      summary: _modelSummary,
       ...patientReportedQualification
     } = qualificationState;
     if (Object.keys(patientReportedQualification).length > 0) {
@@ -218,6 +219,21 @@ export function projectModelFacingContext(
     const subject = asObject(rawSubject);
     if (!subject) return rawSubject;
 
+    if (agentFirst) {
+      const {
+        id: _internalId,
+        missing: _missing,
+        status: _status,
+        booking_contact: _bookingContact,
+        role: _role,
+        slot: _slot,
+        phone_status: _phoneStatus,
+        contact_owner: _contactOwner,
+        ...semanticPersonFacts
+      } = subject;
+      return semanticPersonFacts;
+    }
+
     const {
       id: _internalId,
       missing: _missing,
@@ -254,7 +270,7 @@ export function projectModelFacingContext(
       ...runtimeContext,
       booking_subjects: {
         ...visibleBookingSubjects,
-        ...(typeof pendingTypedPhone === "string" && pendingTypedPhone.trim().length > 0
+        ...(!agentFirst && typeof pendingTypedPhone === "string" && pendingTypedPhone.trim().length > 0
           ? { has_pending_typed_phone: true }
           : {}),
         subjects: projectedSubjects,

@@ -133,6 +133,22 @@ function projectAgentFirstRuntimeContext(
     else delete projected.runtime_policy;
   }
 
+  const qualificationState = asObject(runtimeContext.qualification_state);
+  if (qualificationState) {
+    const {
+      route: _route,
+      urgency: _urgency,
+      red_flags: _redFlags,
+      policy_applied: _policyApplied,
+      ...patientReportedQualification
+    } = qualificationState;
+    if (Object.keys(patientReportedQualification).length > 0) {
+      projected.qualification_state = patientReportedQualification;
+    } else {
+      delete projected.qualification_state;
+    }
+  }
+
   // Historical case/appointment summaries remain available to deterministic Runtime and
   // shadow classifiers, but are intentionally absent from the patient-facing agent surface.
   // The model must use recent dialogue for continuity and tools for current clinic state.
@@ -150,9 +166,10 @@ function projectAgentFirstRuntimeContext(
  * The returned object is a detached projection and never mutates runtime state.
  *
  * Agent-first exposes conversational evidence and known facts, not Runtime's hidden state
- * machines. Full booking_process_state, historical case summaries, missing-field lists and
- * readiness statuses stay Runtime-private. A verified selected slot is projected separately
- * as booking_selection because it is a concrete continuity fact rather than a next-step order.
+ * machines. Full booking_process_state, historical case summaries, missing-field lists,
+ * readiness statuses and old clinical-routing decisions stay Runtime-private. A verified
+ * selected slot is projected separately as booking_selection because it is a concrete
+ * continuity fact rather than a next-step order.
  */
 export function projectModelFacingContext(
   context: Record<string, unknown>,
@@ -203,11 +220,15 @@ export function projectModelFacingContext(
       status,
       booking_contact: _bookingContact,
       role: _role,
+      slot,
       ...visibleSubject
     } = subject;
     return {
       ...visibleSubject,
       ...(status === "booked" ? { is_booked: true } : {}),
+      ...(status === "booked" && typeof slot === "string" && slot.trim().length > 0
+        ? { slot }
+        : {}),
       ...(Object.prototype.hasOwnProperty.call(visibleSubject, "contact_owner")
         ? { contact_owner: semanticContactOwner(visibleSubject.contact_owner, subjectsById) }
         : {}),

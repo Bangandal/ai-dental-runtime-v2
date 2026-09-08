@@ -37,6 +37,24 @@ const skipBookingCases = new Set(
     .filter(Boolean),
 );
 
+function asObject(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readVisitCreated(toolResults: unknown[] | undefined): boolean | null {
+  if (!Array.isArray(toolResults)) return null;
+  for (const raw of toolResults) {
+    const result = asObject(raw);
+    if (result?.tool !== "booking.apply") continue;
+    const data = asObject(result.data);
+    if (typeof data?.visit_created === "boolean") return data.visit_created;
+    if (typeof data?.created_visit === "boolean") return data.created_visit;
+  }
+  return null;
+}
+
 function cleanUserTurns(raw: SourceScenario): string[] {
   if (!Array.isArray(raw.turns)) return [];
   return raw.turns.flatMap((turn) => {
@@ -112,6 +130,7 @@ async function runScenario(raw: SourceScenario, index: number) {
   }
 
   const turns: Array<Record<string, unknown>> = [];
+  let visitCreated: boolean | null = null;
   for (let turnIndex = 0; turnIndex < plannedTurns.length; turnIndex += 1) {
     const user = plannedTurns[turnIndex]!;
     const response = await postTurn({
@@ -121,6 +140,8 @@ async function runScenario(raw: SourceScenario, index: number) {
       text: user,
     });
     const payload = response.payload;
+    const turnVisitCreated = readVisitCreated(payload.tool_results);
+    if (turnVisitCreated !== null) visitCreated = turnVisitCreated;
     turns.push({
       turn: turnIndex + 1,
       phase: turnIndex < originalTurns.length ? "scenario" : "booking_probe",
@@ -130,6 +151,7 @@ async function runScenario(raw: SourceScenario, index: number) {
       trace_id: payload.trace_id ?? null,
       tool_results: payload.tool_results ?? [],
       side_effects: payload.side_effects ?? [],
+      visit_created: turnVisitCreated,
       ui: payload.ui ?? null,
       debug: payload.debug ?? null,
       error: payload.error ?? null,
@@ -145,6 +167,7 @@ async function runScenario(raw: SourceScenario, index: number) {
       write_enabled: writeTests,
       service: "consultation",
       stable_message_ids: true,
+      visit_created: visitCreated,
     },
     turns,
   };

@@ -104,6 +104,22 @@ test("Prompt 2.0 preserves policy-owned clinical routing", () => {
   assert.doesNotMatch(instruction, /acute_exam|emergency_exam|orthodontic_consultation/i);
 });
 
+test("Prompt 2.0 never turns a doctor contact request into a callback", () => {
+  const instruction = prompt();
+
+  assert.match(instruction, /Never disclose a doctor's direct or personal contact details/i);
+  assert.match(instruction, /request for a doctor's phone number, email or other direct contact is not a callback request/i);
+  assert.match(instruction, /do not create a staff_request solely from that request/i);
+  assert.match(instruction, /explicitly asks a doctor or administrator to call them.*staff_request\.kind=callback/i);
+});
+
+test("Prompt 2.0 asks the model to persist patient facts, not its own summary", () => {
+  const instruction = prompt();
+
+  assert.match(instruction, /qualification: complaint \(without diagnosis\) and reported_facts/i);
+  assert.doesNotMatch(instruction, /qualification:.*summary/i);
+});
+
 test("legacy mode remains byte-for-byte unchanged", () => {
   assert.equal(
     resolveRuntimeSystemInstruction(LEGACY, { RUNTIME_AGENT_MODE: "legacy" }),

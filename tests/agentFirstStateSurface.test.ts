@@ -97,7 +97,7 @@ function noisyContext() {
   };
 }
 
-test("agent-first hides Runtime state machines and historical case summaries", async () => {
+test("agent-first hides Runtime state machines and model-written summaries", async () => {
   await withAgentMode("agent_first", () => {
     const projected = projectModelFacingContext(noisyContext());
 
@@ -120,7 +120,6 @@ test("agent-first hides Runtime state machines and historical case summaries", a
     assert.deepEqual(runtime.qualification_state, {
       complaint: "болить зуб",
       reported_facts: ["біль з вечора"],
-      summary: "Пацієнт повідомляє про біль",
     });
   });
 });
@@ -135,7 +134,7 @@ test("agent-first exposes only verified selected-slot continuity, never stale bo
   });
 });
 
-test("agent-first people context contains people facts, not missing/readiness state", async () => {
+test("agent-first people context contains semantic identity only", async () => {
   await withAgentMode("agent_first", () => {
     const projected = projectModelFacingContext({
       runtime_context: {
@@ -185,22 +184,22 @@ test("agent-first people context contains people facts, not missing/readiness st
     assert.equal(bookingSubjects.active_subject_id, undefined);
     assert.equal(bookingSubjects.max_subjects, undefined);
     assert.equal(bookingSubjects.pending_typed_phone, undefined);
-    assert.equal(bookingSubjects.has_pending_typed_phone, true);
+    assert.equal(bookingSubjects.has_pending_typed_phone, undefined);
 
-    assert.equal(bookingSubjects.subjects[0].id, undefined);
-    assert.equal(bookingSubjects.subjects[0].missing, undefined);
-    assert.equal(bookingSubjects.subjects[0].status, undefined);
-    assert.equal(bookingSubjects.subjects[0].slot, undefined);
-    assert.equal(bookingSubjects.subjects[0].is_booked, undefined);
-    assert.equal(bookingSubjects.subjects[0].person_kind, "self");
-
-    assert.equal(bookingSubjects.subjects[1].id, undefined);
-    assert.equal(bookingSubjects.subjects[1].missing, undefined);
-    assert.equal(bookingSubjects.subjects[1].status, undefined);
-    assert.equal(bookingSubjects.subjects[1].is_booked, true);
-    assert.equal(bookingSubjects.subjects[1].slot, "2026-09-10T12:00");
-    assert.equal(bookingSubjects.subjects[1].label, "мама");
-    assert.equal(bookingSubjects.subjects[1].contact_owner, "self");
+    assert.deepEqual(bookingSubjects.subjects[0], {
+      person_kind: "self",
+      is_active: false,
+      label: "я",
+      patient_name: "Михайло",
+      service: "гігієна",
+    });
+    assert.deepEqual(bookingSubjects.subjects[1], {
+      person_kind: "other_person",
+      is_active: true,
+      label: "мама",
+      patient_name: "Олена",
+      service: "огляд",
+    });
   });
 });
 

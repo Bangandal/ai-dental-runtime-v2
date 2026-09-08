@@ -73,8 +73,6 @@ function projectAgentFirstBaseContext(
       ...channelRest,
       ...(languageHint
         ? {
-            // This is the only language metadata exposed in agent-first. It is a weak
-            // fallback hint and must never override language established by dialogue.
             language_hint: languageHint,
           }
         : {}),
@@ -85,9 +83,11 @@ function projectAgentFirstBaseContext(
 function projectAgentFirstRuntimeContext(
   runtimeContext: Record<string, unknown>,
 ): Record<string, unknown> {
+  const semanticMemoryFresh = runtimeContext._semantic_memory_fresh !== false;
   const {
     case_context: _caseContext,
     booking_context: _bookingContext,
+    _semantic_memory_fresh: _semanticMemoryFresh,
     ...runtimeRest
   } = runtimeContext;
   const projected: Record<string, unknown> = { ...runtimeRest };
@@ -121,9 +121,16 @@ function projectAgentFirstRuntimeContext(
         contact_channel_available: _duplicateReachability,
         ...collectedFacts
       } = collected;
-      projected.task_state = { ...taskRest, collected: collectedFacts };
-    } else {
+      const compactTask = { ...taskRest, collected: collectedFacts };
+      if (Object.keys(collectedFacts).length === 0 && Object.keys(taskRest).every((key) => key === "collected")) {
+        delete projected.task_state;
+      } else {
+        projected.task_state = compactTask;
+      }
+    } else if (Object.keys(taskRest).length > 0) {
       projected.task_state = taskRest;
+    } else {
+      delete projected.task_state;
     }
   }
 
@@ -138,7 +145,7 @@ function projectAgentFirstRuntimeContext(
   }
 
   const qualificationState = asObject(runtimeContext.qualification_state);
-  if (qualificationState) {
+  if (qualificationState && semanticMemoryFresh) {
     const {
       route: _route,
       urgency: _urgency,
@@ -152,11 +159,19 @@ function projectAgentFirstRuntimeContext(
     } else {
       delete projected.qualification_state;
     }
+  } else {
+    delete projected.qualification_state;
   }
 
-  // Historical case/appointment summaries remain available to deterministic Runtime and
-  // shadow classifiers, but are intentionally absent from the patient-facing agent surface.
-  // The model must use recent dialogue for continuity and tools for current clinic state.
+  if (!semanticMemoryFresh) {
+    // A new session must not inherit an old task/person/callback narrative. Runtime keeps
+    // durable operational state privately, while the model starts from the new patient turn.
+    delete projected.task_state;
+    delete projected.staff_request_context;
+    delete projected.booking_subjects;
+    projected.recent_history = [];
+  }
+
   delete projected.case_context;
   delete projected.booking_context;
 
@@ -192,11 +207,14 @@ export function projectModelFacingContext(
   const rawRuntimeContext = asObject(baseContext.runtime_context);
   if (!rawRuntimeContext) return baseContext;
 
+  const semanticMemoryFresh = rawRuntimeContext._semantic_memory_fresh !== false;
   const runtimeContext = agentFirst
     ? projectAgentFirstRuntimeContext(rawRuntimeContext)
     : rawRuntimeContext;
 
-  const bookingSubjects = asObject(runtimeContext.booking_subjects);
+  const bookingSubjects = semanticMemoryFresh || !agentFirst
+    ? asObject(runtimeContext.booking_subjects)
+    : null;
   if (!bookingSubjects) {
     return {
       ...baseContext,

@@ -10,7 +10,13 @@ function readString(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function hasEstablishedPriorPatientLanguage(runtimeContext: Record<string, unknown> | null): boolean {
+function hasSubstantivePatientLanguageSignal(text: string): boolean {
+  const words = text.match(/\p{L}+/gu) ?? [];
+  const letters = text.match(/\p{L}/gu) ?? [];
+  return letters.length >= 6 || (words.length >= 2 && letters.length >= 4);
+}
+
+function hasEstablishedPatientLanguage(runtimeContext: Record<string, unknown> | null): boolean {
   const history = Array.isArray(runtimeContext?.recent_history)
     ? runtimeContext.recent_history
     : [];
@@ -22,14 +28,13 @@ function hasEstablishedPriorPatientLanguage(runtimeContext: Record<string, unkno
   });
 
   // The orchestrator persists the current inbound before building model context, so the
-  // last user item is normally the current turn. Only earlier patient messages can establish
-  // prior dialogue language. A few letters are enough to distinguish normal language from
-  // low-signal turns such as "17:00", "?", "Так", or "да".
-  if (userTexts.length < 2) return false;
-  return userTexts.slice(0, -1).some((text) => {
-    const letters = text.match(/\p{L}/gu);
-    return (letters?.length ?? 0) >= 4;
-  });
+  // last user item is normally the current turn. A prior substantive patient message already
+  // establishes dialogue language. A substantive current message can also establish language
+  // on the first turn and must not compete with channel/profile metadata. Low-signal turns such
+  // as "17:00", "?", "Так" or "да" keep the fallback hint when no prior dialogue exists.
+  const priorEstablished = userTexts.slice(0, -1).some(hasSubstantivePatientLanguageSignal);
+  const currentText = userTexts.at(-1);
+  return priorEstablished || (currentText != null && hasSubstantivePatientLanguageSignal(currentText));
 }
 
 function isLegacySubjectId(value: unknown): value is string {
@@ -70,7 +75,7 @@ function projectVerifiedBookingSelection(raw: unknown): Record<string, unknown> 
 function projectAgentFirstBaseContext(
   context: Record<string, unknown>,
   profileLanguageHint: string | null,
-  priorPatientLanguageEstablished: boolean,
+  patientLanguageEstablished: boolean,
 ): Record<string, unknown> {
   const {
     locale,
@@ -79,7 +84,7 @@ function projectAgentFirstBaseContext(
     booking_process_state: bookingProcessState,
     ...rest
   } = context;
-  const languageHint = priorPatientLanguageEstablished
+  const languageHint = patientLanguageEstablished
     ? null
     : readString(locale) ?? profileLanguageHint;
   const channelContext = asObject(rest.channel_context);
@@ -212,10 +217,10 @@ export function projectModelFacingContext(
   const rawPatientBeforeBase = asObject(rawRuntimeBeforeBase?.patient_context);
   const profileLanguageHint = readString(rawPatientBeforeBase?.preferred_language)
     ?? readString(rawPatientBeforeBase?.profile_language_hint);
-  const priorPatientLanguageEstablished = hasEstablishedPriorPatientLanguage(rawRuntimeBeforeBase);
+  const patientLanguageEstablished = hasEstablishedPatientLanguage(rawRuntimeBeforeBase);
 
   const baseContext = agentFirst
-    ? projectAgentFirstBaseContext(context, profileLanguageHint, priorPatientLanguageEstablished)
+    ? projectAgentFirstBaseContext(context, profileLanguageHint, patientLanguageEstablished)
     : { ...context };
 
   const rawRuntimeContext = asObject(baseContext.runtime_context);

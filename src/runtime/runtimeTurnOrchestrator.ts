@@ -39,6 +39,22 @@ function stableJson(value: unknown): string {
   return JSON.stringify(value ?? null);
 }
 
+function stripLegacyAgentFirstSeedFields(
+  conversationState: Record<string, unknown>,
+): Record<string, unknown> {
+  const collected = asRecord(conversationState.collected);
+  const {
+    first_name: _firstName,
+    patient_first_name: _patientFirstName,
+    last_name: _lastName,
+    patient_last_name: _patientLastName,
+    service: _service,
+    service_reason: _serviceReason,
+    ...safeCollected
+  } = collected;
+  return { ...conversationState, collected: safeCollected };
+}
+
 /**
  * Agent-first owns cross-turn dialogue continuity through Runtime/Supabase history.
  * Provider conversation ids are deliberately scoped to one patient turn only.
@@ -75,13 +91,14 @@ export function withAgentFirstTurnLocalConversationMemory(
  *
  * It reuses the RuntimeContext snapshot already loaded at turn start, so qualification
  * persistence does not perform a second Supabase read. Durable semantic objects receive
- * their own timestamps and are merged only inside the current message session. This keeps
- * an old complaint/callback/PEOPLE registry from becoming fresh merely because some other
- * field in convo_state was updated on a later visit.
+ * their own timestamps and are merged only inside the current message session. Stale
+ * PEOPLE and unverified typed phones are also removed from the execution snapshot, so
+ * hidden legacy state cannot bind a new patient turn to an old subject/contact owner.
  */
 export function withAgentQualificationPersistence(
   deps: Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1],
 ): Parameters<typeof runRuntimeTurnOrchestratedLegacy>[1] {
+  const agentFirst = isAgentFirstRuntimeEnabled();
   let capturedQualification: AgentQualificationState | null = null;
   let capturedStaffRequest: RuntimeTurnResult["staff_request_state"];
   let previousQualification: AgentQualificationState | null = null;
@@ -95,20 +112,49 @@ export function withAgentQualificationPersistence(
         ) {
           const result = await deps.runtimeContextRepository!.loadRuntimeContext(input);
           runtimeContextLoaded = result.ok;
-          if (result.ok) {
-            const conversationState = asRecord(result.data.conversation_state);
-            const collected = asRecord(conversationState.collected);
-            const sessionStartedAt = getSemanticSessionStartedAt(result.data.recent_history);
-            const previousQualificationIsCurrent = isStoredSemanticItemInCurrentSession(
-              collected.agent_qualification_updated_at,
+          if (!result.ok) return result;
+
+          const conversationState = asRecord(result.data.conversation_state);
+          const collected = asRecord(conversationState.collected);
+          const sessionStartedAt = getSemanticSessionStartedAt(result.data.recent_history);
+          const previousQualificationIsCurrent = isStoredSemanticItemInCurrentSession(
+            collected.agent_qualification_updated_at,
+            sessionStartedAt,
+          );
+          previousQualification = previousQualificationIsCurrent
+            ? parseStoredAgentQualification(collected.agent_qualification)
+            : null;
+
+          const bookingSubjectsAreCurrent = isStoredSemanticItemInCurrentSession(
+            collected.booking_subjects_updated_at,
+            sessionStartedAt,
+          );
+          previousBookingSubjectsSignature = stableJson(
+            bookingSubjectsAreCurrent ? result.data.booking_subjects : null,
+          );
+
+          if (!agentFirst) return result;
+
+          const providedPhoneIsCurrent = result.data.provided_phone == null
+            || isStoredSemanticItemInCurrentSession(
+              result.data.provided_phone.phone_collected_at,
               sessionStartedAt,
             );
-            previousQualification = previousQualificationIsCurrent
-              ? parseStoredAgentQualification(collected.agent_qualification)
-              : null;
-            previousBookingSubjectsSignature = stableJson(result.data.booking_subjects);
-          }
-          return result;
+
+          return {
+            ...result,
+            data: {
+              ...result.data,
+              conversation_state: stripLegacyAgentFirstSeedFields(conversationState),
+              booking_subjects: bookingSubjectsAreCurrent ? result.data.booking_subjects : null,
+              provided_phone: providedPhoneIsCurrent ? result.data.provided_phone : null,
+              // selected_slot_starts_at is only a legacy S1 bootstrap hint here. The actual
+              // booking-process proof remains in its dedicated repository and stays authoritative.
+              selected_slot_starts_at: bookingSubjectsAreCurrent
+                ? result.data.selected_slot_starts_at
+                : null,
+            },
+          };
         },
       }
     : undefined;

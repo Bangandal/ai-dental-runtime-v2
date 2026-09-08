@@ -66,6 +66,15 @@ function noisyContext() {
         last_known_intent: "booking",
         intake_status: "collecting_time",
       },
+      qualification_state: {
+        complaint: "болить зуб",
+        reported_facts: ["біль з вечора"],
+        summary: "Пацієнт повідомляє про біль",
+        route: "urgent_exam",
+        urgency: "urgent",
+        red_flags: ["severe_pain"],
+        policy_applied: true,
+      },
       runtime_policy: {
         phone_required: false,
         patient_reachable_in_current_channel: true,
@@ -108,6 +117,11 @@ test("agent-first hides Runtime state machines and historical case summaries", a
     assert.equal(runtime.task_state.last_known_intent, undefined);
     assert.equal(runtime.task_state.intake_status, undefined);
     assert.deepEqual(runtime.runtime_policy, { patient_reachable_in_current_channel: true });
+    assert.deepEqual(runtime.qualification_state, {
+      complaint: "болить зуб",
+      reported_facts: ["біль з вечора"],
+      summary: "Пацієнт повідомляє про біль",
+    });
   });
 });
 
@@ -140,7 +154,7 @@ test("agent-first people context contains people facts, not missing/readiness st
               label: "я",
               patient_name: "Михайло",
               service: "гігієна",
-              slot: null,
+              slot: "2026-09-12T09:00",
               phone_status: "trusted",
               contact_owner: "subject_1",
               missing: ["slot"],
@@ -176,6 +190,7 @@ test("agent-first people context contains people facts, not missing/readiness st
     assert.equal(bookingSubjects.subjects[0].id, undefined);
     assert.equal(bookingSubjects.subjects[0].missing, undefined);
     assert.equal(bookingSubjects.subjects[0].status, undefined);
+    assert.equal(bookingSubjects.subjects[0].slot, undefined);
     assert.equal(bookingSubjects.subjects[0].is_booked, undefined);
     assert.equal(bookingSubjects.subjects[0].person_kind, "self");
 
@@ -183,6 +198,7 @@ test("agent-first people context contains people facts, not missing/readiness st
     assert.equal(bookingSubjects.subjects[1].missing, undefined);
     assert.equal(bookingSubjects.subjects[1].status, undefined);
     assert.equal(bookingSubjects.subjects[1].is_booked, true);
+    assert.equal(bookingSubjects.subjects[1].slot, "2026-09-10T12:00");
     assert.equal(bookingSubjects.subjects[1].label, "мама");
     assert.equal(bookingSubjects.subjects[1].contact_owner, "self");
   });
@@ -238,5 +254,6 @@ test("legacy keeps full historical state surface unchanged", async () => {
     const runtime = projected.runtime_context as Record<string, any>;
     assert.deepEqual(runtime.case_context, (source.runtime_context as Record<string, any>).case_context);
     assert.deepEqual(runtime.booking_context, (source.runtime_context as Record<string, any>).booking_context);
+    assert.deepEqual(runtime.qualification_state, (source.runtime_context as Record<string, any>).qualification_state);
   });
 });

@@ -44,6 +44,15 @@ const AGENT_FIRST_PHONE_SCHEMA = {
   description: "Booking contact explicitly provided by the patient. Normalize it yourself to 9-15 digits with an optional leading +. Do not invent a number and omit this field when no booking contact is known.",
 } as const;
 
+const AGENT_FIRST_RUNTIME_TRUTH_KEYS = [
+  "booking_process_state",
+  "booking_apply_action_truth",
+  "availability_action_truth",
+  "availability_presentation_truth",
+  "appointment_display_truth",
+  "resolved_context",
+] as const;
+
 export function createOpenAIRuntimeAgentCaller(deps: CreateOpenAIRuntimeAgentCallerDeps): RuntimeAgentCaller {
   return async (input) => {
     const openAIInput = buildOpenAIInput(input);
@@ -109,32 +118,92 @@ export function buildOpenAIToolDefinitions(input: RuntimeAgentCallerInput): Arra
   });
 }
 
-export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string, unknown> {
-  const payload = {
-    message: input.input.message,
-    context: projectModelFacingContext(input.input.context),
-  };
+function stripCurrentMessageFromRecentHistory(
+  context: Record<string, unknown>,
+  message: string,
+): Record<string, unknown> {
+  const runtimeContext = asObject(context.runtime_context);
+  const history = Array.isArray(runtimeContext?.recent_history)
+    ? runtimeContext.recent_history
+    : null;
+  if (!history || history.length === 0) return context;
 
-  const responseInput: Array<Record<string, unknown>> = [
-    {
+  const last = asObject(history[history.length - 1]);
+  const lastRole = readString(last?.role);
+  const lastText = readString(last?.text)?.trim();
+  if (lastRole !== "user" || lastText !== message.trim()) return context;
+
+  return {
+    ...context,
+    runtime_context: {
+      ...runtimeContext,
+      recent_history: history.slice(0, -1),
+    },
+  };
+}
+
+function extractAgentFirstRuntimeTruth(
+  context: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const truth = Object.fromEntries(
+    AGENT_FIRST_RUNTIME_TRUTH_KEYS.flatMap((key) =>
+      Object.prototype.hasOwnProperty.call(context, key)
+        ? [[key, context[key]]]
+        : [],
+    ),
+  );
+  return Object.keys(truth).length > 0 ? truth : null;
+}
+
+export function buildOpenAIInput(input: RuntimeAgentCallerInput): Record<string, unknown> {
+  const agentFirst = isAgentFirstRuntimeEnabled();
+  const projectedContext = projectModelFacingContext(input.input.context);
+  const cleanContext = agentFirst
+    ? stripCurrentMessageFromRecentHistory(projectedContext, input.input.message)
+    : projectedContext;
+  const toolResultsWithCallId = (input.input.tool_results ?? []).filter(
+    (toolResult) => Boolean(toolResult.call_id),
+  );
+  const agentFirstToolFollowUp = agentFirst && toolResultsWithCallId.length > 0;
+
+  const responseInput: Array<Record<string, unknown>> = [];
+
+  // First model call for a patient turn carries the current message and the stable context.
+  // Later agent-first tool rounds continue the same provider conversation, so repeating the
+  // patient message/context would create an echo. Those rounds submit only tool outputs plus
+  // compact deterministic Runtime truth derived from the updated state.
+  if (!agentFirstToolFollowUp) {
+    responseInput.push({
       role: "user",
       content: [
         {
           type: "input_text",
-          text: JSON.stringify(payload),
+          text: JSON.stringify({
+            message: input.input.message,
+            context: cleanContext,
+          }),
         },
       ],
-    },
-  ];
+    });
+  }
 
   if (input.input.tool_results) {
+    const runtimeTruth = agentFirst
+      ? extractAgentFirstRuntimeTruth(cleanContext)
+      : null;
+    let emittedToolResultIndex = 0;
     for (const toolResult of input.input.tool_results) {
       if (!toolResult.call_id) continue;
+      const isLastToolResult = emittedToolResultIndex === toolResultsWithCallId.length - 1;
+      const outputPayload = agentFirst && isLastToolResult && runtimeTruth
+        ? { ...toolResult, runtime_truth: runtimeTruth }
+        : toolResult;
       responseInput.push({
         type: "function_call_output",
         call_id: toolResult.call_id,
-        output: JSON.stringify(toolResult),
+        output: JSON.stringify(outputPayload),
       });
+      emittedToolResultIndex += 1;
     }
   }
 

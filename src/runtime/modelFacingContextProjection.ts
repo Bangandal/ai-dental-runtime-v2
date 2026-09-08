@@ -29,20 +29,34 @@ function semanticContactOwner(
 
 function projectAgentFirstBaseContext(
   context: Record<string, unknown>,
+  profileLanguageHint: string | null,
 ): Record<string, unknown> {
-  const { locale, ...rest } = context;
-  const languageHint = readString(locale);
+  const {
+    locale,
+    truth_snapshot: truthSnapshot,
+    recent_summary: recentSummary,
+    ...rest
+  } = context;
+  const languageHint = readString(locale) ?? profileLanguageHint;
   const channelContext = asObject(rest.channel_context);
-
-  if (!languageHint) return rest;
+  const {
+    patient_reachable_in_current_channel: _duplicateReachability,
+    ...channelRest
+  } = channelContext ?? {};
 
   return {
     ...rest,
+    ...(truthSnapshot != null ? { truth_snapshot: truthSnapshot } : {}),
+    ...(recentSummary != null ? { recent_summary: recentSummary } : {}),
     channel_context: {
-      ...(channelContext ?? {}),
-      // Transport/profile locale is weak fallback metadata only. It must never be
-      // interpreted as the language of the current conversation.
-      language_hint: languageHint,
+      ...channelRest,
+      ...(languageHint
+        ? {
+            // This is the only language metadata exposed in agent-first. It is a weak
+            // fallback hint and must never override language established by dialogue.
+            language_hint: languageHint,
+          }
+        : {}),
     },
   };
 }
@@ -54,12 +68,13 @@ function projectAgentFirstRuntimeContext(
 
   const patientContext = asObject(runtimeContext.patient_context);
   if (patientContext) {
-    const { preferred_language, ...patientRest } = patientContext;
-    const profileLanguageHint = readString(preferred_language);
-    projected.patient_context = {
-      ...patientRest,
-      ...(profileLanguageHint ? { profile_language_hint: profileLanguageHint } : {}),
-    };
+    const {
+      preferred_language: _preferredLanguage,
+      profile_language_hint: _profileLanguageHint,
+      reachable_in_current_channel: _duplicateReachability,
+      ...patientRest
+    } = patientContext;
+    projected.patient_context = patientRest;
   }
 
   const taskState = asObject(runtimeContext.task_state);
@@ -88,15 +103,20 @@ function projectAgentFirstRuntimeContext(
  * The returned object is a detached projection and never mutates runtime state.
  *
  * Agent-first additionally removes provider/profile language claims and legacy intake
- * steering from the reasoning surface. Weak language metadata is explicitly named as a
- * hint, while the patient's messages remain authoritative for conversational language.
+ * steering from the reasoning surface. Language/reachability metadata is exposed once,
+ * under an explicitly weak/authoritative location, rather than repeated across the payload.
  */
 export function projectModelFacingContext(
   context: Record<string, unknown>,
 ): Record<string, unknown> {
   const agentFirst = isAgentFirstRuntimeEnabled();
+  const rawRuntimeBeforeBase = asObject(context.runtime_context);
+  const rawPatientBeforeBase = asObject(rawRuntimeBeforeBase?.patient_context);
+  const profileLanguageHint = readString(rawPatientBeforeBase?.preferred_language)
+    ?? readString(rawPatientBeforeBase?.profile_language_hint);
+
   const baseContext = agentFirst
-    ? projectAgentFirstBaseContext(context)
+    ? projectAgentFirstBaseContext(context, profileLanguageHint)
     : { ...context };
 
   const rawRuntimeContext = asObject(baseContext.runtime_context);

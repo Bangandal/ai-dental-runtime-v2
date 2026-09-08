@@ -69,7 +69,7 @@ test("readRuntimeServerEnv keeps model wiring from process env", () => {
   assert.equal(explicit.runtimeEmbeddingModel, "text-embedding-3-large");
 
   const fallback = readRuntimeServerEnv({});
-  assert.equal(fallback.runtimeModel, "gpt-4.1-mini");
+  assert.equal(fallback.runtimeModel, "gpt-5.6-luna");
   assert.equal(fallback.runtimeEmbeddingModel, "text-embedding-3-small");
 });
 

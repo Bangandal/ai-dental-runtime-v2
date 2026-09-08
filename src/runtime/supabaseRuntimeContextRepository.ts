@@ -125,6 +125,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
         conversation_stage: stateJson?.conversation_stage ?? null,
         turn_count: typeof stateJson?.turn_count === "number" ? stateJson.turn_count : 0,
         need_admin: row?.out_need_admin ?? false,
+        updated_at: asStr(stateJson?.updated_at),
       };
 
       return {

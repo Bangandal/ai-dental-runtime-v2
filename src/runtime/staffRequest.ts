@@ -45,8 +45,15 @@ export interface StaffRequestProof {
 }
 
 declare module "./openaiRuntimeAgent.ts" {
-  interface RuntimeAgentFinalResponse { staff_request?: StaffRequest | null; }
-  interface RuntimeAgentTurnResult { staff_request?: StaffRequest | null; }
+  interface RuntimeAgentFinalResponse {
+    staff_request?: StaffRequest | null;
+    /** A staff side-effect was proposed but failed deterministic schema validation. */
+    staff_request_invalid?: boolean;
+  }
+  interface RuntimeAgentTurnResult {
+    staff_request?: StaffRequest | null;
+    staff_request_invalid?: boolean;
+  }
 }
 
 function text(value: unknown, max: number): string | null {
@@ -78,6 +85,33 @@ export function parseStaffRequest(raw: unknown): StaffRequest | null {
     reply_language: value.reply_language as StaffRequest["reply_language"],
     ...(additionalReply ? { additional_reply: additionalReply } : {}),
   };
+}
+
+/**
+ * additional_reply is model-controlled prose and therefore never carries side-effect
+ * authority. Keep useful independent answers, but drop text that could assert staff or
+ * doctor execution. The deterministic receipt remains the sole source of such claims.
+ */
+const STAFF_ACTION_CLAIM_PATTERN = /(уведом|повідом|передал|передала|передано|передан|передам|администратор|сотрудник|співробітник|personál|administrátor|staff|doctor|врач|лікар|lékař|received|reviewed|notified|informed|forwarded|отримав|отримано|получил|получено|переглян|переглянуто|просмотр|позвон|зателефон|callback)/i;
+
+export function sanitizeStaffAdditionalReply(value: string | undefined): string | null {
+  const normalized = text(value, 1500);
+  if (!normalized) return null;
+  return STAFF_ACTION_CLAIM_PATTERN.test(normalized) ? null : normalized;
+}
+
+export function staffRequestFailureReceipt(locale?: string | null): string {
+  const normalized = (locale ?? "").trim().toLowerCase();
+  if (normalized.startsWith("uk")) {
+    return "Не вдалося обробити запит для співробітника. Будь ласка, зв’яжіться з клінікою напряму або спробуйте ще раз.";
+  }
+  if (normalized.startsWith("cs")) {
+    return "Požadavek pro personál se nepodařilo zpracovat. Kontaktujte prosím kliniku přímo nebo to zkuste znovu.";
+  }
+  if (normalized.startsWith("en")) {
+    return "I couldn’t process your request for staff. Please contact the clinic directly or try again.";
+  }
+  return "Не удалось обработать запрос для сотрудника. Пожалуйста, свяжитесь с клиникой напрямую или попробуйте ещё раз.";
 }
 
 /** This reply is an execution receipt. It never promises a doctor's action or timing. */

@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   buildModelVisibleRuntimeContext,
-  isSemanticContextFresh,
+  getSemanticSessionStartedAt,
   resolveSemanticContextTtlMs,
 } from "../src/runtime/modelVisibleRuntimeContext.ts";
 import { projectModelFacingContext } from "../src/runtime/modelFacingContextProjection.ts";
@@ -13,27 +13,31 @@ import { normalizeTelegramUpdate } from "../src/runtime/telegramWebhookAdapter.t
 import { normalizeWhatsAppPayload } from "../src/runtime/whatsappWebhookAdapter.ts";
 import { handleInboundMediaStaffRequest } from "../src/runtime/inboundMediaStaffRequest.ts";
 
-test("semantic context TTL defaults to 24h and expires old agent-first task memory", () => {
+test("agent-first semantic memory starts a new session after a 24h message gap and hides old structured state", () => {
   const previousMode = process.env.RUNTIME_AGENT_MODE;
   const previousTtl = process.env.RUNTIME_SEMANTIC_CONTEXT_TTL_HOURS;
   try {
     process.env.RUNTIME_AGENT_MODE = "agent_first";
     delete process.env.RUNTIME_SEMANTIC_CONTEXT_TTL_HOURS;
     assert.equal(resolveSemanticContextTtlMs(), 24 * 60 * 60 * 1000);
-    assert.equal(
-      isSemanticContextFresh("2026-09-07T08:00:00.000Z", new Date("2026-09-08T10:00:00.000Z")),
-      false,
-    );
+
+    const recentHistory = [
+      { role: "user", text: "old booking topic", created_at: "2026-09-06T08:00:00.000Z" },
+      { role: "assistant", text: "old reply", created_at: "2026-09-06T08:01:00.000Z" },
+      { role: "user", text: "new unrelated question", created_at: "2026-09-08T10:00:00.000Z" },
+    ];
+    assert.equal(getSemanticSessionStartedAt(recentHistory), "2026-09-08T10:00:00.000Z");
 
     const runtimeContext = buildModelVisibleRuntimeContext({
       known_contact: { first_name: "Mila", language_code: "uk" },
       conversation_state: {
-        updated_at: "2026-09-07T08:00:00.000Z",
         collected: {
+          // These old unversioned fields are deliberately ignored by agent-first.
           service_interest: "braces",
           problem: "broken wire",
           preferred_time: "Friday",
           agent_qualification: { complaint: "pain", reported_facts: ["since yesterday"] },
+          agent_qualification_updated_at: "2026-09-06T08:00:30.000Z",
           agent_staff_request: {
             request: {
               kind: "callback",
@@ -44,13 +48,19 @@ test("semantic context TTL defaults to 24h and expires old agent-first task memo
               reply_language: "uk",
             },
           },
+          agent_staff_request_updated_at: "2026-09-06T08:00:40.000Z",
+          booking_subjects_updated_at: "2026-09-06T08:00:50.000Z",
         },
       },
-      recent_history: [
-        { role: "user", text: "old booking topic" },
-        { role: "assistant", text: "old reply" },
-      ],
+      recent_history: recentHistory,
     });
+
+    assert.equal(runtimeContext._booking_subjects_fresh, false);
+    assert.deepEqual(runtimeContext.recent_history, [
+      { role: "user", text: "new unrelated question" },
+    ]);
+    assert.equal(runtimeContext.qualification_state, undefined);
+    assert.equal(runtimeContext.staff_request_context, undefined);
 
     const projected = projectModelFacingContext({
       locale: "uk",
@@ -71,14 +81,101 @@ test("semantic context TTL defaults to 24h and expires old agent-first task memo
     assert.equal(visibleRuntime.qualification_state, undefined);
     assert.equal(visibleRuntime.staff_request_context, undefined);
     assert.equal(visibleRuntime.booking_subjects, undefined);
-    assert.deepEqual(visibleRuntime.recent_history, []);
-    assert.equal("_semantic_memory_fresh" in visibleRuntime, false);
+    assert.equal("_booking_subjects_fresh" in visibleRuntime, false);
+    assert.deepEqual(visibleRuntime.recent_history, [
+      { role: "user", text: "new unrelated question" },
+    ]);
     assert.deepEqual(visibleRuntime.patient_context, { display_name: "Mila" });
   } finally {
     if (previousMode === undefined) delete process.env.RUNTIME_AGENT_MODE;
     else process.env.RUNTIME_AGENT_MODE = previousMode;
     if (previousTtl === undefined) delete process.env.RUNTIME_SEMANTIC_CONTEXT_TTL_HOURS;
     else process.env.RUNTIME_SEMANTIC_CONTEXT_TTL_HOURS = previousTtl;
+  }
+});
+
+test("current-session qualification, staff request and people remain visible while unversioned collected facts stay hidden", () => {
+  const previousMode = process.env.RUNTIME_AGENT_MODE;
+  try {
+    process.env.RUNTIME_AGENT_MODE = "agent_first";
+    const recentHistory = [
+      { role: "user", text: "запиши маму", created_at: "2026-09-08T09:00:00.000Z" },
+      { role: "assistant", text: "как её зовут?", created_at: "2026-09-08T09:00:30.000Z" },
+      { role: "user", text: "Анна", created_at: "2026-09-08T09:01:00.000Z" },
+    ];
+    const runtimeContext = buildModelVisibleRuntimeContext({
+      known_contact: { first_name: "Mila", language_code: "ru" },
+      conversation_state: {
+        collected: {
+          service_interest: "stale-unversioned-service",
+          agent_qualification: { complaint: "болит зуб", reported_facts: ["с вечера"] },
+          agent_qualification_updated_at: "2026-09-08T09:00:10.000Z",
+          agent_staff_request: {
+            request: {
+              kind: "callback",
+              patient_target: "self",
+              person_ref: "Mila",
+              summary: "Нужен звонок сотрудника",
+              preferred_contact_window: "после 17:00",
+              reply_language: "ru",
+            },
+          },
+          agent_staff_request_updated_at: "2026-09-08T09:00:20.000Z",
+          booking_subjects_updated_at: "2026-09-08T09:00:25.000Z",
+        },
+      },
+      recent_history: recentHistory,
+    });
+
+    assert.equal(runtimeContext._booking_subjects_fresh, true);
+    assert.ok(runtimeContext.qualification_state);
+    assert.ok(runtimeContext.staff_request_context);
+
+    const projected = projectModelFacingContext({
+      locale: "ru",
+      runtime_context: {
+        ...runtimeContext,
+        booking_subjects: {
+          active_subject_id: "subject_2",
+          subjects: [
+            {
+              id: "subject_1",
+              role: "sender",
+              label: "self",
+              patient_name: "Mila",
+              service: null,
+              status: "collecting",
+              missing: ["service"],
+            },
+            {
+              id: "subject_2",
+              role: "mentioned_person",
+              label: "мама",
+              patient_name: "Анна",
+              service: "hygiene",
+              status: "collecting",
+              missing: ["slot"],
+            },
+          ],
+        },
+      },
+    });
+    const visibleRuntime = projected.runtime_context as Record<string, unknown>;
+    assert.equal(visibleRuntime.task_state, undefined, "legacy unversioned collected facts do not steer agent-first");
+    assert.deepEqual(visibleRuntime.qualification_state, {
+      complaint: "болит зуб",
+      reported_facts: ["с вечера"],
+    });
+    assert.ok(visibleRuntime.staff_request_context);
+    const people = visibleRuntime.booking_subjects as { subjects?: Array<Record<string, unknown>> };
+    assert.deepEqual(people.subjects, [
+      { label: "self", patient_name: "Mila", service: null },
+      { label: "мама", patient_name: "Анна", service: "hygiene" },
+    ]);
+    assert.equal("_booking_subjects_fresh" in visibleRuntime, false);
+  } finally {
+    if (previousMode === undefined) delete process.env.RUNTIME_AGENT_MODE;
+    else process.env.RUNTIME_AGENT_MODE = previousMode;
   }
 });
 

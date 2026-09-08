@@ -67,7 +67,7 @@ test("agent-first initial model input contains current patient message once", as
     ]);
     assert.equal(payload.context.truth_snapshot, undefined);
     assert.equal(payload.context.recent_summary, undefined);
-    assert.equal(payload.context.channel_context.language_hint, "uk");
+    assert.equal(payload.context.channel_context.language_hint, undefined);
     assert.equal(payload.context.channel_context.patient_reachable_in_current_channel, undefined);
     assert.equal(payload.context.runtime_context.patient_context.preferred_language, undefined);
     assert.equal(payload.context.runtime_context.patient_context.reachable_in_current_channel, undefined);

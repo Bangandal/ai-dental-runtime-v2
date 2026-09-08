@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node src/main.ts",
     "test": "node --import tsx/esm --test tests/*.test.ts",
+    "eval:live-booking": "node --import tsx/esm scripts/run-dental-live-regression.ts",
     "cliniccard:probe": "node scripts/cliniccard-probe.ts",
     "cliniccard:availability-probe": "node scripts/cliniccard-availability-probe.ts",
     "voice:start": "node --import tsx/esm src/voice/main.ts",

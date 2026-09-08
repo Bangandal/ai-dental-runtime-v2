@@ -9,6 +9,7 @@ import { createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtimeTu
 import type { TelegramDeliveryOutcome } from "./telegramSender.ts";
 import { createSupabaseOpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 import { createSupabaseBookingProcessStateRepository } from "./supabaseBookingProcessStateRepository.ts";
+import { createSerializedBookingProcessStateRepository } from "./serializedBookingProcessStateRepository.ts";
 import { createSupabaseTurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import { createSupabaseClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import { createSupabaseRuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
@@ -82,7 +83,9 @@ export interface OrchestrationDepsInput {
 export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): RuntimeTurnOrchestratorDeps {
   const agentFirst = isAgentFirstRuntimeEnabled();
   const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
-  const bookingProcessStateRepository = createSupabaseBookingProcessStateRepository({ rpc: deps.rpc });
+  const bookingProcessStateRepository = createSerializedBookingProcessStateRepository(
+    createSupabaseBookingProcessStateRepository({ rpc: deps.rpc }),
+  );
   const turnPersistenceRepository = createSupabaseTurnPersistenceRepository({ rpc: deps.rpc });
   const clinicIdentityResolver = createSupabaseClinicIdentityResolver({ rpc: deps.rpc });
   const runtimeContextRepository = createSupabaseRuntimeContextRepository({ rpc: deps.rpc });

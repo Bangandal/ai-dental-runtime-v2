@@ -109,6 +109,10 @@ function projectAgentFirstRuntimeContext(
       missing_fields: _missingFields,
       last_known_intent: _lastKnownIntent,
       intake_status: _intakeStatus,
+      phone_received: _phoneReceived,
+      phone_captured: _phoneCaptured,
+      phone_source: _phoneSource,
+      phone_trust: _phoneTrust,
       ...taskRest
     } = taskState;
     const collected = asObject(taskRest.collected);
@@ -167,9 +171,9 @@ function projectAgentFirstRuntimeContext(
  *
  * Agent-first exposes conversational evidence and known facts, not Runtime's hidden state
  * machines. Full booking_process_state, historical case summaries, missing-field lists,
- * readiness statuses and old clinical-routing decisions stay Runtime-private. A verified
- * selected slot is projected separately as booking_selection because it is a concrete
- * continuity fact rather than a next-step order.
+ * readiness statuses, transport phone metadata and old clinical-routing decisions stay
+ * Runtime-private. A verified selected slot is projected separately as booking_selection
+ * because it is a concrete continuity fact rather than a next-step order.
  */
 export function projectModelFacingContext(
   context: Record<string, unknown>,

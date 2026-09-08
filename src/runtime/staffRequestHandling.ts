@@ -46,7 +46,7 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
 
         // A malformed side-effect proposal is not an ordinary reply. Never let the
         // model's success prose escape when Runtime could not validate an executable request.
-        if (result.staff_request_invalid === true) {
+        if (result.staff_request_invalid === true || result.debug?.staff_request_invalid === true) {
           const proof = failedProof();
           return {
             ...result,

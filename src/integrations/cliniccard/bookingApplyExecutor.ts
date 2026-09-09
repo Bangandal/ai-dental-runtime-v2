@@ -17,8 +17,6 @@ import type {
 } from "../../runtime/bookingReconciliationCoordinator.ts";
 import { acquireBookingSlotLock } from "./bookingSlotMutex.ts";
 
-// Strict HH:MM, exactly two-digit hour and minute, valid range.
-// Rejects "9:00", "10am", "morning", and any natural-language string.
 function parseStrictHHMM(val: string): string | null {
   const m = val.trim().match(/^(\d{2}):(\d{2})$/);
   if (!m) return null;
@@ -71,8 +69,6 @@ async function reconcilePendingVisit(
   lock: BookingReconciliationLock,
   timezone: string,
 ): Promise<BookingApplySuccessResult | null> {
-  // Without a patient id we cannot uniquely attribute a ClinicCard visit to this
-  // write. Keep the lock and require operator reconciliation rather than guessing.
   if (lock.patient_id === undefined) return null;
 
   const visitsResult = await adapter.listVisits(lock.date, lock.date);
@@ -88,8 +84,6 @@ async function reconcilePendingVisit(
     && visit.time_end === lock.time_end,
   );
 
-  // A missing read can be stale, and multiple matches indicate an anomaly. Neither
-  // authorizes a retry or an automatic unlock. Only one exact authoritative visit does.
   if (exactMatches.length !== 1) return null;
 
   const visit = exactMatches[0];
@@ -123,6 +117,7 @@ async function reconcilePendingVisit(
 export const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
   "telegram_contact_button",
   "whatsapp_sender",
+  "voice_sip_caller",
   "existing_cliniccard_patient",
 ]);
 
@@ -460,8 +455,6 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
           if (!attached.ok) reconciliationBindingFailure = attached.reason;
         }
 
-        // Known failures are safe to unlock. Unknown outcomes deliberately retain the
-        // durable write-ahead lock so later turns cannot repeat the POST blindly.
         if (!outcomeUnknown && reconciliationArmed && deps.bookingReconciliationGuard) {
           await deps.bookingReconciliationGuard.clear(reconciliationKey);
         }
@@ -486,8 +479,6 @@ export function createBookingApplyExecutor(deps: BookingApplyExecutorDeps = {}):
       }
 
       if (reconciliationArmed && deps.bookingReconciliationGuard) {
-        // Outcome is known successful. Failure to clear is conservative: the visit proof
-        // remains valid, while a stale lock can only block a future write until reconciled.
         await deps.bookingReconciliationGuard.clear(reconciliationKey);
       }
 

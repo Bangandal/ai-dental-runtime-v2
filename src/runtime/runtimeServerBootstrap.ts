@@ -7,14 +7,21 @@ import type { RpcCaller } from "./runtimeRepositories.ts";
 import type { EmbeddingClient } from "./supabaseKnowledgeRepository.ts";
 import { createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
 import type { TelegramDeliveryOutcome } from "./telegramSender.ts";
+import { createSupabaseOpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 import { createSupabaseBookingProcessStateRepository } from "./supabaseBookingProcessStateRepository.ts";
 import { createSerializedBookingProcessStateRepository } from "./serializedBookingProcessStateRepository.ts";
 import { createSupabaseTurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import { createSupabaseClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import { createSupabaseRuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
+import { createSupabaseCaseContextRepository } from "./supabaseCaseContextRepository.ts";
+import { createOpenAICaseRouterClassifier } from "./openaiCaseRouterClassifier.ts";
+import { createOpenAIRuntimeGateClassifier } from "./runtimeGateShadow.ts";
+import { createOpenAITurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 import { loadAdminNotifyConfig } from "../integrations/adminNotify/adminNotifyConfig.ts";
 import { createAdminNotifier } from "../integrations/adminNotify/telegramAdminNotifier.ts";
+import { createOpenAIRuntimeCaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
 import type { RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 import { createSupabaseStaffRequestRepository } from "./supabaseStaffRequestRepository.ts";
 
 export interface TelegramBootstrapConfig {
@@ -48,7 +55,9 @@ export function createDeliveryObserver(
       retry_count: outcome.retry_count,
       ...(outcome.error_code !== undefined ? { error_code: outcome.error_code } : {}),
       ...(outcome.error !== undefined ? { error: outcome.error.slice(0, 300) } : {}),
-    }).catch(() => undefined);
+    }).catch(() => {
+      // never propagate logger errors to webhook
+    });
   };
 }
 
@@ -69,8 +78,11 @@ export interface OrchestrationDepsInput {
   telegram?: TelegramBootstrapConfig;
 }
 
-/** One production dependency graph. There is no legacy/shadow bootstrap path. */
+// Exported for use by non-Telegram transports (e.g. WhatsApp) that need the
+// same shared orchestration deps without going through registerRuntimeRoutes.
 export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): RuntimeTurnOrchestratorDeps {
+  const agentFirst = isAgentFirstRuntimeEnabled();
+  const openAIConversationMemoryRepository = createSupabaseOpenAIConversationMemoryRepository({ rpc: deps.rpc });
   const bookingProcessStateRepository = createSerializedBookingProcessStateRepository(
     createSupabaseBookingProcessStateRepository({ rpc: deps.rpc }),
   );
@@ -83,13 +95,41 @@ export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): Ru
       conversations?: { create?: () => Promise<unknown> };
     }).conversations;
     if (typeof conversations?.create !== "function") return null;
-    return readConversationId(await conversations.create());
+    const created = await conversations.create();
+    return readConversationId(created);
   };
 
+  const adminNotifyConfig = loadAdminNotifyConfig();
   const adminNotifier = createAdminNotifier({
-    config: loadAdminNotifyConfig(),
+    config: adminNotifyConfig,
     botToken: deps.telegram?.botToken ?? null,
   });
+
+  const logger = deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger();
+  const legacyOnlyDeps = !agentFirst
+    ? {
+        caseContextRepository: createSupabaseCaseContextRepository({ rpc: deps.rpc }),
+        runtimeGateClassifier: createOpenAIRuntimeGateClassifier({
+          client: deps.openaiClient,
+          model: process.env.OPENAI_RUNTIME_GATE_MODEL?.trim() || deps.model,
+        }),
+        turnUnderstandingClassifier: createOpenAITurnUnderstandingClassifier({
+          client: deps.openaiClient,
+          model:
+            process.env.OPENAI_TURN_UNDERSTANDING_MODEL?.trim()
+            || process.env.OPENAI_RUNTIME_GATE_MODEL?.trim()
+            || deps.model,
+        }),
+        caseRouterClassifier: createOpenAICaseRouterClassifier({
+          client: deps.openaiClient,
+          model: process.env.OPENAI_CASE_ROUTER_MODEL?.trim() || deps.model,
+        }),
+        caseLiteExtractor: createOpenAIRuntimeCaseLiteExtractor({
+          client: deps.openaiClient,
+          model: deps.model,
+        }),
+      }
+    : {};
 
   return {
     runtimeTurnService: createDentalRuntimeTurnService({
@@ -100,11 +140,13 @@ export function createRuntimeOrchestrationDeps(deps: OrchestrationDepsInput): Ru
       embeddingClient: deps.embeddingClient,
       bookingProcessStateRepository,
     }),
-    runtimeTurnLogger: deps.runtimeTurnLogger ?? createNoopRuntimeTurnLogger(),
+    runtimeTurnLogger: logger,
+    openAIConversationMemoryRepository,
     createOpenAIConversation,
     turnPersistenceRepository,
     clinicIdentityResolver,
     runtimeContextRepository,
+    ...legacyOnlyDeps,
     debugEnabled: deps.debugEnabled,
     adminNotifier,
     staffRequestRepository: createSupabaseStaffRequestRepository({ rpc: deps.rpc }),

@@ -2,12 +2,18 @@ import { checkRuntimeApiKey, extractBearerToken } from "./runtimeApiAuth.ts";
 import type { RateLimiter } from "./runtimeRateLimiter.ts";
 import type { RuntimeTurnService } from "./runtimeTurnService.ts";
 import type { RuntimeTurnLogger } from "./runtimeTurnLogger.ts";
+import type { OpenAIConversationMemoryRepository } from "./supabaseOpenAIConversationMemoryRepository.ts";
 import type { TurnPersistenceRepository } from "./supabaseTurnPersistenceRepository.ts";
 import type { ClinicIdentityResolver } from "./supabaseClinicIdentityResolver.ts";
 import type { RuntimeContextRepository } from "./supabaseRuntimeContextRepository.ts";
+import type { CaseContextRepository } from "./supabaseCaseContextRepository.ts";
+import type { CaseRouterClassifier } from "./caseRouterShadow.ts";
+import type { RuntimeGateClassifier } from "./runtimeGateShadow.ts";
+import type { TurnUnderstandingClassifier } from "./turnUnderstandingShadow.ts";
 import { runRuntimeTurnOrchestrated } from "./runtimeTurnOrchestrator.ts";
 import type { AdminNotifier } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import type { StaffRequestRepository } from "./staffRequest.ts";
+import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -39,16 +45,22 @@ export interface RuntimeTurnHttpErrorResponse {
 export interface RuntimeTurnRouteDeps {
   runtimeTurnService: RuntimeTurnService;
   runtimeTurnLogger: RuntimeTurnLogger;
+  openAIConversationMemoryRepository?: OpenAIConversationMemoryRepository;
+  createOpenAIConversation?: () => Promise<string | null>;
   turnPersistenceRepository?: TurnPersistenceRepository;
   clinicIdentityResolver?: ClinicIdentityResolver;
   runtimeContextRepository?: RuntimeContextRepository;
-  createOpenAIConversation?: () => Promise<string | null>;
+  caseContextRepository?: CaseContextRepository;
+  caseRouterClassifier?: CaseRouterClassifier;
+  runtimeGateClassifier?: RuntimeGateClassifier;
+  turnUnderstandingClassifier?: TurnUnderstandingClassifier;
   apiKey?: string | undefined;
   isProduction?: boolean;
   rateLimiter?: RateLimiter;
   debugEnabled?: boolean;
   adminNotifier?: AdminNotifier;
   staffRequestRepository?: StaffRequestRepository;
+  caseLiteExtractor?: CaseLiteExtractor;
 }
 
 export interface RouteRequest {
@@ -71,6 +83,7 @@ export interface RouteReply {
 
 export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: RuntimeTurnRouteDeps): void {
   app.post("/runtime/turn", async (request, reply) => {
+    // Auth — before any business logic.
     const authResult = checkRuntimeApiKey({
       configuredKey: deps.apiKey,
       authHeader: asHeaderString(request.headers["authorization"]),
@@ -82,6 +95,7 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       return;
     }
 
+    // Rate limit — key is API key when present, else IP.
     if (deps.rateLimiter) {
       const rateLimitKey =
         extractBearerToken(asHeaderString(request.headers["authorization"])) ??
@@ -101,9 +115,6 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
         return;
       case "duplicate":
         reply.code(200).send({ ok: true });
-        return;
-      case "inbound_registration_failed":
-        reply.code(503).send({ error: { code: "inbound_registration_failed", message: "Inbound event could not be registered" } });
         return;
       case "invalid_request":
         reply.code(400).send({ error: { code: "invalid_runtime_turn_request", message: result.message } });

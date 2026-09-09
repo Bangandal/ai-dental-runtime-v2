@@ -17,8 +17,6 @@ import { createStaffNotificationOutboxWorker } from "./runtime/staffNotification
 import { createStaffNotificationOutboxLoop } from "./runtime/staffNotificationOutboxLoop.ts";
 import { createSupabaseStaffInboxRepository } from "./runtime/staffInboxRepository.ts";
 import { registerStaffInboxRoutes } from "./runtime/staffInboxRoute.ts";
-import { createVoiceToolAuthorityFromRuntimeDeps } from "./runtime/voiceToolAuthority.ts";
-import { registerVoiceToolAuthorityRoute } from "./runtime/voiceToolAuthorityRoute.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;
@@ -103,17 +101,6 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
     telegram: deps.telegram,
   });
 
-  const voiceToolAuthority = createVoiceToolAuthorityFromRuntimeDeps({
-    rpc: deps.rpc,
-    embeddingClient: deps.embeddingClient,
-    embeddingModel: deps.embeddingModel,
-  });
-  registerVoiceToolAuthorityRoute(app, {
-    execute: voiceToolAuthority,
-    apiKey: deps.apiKey,
-    isProduction: deps.isProduction,
-  });
-
   registerStaffInboxRoutes(app, {
     repository: createSupabaseStaffInboxRepository({ rpc: deps.rpc }),
     apiKey: deps.apiKey,
@@ -151,6 +138,9 @@ function positiveInt(raw: string | undefined, fallback: number, min: number, max
   return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
 }
 
+// Explicit OpenAI client limits. The SDK default timeout (10 minutes) is far too
+// long for a patient-facing turn, a hung request must fail into the existing
+// caller-exception fallback path instead of stalling the conversation.
 export const OPENAI_CLIENT_TIMEOUT_MS = 60_000;
 export const OPENAI_CLIENT_MAX_RETRIES = 2;
 

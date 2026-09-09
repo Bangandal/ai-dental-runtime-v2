@@ -3,6 +3,7 @@ import {
   type RuntimeAgentToolRequest,
   type RuntimeAgentToolResult,
 } from "./openaiRuntimeAgent.ts";
+import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 import type { RuntimeAgentCaller, RuntimeAgentCallerOutput } from "./runtimeModelCall.ts";
 import {
   invokeRuntimeModelIteration,
@@ -13,13 +14,19 @@ export interface RuntimeBoundedLoopFrame<TDomainState> {
   domain_state: TDomainState;
   context: Record<string, unknown>;
   tool_results?: RuntimeAgentToolResult[];
-  /** Business guard result. False blocks the attempted action, but does not prevent conversational recovery. */
   allow_tools: boolean;
 }
 
 export type RuntimeBoundedLoopBatchTransition<TDomainState> =
-  | { kind: "continue"; frame: RuntimeBoundedLoopFrame<TDomainState> }
-  | { kind: "abort"; domain_state: TDomainState; reason: string };
+  | {
+      kind: "continue";
+      frame: RuntimeBoundedLoopFrame<TDomainState>;
+    }
+  | {
+      kind: "abort";
+      domain_state: TDomainState;
+      reason: string;
+    };
 
 export type RuntimeBoundedModelToolLoopOutcome<TDomainState> =
   | {
@@ -50,6 +57,13 @@ export type RuntimeBoundedModelToolLoopOutcome<TDomainState> =
       call_number: number;
     }
   | {
+      kind: "terminal_tool_request";
+      requests: RuntimeAgentToolRequest[];
+      model_state: RuntimeModelIterationState;
+      domain_state: TDomainState;
+      call_number: number;
+    }
+  | {
       kind: "batch_aborted";
       reason: string;
       model_state: RuntimeModelIterationState;
@@ -58,9 +72,15 @@ export type RuntimeBoundedModelToolLoopOutcome<TDomainState> =
     };
 
 /**
- * Generic bounded model <-> deterministic-tool iterator.
- * Business legality lives in execute_batch. A denied action never terminates the model's
- * ability to recover conversationally; only the hard model-call budget is terminal.
+ * Generic bounded model <-> tool iterator.
+ *
+ * It owns transport sequencing only. Tool/business legality lives in execute_batch.
+ * The final model-call budget slot is always terminal: tool definitions are omitted because
+ * there is no remaining call budget to execute a new batch and submit its outputs safely.
+ *
+ * In agent-first pilot mode, a domain frame with allow_tools=false no longer terminates the
+ * model's ability to recover. The deterministic kernel still blocks illegal writes; the model
+ * may continue with other tools or clarification until the hard transport budget is reached.
  */
 export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
   model_state: RuntimeModelIterationState;
@@ -83,10 +103,12 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
     allow_tools: true,
   };
   let batchNumber = 0;
+  const agentFirst = isAgentFirstRuntimeEnabled();
 
   while (true) {
     const callNumber = modelState.calls_used + 1;
     const hasFutureModelCall = modelState.calls_used < modelState.max_calls - 1;
+    const toolsEnabledForCall = (agentFirst || frame.allow_tools) && hasFutureModelCall;
 
     const step = await invokeRuntimeModelIteration({
       state: modelState,
@@ -95,7 +117,7 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
       system_instruction: params.system_instruction,
       message: params.message,
       context: frame.context,
-      ...(hasFutureModelCall ? { tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS } : {}),
+      ...(toolsEnabledForCall ? { tool_definitions: RUNTIME_AGENT_TOOL_DEFINITIONS } : {}),
       ...(frame.tool_results !== undefined ? { tool_results: frame.tool_results } : {}),
     });
     modelState = step.state;
@@ -108,6 +130,7 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
         call_number: callNumber,
       };
     }
+
     if (step.kind === "call_failed") {
       return {
         kind: "call_failed",
@@ -117,6 +140,7 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
         call_number: callNumber,
       };
     }
+
     if (step.output.type === "final_response") {
       return {
         kind: "final_response",
@@ -126,6 +150,17 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
         call_number: callNumber,
       };
     }
+
+    if (!frame.allow_tools && !agentFirst) {
+      return {
+        kind: "terminal_tool_request",
+        requests: step.output.tool_requests,
+        model_state: modelState,
+        domain_state: frame.domain_state,
+        call_number: callNumber,
+      };
+    }
+
     if (!hasFutureModelCall) {
       return {
         kind: "tool_request_at_budget_limit",
@@ -142,6 +177,7 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
       domain_state: frame.domain_state,
       batch_number: batchNumber,
     });
+
     if (transition.kind === "abort") {
       return {
         kind: "batch_aborted",
@@ -151,6 +187,7 @@ export async function runRuntimeBoundedModelToolLoop<TDomainState>(params: {
         call_number: callNumber,
       };
     }
+
     frame = transition.frame;
   }
 }

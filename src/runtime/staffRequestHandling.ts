@@ -1,8 +1,5 @@
-import type { RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestratorLegacy.ts";
-import type {
-  AdminNotificationResult,
-} from "../integrations/adminNotify/adminNotifyTypes.ts";
-import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
+import type { RuntimeTurnService } from "./runtimeTurnService.ts";
+import type { AdminNotifier, AdminNotificationResult } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import {
   parseStaffRequest,
   sanitizeStaffAdditionalReply,
@@ -11,7 +8,14 @@ import {
   type StaffNotificationContext,
   type StaffRequest,
   type StaffRequestProof,
+  type StaffRequestRepository,
 } from "./staffRequest.ts";
+
+export interface StaffRequestHandlingDeps {
+  runtimeTurnService: RuntimeTurnService;
+  staffRequestRepository?: StaffRequestRepository;
+  adminNotifier?: AdminNotifier;
+}
 
 function value(raw: unknown): string | null {
   return typeof raw === "string" && raw.trim() ? raw.trim() : null;
@@ -43,7 +47,7 @@ function failedProof(): StaffRequestProof {
 }
 
 function buildNotificationContext(
-  input: Parameters<RuntimeTurnOrchestratorDeps["runtimeTurnService"]["runTurn"]>[0],
+  input: Parameters<RuntimeTurnService["runTurn"]>[0],
   request: StaffRequest,
 ): StaffNotificationContext {
   const context = input.business_context;
@@ -71,17 +75,15 @@ function buildNotificationContext(
 }
 
 /**
- * The agent proposes one staff request; Runtime persists it before any notification.
- * Production Supabase additionally queues the notification in the same transaction.
- * Legacy/test repositories without outbox support retain the synchronous notifier path.
+ * Persist staff authority before any notification or call-control action.
+ * Production Supabase queues notification in the same transaction as the request.
  */
-export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): RuntimeTurnOrchestratorDeps {
+export function withStaffRequestHandling<T extends StaffRequestHandlingDeps>(deps: T): T {
   return {
     ...deps,
     runtimeTurnService: {
       async runTurn(input) {
         const result = await deps.runtimeTurnService.runTurn(input);
-        if (!isAgentFirstRuntimeEnabled()) return result;
 
         if (result.debug?.staff_request_invalid === true) {
           const proof = failedProof();
@@ -101,10 +103,6 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
 
         const context = input.business_context;
         const channel = value(context?.channel) ?? "unknown";
-
-        // A live transfer is transport-specific authority. Never create one from text
-        // channels or from a model-only claim. Voice persists first, then call control
-        // may act only on the saved side-effect proof.
         if (request.kind === "live_transfer" && channel !== "voice") {
           const proof: StaffRequestProof = { ...failedProof(), kind: request.kind };
           return {
@@ -125,8 +123,6 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
         const idempotencyKey = stableStaffRequestKey(input.business_context);
         const notificationContext = buildNotificationContext(input, request);
 
-        // The durable request key comes from the provider event, never the random Runtime trace.
-        // In production, notification_context is inserted into an outbox in the same transaction.
         if (repository && input.contact_id && input.trace_id && idempotencyKey) {
           const saved = await repository.create({
             clinic_id: input.clinic_id,
@@ -144,8 +140,7 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
             proof.delivery_recorded = saved.data.delivery_status !== "pending"
               && saved.data.delivery_status !== "queued";
 
-            // Compatibility path for in-memory/test/legacy repositories. Production
-            // Supabase reports notification_queued=true and never sends inline.
+            // Test/in-memory compatibility only. Production outbox never sends inline.
             if (!saved.data.notification_queued && saved.data.created) {
               const base: AdminNotificationResult = {
                 type: "admin_notification",
@@ -172,7 +167,6 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
           }
         }
 
-        // Durable queueing is not delivery. Only a persisted/synchronous sent status permits the claim.
         proof.may_claim_notified = proof.request_saved && proof.delivery_status === "sent";
         const additionalReply = sanitizeStaffAdditionalReply(request.additional_reply);
         const additionalReplySuppressed = Boolean(request.additional_reply && !additionalReply);

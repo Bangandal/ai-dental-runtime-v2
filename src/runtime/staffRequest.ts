@@ -1,4 +1,7 @@
-import type { AdminNotificationResult } from "../integrations/adminNotify/adminNotifyTypes.ts";
+import type {
+  AdminNotificationPayload,
+  AdminNotificationResult,
+} from "../integrations/adminNotify/adminNotifyTypes.ts";
 import type { RuntimeResult } from "./runtimeRepositories.ts";
 
 /** A model proposal, never evidence of delivery or a clinical finding. */
@@ -13,10 +16,14 @@ export interface StaffRequest {
   additional_reply?: string;
 }
 
+export type StaffNotificationContext = Omit<AdminNotificationPayload, "staff_request">;
+
 export interface StaffRequestRecord {
   request_id: string;
   created: boolean;
   delivery_status: AdminNotificationResult["status"] | "pending";
+  /** True when notification delivery was durably queued in the same DB transaction. */
+  notification_queued?: boolean;
 }
 
 export interface StaffRequestRepository {
@@ -26,6 +33,8 @@ export interface StaffRequestRepository {
     trace_id: string;
     request: StaffRequest;
     source_message: string;
+    /** Optional durable outbox payload. Supabase production persists it atomically with the request. */
+    notification_context?: StaffNotificationContext;
   }): Promise<RuntimeResult<StaffRequestRecord>>;
   recordDelivery(input: {
     clinic_id: string;
@@ -41,6 +50,8 @@ export interface StaffRequestProof {
   kind?: StaffRequest["kind"];
   request_id: string | null;
   request_saved: boolean;
+  /** Durable notification queue entry exists, but this is not delivery proof. */
+  notification_queued?: boolean;
   delivery_status: AdminNotificationResult["status"] | "pending";
   delivery_recorded: boolean;
   may_claim_notified: boolean;

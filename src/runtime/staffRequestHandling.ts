@@ -1,11 +1,15 @@
 import type { RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestratorLegacy.ts";
-import type { AdminNotificationResult } from "../integrations/adminNotify/adminNotifyTypes.ts";
+import type {
+  AdminNotificationResult,
+} from "../integrations/adminNotify/adminNotifyTypes.ts";
 import { isAgentFirstRuntimeEnabled } from "./agentFirstRuntimePolicy.ts";
 import {
   parseStaffRequest,
   sanitizeStaffAdditionalReply,
   staffRequestFailureReceipt,
   staffRequestReceipt,
+  type StaffNotificationContext,
+  type StaffRequest,
   type StaffRequestProof,
 } from "./staffRequest.ts";
 
@@ -38,10 +42,38 @@ function failedProof(): StaffRequestProof {
   };
 }
 
+function buildNotificationContext(
+  input: Parameters<RuntimeTurnOrchestratorDeps["runtimeTurnService"]["runTurn"]>[0],
+  request: StaffRequest,
+): StaffNotificationContext {
+  const context = input.business_context;
+  return {
+    clinic_id: input.clinic_id,
+    clinic_code: value(context?.clinic_code),
+    channel: value(context?.channel) ?? "unknown",
+    chat_id: value(context?.chat_id),
+    external_user_id: value(context?.external_user_id),
+    trace_id: input.trace_id ?? "unknown",
+    patient_display_name: request.person_ref,
+    phone_source: input.channel_contact?.phone_source ?? null,
+    phone_available: Boolean(input.channel_contact?.phone_number),
+    original_message: input.user_message,
+    requested_service: null,
+    requested_date: null,
+    requested_time: null,
+    booking_status: "not_requested",
+    created_visit: false,
+    may_claim_booked: false,
+    required_next_action: "staff_review",
+    reason: request.kind,
+    timestamp: new Date().toISOString(),
+  };
+}
+
 /**
  * The agent proposes one staff request; Runtime persists it before any notification.
- * This runs inside the shared inbound dedupe/serialization boundary, before the final
- * reply is stored or sent. Neither the model nor transport adapters execute the write.
+ * Production Supabase additionally queues the notification in the same transaction.
+ * Legacy/test repositories without outbox support retain the synchronous notifier path.
  */
 export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): RuntimeTurnOrchestratorDeps {
   return {
@@ -51,8 +83,6 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
         const result = await deps.runtimeTurnService.runTurn(input);
         if (!isAgentFirstRuntimeEnabled()) return result;
 
-        // A malformed side-effect proposal is not an ordinary reply. Never let the
-        // model's success prose escape when Runtime could not validate an executable request.
         if (result.debug?.staff_request_invalid === true) {
           const proof = failedProof();
           return {
@@ -73,8 +103,8 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
         const channel = value(context?.channel) ?? "unknown";
 
         // A live transfer is transport-specific authority. Never create one from text
-        // channels or from a model-only claim. Voice must persist the request first, then
-        // the voice gateway may act on the resulting saved side-effect proof.
+        // channels or from a model-only claim. Voice persists first, then call control
+        // may act only on the saved side-effect proof.
         if (request.kind === "live_transfer" && channel !== "voice") {
           const proof: StaffRequestProof = { ...failedProof(), kind: request.kind };
           return {
@@ -93,10 +123,10 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
         let delivery: AdminNotificationResult | null = null;
         const repository = deps.staffRequestRepository;
         const idempotencyKey = stableStaffRequestKey(input.business_context);
+        const notificationContext = buildNotificationContext(input, request);
 
-        // Staff notification is an externally visible side effect. A random Runtime trace
-        // is not an idempotency key. The durable request uses the stable provider event key;
-        // the ordinary Runtime trace remains attached to notification/audit delivery data.
+        // The durable request key comes from the provider event, never the random Runtime trace.
+        // In production, notification_context is inserted into an outbox in the same transaction.
         if (repository && input.contact_id && input.trace_id && idempotencyKey) {
           const saved = await repository.create({
             clinic_id: input.clinic_id,
@@ -104,16 +134,19 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
             trace_id: idempotencyKey,
             request,
             source_message: input.user_message,
+            notification_context: notificationContext,
           }).catch(() => null);
           if (saved?.ok) {
             proof.request_id = saved.data.request_id;
             proof.request_saved = true;
             proof.delivery_status = saved.data.delivery_status;
-            proof.delivery_recorded = saved.data.delivery_status !== "pending";
+            proof.notification_queued = saved.data.notification_queued === true;
+            proof.delivery_recorded = saved.data.delivery_status !== "pending"
+              && saved.data.delivery_status !== "queued";
 
-            // Only the transaction that created the durable request owns delivery.
-            // A duplicate or crash after creation must not silently send again.
-            if (saved.data.created) {
+            // Compatibility path for in-memory/test/legacy repositories. Production
+            // Supabase reports notification_queued=true and never sends inline.
+            if (!saved.data.notification_queued && saved.data.created) {
               const base: AdminNotificationResult = {
                 type: "admin_notification",
                 status: "not_configured",
@@ -123,25 +156,7 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
               };
               delivery = deps.adminNotifier
                 ? await deps.adminNotifier.notify({
-                    clinic_id: input.clinic_id,
-                    clinic_code: value(context?.clinic_code),
-                    channel,
-                    chat_id: value(context?.chat_id),
-                    external_user_id: value(context?.external_user_id),
-                    trace_id: input.trace_id,
-                    patient_display_name: request.person_ref,
-                    phone_source: input.channel_contact?.phone_source ?? null,
-                    phone_available: Boolean(input.channel_contact?.phone_number),
-                    original_message: input.user_message,
-                    requested_service: null,
-                    requested_date: null,
-                    requested_time: null,
-                    booking_status: "not_requested",
-                    created_visit: false,
-                    may_claim_booked: false,
-                    required_next_action: "staff_review",
-                    reason: request.kind,
-                    timestamp: new Date().toISOString(),
+                    ...notificationContext,
                     staff_request: { ...request, request_id: saved.data.request_id },
                   }).catch(() => ({ ...base, status: "failed" as const, error_code: "staff_notification_exception" }))
                 : base;
@@ -157,7 +172,7 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
           }
         }
 
-        // Queueing is not delivery; a doctor's call/review is never promised here.
+        // Durable queueing is not delivery. Only a persisted/synchronous sent status permits the claim.
         proof.may_claim_notified = proof.request_saved && proof.delivery_status === "sent";
         const additionalReply = sanitizeStaffAdditionalReply(request.additional_reply);
         const additionalReplySuppressed = Boolean(request.additional_reply && !additionalReply);

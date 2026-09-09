@@ -16,6 +16,7 @@ export function createSupabaseStaffRequestRepository(deps: { rpc: RpcCaller }): 
         p_trace_id: input.trace_id,
         p_request: input.request,
         p_source_message: input.source_message,
+        p_notification_context: input.notification_context ?? null,
       });
       if (error) return fail("staff_request_persist_failed");
       const row = Array.isArray(data) ? data[0] as Record<string, unknown> | undefined : undefined;
@@ -27,6 +28,9 @@ export function createSupabaseStaffRequestRepository(deps: { rpc: RpcCaller }): 
         request_id: row.request_id,
         created: row.created,
         delivery_status: row.delivery_status as StaffRequestRecord["delivery_status"],
+        ...(typeof row.notification_queued === "boolean"
+          ? { notification_queued: row.notification_queued }
+          : {}),
       } };
     },
     async recordDelivery(input) {

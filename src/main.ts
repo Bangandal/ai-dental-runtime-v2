@@ -17,6 +17,8 @@ import { createStaffNotificationOutboxWorker } from "./runtime/staffNotification
 import { createStaffNotificationOutboxLoop } from "./runtime/staffNotificationOutboxLoop.ts";
 import { createSupabaseStaffInboxRepository } from "./runtime/staffInboxRepository.ts";
 import { registerStaffInboxRoutes } from "./runtime/staffInboxRoute.ts";
+import { createVoiceToolAuthorityFromRuntimeDeps } from "./runtime/voiceToolAuthority.ts";
+import { registerVoiceToolAuthorityRoute } from "./runtime/voiceToolAuthorityRoute.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;
@@ -99,6 +101,17 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
     isProduction: deps.isProduction,
     debugEnabled: deps.debugEnabled,
     telegram: deps.telegram,
+  });
+
+  const voiceToolAuthority = createVoiceToolAuthorityFromRuntimeDeps({
+    rpc: deps.rpc,
+    embeddingClient: deps.embeddingClient,
+    embeddingModel: deps.embeddingModel,
+  });
+  registerVoiceToolAuthorityRoute(app, {
+    execute: voiceToolAuthority,
+    apiKey: deps.apiKey,
+    isProduction: deps.isProduction,
   });
 
   registerStaffInboxRoutes(app, {

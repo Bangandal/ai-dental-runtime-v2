@@ -3,6 +3,7 @@ export interface SafeVoiceLogFields {
   conversation_id?: string;
   call_sid?: string;
   stream_sid?: string;
+  request_id?: string;
   turn_number?: number;
   stage?: string;
   latency_ms?: number;
@@ -16,6 +17,7 @@ export function safeVoiceLog(fields: SafeVoiceLogFields): void {
   if (fields.conversation_id !== undefined) entry.conversation_id = fields.conversation_id;
   if (fields.call_sid !== undefined) entry.call_sid = fields.call_sid;
   if (fields.stream_sid !== undefined) entry.stream_sid = fields.stream_sid;
+  if (fields.request_id !== undefined) entry.request_id = fields.request_id;
   if (fields.turn_number !== undefined) entry.turn_number = fields.turn_number;
   if (fields.stage !== undefined) entry.stage = fields.stage;
   if (fields.latency_ms !== undefined) entry.latency_ms = fields.latency_ms;

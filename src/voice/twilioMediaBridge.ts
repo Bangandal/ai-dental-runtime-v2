@@ -1,6 +1,7 @@
 import WebSocket from "ws";
 import type { ElevenLabsClient } from "@elevenlabs/elevenlabs-js";
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
+import type { VoiceCallContextRegistry } from "./voiceCallContext.ts";
 
 const MAX_AUDIO_BUFFER = 200;
 
@@ -19,7 +20,8 @@ export interface TwilioMediaBridgeDeps {
   speechEngineId: string;
   voiceFirstMessage: string;
   twilioAuthToken?: string;
-  /** Injectable WebSocket factory — default: new WebSocket(url) */
+  callRegistry?: VoiceCallContextRegistry;
+  /** Injectable WebSocket factory, default: new WebSocket(url). */
   createElevenLabsWebSocket?: (url: string) => WebSocketLike;
 }
 
@@ -29,6 +31,16 @@ export interface WebSocketConnection {
   on(event: "error", handler: (err: Error) => void): void;
   send(data: string): void;
   close(): void;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
@@ -48,6 +60,7 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
       if (reason) {
         safeVoiceLog({ event: "bridge_close", call_sid: callSid, stage: reason, connection_state: "closing" });
       }
+      if (callSid) deps.callRegistry?.finishByCallSid(callSid);
       try {
         twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
       } catch {}
@@ -73,7 +86,7 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
         return;
       }
 
-      const event = msg.event as string | undefined;
+      const event = stringValue(msg.event);
 
       if (event === "connected") {
         safeVoiceLog({ event: "bridge_twilio_connected", connection_state: "connected" });
@@ -81,9 +94,21 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
       }
 
       if (event === "start") {
-        const start = msg.start as Record<string, string> | undefined;
-        streamSid = start?.streamSid ?? "";
-        callSid = start?.callSid ?? "";
+        const start = record(msg.start);
+        streamSid = stringValue(start?.streamSid);
+        callSid = stringValue(start?.callSid);
+        const custom = record(start?.customParameters);
+        const callerPhone = stringValue(custom?.caller_phone);
+        const calledNumber = stringValue(custom?.called_number);
+
+        if (callSid) {
+          deps.callRegistry?.register({
+            callSid,
+            streamSid,
+            ...(callerPhone ? { callerPhone } : {}),
+            ...(calledNumber ? { calledNumber } : {}),
+          });
+        }
 
         safeVoiceLog({ event: "bridge_call_start", call_sid: callSid, stream_sid: streamSid });
 
@@ -105,7 +130,6 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
                 connection_state: "connected",
               });
 
-              // Send initiation data first (spec section 3): includes first_message override
               elWs!.send(JSON.stringify({
                 type: "conversation_initiation_client_data",
                 conversation_config_override: {
@@ -115,7 +139,6 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
                 },
               }));
 
-              // Flush buffered early audio in order
               elReady = true;
               for (const chunk of audioBuffer) {
                 sendToElevenLabs(chunk);
@@ -131,11 +154,22 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
                 return;
               }
 
-              const type = elMsg.type as string | undefined;
+              const type = stringValue(elMsg.type);
 
-              if (type === "audio") {
-                const audioEvent = elMsg.audio_event as Record<string, unknown> | undefined;
-                const payload = audioEvent?.audio_base_64 as string | undefined;
+              if (type === "conversation_initiation_metadata") {
+                const metadata = record(elMsg.conversation_initiation_metadata_event);
+                const conversationId = stringValue(metadata?.conversation_id);
+                if (conversationId && callSid) {
+                  deps.callRegistry?.bindConversation(callSid, conversationId);
+                  safeVoiceLog({
+                    event: "bridge_conversation_bound",
+                    call_sid: callSid,
+                    conversation_id: conversationId,
+                  });
+                }
+              } else if (type === "audio") {
+                const audioEvent = record(elMsg.audio_event);
+                const payload = stringValue(audioEvent?.audio_base_64);
                 if (payload) {
                   twilioWs.send(
                     JSON.stringify({ event: "media", streamSid, media: { payload } }),
@@ -144,7 +178,7 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
               } else if (type === "interruption") {
                 twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
               } else if (type === "ping") {
-                const pingEvent = elMsg.ping_event as Record<string, unknown> | undefined;
+                const pingEvent = record(elMsg.ping_event);
                 const eventId = pingEvent?.event_id;
                 elWs?.send(JSON.stringify({ type: "pong", event_id: eventId }));
               }
@@ -181,8 +215,8 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
       }
 
       if (event === "media") {
-        const media = msg.media as Record<string, string> | undefined;
-        const payload = media?.payload;
+        const media = record(msg.media);
+        const payload = stringValue(media?.payload);
         if (!payload) return;
 
         if (elReady) {
@@ -191,7 +225,6 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
           if (audioBuffer.length < MAX_AUDIO_BUFFER) {
             audioBuffer.push(payload);
           } else {
-            // Buffer full: fail-closed rather than silently dropping frames
             safeVoiceLog({
               event: "voice_buffer_overflow",
               call_sid: callSid,
@@ -230,4 +263,3 @@ export function createMediaBridgeHandler(deps: TwilioMediaBridgeDeps) {
     });
   };
 }
-

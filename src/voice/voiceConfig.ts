@@ -9,7 +9,10 @@ export interface VoiceConfig {
   voiceFirstMessage: string;
   voiceFallbackReply: string;
   twilioAuthToken?: string;
+  twilioAccountSid?: string;
   voicePublicBaseUrl?: string;
+  voiceHumanTransferNumber?: string;
+  voiceIdentityHmacSecret?: string;
 }
 
 export function readVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConfig {
@@ -37,9 +40,25 @@ export function readVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConf
       );
     }
     console.warn(
-      `\n⚠️  WARNING: VOICE_ALLOW_INSECURE_DEV=true — running without Twilio authentication!` +
+      `\n⚠️  WARNING: VOICE_ALLOW_INSECURE_DEV=true, running without Twilio authentication!` +
       ` Missing: ${missingSecurity.join(", ")}. DO NOT USE IN PRODUCTION.\n`,
     );
+  }
+
+  const accountSid = env.TWILIO_ACCOUNT_SID?.trim() || undefined;
+  const transferNumber = env.VOICE_HUMAN_TRANSFER_NUMBER?.trim() || undefined;
+  const identitySecret = env.VOICE_IDENTITY_HMAC_SECRET?.trim() || undefined;
+  const transferSettingsPresent = Boolean(accountSid || transferNumber);
+  if (transferSettingsPresent && (!accountSid || !transferNumber || !env.TWILIO_AUTH_TOKEN?.trim())) {
+    throw new Error(
+      "Voice gateway: live transfer requires TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN and VOICE_HUMAN_TRANSFER_NUMBER together.",
+    );
+  }
+  if (transferNumber && !/^\+[1-9]\d{7,14}$/.test(transferNumber)) {
+    throw new Error("Voice gateway: VOICE_HUMAN_TRANSFER_NUMBER must be an E.164 phone number.");
+  }
+  if (identitySecret && identitySecret.length < 32) {
+    throw new Error("Voice gateway: VOICE_IDENTITY_HMAC_SECRET must contain at least 32 characters.");
   }
 
   return {
@@ -57,6 +76,9 @@ export function readVoiceConfig(env: NodeJS.ProcessEnv = process.env): VoiceConf
       env.VOICE_FALLBACK_REPLY?.trim() ||
       "Извините, сейчас не удалось обработать запрос. Пожалуйста, повторите ещё раз.",
     twilioAuthToken: env.TWILIO_AUTH_TOKEN?.trim() || undefined,
+    twilioAccountSid: accountSid,
     voicePublicBaseUrl: env.VOICE_PUBLIC_BASE_URL?.trim().replace(/\/$/, "") || undefined,
+    voiceHumanTransferNumber: transferNumber,
+    voiceIdentityHmacSecret: identitySecret,
   };
 }

@@ -21,7 +21,7 @@ const TIMEZONE = "Europe/Prague";
 // NOW = 2026-08-12 10:00 UTC = 12:00 Prague (UTC+2 summer)
 const NOW = new Date("2026-08-12T10:00:00.000Z");
 const FRESH_CHECKED_AT = new Date(NOW.getTime() - 5 * 60 * 1000).toISOString(); // 5 min ago — within TTL
-const STALE_CHECKED_AT = new Date(NOW.getTime() - 20 * 60 * 1000).toISOString(); // 20 min ago — beyond TTL
+const STALE_CHECKED_AT = new Date(NOW.getTime() - AVAILABILITY_MODEL_VISIBILITY_TTL_MS - 5 * 60 * 1000).toISOString(); // beyond TTL
 
 function makeEvidence(opts: { checkedAt?: string; date?: string } = {}): AvailabilityEvidence {
   const date = opts.date ?? "2026-08-12";

@@ -14,9 +14,5 @@ export function hasPriorDurablePatientTurn(context: RuntimeContext): boolean {
     context.runtime_flags.available_recent_history_count ?? context.recent_history.length;
   if (recentHistoryCount > 1) return true;
 
-  if (context.booking_subjects !== null || context.selected_slot_starts_at !== null) {
-    return true;
-  }
-
-  return false;
+  return context.booking_subjects !== null;
 }

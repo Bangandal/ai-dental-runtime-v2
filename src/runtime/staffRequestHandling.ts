@@ -69,7 +69,27 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
         const request = parseStaffRequest(result.staff_request);
         if (!request) return result;
 
-        const proof = failedProof();
+        const context = input.business_context;
+        const channel = value(context?.channel) ?? "unknown";
+
+        // A live transfer is transport-specific authority. Never create one from text
+        // channels or from a model-only claim. Voice must persist the request first, then
+        // the voice gateway may act on the resulting saved side-effect proof.
+        if (request.kind === "live_transfer" && channel !== "voice") {
+          const proof: StaffRequestProof = { ...failedProof(), kind: request.kind };
+          return {
+            ...result,
+            final_patient_reply: staffRequestFailureReceipt(request.reply_language),
+            staff_request_state: { request, proof },
+            side_effects: [...(result.side_effects ?? []), proof],
+            debug: {
+              ...result.debug,
+              staff_request: { ...proof, reason: "live_transfer_requires_voice" },
+            },
+          };
+        }
+
+        const proof: StaffRequestProof = { ...failedProof(), kind: request.kind };
         let delivery: AdminNotificationResult | null = null;
         const repository = deps.staffRequestRepository;
         const idempotencyKey = stableStaffRequestKey(input.business_context);
@@ -101,12 +121,11 @@ export function withStaffRequestHandling(deps: RuntimeTurnOrchestratorDeps): Run
                 reason: request.kind,
                 trace_id: input.trace_id,
               };
-              const context = input.business_context;
               delivery = deps.adminNotifier
                 ? await deps.adminNotifier.notify({
                     clinic_id: input.clinic_id,
                     clinic_code: value(context?.clinic_code),
-                    channel: value(context?.channel) ?? "unknown",
+                    channel,
                     chat_id: value(context?.chat_id),
                     external_user_id: value(context?.external_user_id),
                     trace_id: input.trace_id,

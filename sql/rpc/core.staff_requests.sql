@@ -28,7 +28,7 @@ language plpgsql security definer set search_path = pg_catalog, core as $$
 declare v_id uuid;
 begin
   if p_clinic_id is null or p_contact_id is null or coalesce(length(trim(p_trace_id)), 0) = 0
-    or coalesce(p_request->>'kind', '') not in ('callback', 'document_update')
+    or coalesce(p_request->>'kind', '') not in ('callback', 'document_update', 'live_transfer')
     or coalesce(p_request->>'patient_target', '') not in ('self', 'other_person')
     or coalesce(length(trim(p_request->>'summary')), 0) not between 1 and 1000
     or coalesce(length(trim(p_request->>'person_ref')), 0) not between 1 and 200 then

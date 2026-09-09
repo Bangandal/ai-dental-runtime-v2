@@ -3,7 +3,7 @@ import type { RuntimeResult } from "./runtimeRepositories.ts";
 
 /** A model proposal, never evidence of delivery or a clinical finding. */
 export interface StaffRequest {
-  kind: "callback" | "document_update";
+  kind: "callback" | "document_update" | "live_transfer";
   patient_target: "self" | "other_person";
   person_ref: string;
   summary: string;
@@ -37,6 +37,8 @@ export interface StaffRequestRepository {
 
 export interface StaffRequestProof {
   type: "staff_request";
+  /** Present only after a valid request is parsed. Consumers may act only on a saved request. */
+  kind?: StaffRequest["kind"];
   request_id: string | null;
   request_saved: boolean;
   delivery_status: AdminNotificationResult["status"] | "pending";
@@ -65,7 +67,7 @@ function text(value: unknown, max: number): string | null {
 export function parseStaffRequest(raw: unknown): StaffRequest | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
-  if (value.kind !== "callback" && value.kind !== "document_update") return null;
+  if (value.kind !== "callback" && value.kind !== "document_update" && value.kind !== "live_transfer") return null;
   if (value.patient_target !== "self" && value.patient_target !== "other_person") return null;
   if (!["uk", "ru", "cs", "en"].includes(String(value.reply_language))) return null;
   const summary = text(value.summary, 1000);
@@ -92,7 +94,7 @@ export function parseStaffRequest(raw: unknown): StaffRequest | null {
  * authority. Keep useful independent answers, but drop text that could assert staff or
  * doctor execution. The deterministic receipt remains the sole source of such claims.
  */
-const STAFF_ACTION_CLAIM_PATTERN = /(уведом|повідом|передал|передала|передано|передан|передам|администратор|сотрудник|співробітник|personál|administrátor|staff|doctor|врач|лікар|lékař|received|reviewed|notified|informed|forwarded|отримав|отримано|получил|получено|переглян|переглянуто|просмотр|позвон|зателефон|callback)/i;
+const STAFF_ACTION_CLAIM_PATTERN = /(уведом|повідом|передал|передала|передано|передан|передам|администратор|сотрудник|співробітник|personál|administrátor|staff|doctor|врач|лікар|lékař|received|reviewed|notified|informed|forwarded|отримав|отримано|получил|получено|переглян|переглянуто|просмотр|позвон|зателефон|callback|transfer|соедин|переключ|переадрес|з'єдна|přepoj)/i;
 
 export function sanitizeStaffAdditionalReply(value: string | undefined): string | null {
   const normalized = text(value, 1500);
@@ -122,27 +124,32 @@ export function staffRequestReceipt(request: StaffRequest, proof: StaffRequestPr
       saved: "Запит збережено, але доставку повідомлення співробітнику не підтверджено. Будь ласка, зв’яжіться з клінікою напряму, якщо відповідь потрібна зараз.",
       callback: "Запит на зворотний дзвінок передано співробітнику. Бажаний час зазначено в запиті; лікар його ще не підтвердив.",
       document_update: "Дякую за оновлення. Ваше повідомлення про знімок або документ передано співробітнику. Отримання та перегляд лікарем ще не підтверджено.",
+      live_transfer: "Запит на розмову зі співробітником збережено. Переведення цього дзвінка ще не підтверджено.",
     },
     ru: {
       failed: "Не удалось сохранить запрос для сотрудника. Пожалуйста, свяжитесь с клиникой напрямую или попробуйте ещё раз.",
       saved: "Запрос сохранён, но доставка сообщения сотруднику не подтверждена. Пожалуйста, свяжитесь с клиникой напрямую, если ответ нужен сейчас.",
       callback: "Запрос на обратный звонок передан сотруднику. Желаемое время указано в запросе; врач его ещё не подтвердил.",
       document_update: "Спасибо за обновление. Ваше сообщение о снимке или документе передано сотруднику. Получение и просмотр врачом ещё не подтверждены.",
+      live_transfer: "Запрос на разговор с сотрудником сохранён. Перевод этого звонка ещё не подтверждён.",
     },
     cs: {
       failed: "Požadavek pro personál se nepodařilo uložit. Kontaktujte prosím kliniku přímo nebo to zkuste znovu.",
       saved: "Požadavek je uložen, ale doručení zprávy personálu není potvrzeno. Pokud potřebujete odpověď hned, kontaktujte prosím kliniku přímo.",
       callback: "Požadavek na zpětné zavolání byl předán personálu. Preferovaný čas je uveden v požadavku; lékař jej zatím nepotvrdil.",
       document_update: "Děkujeme za aktualizaci. Vaše zpráva o snímku nebo dokumentu byla předána personálu. Přijetí a kontrola lékařem zatím nejsou potvrzeny.",
+      live_transfer: "Požadavek na rozhovor s personálem je uložen. Přepojení tohoto hovoru zatím není potvrzeno.",
     },
     en: {
       failed: "I couldn’t save your request for staff. Please contact the clinic directly or try again.",
       saved: "Your request is saved, but delivery to staff has not been confirmed. Please contact the clinic directly if you need an answer now.",
       callback: "Your callback request has been passed to staff. Your preferred time is included in the request; the doctor has not confirmed it yet.",
       document_update: "Thank you for the update. Your report about the image or document has been passed to staff. Receipt and review by the doctor have not yet been confirmed.",
+      live_transfer: "Your request to speak with staff is saved. Transfer of this call has not yet been confirmed.",
     },
   }[request.reply_language];
   if (!proof.request_saved) return replies.failed;
+  if (request.kind === "live_transfer") return replies.live_transfer;
   if (!proof.may_claim_notified) return replies.saved;
   if (request.kind === "callback" && !request.preferred_contact_window) {
     return {

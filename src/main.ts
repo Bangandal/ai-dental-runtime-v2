@@ -15,6 +15,8 @@ import { createAdminNotifier } from "./integrations/adminNotify/telegramAdminNot
 import { createSupabaseStaffNotificationOutboxRepository } from "./runtime/supabaseStaffNotificationOutboxRepository.ts";
 import { createStaffNotificationOutboxWorker } from "./runtime/staffNotificationOutboxWorker.ts";
 import { createStaffNotificationOutboxLoop } from "./runtime/staffNotificationOutboxLoop.ts";
+import { createSupabaseStaffInboxRepository } from "./runtime/staffInboxRepository.ts";
+import { registerStaffInboxRoutes } from "./runtime/staffInboxRoute.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;
@@ -97,6 +99,12 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
     isProduction: deps.isProduction,
     debugEnabled: deps.debugEnabled,
     telegram: deps.telegram,
+  });
+
+  registerStaffInboxRoutes(app, {
+    repository: createSupabaseStaffInboxRepository({ rpc: deps.rpc }),
+    apiKey: deps.apiKey,
+    isProduction: deps.isProduction,
   });
 
   return app;

@@ -116,7 +116,8 @@ test("agent-first accepts only an already-normalized model phone", () => {
       "420777123456",
     );
 
-    // Runtime must not become a second natural-language parser in agent-first mode.
+    // The model-owned tool argument remains strict/canonical even though Runtime has a
+    // deterministic current-turn fallback for explicitly typed phone-shaped text.
     assert.equal(deriveAgentFirstProvidedPhone(bookingApply("+420 777 123 456"), now), null);
     assert.equal(deriveAgentFirstProvidedPhone(bookingApply("+420-777-123-456"), now), null);
     assert.equal(deriveAgentFirstProvidedPhone(bookingApply("call me at +420777123456"), now), null);
@@ -136,12 +137,13 @@ test("legacy does not accept the model-owned phone path", () => {
   });
 });
 
-test("free-text phone regex remains legacy-only", () => {
+test("free-text phone extraction is deterministic fallback in both modes", () => {
   withMode("legacy", () => {
     assert.equal(extractTypedPhone("мой номер +420 777 123 456"), "+420777123456");
   });
   withMode("agent_first", () => {
-    assert.equal(extractTypedPhone("мой номер +420 777 123 456"), null);
+    assert.equal(extractTypedPhone("Мій номер +420700100001"), "+420700100001");
+    assert.equal(extractTypedPhone("запишите меня на завтра в 15:00"), null);
   });
 });
 

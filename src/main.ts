@@ -10,6 +10,13 @@ import type { RpcCaller } from "./runtime/runtimeRepositories.ts";
 import type { EmbeddingClient } from "./runtime/supabaseKnowledgeRepository.ts";
 import { createFileRuntimeTurnLogger, createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtime/runtimeTurnLogger.ts";
 import { bindOpenAIPerCallTimeout } from "./runtime/openaiClientTimeout.ts";
+import { loadAdminNotifyConfig } from "./integrations/adminNotify/adminNotifyConfig.ts";
+import { createAdminNotifier } from "./integrations/adminNotify/telegramAdminNotifier.ts";
+import { createSupabaseStaffNotificationOutboxRepository } from "./runtime/supabaseStaffNotificationOutboxRepository.ts";
+import { createStaffNotificationOutboxWorker } from "./runtime/staffNotificationOutboxWorker.ts";
+import { createStaffNotificationOutboxLoop } from "./runtime/staffNotificationOutboxLoop.ts";
+import { createSupabaseStaffInboxRepository } from "./runtime/staffInboxRepository.ts";
+import { registerStaffInboxRoutes } from "./runtime/staffInboxRoute.ts";
 
 export interface BuildRuntimeAppDeps {
   openaiClient: OpenAI;
@@ -33,11 +40,10 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
 
   // WhatsApp requires raw bytes for Meta signature verification.
   // Register a raw-body content type parser in a scoped plugin so only
-  // /webhooks/whatsapp routes capture raw bytes — other routes are unaffected.
+  // /webhooks/whatsapp routes capture raw bytes, other routes are unaffected.
   if (deps.whatsapp) {
     const wa = deps.whatsapp;
     app.register(async (scope) => {
-      // Capture raw bytes before JSON parse (scoped — does not affect other routes)
       scope.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
         (req as unknown as Record<string, unknown>).rawBody = body as Buffer;
         try {
@@ -47,7 +53,6 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
         }
       });
 
-      // Shared orchestration deps (repositories, classifiers) built once
       const oDeps = createRuntimeOrchestrationDeps(deps);
       const waDeps: WhatsAppWebhookRouteDeps = {
         ...oDeps,
@@ -60,7 +65,6 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
         openaiApiKey: deps.openaiApiKey,
       };
 
-      // Adapter: bridges Fastify scope to WhatsAppRouteApp interface
       const waRouteApp = {
         get(path: string, handler: (req: { query: Record<string, string | string[] | undefined> }, reply: FastifyReply) => Promise<void>) {
           scope.get(path, async (request: FastifyRequest, reply: FastifyReply) => {
@@ -97,6 +101,12 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
     telegram: deps.telegram,
   });
 
+  registerStaffInboxRoutes(app, {
+    repository: createSupabaseStaffInboxRepository({ rpc: deps.rpc }),
+    apiKey: deps.apiKey,
+    isProduction: deps.isProduction,
+  });
+
   return app;
 }
 
@@ -123,8 +133,13 @@ function createRpcClient(env: NodeJS.ProcessEnv = process.env): RpcCaller {
   };
 }
 
+function positiveInt(raw: string | undefined, fallback: number, min: number, max: number): number {
+  const parsed = Number(raw?.trim());
+  return Number.isInteger(parsed) && parsed >= min && parsed <= max ? parsed : fallback;
+}
+
 // Explicit OpenAI client limits. The SDK default timeout (10 minutes) is far too
-// long for a patient-facing turn — a hung request must fail into the existing
+// long for a patient-facing turn, a hung request must fail into the existing
 // caller-exception fallback path instead of stalling the conversation.
 export const OPENAI_CLIENT_TIMEOUT_MS = 60_000;
 export const OPENAI_CLIENT_MAX_RETRIES = 2;
@@ -135,9 +150,6 @@ export function buildOpenAIClientOptions(apiKey: string): { apiKey: string; time
 
 export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const openaiApiKey = readRequiredEnv("OPENAI_API_KEY", env);
-  // Constructor timeout bounds each attempt to response headers; the per-call
-  // signal from bindOpenAIPerCallTimeout bounds the whole call including body
-  // parsing (see openaiClientTimeout.ts).
   const openaiClient = bindOpenAIPerCallTimeout(new OpenAI(buildOpenAIClientOptions(openaiApiKey)));
   const runtimeEnv = readRuntimeServerEnv(env);
   const rpc = createRpcClient(env);
@@ -174,6 +186,36 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
     telegram: telegramConfig,
     whatsapp: whatsappConfig,
   });
+
+  const outboxEnabled = env.STAFF_NOTIFICATION_OUTBOX_ENABLED?.trim() !== "false";
+  if (outboxEnabled) {
+    const notifier = createAdminNotifier({
+      config: loadAdminNotifyConfig(env as Record<string, string | undefined>),
+      botToken: telegramConfig?.botToken ?? null,
+    });
+    const worker = createStaffNotificationOutboxWorker({
+      repository: createSupabaseStaffNotificationOutboxRepository({ rpc }),
+      notifier,
+      batchSize: positiveInt(env.STAFF_NOTIFICATION_OUTBOX_BATCH_SIZE, 10, 1, 50),
+      maxAttempts: positiveInt(env.STAFF_NOTIFICATION_OUTBOX_MAX_ATTEMPTS, 8, 1, 20),
+      onEvent(event) {
+        process.stderr.write(`${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`);
+      },
+    });
+    const loop = createStaffNotificationOutboxLoop({
+      worker,
+      pollMs: positiveInt(env.STAFF_NOTIFICATION_OUTBOX_POLL_MS, 5_000, 1_000, 300_000),
+      onError(error) {
+        process.stderr.write(`${JSON.stringify({
+          ts: new Date().toISOString(),
+          event: "staff_notification_outbox_loop_error",
+          error_code: error instanceof Error ? error.name : "unknown",
+        })}\n`);
+      },
+    });
+    app.addHook("onReady", async () => { loop.start(); });
+    app.addHook("onClose", async () => { loop.stop(); });
+  }
 
   await app.listen({ port, host });
 }

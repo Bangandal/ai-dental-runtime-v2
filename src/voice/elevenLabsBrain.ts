@@ -2,10 +2,14 @@ import type { SpeechEngineCallbacks, SpeechEngineSession, TranscriptMessage } fr
 import type { RuntimeVoiceClientDeps } from "./runtimeVoiceClient.ts";
 import { createRuntimeVoiceClient } from "./runtimeVoiceClient.ts";
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
+import type { VoiceCallContextRegistry } from "./voiceCallContext.ts";
+import type { VoiceTransferController } from "./voiceTransfer.ts";
 
 export interface ElevenLabsBrainDeps extends RuntimeVoiceClientDeps {
   voiceClinicCode: string;
   voiceFallbackReply: string;
+  callRegistry?: VoiceCallContextRegistry;
+  transferController?: VoiceTransferController;
 }
 
 export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): SpeechEngineCallbacks {
@@ -14,7 +18,6 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
 
   return {
     onInit(conversationId: string, _session: SpeechEngineSession) {
-      // Greeting is sent via conversation_initiation_client_data first_message override (not here)
       safeVoiceLog({ event: "brain_init", conversation_id: conversationId, stage: "ready" });
     },
 
@@ -28,7 +31,6 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
       const turnNumber = (turnCounters.get(session) ?? 0) + 1;
       turnCounters.set(session, turnNumber);
 
-      // Section 10: guard conversationId — never call runtime with "unknown" identity
       const conversationId = session.conversationId;
       if (!conversationId) {
         safeVoiceLog({
@@ -36,15 +38,15 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
           turn_number: turnNumber,
           stage: "skipped",
         });
-        if (!signal.aborted) {
-          void session.sendResponse(deps.voiceFallbackReply);
-        }
+        if (!signal.aborted) void session.sendResponse(deps.voiceFallbackReply);
         return;
       }
 
+      const callContext = deps.callRegistry?.getByConversationId(conversationId) ?? null;
       safeVoiceLog({
         event: "brain_transcript_received",
         conversation_id: conversationId,
+        call_sid: callContext?.callSid,
         turn_number: turnNumber,
         stage: "runtime_call_start",
       });
@@ -58,8 +60,9 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
           patientTranscript: text,
           turnNumber,
           signal,
+          callContext,
         })
-        .then((result) => {
+        .then(async (result) => {
           if (signal.aborted) {
             safeVoiceLog({
               event: "brain_stale_response_suppressed",
@@ -68,9 +71,40 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
             });
             return;
           }
+
+          if (result.liveTransfer) {
+            if (!callContext?.callSid || !deps.transferController) {
+              safeVoiceLog({
+                event: "voice_transfer_unavailable",
+                conversation_id: conversationId,
+                call_sid: callContext?.callSid,
+                request_id: result.liveTransfer.requestId,
+                stage: "missing_call_control",
+              });
+            } else {
+              const transfer = await deps.transferController.transfer(
+                callContext.callSid,
+                result.liveTransfer.requestId,
+              );
+              if (transfer.ok) {
+                safeVoiceLog({
+                  event: "brain_live_transfer_started",
+                  conversation_id: conversationId,
+                  call_sid: callContext.callSid,
+                  request_id: result.liveTransfer.requestId,
+                  latency_ms: Date.now() - started,
+                });
+                // Twilio now owns the call transition. Do not play the pre-transfer Runtime
+                // receipt over the stream after the live call has been redirected.
+                return;
+              }
+            }
+          }
+
           safeVoiceLog({
             event: "brain_runtime_reply",
             conversation_id: conversationId,
+            call_sid: callContext?.callSid,
             turn_number: turnNumber,
             stage: "send_response",
             latency_ms: Date.now() - started,
@@ -81,23 +115,23 @@ export function createElevenLabsBrainCallbacks(deps: ElevenLabsBrainDeps): Speec
           safeVoiceLog({
             event: "brain_runtime_error",
             conversation_id: conversationId,
+            call_sid: callContext?.callSid,
             turn_number: turnNumber,
             error_code: err instanceof Error ? err.name : "unknown",
           });
-          // Section 9: send fallback only if not aborted
-          if (!signal.aborted) {
-            void session.sendResponse(deps.voiceFallbackReply);
-          }
+          if (!signal.aborted) void session.sendResponse(deps.voiceFallbackReply);
         });
     },
 
     onClose(session: SpeechEngineSession) {
       turnCounters.delete(session);
+      if (session.conversationId) deps.callRegistry?.finishByConversationId(session.conversationId);
       safeVoiceLog({ event: "brain_close", conversation_id: session.conversationId });
     },
 
     onDisconnect(session: SpeechEngineSession) {
       turnCounters.delete(session);
+      if (session.conversationId) deps.callRegistry?.finishByConversationId(session.conversationId);
       safeVoiceLog({
         event: "brain_disconnect",
         conversation_id: session.conversationId,

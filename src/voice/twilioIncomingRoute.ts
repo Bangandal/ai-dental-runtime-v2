@@ -32,7 +32,7 @@ export function registerTwilioIncomingRoute(
   deps: TwilioIncomingRouteDeps,
 ): void {
   app.post("/voice/incoming", async (req, reply) => {
-    // Section 5: fail-closed — both token and public URL are required
+    // Fail closed: both token and public URL are required.
     if (!deps.twilioAuthToken || !deps.voicePublicBaseUrl) {
       safeVoiceLog({ event: "incoming_not_configured", stage: "503" });
       reply.code(503).send("Voice gateway not configured: missing TWILIO_AUTH_TOKEN or VOICE_PUBLIC_BASE_URL");
@@ -51,9 +51,14 @@ export function registerTwilioIncomingRoute(
 
     const twiml = new VoiceResponse();
     const connect = twiml.connect();
-    connect.stream({ url: wssUrl });
+    const stream = connect.stream({ url: wssUrl });
 
-    safeVoiceLog({ event: "incoming_call_accepted", stage: "twiml_response" });
+    // Twilio includes these values in start.customParameters on the authenticated media
+    // stream. They stay inside the voice gateway and are never exposed to the model.
+    if (req.body.From) stream.parameter({ name: "caller_phone", value: req.body.From });
+    if (req.body.To) stream.parameter({ name: "called_number", value: req.body.To });
+
+    safeVoiceLog({ event: "incoming_call_accepted", call_sid: req.body.CallSid, stage: "twiml_response" });
 
     reply
       .code(200)

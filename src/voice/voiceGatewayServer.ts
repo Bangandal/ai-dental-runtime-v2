@@ -10,10 +10,12 @@ import { createElevenLabsBrainCallbacks } from "./elevenLabsBrain.ts";
 import { registerTwilioIncomingRoute } from "./twilioIncomingRoute.ts";
 import { createMediaBridgeHandler, type WebSocketConnection } from "./twilioMediaBridge.ts";
 import { safeVoiceLog } from "./safeVoiceLogger.ts";
+import { VoiceCallContextRegistry } from "./voiceCallContext.ts";
+import { createVoiceTransferController } from "./voiceTransfer.ts";
 import type { FastifyRequest, FastifyReply } from "fastify";
 
 /**
- * Extracted auth helper — validates that the x-twilio-signature header matches
+ * Extracted auth helper, validates that the x-twilio-signature header matches
  * the canonical WebSocket URL for the media-stream endpoint. Testable independently.
  */
 export function validateTwilioWsSignature(
@@ -28,6 +30,12 @@ export function validateTwilioWsSignature(
 export function createVoiceGatewayServer(config: VoiceConfig) {
   const app = Fastify();
   const elevenlabs = new ElevenLabsClient({ apiKey: config.elevenLabsApiKey });
+  const callRegistry = new VoiceCallContextRegistry();
+  const transferController = createVoiceTransferController({
+    accountSid: config.twilioAccountSid,
+    authToken: config.twilioAuthToken,
+    humanTransferNumber: config.voiceHumanTransferNumber,
+  });
 
   let attachment: { close(): Promise<void> } | null = null;
   let ready = false;
@@ -41,7 +49,13 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
         reply.code(503);
         return { ok: false, status: "starting" };
       }
-      return { ok: true };
+      return {
+        ok: true,
+        live_transfer_configured: Boolean(
+          config.twilioAccountSid && config.twilioAuthToken && config.voiceHumanTransferNumber,
+        ),
+        stable_caller_identity_configured: Boolean(config.voiceIdentityHmacSecret),
+      };
     });
 
     const incomingRouteApp = {
@@ -83,10 +97,10 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
       speechEngineId: config.elevenLabsSpeechEngineId,
       voiceFirstMessage: config.voiceFirstMessage,
       twilioAuthToken: config.twilioAuthToken,
+      callRegistry,
     });
 
     app.get("/voice/media-stream", { websocket: true }, (socket, request: FastifyRequest) => {
-      // Fail-closed: reject if auth token or public URL missing
       if (!config.twilioAuthToken || !config.voicePublicBaseUrl) {
         safeVoiceLog({ event: "bridge_ws_auth_rejected", stage: "503_missing_config", connection_state: "rejected" });
         socket.close();
@@ -119,8 +133,11 @@ export function createVoiceGatewayServer(config: VoiceConfig) {
     const brainCallbacks = createElevenLabsBrainCallbacks({
       runtimeBaseUrl: config.runtimeBaseUrl,
       runtimeApiKey: config.runtimeApiKey,
+      voiceIdentityHmacSecret: config.voiceIdentityHmacSecret,
       voiceClinicCode: config.voiceClinicCode,
       voiceFallbackReply: config.voiceFallbackReply,
+      callRegistry,
+      transferController,
     });
 
     const engine = await elevenlabs.speechEngine.get(config.elevenLabsSpeechEngineId);

@@ -123,6 +123,7 @@ async function reconcilePendingVisit(
 export const TRUSTED_PHONE_SOURCES: ReadonlySet<string> = new Set([
   "telegram_contact_button",
   "whatsapp_sender",
+  "voice_sip_caller",
   "existing_cliniccard_patient",
 ]);
 

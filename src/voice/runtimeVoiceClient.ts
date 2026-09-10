@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { VoiceCallContext } from "./voiceCallContext.ts";
+import { createVoiceTrustedContactToken } from "../runtime/voiceTrustedContactToken.ts";
 
 export interface VoiceRuntimeRequest {
   clinicCode: string;
@@ -64,6 +65,21 @@ export function createRuntimeVoiceClient(deps: RuntimeVoiceClientDeps) {
       req.callContext,
       deps.voiceIdentityHmacSecret,
     );
+    const messageId = `${req.conversationId}:${req.turnNumber}`;
+    const callSid = req.callContext?.callSid?.trim() || "";
+    const callerPhone = req.callContext?.callerPhone?.trim() || "";
+    const voiceContactToken = callSid && callerPhone
+      ? createVoiceTrustedContactToken({
+          runtimeApiKey: deps.runtimeApiKey,
+          phoneNumber: callerPhone,
+          context: {
+            clinicCode: req.clinicCode,
+            conversationId: req.conversationId,
+            callSid,
+            messageId,
+          },
+        })
+      : null;
 
     const body = JSON.stringify({
       clinic_code: req.clinicCode,
@@ -71,13 +87,14 @@ export function createRuntimeVoiceClient(deps: RuntimeVoiceClientDeps) {
       external_user_id: externalUserId,
       chat_id: externalUserId,
       text: req.patientTranscript,
+      ...(voiceContactToken ? { voice_contact_token: voiceContactToken } : {}),
       meta: {
-        message_id: `${req.conversationId}:${req.turnNumber}`,
-        update_id: `${req.conversationId}:${req.turnNumber}`,
+        message_id: messageId,
+        update_id: messageId,
         input_modality: "realtime_voice",
         voice_provider: "elevenlabs",
         voice_conversation_id: req.conversationId,
-        ...(req.callContext?.callSid ? { twilio_call_sid: req.callContext.callSid } : {}),
+        ...(callSid ? { twilio_call_sid: callSid } : {}),
       },
     });
 
@@ -91,18 +108,14 @@ export function createRuntimeVoiceClient(deps: RuntimeVoiceClientDeps) {
       signal: combined,
     });
 
-    if (!response.ok) {
-      throw new Error(`Runtime /runtime/turn returned ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Runtime /runtime/turn returned ${response.status}`);
 
     const data = (await response.json()) as Record<string, unknown>;
     const reply =
       (data.final_patient_reply as string | undefined) ||
       (data.reply_text as string | undefined);
 
-    if (!reply) {
-      throw new Error("Runtime response missing final_patient_reply and reply_text");
-    }
+    if (!reply) throw new Error("Runtime response missing final_patient_reply and reply_text");
 
     return {
       reply,

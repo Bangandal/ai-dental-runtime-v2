@@ -14,6 +14,8 @@ import { runRuntimeTurnOrchestrated } from "./runtimeTurnOrchestrator.ts";
 import type { AdminNotifier } from "../integrations/adminNotify/adminNotifyTypes.ts";
 import type { StaffRequestRepository } from "./staffRequest.ts";
 import type { CaseLiteExtractor } from "./openaiRuntimeCaseLiteExtractor.ts";
+import type { ChannelContact } from "./openaiRuntimeAgent.ts";
+import { readVoiceTrustedContactToken } from "./voiceTrustedContactToken.ts";
 
 export interface RuntimeTurnHttpRequestBody {
   clinic_code?: string;
@@ -22,6 +24,8 @@ export interface RuntimeTurnHttpRequestBody {
   chat_id?: string;
   text?: string;
   meta?: Record<string, unknown>;
+  /** Opaque transport proof. It is stripped before orchestration/persistence/model context. */
+  voice_contact_token?: string;
 }
 
 export interface RuntimeTurnHttpSuccessResponse {
@@ -36,10 +40,7 @@ export interface RuntimeTurnHttpSuccessResponse {
 }
 
 export interface RuntimeTurnHttpErrorResponse {
-  error: {
-    code: "invalid_runtime_turn_request";
-    message: string;
-  };
+  error: { code: "invalid_runtime_turn_request"; message: string };
 }
 
 export interface RuntimeTurnRouteDeps {
@@ -70,10 +71,7 @@ export interface RouteRequest {
 }
 
 export interface RouteRegistrationApp {
-  post(
-    path: string,
-    handler: (request: RouteRequest, reply: RouteReply) => Promise<void>,
-  ): void;
+  post(path: string, handler: (request: RouteRequest, reply: RouteReply) => Promise<void>): void;
 }
 
 export interface RouteReply {
@@ -81,9 +79,41 @@ export interface RouteReply {
   send(payload: RuntimeTurnHttpSuccessResponse | RuntimeTurnHttpErrorResponse | { error: { code: string; message: string } } | { ok: boolean }): void;
 }
 
+function readString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function extractTrustedVoiceChannelContact(
+  body: RuntimeTurnHttpRequestBody,
+  runtimeApiKey: string | undefined,
+): ChannelContact | undefined {
+  if (readString(body.channel) !== "voice" || !runtimeApiKey?.trim() || !body.voice_contact_token) return undefined;
+
+  const clinicCode = readString(body.clinic_code);
+  const conversationId = readString(body.meta?.voice_conversation_id);
+  const callSid = readString(body.meta?.twilio_call_sid);
+  const messageId = readString(body.meta?.message_id);
+  if (!clinicCode || !conversationId || !callSid || !messageId) return undefined;
+
+  const phoneNumber = readVoiceTrustedContactToken({
+    runtimeApiKey,
+    token: body.voice_contact_token,
+    context: { clinicCode, conversationId, callSid, messageId },
+  });
+  if (!phoneNumber) return undefined;
+
+  // The source literal is already enforced by the transport boundary and the booking
+  // authority's TRUSTED_PHONE_SOURCES. Keep this cast local until ChannelContact's
+  // historical union is widened without touching the model-visible contract.
+  return {
+    phone_number: phoneNumber,
+    phone_source: "voice_sip_caller",
+    phone_collected_at: new Date().toISOString(),
+  } as unknown as ChannelContact;
+}
+
 export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: RuntimeTurnRouteDeps): void {
   app.post("/runtime/turn", async (request, reply) => {
-    // Auth — before any business logic.
     const authResult = checkRuntimeApiKey({
       configuredKey: deps.apiKey,
       authHeader: asHeaderString(request.headers["authorization"]),
@@ -95,7 +125,6 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       return;
     }
 
-    // Rate limit — key is API key when present, else IP.
     if (deps.rateLimiter) {
       const rateLimitKey =
         extractBearerToken(asHeaderString(request.headers["authorization"])) ??
@@ -108,7 +137,13 @@ export function registerRuntimeTurnRoute(app: RouteRegistrationApp, deps: Runtim
       }
     }
 
-    const result = await runRuntimeTurnOrchestrated(request.body, deps);
+    const trustedChannelContact = extractTrustedVoiceChannelContact(request.body, deps.apiKey);
+    const { voice_contact_token: _voiceContactToken, ...runtimeBody } = request.body;
+    const result = await runRuntimeTurnOrchestrated(
+      runtimeBody,
+      deps,
+      trustedChannelContact ? { trustedChannelContact } : undefined,
+    );
     switch (result.outcome) {
       case "success":
         reply.send(result.payload);

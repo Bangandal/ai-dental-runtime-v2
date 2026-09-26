@@ -6,6 +6,8 @@ import { readRuntimeServerEnv } from "./index.ts";
 import { registerRuntimeRoutes, createRuntimeOrchestrationDeps } from "./runtime/runtimeServerBootstrap.ts";
 import { readWhatsAppConfig } from "./runtime/whatsappConfig.ts";
 import { registerWhatsAppWebhookRoute, type WhatsAppWebhookRouteDeps } from "./runtime/whatsappWebhookRoute.ts";
+import { readMetaMessengerConfig } from "./runtime/metaMessengerConfig.ts";
+import { registerMetaMessengerWebhookRoute, type MetaMessengerWebhookRouteDeps } from "./runtime/metaMessengerWebhookRoute.ts";
 import type { RpcCaller } from "./runtime/runtimeRepositories.ts";
 import type { EmbeddingClient } from "./runtime/supabaseKnowledgeRepository.ts";
 import { createFileRuntimeTurnLogger, createNoopRuntimeTurnLogger, type RuntimeTurnLogger } from "./runtime/runtimeTurnLogger.ts";
@@ -24,6 +26,7 @@ export interface BuildRuntimeAppDeps {
   debugEnabled?: boolean;
   telegram?: import("./runtime/runtimeServerBootstrap.ts").TelegramBootstrapConfig;
   whatsapp?: import("./runtime/whatsappConfig.ts").WhatsAppBootstrapConfig;
+  metaMessenger?: import("./runtime/metaMessengerConfig.ts").MetaMessengerConfig;
 }
 
 export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
@@ -80,6 +83,57 @@ export function buildRuntimeApp(deps: BuildRuntimeAppDeps): FastifyInstance {
       };
 
       registerWhatsAppWebhookRoute(waRouteApp, waDeps);
+    });
+  }
+
+  if (deps.metaMessenger) {
+    const meta = deps.metaMessenger;
+    app.register(async (scope) => {
+      // Meta signs the exact request bytes with X-Hub-Signature-256.
+      // Keep raw-body capture scoped to /webhooks/meta so the canonical Runtime
+      // route and other transports retain Fastify's normal JSON parser.
+      scope.addContentTypeParser("application/json", { parseAs: "buffer" }, (req, body, done) => {
+        (req as unknown as Record<string, unknown>).rawBody = body as Buffer;
+        try {
+          done(null, JSON.parse((body as Buffer).toString("utf-8")));
+        } catch {
+          done(new Error("Invalid JSON"));
+        }
+      });
+
+      const oDeps = createRuntimeOrchestrationDeps(deps);
+      const metaDeps: MetaMessengerWebhookRouteDeps = {
+        ...oDeps,
+        pageAccessToken: meta.pageAccessToken,
+        pageId: meta.pageId,
+        verifyToken: meta.verifyToken,
+        appSecret: meta.appSecret,
+        graphApiVersion: meta.graphApiVersion,
+        clinicCode: meta.clinicCode,
+      };
+
+      const metaRouteApp = {
+        get(path: string, handler: (req: { query: Record<string, string | string[] | undefined> }, reply: FastifyReply) => Promise<void>) {
+          scope.get(path, async (request: FastifyRequest, reply: FastifyReply) => {
+            await handler(
+              { query: request.query as Record<string, string | string[] | undefined> },
+              reply,
+            );
+          });
+        },
+        post(path: string, handler: (req: { body: unknown; rawBody: Buffer | null; headers: Record<string, string | string[] | undefined> }, reply: FastifyReply) => Promise<void>) {
+          scope.post(path, async (request: FastifyRequest, reply: FastifyReply) => {
+            const rawBody = (request as unknown as Record<string, unknown>).rawBody;
+            await handler({
+              body: request.body,
+              rawBody: Buffer.isBuffer(rawBody) ? rawBody : null,
+              headers: request.headers as Record<string, string | string[] | undefined>,
+            }, reply);
+          });
+        },
+      };
+
+      registerMetaMessengerWebhookRoute(metaRouteApp, metaDeps);
     });
   }
 
@@ -159,6 +213,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
   const debugEnabled = env.RUNTIME_DEBUG_RESPONSE?.trim() === "true";
   const telegramConfig = readTelegramConfig(env, isProduction);
   const whatsappConfig = readWhatsAppConfig(env, isProduction);
+  const metaMessengerConfig = readMetaMessengerConfig(env, isProduction);
 
   const app = buildRuntimeApp({
     openaiClient,
@@ -173,6 +228,7 @@ export async function startRuntimeServer(env: NodeJS.ProcessEnv = process.env): 
     debugEnabled,
     telegram: telegramConfig,
     whatsapp: whatsappConfig,
+    metaMessenger: metaMessengerConfig,
   });
 
   await app.listen({ port, host });

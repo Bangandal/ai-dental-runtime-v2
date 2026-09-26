@@ -92,7 +92,7 @@ export function normalizeMetaMessengerPayload(
     if (!entry || typeof entry !== "object") continue;
 
     const entryPageId = typeof entry.id === "string" ? entry.id : null;
-    if (configuredPageId && entryPageId && entryPageId !== configuredPageId) {
+    if (configuredPageId && entryPageId !== configuredPageId) {
       continue;
     }
 

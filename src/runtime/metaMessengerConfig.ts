@@ -30,16 +30,16 @@ export function readMetaMessengerConfigResult(
 ): MetaMessengerConfigReadResult {
   const pageAccessToken = env.META_MESSENGER_PAGE_ACCESS_TOKEN?.trim() || "";
 
-  const anyConfigured = [
+  // Graph version and default clinic code may be pre-filled operational defaults.
+  // They do not enable the transport by themselves.
+  const transportIntent = [
     pageAccessToken,
     env.META_MESSENGER_PAGE_ID,
     env.META_WEBHOOK_VERIFY_TOKEN,
     env.META_APP_SECRET,
-    env.META_GRAPH_API_VERSION,
-    env.META_DEFAULT_CLINIC_CODE,
   ].some((value) => value?.trim());
 
-  if (!anyConfigured) {
+  if (!transportIntent) {
     return { ok: false, reason: "disabled" };
   }
 

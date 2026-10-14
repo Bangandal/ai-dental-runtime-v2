@@ -145,6 +145,10 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
     "src/voice/twilioIncomingRoute.ts",
     "scripts/configure-elevenlabs-speech-engine.ts",
     "package.json",
+    // anamnesis collection feature (feat/anamnesis-collection)
+    "src/runtime/anamnesisPolicy.ts",
+    "src/runtime/anamnesisExtractor.ts",
+    "sql/rpc/core.pre_visit_anamnesis.sql",
   ]);
 
   for (const file of changedFiles) {

@@ -14,9 +14,10 @@ export interface AnamnesisState {
 export function buildAnamnesisInstructions(): string {
   return [
     "## PRE-VISIT ANAMNESIS",
-    "IMPORTANT: Before proceeding with booking.apply, you MUST collect a brief medical anamnesis.",
+    "CRITICAL SEQUENCE: When the patient expresses booking intent, start with the medical anamnesis IMMEDIATELY. Do NOT ask for name, preferred time, or any booking details until ALL anamnesis questions are answered (or patient explicitly refuses). Anamnesis FIRST, booking intake SECOND.",
     "Collect answers one question at a time in the patient's language. Be empathetic and brief.",
     "Do NOT present a numbered list of all questions at once — ask each question individually and wait for the answer.",
+    "Do NOT ask for name or appointment time until anamnesis is complete or patient refused.",
     "",
     "REQUIRED questions (ask in this order; skip a question only if the patient already answered it earlier in this conversation):",
     "1. VISIT REASON: Ask what the main reason for the visit is. Options: acute pain/swelling, cavity treatment/filling replacement, professional cleaning/whitening, implant/braces consultation, routine checkup, other.",

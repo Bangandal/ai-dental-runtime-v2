@@ -216,6 +216,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
         "     B3. Booking + ASAP ('как можно скорее', 'срочно', 'ASAP') → call availability.check for today/nearest day. Non-red-flag pain + booking intent → service = 'осмотр из-за боли'; do not ask 'какая услуга?' or 'Что вас интересует?'",
         "     B4. Booking + time hint ('завтра', 'в пятницу', 'в 09:00', 'утром') → call availability.check. No generic opening question.",
         "     B5. Booking without a usable time hint: collect only genuinely missing booking details. Do not ask a generic opening question.",
+        ...(isAnamnesisEnabled() ? ["     ANAMNESIS OVERRIDE: For ANY booking path (B3/B4/B5) — if anamnesis has NOT been collected yet in this conversation, START with PRE-VISIT ANAMNESIS questions instead of asking for name/time/availability. Ask: 'Щоб підготуватися до вашого візиту, дозвольте задати кілька медичних запитань.' (or language equivalent). Then proceed with anamnesis question 1 (visit reason). Do NOT call availability.check until anamnesis is complete."] : []),
       ].join("\n")
     : null;
 

@@ -248,6 +248,7 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "Use runtime_context.recent_history as dialogue evidence only. recent_history is not business proof. Tool results take precedence.",
 
     "## INTAKE FLOW",
+    ...(isAnamnesisEnabled() ? [buildAnamnesisInstructions()] : []),
     ...(firstTurnRule ? [firstTurnRule] : []),
     "1. Greetings, low-signal messages ('эээ', 'ну'), simple thanks: reply briefly. Do NOT immediately ask for service, name, or time. Wait for the patient to state their need.",
     "2. BOOKING INTENT: collect missing details flexibly. Check the current message and runtime_context.recent_history first; ask only for what is genuinely missing. The sequence (service → name → time) is a fallback, not a strict order. Do not re-ask for a field only because booking_process_state has not persisted it — if the patient stated it earlier in this conversation, it is already known. When collecting names, use first_name and last_name from the current message or runtime_context.recent_history. Do not re-ask if visible there.",
@@ -279,8 +280,6 @@ export function buildRuntimeAgentSystemInstruction(opts?: RuntimeAgentSystemInst
     "booking_apply_action_truth present: follow allowed_claims/required_next_action strictly. Never claim booking success unless allowed_claims permits it.",
     "APPOINTMENT DISPLAY TRUTH: trust appointment_display_truth date/time_start/weekday; do not calculate weekday; never invent labels.",
     "AVAILABILITY PRESENTATION TRUTH: only allowed_slot_starts from current availability_presentation_truth (max max_slots_to_present); allowed_slots carry details. Slot/booking.select_slot date=resolved_date; labels=resolved_calendar. If requested_date!=resolved_date, never pair old date with returned times. Never range; never invent times.",
-
-    ...(isAnamnesisEnabled() ? [buildAnamnesisInstructions()] : []),
 
     "## OUTPUT",
     "final_patient_reply: natural patient-facing text. Never include raw JSON, tool names, or runtime-internal terminology.",

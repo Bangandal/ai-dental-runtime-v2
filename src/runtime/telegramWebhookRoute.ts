@@ -4,7 +4,7 @@ import {
   type TelegramUpdate,
   type TelegramNormalizeResult,
 } from "./telegramWebhookAdapter.ts";
-import { sendTelegramMessage, sendTelegramMessageWithRetry, buildContactRequestReplyMarkup, buildRemoveKeyboardMarkup, type TelegramDeliveryOutcome } from "./telegramSender.ts";
+import { sendTelegramMessage, sendTelegramMessageWithRetry, sendChatAction, sendTelegramReplyWithSplitting, buildContactRequestReplyMarkup, buildRemoveKeyboardMarkup, type TelegramDeliveryOutcome } from "./telegramSender.ts";
 import { runRuntimeTurnOrchestrated, type RuntimeTurnOrchestratorDeps } from "./runtimeTurnOrchestrator.ts";
 import { resolveTelegramMedia } from "./telegramMediaResolver.ts";
 import { transcribeAudio } from "./audioTranscription.ts";
@@ -214,7 +214,16 @@ export function registerTelegramWebhookRoute(
         },
       };
 
-      const voiceResult = await runRuntimeTurnOrchestrated(voiceTurnBody, deps);
+      void sendChatAction({ botToken: deps.botToken, chatId: normalized.chat_id, fetch: fetchFn });
+      const voiceTypingInterval = setInterval(() => {
+        void sendChatAction({ botToken: deps.botToken, chatId: normalized.chat_id, fetch: fetchFn });
+      }, 4000);
+      let voiceResult;
+      try {
+        voiceResult = await runRuntimeTurnOrchestrated(voiceTurnBody, deps);
+      } finally {
+        clearInterval(voiceTypingInterval);
+      }
 
       if (voiceResult.outcome === "duplicate") {
         reply.code(200).send({ ok: true });
@@ -234,7 +243,7 @@ export function registerTelegramWebhookRoute(
         const replyMarkup = uiTelegram?.request_contact === true
           ? buildContactRequestReplyMarkup(uiTelegram.button_text)
           : undefined;
-        const delivery = await sendTelegramMessageWithRetry({
+        const delivery = await sendTelegramReplyWithSplitting({
           botToken: deps.botToken,
           chatId: normalized.chat_id,
           text: replyText,
@@ -254,7 +263,16 @@ export function registerTelegramWebhookRoute(
     }
 
     // Text update — standard pipeline.
-    const result = await runRuntimeTurnOrchestrated(normalized.body, deps);
+    void sendChatAction({ botToken: deps.botToken, chatId: normalized.body.chat_id, fetch: deps.fetch });
+    const typingInterval = setInterval(() => {
+      void sendChatAction({ botToken: deps.botToken, chatId: normalized.body.chat_id, fetch: deps.fetch });
+    }, 4000);
+    let result;
+    try {
+      result = await runRuntimeTurnOrchestrated(normalized.body, deps);
+    } finally {
+      clearInterval(typingInterval);
+    }
 
     if (result.outcome === "duplicate") {
       reply.code(200).send({ ok: true });
@@ -276,7 +294,7 @@ export function registerTelegramWebhookRoute(
         ? buildContactRequestReplyMarkup(uiTelegram.button_text)
         : undefined;
 
-      const delivery = await sendTelegramMessageWithRetry({
+      const delivery = await sendTelegramReplyWithSplitting({
         botToken: deps.botToken,
         chatId: normalized.body.chat_id,
         text: replyText,

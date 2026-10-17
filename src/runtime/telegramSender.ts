@@ -94,3 +94,73 @@ export async function sendTelegramMessageWithRetry(
   const errorCode = second.error?.startsWith("telegram_timeout:") ? "telegram_timeout" : "telegram_send_failed";
   return { ok: false, retry_count: 1, error_code: errorCode, error: second.error?.slice(0, 300) };
 }
+
+export async function sendChatAction(opts: {
+  botToken: string;
+  chatId: string;
+  action?: string;
+  fetch?: typeof globalThis.fetch;
+}): Promise<void> {
+  const fetchFn = opts.fetch ?? globalThis.fetch;
+  try {
+    await fetchFn(
+      `https://api.telegram.org/bot${opts.botToken}/sendChatAction`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: opts.chatId, action: opts.action ?? "typing" }),
+        signal: AbortSignal.timeout(5_000),
+      },
+    );
+  } catch {
+    // typing indicator failure is non-critical — swallow
+  }
+}
+
+export function splitReplyText(text: string, maxParts = 3): string[] {
+  if (text.length <= 200) return [text];
+  const paragraphs = text.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
+  if (paragraphs.length <= 1) return [text];
+  if (paragraphs.length <= maxParts) return paragraphs;
+  // Merge overflow into last part
+  const parts = paragraphs.slice(0, maxParts - 1);
+  parts.push(paragraphs.slice(maxParts - 1).join("\n\n"));
+  return parts;
+}
+
+export async function sendTelegramReplyWithSplitting(opts: {
+  botToken: string;
+  chatId: string;
+  text: string;
+  messageThreadId?: string | null;
+  replyMarkup?: TelegramReplyMarkup;
+  fetch?: typeof globalThis.fetch;
+  retryBackoffMs?: number;
+  splitDelayMs?: number;
+}): Promise<TelegramDeliveryOutcome> {
+  const parts = splitReplyText(opts.text);
+  let finalOutcome: TelegramDeliveryOutcome = { ok: true, retry_count: 0 };
+
+  for (let i = 0; i < parts.length; i++) {
+    if (i > 0) {
+      await new Promise<void>((r) => setTimeout(r, opts.splitDelayMs ?? 500));
+    }
+    const isLast = i === parts.length - 1;
+    const outcome = await sendTelegramMessageWithRetry({
+      botToken: opts.botToken,
+      chatId: opts.chatId,
+      text: parts[i],
+      messageThreadId: opts.messageThreadId,
+      replyMarkup: isLast ? opts.replyMarkup : undefined,
+      fetch: opts.fetch,
+      retryBackoffMs: opts.retryBackoffMs,
+    });
+    if (!outcome.ok) {
+      finalOutcome = outcome;
+      break;
+    }
+    finalOutcome = outcome;
+  }
+
+  return finalOutcome;
+}

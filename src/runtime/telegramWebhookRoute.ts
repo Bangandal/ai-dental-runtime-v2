@@ -39,6 +39,13 @@ export interface TelegramRouteApp {
   ): void;
 }
 
+function humanReplyDelay(inputLength: number): Promise<void> {
+  const base = 1500;
+  const bonus = Math.min(inputLength * 10, 2500);
+  const delay = base + Math.random() * bonus;
+  return new Promise((r) => setTimeout(r, delay));
+}
+
 export function registerTelegramWebhookRoute(
   app: TelegramRouteApp,
   deps: TelegramWebhookRouteDeps,
@@ -218,6 +225,7 @@ export function registerTelegramWebhookRoute(
       const voiceTypingInterval = setInterval(() => {
         void sendChatAction({ botToken: deps.botToken, chatId: normalized.chat_id, fetch: fetchFn });
       }, 4000);
+      await humanReplyDelay(transcription.text.length);
       let voiceResult;
       try {
         voiceResult = await runRuntimeTurnOrchestrated(voiceTurnBody, deps);
@@ -267,6 +275,7 @@ export function registerTelegramWebhookRoute(
     const typingInterval = setInterval(() => {
       void sendChatAction({ botToken: deps.botToken, chatId: normalized.body.chat_id, fetch: deps.fetch });
     }, 4000);
+    await humanReplyDelay(normalized.body.text?.length ?? 0);
     let result;
     try {
       result = await runRuntimeTurnOrchestrated(normalized.body, deps);

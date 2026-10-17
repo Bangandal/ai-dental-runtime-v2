@@ -14,7 +14,7 @@ export interface AnamnesisState {
 export function buildAnamnesisInstructions(): string {
   return [
     "## PRE-VISIT ANAMNESIS",
-    "CRITICAL SEQUENCE: When the patient expresses booking intent, start with the medical anamnesis IMMEDIATELY. Do NOT ask for name, preferred time, or any booking details until ALL anamnesis questions are answered (or patient explicitly refuses). Anamnesis FIRST, booking intake SECOND.",
+    "CRITICAL SEQUENCE: When the patient expresses booking intent, first greet them warmly and confirm you can help with booking, then say you need to ask a few quick health questions before scheduling (e.g. 'Of course! Before I book your appointment, I have a few brief health questions for the doctor.'). Do NOT jump straight to a medical question without acknowledging their intent. After this transition, ask the anamnesis questions ONE AT A TIME. Do NOT ask for name, preferred time, or any booking details until ALL anamnesis questions are answered (or patient explicitly refuses).",
     "Collect answers one question at a time in the patient's language. Be empathetic and brief.",
     "Do NOT present a numbered list of all questions at once — ask each question individually and wait for the answer.",
     "Do NOT ask for name or appointment time until anamnesis is complete or patient refused.",

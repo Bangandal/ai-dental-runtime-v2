@@ -40,9 +40,10 @@ export interface TelegramRouteApp {
 }
 
 function humanReplyDelay(inputLength: number): Promise<void> {
-  const base = 1500;
-  const bonus = Math.min(inputLength * 10, 2500);
-  const delay = base + Math.random() * bonus;
+  // 2.5-5.5s base; longer messages add up to 1s more
+  const base = 2500 + Math.random() * 3000;
+  const lengthBonus = Math.min(inputLength * 5, 1000);
+  const delay = base + lengthBonus;
   return new Promise((r) => setTimeout(r, delay));
 }
 

@@ -593,6 +593,32 @@ test("B-guard-6: missing_slot / missing_patient_name / missing_service → speci
   }
 });
 
+
+test("B-guard-7: preflight guarded_data.required_next_action is authoritative over booking_status remapping", () => {
+  // Preflight sets required_next_action in data — buildBookingApplyActionTruth must use it
+  // directly rather than recomputing from booking_status via resolveRequiredNextAction.
+  // Covers slot_not_verified (missing_slot_proof guard) and any future guard codes.
+  const preflightResult: RuntimeAgentToolResult = {
+    tool: "booking.apply",
+    call_id: "call_preflight",
+    status: "success",
+    data: {
+      booking_status: "slot_not_verified",
+      required_next_action: "choose_from_available_slots",
+      created_visit: false,
+      may_claim_booked: false,
+      reason: "slot_proof_absent",
+    },
+  };
+  const truth = buildBookingApplyActionTruth([preflightResult]);
+  assert.ok(truth, "B-guard-7: truth must not be null");
+  assert.equal(
+    truth!.required_next_action,
+    "choose_from_available_slots",
+    "B-guard-7: slot_not_verified with explicit required_next_action in data must use data value, not default technical_fallback"
+  );
+});
+
 // ── PR #144 tests: maybeAttachPhoneRequestUI ──────────────────────────────────
 //
 // When booking_process_state.next_action === "ask_for_phone" and phone is not yet

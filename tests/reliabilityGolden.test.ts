@@ -13,6 +13,7 @@ import type {
 import { buildBookingApplyActionTruth } from "../src/runtime/bookingApplyGuard.ts";
 import {
   buildModelVisibleBookingProcessState,
+  AVAILABILITY_MODEL_VISIBILITY_TTL_MS,
   type BookingProcessState,
 } from "../src/runtime/bookingProcessState.ts";
 import type { RuntimeAgentToolResult } from "../src/runtime/openaiRuntimeAgent.ts";
@@ -196,7 +197,7 @@ test("GOLDEN-03 ambiguous target on another person's phone: no visit is written 
 
 test("GOLDEN-04 stale availability: stale slot evidence cannot remain booking-ready to the model", () => {
   const now = new Date("2026-08-12T10:00:00.000Z");
-  const staleCheckedAt = new Date(now.getTime() - 20 * 60 * 1000).toISOString();
+  const staleCheckedAt = new Date(now.getTime() - AVAILABILITY_MODEL_VISIBILITY_TTL_MS - 5 * 60 * 1000).toISOString();
   const evidence: AvailabilityEvidence = {
     availability_call_id: "availability-golden-1",
     requested_date: "2026-08-12",

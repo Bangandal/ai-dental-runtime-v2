@@ -5,7 +5,7 @@ import {
   canDeriveAgentFirstBookingSelectionFromPriorEvidence,
   deriveAgentFirstBookingSelection,
 } from "../src/runtime/agentFirstBookingSlotBinding.ts";
-import type { BookingProcessState } from "../src/runtime/bookingProcessState.ts";
+import { AVAILABILITY_MODEL_VISIBILITY_TTL_MS, type BookingProcessState } from "../src/runtime/bookingProcessState.ts";
 import type { BookingSubject } from "../src/runtime/bookingSubjectsState.ts";
 import type { RuntimeAgentToolRequest } from "../src/runtime/openaiRuntimeAgent.ts";
 
@@ -90,12 +90,14 @@ test("agent-first derives the old slot proof from fresh exact prior evidence", (
 
 test("agent-first refuses stale availability evidence", () => {
   withAgentFirst(() => {
+    const now = new Date("2026-08-22T10:00:00.000Z");
+    const staleCheckedAt = new Date(now.getTime() - AVAILABILITY_MODEL_VISIBILITY_TTL_MS - 5 * 60 * 1000).toISOString();
     const result = deriveAgentFirstBookingSelection({
       booking_apply: bookingApply("15:00"),
       execution_subject_id: "subject_1",
-      booking_process_state: state("2026-08-22T09:40:00.000Z"),
+      booking_process_state: state(staleCheckedAt),
       subjects: [subject("subject_1")],
-      now: new Date("2026-08-22T10:00:00.000Z"),
+      now,
     });
 
     assert.equal(result, null);

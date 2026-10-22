@@ -91,21 +91,22 @@ async function runWithAdapter(adapter: ClinicCardAdapter, context: ToolExecution
   return result.data as Record<string, unknown>;
 }
 
-test("IDENTITY-SAFE-1: marker absent + phone belongs to different named patient never reuses that patient", async () => {
+test("IDENTITY-SAFE-1: marker absent + single phone record with different name → phone wins, reuses existing patient", async () => {
   let createPatientCalled = false;
-  let createVisitCalled = false;
+  let createdVisit: ClinicCardCreateVisitInput | null = null;
   const adapter = makeAdapter({
     patients: [{ id: 10, name: "Olena Koval", phone: "+420111222333" }],
     onCreatePatient: () => { createPatientCalled = true; },
-    onCreateVisit: () => { createVisitCalled = true; },
+    onCreateVisit: (input) => { createdVisit = input; },
   });
 
   const data = await runWithAdapter(adapter, makeContext());
-  assert.equal(data.booking_status, "identity_ambiguous");
-  assert.equal(data.created_visit, false);
-  assert.equal(data.may_claim_booked, false);
+  assert.equal(data.booking_status, "visit_created");
+  assert.equal(data.cliniccard_patient_id, 10);
+  assert.equal(data.created_visit, true);
+  assert.equal(data.may_claim_booked, true);
   assert.equal(createPatientCalled, false);
-  assert.equal(createVisitCalled, false);
+  assert.equal(createdVisit?.patient_id, 10);
 });
 
 test("IDENTITY-SAFE-2: borrowed responsible-party phone + only owner exists creates separate target patient", async () => {

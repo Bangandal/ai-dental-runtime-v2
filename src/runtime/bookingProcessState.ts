@@ -100,7 +100,7 @@ const SAFE_VISIBLE_NEXT_ACTIONS = new Set<BookingNextAction>([
   "ready_for_booking_apply",
 ]);
 
-export const AVAILABILITY_MODEL_VISIBILITY_TTL_MS = 15 * 60 * 1000;
+export const AVAILABILITY_MODEL_VISIBILITY_TTL_MS = 60 * 60 * 1000;
 
 /** Fails closed: evidence without checked_at is treated as stale. */
 export function isAvailabilityEvidenceFresh(

@@ -64,14 +64,19 @@ export function createClinicCardPatientIdentityAuthority(adapter: ClinicCardAdap
         );
       }
 
-      if (phoneBelongsToPatient && findResult.data.length > 0) {
-        return ambiguous(
-          `Phone lookup returned patient record(s), but none match "${input.first_name} ${input.last_name}" — admin handoff required`,
-        );
+      // INV-ID-02: exactly one phone record with no name match — phone wins.
+      // The patient's Telegram display name may differ from their legal ClinicCard name
+      // (nickname, maiden name, short form). With only one record on file, the phone is
+      // the strongest available identity signal, so we reuse the existing patient.
+      if (phoneBelongsToPatient && findResult.data.length === 1) {
+        return {
+          ok: true,
+          patient_id: findResult.data[0].id,
+          resolution: "existing_patient",
+        };
       }
 
-      // No candidate + patient-owned phone, or another person's phone with no
-      // target-name match, means booking orchestration may create a separate target.
+      // No candidate at all — booking orchestration may create a new patient record.
       // This authority deliberately performs no ClinicCard writes.
       return {
         ok: true,

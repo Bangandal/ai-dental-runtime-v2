@@ -108,7 +108,7 @@ export function createSupabaseRuntimeContextRepository(deps: { rpc: RpcCaller })
         username: contactMeta?.username ?? null,
         first_name: contactMeta?.first_name ?? null,
         last_name: contactMeta?.last_name ?? null,
-        phone: contactMeta?.phone ?? null,
+        phone: contactMeta?.phone ?? channelContact?.phone_number ?? null,
         language_code: contactMeta?.language_code ?? null,
       };
 

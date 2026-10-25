@@ -38,7 +38,7 @@ export function createRuntimeTurnSerialQueue(): RuntimeTurnSerialQueue {
 export function buildRuntimeTurnSerialKey(body: RuntimeTurnSerialIdentity): string | null {
   const clinic = body.clinic_code?.trim();
   const channel = body.channel?.trim();
-  const contact = body.external_user_id?.trim() || body.chat_id?.trim();
+  const contact = (body.external_user_id != null ? String(body.external_user_id).trim() : "") || (body.chat_id != null ? String(body.chat_id).trim() : "");
   if (!clinic || !channel || !contact) return null;
   return JSON.stringify([clinic, channel, contact]);
 }

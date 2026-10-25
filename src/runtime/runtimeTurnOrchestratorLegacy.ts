@@ -113,8 +113,8 @@ export async function runRuntimeTurnOrchestrated(
   }
 
   const traceId = randomUUID();
-  const externalUserId = validBody.external_user_id?.trim() || undefined;
-  const chatId = validBody.chat_id?.trim() || undefined;
+  const externalUserId = validBody.external_user_id != null ? String(validBody.external_user_id).trim() || undefined : undefined;
+  const chatId = validBody.chat_id != null ? String(validBody.chat_id).trim() || undefined : undefined;
 
   const persistenceDebug: Record<string, unknown> = {};
   const turnLlmCalls = buildRuntimeLlmCallDebug();
@@ -126,7 +126,7 @@ export async function runRuntimeTurnOrchestrated(
     clinic_id: resolvedClinic.data.clinic_id,
     contact_id: null,
     case_id: null,
-    user_message: validBody.text.trim(),
+    user_message: String(validBody.text).trim(),
     locale: readLocale(validBody.meta),
     business_context: {
       channel: validBody.channel.trim(),
@@ -747,7 +747,7 @@ export async function runRuntimeTurnOrchestrated(
           reason: "runtime_turn_failed",
           payload: {
             trace_id: traceId,
-            user_text: validBody.text.trim(),
+            user_text: String(validBody.text).trim(),
             error_message: runtimeError,
           },
         },
@@ -835,8 +835,8 @@ function validateRuntimeTurnRequest(body: RuntimeTurnHttpRequestBody | undefined
   if (!body) return "request body is required";
   if (!body.clinic_code?.trim()) return "clinic_code is required";
   if (!body.channel?.trim()) return "channel is required";
-  if (!body.text?.trim()) return "text is required";
-  if (!body.external_user_id?.trim() && !body.chat_id?.trim()) return "external_user_id or chat_id is required";
+  if (!String(body.text ?? "").trim()) return "text is required";
+  if (!String(body.external_user_id ?? "").trim() && !String(body.chat_id ?? "").trim()) return "external_user_id or chat_id is required";
   return null;
 }
 

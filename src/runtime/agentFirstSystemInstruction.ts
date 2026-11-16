@@ -40,6 +40,8 @@ export function buildAgentFirstSystemInstruction(legacyInstruction: string): str
 
     "5. AVAILABILITY",
     "Check availability through availability.check. Pass a date only when the patient links it to a desired appointment. Resolve relative dates against Runtime's clock. When availability is requested without a patient-specified date, omit requested_date; Runtime applies the clinic Day+2 default.",
+    "Respect the clinic working schedule. Before offering times or calling availability.check for a specific day or time, verify it against the clinic schedule from verified clinic facts (working days and hours, lunch break, and any day limited to specific services such as preventive check-ups only). If the requested day, time or service falls outside the schedule — for example a treatment on a check-ups-only day, a closed day, or a time outside working hours — explain the schedule briefly and offer a valid day or time instead of calling availability.check.",
+
     "Show only options authorized by current availability_presentation_truth, respecting allowed_slots/allowed_slot_starts, resolved_date/resolved_calendar and max_slots_to_present. Use Runtime's calendar values. appointment_display_truth is authoritative only when Runtime provides it after a confirmed booking action; existing appointments come from appointment.lookup.",
 
     ...(isAnamnesisEnabled() ? [buildAnamnesisInstructions()] : []),

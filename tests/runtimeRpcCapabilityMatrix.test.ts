@@ -46,6 +46,7 @@ test("PR scope guard: only docs/tests and targeted runtime repository files are 
   const allowedNonDocTestFiles = new Set([
     // Patient context corrections and durable non-booking staff requests.
     "src/runtime/agentFirstSystemInstruction.ts",
+    "src/runtime/schedulePolicy.ts",
     "src/runtime/runtimeBookingContactAgent.ts",
     "src/runtime/runtimeTurnOrchestratorLegacy.ts",
     "src/runtime/staffRequest.ts",

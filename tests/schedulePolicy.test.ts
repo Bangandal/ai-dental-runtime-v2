@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import {
   parseSchedule,
   getWeekdayKeyInTimezone,
-  isCheckupService,
   buildScheduleSummary,
   evaluateScheduleRequest,
   type ClinicSchedule,
@@ -50,38 +49,26 @@ describe("getWeekdayKeyInTimezone", () => {
   });
 });
 
-describe("isCheckupService", () => {
-  it("detects checkup across languages", () => {
-    for (const s of ["профілактичний огляд", "осмотр", "preventive check-up", "prohlídka"]) {
-      assert.equal(isCheckupService(s), true, s);
-    }
-  });
-  it("treats treatments as non-checkup", () => {
-    for (const s of ["лікування карієсу", "коронка", "implant", "root canal"]) {
-      assert.equal(isCheckupService(s), false, s);
-    }
-    assert.equal(isCheckupService(null), false);
-  });
-});
-
 describe("evaluateScheduleRequest", () => {
-  it("Friday + treatment → blocked, checkups_only, explains", () => {
-    const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: FRI, serviceType: "лечение кариеса", locale: "ru" });
+  it("Friday + known treatment → blocked, checkups_only, explains", () => {
+    const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: FRI, serviceIsCheckup: false, locale: "ru" });
     assert.equal(d.allowed, false);
     assert.equal(d.status, "checkups_only");
     assert.match(d.message, /осмотр/i);
   });
-  it("Friday + checkup → allowed to proceed", () => {
-    const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: FRI, serviceType: "профилактический осмотр", locale: "ru" });
+  it("Friday + known check-up → allowed to proceed", () => {
+    const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: FRI, serviceIsCheckup: true, locale: "ru" });
     assert.equal(d.allowed, true);
     assert.equal(d.status, "ok");
   });
-  it("Friday within 07:00–09:45 (no service) → allowed", () => {
+  it("Friday + unknown service → allowed but flagged checkups_only_day (deferred to model)", () => {
     const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: FRI, requestedTime: "08:00" });
     assert.equal(d.allowed, true);
+    assert.equal(d.status, "checkups_only_day");
+    assert.equal(d.message, "");
   });
-  it("Friday after close (10:30) → outside_hours", () => {
-    const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: FRI, requestedTime: "10:30", serviceType: "огляд" });
+  it("Friday after close (10:30) → outside_hours (time wins over service)", () => {
+    const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: FRI, requestedTime: "10:30", serviceIsCheckup: true });
     assert.equal(d.allowed, false);
     assert.equal(d.status, "outside_hours");
   });
@@ -94,8 +81,8 @@ describe("evaluateScheduleRequest", () => {
     assert.equal(d.allowed, false);
     assert.equal(d.status, "lunch_break");
   });
-  it("Mon–Thu in hours (09:30) → ok, proceed to availability", () => {
-    const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: THU, requestedTime: "09:30", serviceType: "лечение" });
+  it("Mon–Thu in hours (09:30), treatment → ok (all services allowed)", () => {
+    const d = evaluateScheduleRequest({ schedule: SCH, requestedDate: THU, requestedTime: "09:30", serviceIsCheckup: false });
     assert.equal(d.allowed, true);
     assert.equal(d.status, "ok");
   });
@@ -105,12 +92,23 @@ describe("evaluateScheduleRequest", () => {
 });
 
 describe("buildScheduleSummary", () => {
-  it("renders a localized one-liner with Friday checkups note", () => {
+  it("renders a localized one-liner grouped from config", () => {
     const ru = buildScheduleSummary(SCH, "ru");
-    assert.match(ru, /07:00/);
+    assert.match(ru, /Пн–Чт 07:00–17:00/);
     assert.match(ru, /только профилактические осмотры/);
+    assert.match(ru, /выходной/);
     const en = buildScheduleSummary(SCH, "en");
+    assert.match(en, /Mon–Thu 07:00–17:00/);
     assert.match(en, /check-ups only/);
-    assert.match(en, /Closed Sat & Sun/);
+    assert.match(en, /Sat–Sun closed/);
+  });
+  it("is config-driven: a differing weekday is not grouped into Mon–Thu", () => {
+    const raw2 = JSON.parse(JSON.stringify(RAW));
+    raw2.days.tue.open = "08:00"; // Tuesday differs
+    const sch2 = parseSchedule(raw2) as ClinicSchedule;
+    const en = buildScheduleSummary(sch2, "en");
+    assert.match(en, /Mon 07:00–17:00/);
+    assert.match(en, /Tue 08:00–17:00/);
+    assert.match(en, /Wed–Thu 07:00–17:00/);
   });
 });

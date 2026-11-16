@@ -1,15 +1,18 @@
 /**
  * Clinic schedule policy.
  *
- * Single source of truth for the clinic's working schedule, stored as data in
+ * Single source of truth for the clinic working schedule, stored as data in
  * core.clinics.settings_json.schedule and consumed by both the conversational
  * runtime and the booking calendar. Pure, dependency-free functions: parse the
  * stored schedule, render a localized human summary for model context, and make
- * a deterministic decision about whether a requested day/time/service is allowed
- * BEFORE any availability.check — so e.g. a Friday treatment request is answered
- * from the schedule instead of a futile CRM lookup.
+ * a deterministic decision about whether a requested day/time is allowed BEFORE
+ * any availability.check.
  *
- * Changing the schedule means editing the clinic record, not the code or prompt.
+ * Service eligibility for service-restricted days (e.g. check-ups only) is NOT
+ * inferred from free text here: the deterministic layer decides only from an
+ * upstream typed signal (serviceIsCheckup); an unknown service is carried to the
+ * model as a restriction flag. Changing the schedule means editing the clinic
+ * record, not the code or prompt.
  */
 
 export type WeekdayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -35,14 +38,15 @@ export type ScheduleDecisionStatus =
   | "closed_day"
   | "outside_hours"
   | "lunch_break"
-  | "checkups_only";
+  | "checkups_only"
+  | "checkups_only_day";
 
 export interface ScheduleDecision {
   allowed: boolean;
   status: ScheduleDecisionStatus;
   /** Machine reason, stable for tests/debug. */
   reason: string;
-  /** Localized, patient-facing explanation + suggestion. */
+  /** Localized, patient-facing explanation + suggestion (empty when allowed). */
   message: string;
 }
 
@@ -96,62 +100,61 @@ export function parseSchedule(raw: unknown): ClinicSchedule | null {
   return { timezone, slot_minutes: slot, days };
 }
 
-const CHECKUP_WORDS = [
-  "checkup", "check-up", "check up", "preventive", "prevention", "exam",
-  "огляд", "огляди", "профілакт", "перевірка",
-  "осмотр", "осмотры", "профилакт", "проверка",
-  "prohlídka", "prohlidka", "preventiv", "kontrola",
-];
-
-/** Heuristic: does this free-text service look like a preventive check-up? */
-export function isCheckupService(serviceType: string | null | undefined): boolean {
-  if (!serviceType) return false;
-  const s = serviceType.toLowerCase();
-  return CHECKUP_WORDS.some((w) => s.includes(w));
-}
-
 const DASH = "–"; // en dash
 
-function fmtDayLine(day: DaySchedule): string {
-  if (day.closed || (!day.open && !day.close)) return "";
-  const base = `${day.open}${DASH}${day.close}`;
-  const parts: string[] = [base];
-  return parts.join(" ");
-}
-
 const SUMMARY_LABELS: Record<ScheduleLocale, {
-  monThu: string; fri: string; weekend: string; lunch: string; checkups: string; header: string;
+  header: string; lunch: string; checkups: string; closed: string;
 }> = {
-  uk: { header: "Графік роботи", monThu: "Пн" + DASH + "Чт", fri: "Пт", weekend: "Сб і Нд — вихідні",
-        lunch: "обідня перерва", checkups: "лише профілактичні огляди" },
-  ru: { header: "Часы работы", monThu: "Пн" + DASH + "Чт", fri: "Пт", weekend: "Сб и Вс — выходной",
-        lunch: "обеденный перерыв", checkups: "только профилактические осмотры" },
-  cs: { header: "Otevírací doba", monThu: "Po" + DASH + "Čt", fri: "Pá", weekend: "So a Ne zavřeno",
-        lunch: "polední přestávka", checkups: "pouze preventivní prohlídky" },
-  en: { header: "Opening hours", monThu: "Mon" + DASH + "Thu", fri: "Fri", weekend: "Closed Sat & Sun",
-        lunch: "lunch break", checkups: "preventive check-ups only" },
+  uk: { header: "Графік роботи", lunch: "обідня перерва", checkups: "лише профілактичні огляди", closed: "вихідний" },
+  ru: { header: "Часы работы", lunch: "обеденный перерыв", checkups: "только профилактические осмотры", closed: "выходной" },
+  cs: { header: "Otevírací doba", lunch: "polední přestávka", checkups: "pouze preventivní prohlídky", closed: "zavřeno" },
+  en: { header: "Opening hours", lunch: "lunch break", checkups: "preventive check-ups only", closed: "closed" },
 };
 
+const WEEKDAY_NAMES: Record<ScheduleLocale, Record<WeekdayKey, string>> = {
+  uk: { mon: "Пн", tue: "Вт", wed: "Ср", thu: "Чт", fri: "Пт", sat: "Сб", sun: "Нд" },
+  ru: { mon: "Пн", tue: "Вт", wed: "Ср", thu: "Чт", fri: "Пт", sat: "Сб", sun: "Вс" },
+  cs: { mon: "Po", tue: "Út", wed: "St", thu: "Čt", fri: "Pá", sat: "So", sun: "Ne" },
+  en: { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" },
+};
+
+/** Stable signature so consecutive identical days collapse into one range. null = absent day. */
+function daySignature(day: DaySchedule | undefined): string | null {
+  if (!day) return null;
+  if (day.closed || (!day.open && !day.close)) return "closed";
+  const lunch = day.lunch ? `${day.lunch[0]}-${day.lunch[1]}` : "";
+  return `${day.open}|${day.close}|${lunch}|${day.services ?? "all"}`;
+}
+
 /**
- * Localized one-line schedule summary for injection into model context, so the
- * model always answers from the current config without hardcoded hours.
+ * Localized schedule summary for injection into model context, rendered FROM the
+ * configured days (grouping only days that genuinely match), so editing the clinic
+ * record alone always yields a correct summary.
  */
 export function buildScheduleSummary(schedule: ClinicSchedule, locale: ScheduleLocale = "en"): string {
   const L = SUMMARY_LABELS[locale] ?? SUMMARY_LABELS.en;
+  const names = WEEKDAY_NAMES[locale] ?? WEEKDAY_NAMES.en;
   const segments: string[] = [];
-  const mon = schedule.days.mon;
-  if (mon && !mon.closed && mon.open) {
-    let seg = `${L.monThu} ${mon.open}${DASH}${mon.close}`;
-    if (mon.lunch) seg += ` (${L.lunch} ${mon.lunch[0]}${DASH}${mon.lunch[1]})`;
-    segments.push(seg);
+  let i = 0;
+  while (i < WEEKDAY_ORDER.length) {
+    const sig = daySignature(schedule.days[WEEKDAY_ORDER[i]]);
+    if (sig == null) { i++; continue; }
+    let j = i;
+    while (j + 1 < WEEKDAY_ORDER.length && daySignature(schedule.days[WEEKDAY_ORDER[j + 1]]) === sig) j++;
+    const label = i === j
+      ? names[WEEKDAY_ORDER[i]]
+      : `${names[WEEKDAY_ORDER[i]]}${DASH}${names[WEEKDAY_ORDER[j]]}`;
+    if (sig === "closed") {
+      segments.push(`${label} ${L.closed}`);
+    } else {
+      const d = schedule.days[WEEKDAY_ORDER[i]] as DaySchedule;
+      let seg = `${label} ${d.open}${DASH}${d.close}`;
+      if (d.lunch) seg += ` (${L.lunch} ${d.lunch[0]}${DASH}${d.lunch[1]})`;
+      if (d.services === "checkups_only") seg += ` (${L.checkups})`;
+      segments.push(seg);
+    }
+    i = j + 1;
   }
-  const fri = schedule.days.fri;
-  if (fri && !fri.closed && fri.open) {
-    let seg = `${L.fri} ${fri.open}${DASH}${fri.close}`;
-    if (fri.services === "checkups_only") seg += ` (${L.checkups})`;
-    segments.push(seg);
-  }
-  segments.push(L.weekend);
   return `${L.header}: ${segments.join("; ")}.`;
 }
 
@@ -189,14 +192,17 @@ export interface ScheduleRequest {
   schedule: ClinicSchedule;
   requestedDate: string; // YYYY-MM-DD
   requestedTime?: string | null; // HH:MM
-  serviceType?: string | null;
+  /** Typed signal resolved upstream. true=check-up, false=treatment, null/undefined=unknown. */
+  serviceIsCheckup?: boolean | null;
   locale?: ScheduleLocale;
 }
 
 /**
- * Deterministic decision for a requested day/time/service against the schedule.
- * Call BEFORE availability.check. When allowed=false, `message` is a ready
- * patient-facing explanation; the model should not run availability.check.
+ * Deterministic decision for a requested day/time against the schedule. Call
+ * BEFORE availability.check. When allowed=false, `message` is a ready
+ * patient-facing explanation. On a check-ups-only day an unknown service type is
+ * NOT guessed: it returns allowed=true with status "checkups_only_day" so the
+ * model applies the restriction semantically.
  */
 export function evaluateScheduleRequest(req: ScheduleRequest): ScheduleDecision {
   const locale = req.locale ?? "en";
@@ -209,10 +215,7 @@ export function evaluateScheduleRequest(req: ScheduleRequest): ScheduleDecision 
   if (!day || day.closed) {
     return { allowed: false, status: "closed_day", reason: `closed_${wk}`, message: L.closed };
   }
-  // Friday / checkups-only day: block non-checkup services deterministically.
-  if (day.services === "checkups_only" && req.serviceType && !isCheckupService(req.serviceType)) {
-    return { allowed: false, status: "checkups_only", reason: `checkups_only_${wk}`, message: L.checkups };
-  }
+  // Time-window checks apply to every service.
   const time = req.requestedTime ? timeToMinutes(req.requestedTime) : null;
   if (time != null && day.open && day.close) {
     const openM = timeToMinutes(day.open);
@@ -226,6 +229,15 @@ export function evaluateScheduleRequest(req: ScheduleRequest): ScheduleDecision 
       if (ls != null && le != null && time >= ls && time < le) {
         return { allowed: false, status: "lunch_break", reason: `lunch_${wk}`, message: L.lunch(day.lunch[0], day.lunch[1]) };
       }
+    }
+  }
+  // Service-restricted day: decide only from a typed signal, never from free text.
+  if (day.services === "checkups_only") {
+    if (req.serviceIsCheckup === false) {
+      return { allowed: false, status: "checkups_only", reason: `checkups_only_${wk}`, message: L.checkups };
+    }
+    if (req.serviceIsCheckup !== true) {
+      return { allowed: true, status: "checkups_only_day", reason: `checkups_only_day_${wk}`, message: "" };
     }
   }
   return { allowed: true, status: "ok", reason: "allowed", message: "" };
